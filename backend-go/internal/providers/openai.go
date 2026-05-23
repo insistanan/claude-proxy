@@ -15,6 +15,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // OpenAIProvider OpenAI 提供商
@@ -43,16 +44,29 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 		Temperature: claudeReq.Temperature,
 	}
 
-	if claudeReq.MaxTokens > 0 {
-		openaiReq.MaxCompletionTokens = claudeReq.MaxTokens
+	// max_tokens 处理：同时设置 max_tokens 和 max_completion_tokens 以兼容第三方 API
+	tokenValue := 0
+	if claudeReq.MaxCompletionTokens > 0 {
+		tokenValue = claudeReq.MaxCompletionTokens
+	} else if claudeReq.MaxTokens > 0 {
+		tokenValue = claudeReq.MaxTokens
 	} else {
-		openaiReq.MaxCompletionTokens = 65535
+		tokenValue = 65535
 	}
+	openaiReq.MaxCompletionTokens = tokenValue
+	openaiReq.MaxTokens = tokenValue
 
 	// 转换工具
 	if len(claudeReq.Tools) > 0 {
 		openaiReq.Tools = p.convertTools(claudeReq.Tools)
-		openaiReq.ToolChoice = "auto"
+	}
+
+	// 转换 tool_choice
+	openaiReq.ToolChoice = p.convertToolChoice(claudeReq.ToolChoice)
+
+	// 转换 thinking → reasoning_effort
+	if effort := p.convertThinkingToReasoningEffort(claudeReq.Thinking); effort != "" {
+		openaiReq.ReasoningEffort = effort
 	}
 	// --- 转换逻辑结束 ---
 
@@ -154,6 +168,8 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 		contentType, _ := content["type"].(string)
 
 		switch contentType {
+		case "thinking":
+			// thinking 块不转发到 OpenAI（OpenAI 不支持历史 thinking），跳过
 		case "text":
 			if text, ok := content["text"].(string); ok {
 				textContents = append(textContents, text)
@@ -370,11 +386,66 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 
 		toolUseBlockIndex := 0
 		toolCallAccumulator := make(map[int]*ToolCallAccumulator)
-		toolUseStopEmitted := false
 
 		// 文本块状态跟踪
 		textBlockStarted := false
 		textBlockIndex := 0
+
+		// thinking 块状态跟踪
+		thinkingBlockStarted := false
+		thinkingBlockIndex := 0
+
+		// message_start 事件状态
+		messageStartEmitted := false
+		var streamModel string
+
+		// 发送 message_stop 的辅助函数
+		emitMessageStop := func() {
+			eventChan <- "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		}
+
+		// 关闭 thinking 块的辅助函数
+		closeThinkingBlock := func() {
+			if !thinkingBlockStarted {
+				return
+			}
+			// 发送 signature_delta（空签名字段，非 Claude 原生不支持真实签名）
+			sigEvent := map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": thinkingBlockIndex,
+				"delta": map[string]string{
+					"type":      "signature_delta",
+					"signature": "",
+				},
+			}
+			sigJSON, _ := json.Marshal(sigEvent)
+			eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", sigJSON)
+
+			// 发送 content_block_stop
+			stopEvent := map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": thinkingBlockIndex,
+			}
+			stopJSON, _ := json.Marshal(stopEvent)
+			eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
+			thinkingBlockStarted = false
+			thinkingBlockIndex++
+		}
+
+		// 关闭文本块的辅助函数
+		closeTextBlock := func() {
+			if !textBlockStarted {
+				return
+			}
+			stopEvent := map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": textBlockIndex,
+			}
+			stopJSON, _ := json.Marshal(stopEvent)
+			eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
+			textBlockStarted = false
+			textBlockIndex++
+		}
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -398,7 +469,31 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			// 检查是否有错误
 			if errObj, ok := chunk["error"]; ok {
 				errChan <- fmt.Errorf("upstream error: %v", errObj)
+				emitMessageStop()
 				return
+			}
+
+			// 首次收到有效 chunk 时，提取 model 并发送 message_start
+			if !messageStartEmitted {
+				if m, ok := chunk["model"].(string); ok {
+					streamModel = m
+				}
+				msgStart := map[string]interface{}{
+					"type": "message_start",
+					"message": map[string]interface{}{
+						"id":            fmt.Sprintf("msg_%s", uuid.New().String()),
+						"type":          "message",
+						"role":          "assistant",
+						"content":       []interface{}{},
+						"model":         streamModel,
+						"stop_reason":   nil,
+						"stop_sequence": nil,
+						"usage":         map[string]interface{}{"input_tokens": 0, "output_tokens": 1},
+					},
+				}
+				startJSON, _ := json.Marshal(msgStart)
+				eventChan <- fmt.Sprintf("event: message_start\ndata: %s\n\n", startJSON)
+				messageStartEmitted = true
 			}
 
 			choices, ok := chunk["choices"].([]interface{})
@@ -416,8 +511,45 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				continue
 			}
 
+			// 处理 thinking/reasoning 内容（必须在文本内容之前处理）
+			if reasoningContent, ok := delta["reasoning_content"].(string); ok && reasoningContent != "" {
+				// 如果有文本块正在进行，先关闭它
+				closeTextBlock()
+
+				if !thinkingBlockStarted {
+					// 发送 thinking content_block_start
+					startEvent := map[string]interface{}{
+						"type":  "content_block_start",
+						"index": thinkingBlockIndex,
+						"content_block": map[string]string{
+							"type":      "thinking",
+							"thinking":  "",
+							"signature": "",
+						},
+					}
+					startJSON, _ := json.Marshal(startEvent)
+					eventChan <- fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON)
+					thinkingBlockStarted = true
+				}
+
+				// 发送 thinking_delta
+				deltaEvent := map[string]interface{}{
+					"type":  "content_block_delta",
+					"index": thinkingBlockIndex,
+					"delta": map[string]string{
+						"type":     "thinking_delta",
+						"thinking": reasoningContent,
+					},
+				}
+				deltaJSON, _ := json.Marshal(deltaEvent)
+				eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON)
+			}
+
 			// 处理文本内容
 			if content, ok := delta["content"].(string); ok && content != "" {
+				// 如果有 thinking 块正在进行，先关闭它
+				closeThinkingBlock()
+
 				// 如果是第一个文本块,发送 content_block_start
 				if !textBlockStarted {
 					startEvent := map[string]interface{}{
@@ -448,17 +580,9 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 
 			// 处理工具调用
 			if toolCalls, ok := delta["tool_calls"].([]interface{}); ok {
-				// 如果有文本块正在进行,先关闭它
-				if textBlockStarted {
-					stopEvent := map[string]interface{}{
-						"type":  "content_block_stop",
-						"index": textBlockIndex,
-					}
-					stopJSON, _ := json.Marshal(stopEvent)
-					eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
-					textBlockStarted = false
-					textBlockIndex++
-				}
+				// 如果有 thinking/文本块正在进行,先关闭它们
+				closeThinkingBlock()
+				closeTextBlock()
 
 				for _, tc := range toolCalls {
 					toolCall, ok := tc.(map[string]interface{})
@@ -508,53 +632,52 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 
 			// 处理结束原因
 			if finishReason, ok := choice["finish_reason"].(string); ok {
-				// 如果有未关闭的文本块,先关闭它
-				if textBlockStarted {
-					stopEvent := map[string]interface{}{
-						"type":  "content_block_stop",
-						"index": textBlockIndex,
-					}
-					stopJSON, _ := json.Marshal(stopEvent)
-					eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
-					textBlockStarted = false
+				// 关闭所有未关闭的块
+				closeThinkingBlock()
+				closeTextBlock()
+
+				// 根据 finish_reason 确定 stop_reason
+				stopReason := "end_turn"
+				if finishReason == "tool_calls" || finishReason == "function_call" {
+					stopReason = "tool_use"
+				} else if finishReason == "length" {
+					stopReason = "max_tokens"
 				}
 
-				if !toolUseStopEmitted && (finishReason == "tool_calls" || finishReason == "function_call") {
-					event := map[string]interface{}{
-						"type": "message_delta",
-						"delta": map[string]string{
-							"stop_reason": "tool_use",
-						},
-					}
-					eventJSON, _ := json.Marshal(event)
-					eventChan <- fmt.Sprintf("event: message_delta\ndata: %s\n\n", eventJSON)
-					toolUseStopEmitted = true
+				// 发送 message_delta（包含 stop_reason）
+				deltaEvent := map[string]interface{}{
+					"type": "message_delta",
+					"delta": map[string]interface{}{
+						"stop_reason":   stopReason,
+						"stop_sequence": nil,
+					},
+					"usage": map[string]interface{}{
+						"output_tokens": 0,
+					},
 				}
+				deltaJSON, _ := json.Marshal(deltaEvent)
+				eventChan <- fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON)
 			}
 		}
 
-		// 确保流结束时关闭任何未关闭的文本块
-		if textBlockStarted {
-			stopEvent := map[string]interface{}{
-				"type":  "content_block_stop",
-				"index": textBlockIndex,
-			}
-			stopJSON, _ := json.Marshal(stopEvent)
-			eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
-		}
+		// 确保流结束时关闭任何未关闭的块
+		closeThinkingBlock()
+		closeTextBlock()
 
 		if err := scanner.Err(); err != nil {
-			// 在 tool_use 场景下，客户端主动断开是正常行为
-			// 如果已经发送了 tool_use stop 事件，并且错误是连接断开相关的，则忽略该错误
 			errMsg := err.Error()
-			if toolUseStopEmitted && (strings.Contains(errMsg, "broken pipe") ||
+			if strings.Contains(errMsg, "broken pipe") ||
 				strings.Contains(errMsg, "connection reset") ||
-				strings.Contains(errMsg, "EOF")) {
-				// 这是预期的客户端行为，不报告错误
+				strings.Contains(errMsg, "EOF") {
+				// 客户端主动断开，仍然发送 message_stop
+				emitMessageStop()
 				return
 			}
 			errChan <- err
 		}
+
+		// 流正常结束，发送 message_stop
+		emitMessageStop()
 	}()
 
 	return eventChan, errChan, nil
@@ -609,6 +732,74 @@ func processToolUsePart(id, name string, input interface{}, index int) []string 
 }
 
 // 辅助函数
+
+// convertToolChoice 转换 tool_choice
+func (p *OpenAIProvider) convertToolChoice(toolChoice interface{}) interface{} {
+	if toolChoice == nil {
+		return nil
+	}
+
+	// 字符串格式：Claude "auto"/"any" → OpenAI "auto"/"required"
+	if str, ok := toolChoice.(string); ok {
+		switch str {
+		case "any":
+			return "required"
+		case "auto":
+			return "auto"
+		default:
+			return "auto"
+		}
+	}
+
+	// 对象格式：Claude {type: "auto"/"any"/"tool", name: "..."} → OpenAI 对应格式
+	if obj, ok := toolChoice.(map[string]interface{}); ok {
+		tcType, _ := obj["type"].(string)
+		switch tcType {
+		case "auto":
+			return "auto"
+		case "any":
+			return "required"
+		case "tool":
+			name, _ := obj["name"].(string)
+			if name != "" {
+				return map[string]interface{}{
+					"type": "function",
+					"function": map[string]string{
+						"name": name,
+					},
+				}
+			}
+			return "auto"
+		default:
+			return "auto"
+		}
+	}
+
+	return nil
+}
+
+// convertThinkingToReasoningEffort 将 Claude thinking 配置转换为 OpenAI reasoning_effort
+func (p *OpenAIProvider) convertThinkingToReasoningEffort(thinking interface{}) string {
+	if thinking == nil {
+		return ""
+	}
+
+	if obj, ok := thinking.(map[string]interface{}); ok {
+		thinkType, _ := obj["type"].(string)
+		switch thinkType {
+		case "enabled":
+			// 有明确 budget 的 thinking → high reasoning effort
+			return "high"
+		case "adaptive":
+			// adaptive 模式不设 reasoning_effort，使用上游默认
+			return ""
+		default:
+			return ""
+		}
+	}
+
+	return ""
+}
 
 func extractSystemText(system interface{}) string {
 	if str, ok := system.(string); ok {

@@ -2,14 +2,17 @@ package types
 
 // ClaudeRequest Claude 请求结构
 type ClaudeRequest struct {
-	Model       string                 `json:"model"`
-	Messages    []ClaudeMessage        `json:"messages"`
-	System      interface{}            `json:"system,omitempty"` // string 或 content 数组
-	MaxTokens   int                    `json:"max_tokens,omitempty"`
-	Temperature float64                `json:"temperature,omitempty"`
-	Stream      bool                   `json:"stream,omitempty"`
-	Tools       []ClaudeTool           `json:"tools,omitempty"`
-	Metadata    map[string]interface{} `json:"metadata,omitempty"` // Claude Code CLI 等客户端发送的元数据
+	Model               string                 `json:"model"`
+	Messages            []ClaudeMessage        `json:"messages"`
+	System              interface{}            `json:"system,omitempty"` // string 或 content 数组
+	MaxTokens           int                    `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int                    `json:"max_completion_tokens,omitempty"`
+	Temperature         float64                `json:"temperature,omitempty"`
+	Stream              bool                   `json:"stream,omitempty"`
+	Tools               []ClaudeTool           `json:"tools,omitempty"`
+	ToolChoice          interface{}            `json:"tool_choice,omitempty"`  // string 或 object
+	Thinking            interface{}            `json:"thinking,omitempty"`    // {type: "enabled"/"adaptive", budget_tokens: N}
+	Metadata            map[string]interface{} `json:"metadata,omitempty"`    // Claude Code CLI 等客户端发送的元数据
 }
 
 // ClaudeMessage Claude 消息
@@ -58,10 +61,12 @@ type OpenAIRequest struct {
 	Model               string          `json:"model"`
 	Messages            []OpenAIMessage `json:"messages"`
 	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
 	Temperature         float64         `json:"temperature,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	Tools               []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice          string          `json:"tool_choice,omitempty"`
+	ToolChoice          interface{}     `json:"tool_choice,omitempty"`        // string 或 object
+	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`   // none/minimal/low/medium/high/xhigh
 }
 
 // OpenAIMessage OpenAI 消息

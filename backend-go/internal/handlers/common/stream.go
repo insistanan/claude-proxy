@@ -40,6 +40,8 @@ type StreamContext struct {
 	LowQuality   bool   // 是否为低质量渠道
 	// 隐式缓存推断
 	MessageStartInputTokens int // message_start 事件中的 input_tokens（用于推断隐式缓存）
+	// 兜底注入
+	SeenMessageStart bool // 是否已收到 message_start 事件
 }
 
 // CollectedUsageData 从流事件中收集的 usage 数据
@@ -241,6 +243,22 @@ func ProcessStreamEvent(
 
 	// 修补 token
 	eventToSend := event
+
+	// 兜底注入：如果第一个事件不是 message_start，自动注入
+	if !ctx.SeenMessageStart && !IsMessageStartEvent(event) {
+		if IsContentBlockStartEvent(event) || IsMessageDeltaEvent(event) || IsMessageStopEvent(event) {
+			syntheticStart := BuildMessageStartEvent(ctx.RequestModel)
+			if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
+				log.Printf("[Messages-Stream-Patch] 上游缺少 message_start，自动注入")
+			}
+			w.Write([]byte(syntheticStart))
+			flusher.Flush()
+			ctx.SeenMessageStart = true
+		}
+	}
+	if IsMessageStartEvent(event) {
+		ctx.SeenMessageStart = true
+	}
 
 	// 处理 message_start 事件：补全空 id 和检查 model 一致性（可选）
 	if IsMessageStartEvent(event) && ctx.RequestModel != "" {
@@ -928,6 +946,34 @@ func BuildUsageEvent(requestBody []byte, outputText string) string {
 func IsMessageStartEvent(event string) bool {
 	return strings.Contains(event, "\"type\":\"message_start\"") ||
 		strings.Contains(event, "\"type\": \"message_start\"")
+}
+
+// IsContentBlockStartEvent 检测是否为 content_block_start 事件
+func IsContentBlockStartEvent(event string) bool {
+	return strings.Contains(event, "\"type\":\"content_block_start\"") ||
+		strings.Contains(event, "\"type\": \"content_block_start\"")
+}
+
+// BuildMessageStartEvent 构造一个合成的 message_start 事件
+func BuildMessageStartEvent(model string) string {
+	if model == "" {
+		model = "unknown"
+	}
+	event := map[string]interface{}{
+		"type": "message_start",
+		"message": map[string]interface{}{
+			"id":            fmt.Sprintf("msg_%s", uuid.New().String()),
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []interface{}{},
+			"model":         model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         map[string]interface{}{"input_tokens": 0, "output_tokens": 1},
+		},
+	}
+	eventJSON, _ := json.Marshal(event)
+	return fmt.Sprintf("event: message_start\ndata: %s\n\n", eventJSON)
 }
 
 // PatchMessageStartEvent 修补 message_start 事件中的 id 和 model 字段
