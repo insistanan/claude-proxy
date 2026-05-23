@@ -44,17 +44,9 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 		Temperature: claudeReq.Temperature,
 	}
 
-	// max_tokens 处理：同时设置 max_tokens 和 max_completion_tokens 以兼容第三方 API
-	tokenValue := 0
-	if claudeReq.MaxCompletionTokens > 0 {
-		tokenValue = claudeReq.MaxCompletionTokens
-	} else if claudeReq.MaxTokens > 0 {
-		tokenValue = claudeReq.MaxTokens
-	} else {
-		tokenValue = 65535
-	}
-	openaiReq.MaxCompletionTokens = tokenValue
-	openaiReq.MaxTokens = tokenValue
+	// 只发送一个 token 限制字段，避免部分 OpenAI 兼容网关因同时收到
+	// max_tokens 和 max_completion_tokens 而返回 invalid_request。
+	p.applyTokenLimit(openaiReq, &claudeReq, upstream)
 
 	// 转换工具
 	if len(claudeReq.Tools) > 0 {
@@ -732,6 +724,54 @@ func processToolUsePart(id, name string, input interface{}, index int) []string 
 }
 
 // 辅助函数
+
+func (p *OpenAIProvider) applyTokenLimit(openaiReq *types.OpenAIRequest, claudeReq *types.ClaudeRequest, upstream *config.UpstreamConfig) {
+	tokenValue := 65535
+	if claudeReq.MaxCompletionTokens > 0 {
+		tokenValue = claudeReq.MaxCompletionTokens
+	} else if claudeReq.MaxTokens > 0 {
+		tokenValue = claudeReq.MaxTokens
+	}
+
+	if shouldUseMaxCompletionTokens(openaiReq.Model, claudeReq, upstream) {
+		openaiReq.MaxCompletionTokens = tokenValue
+		return
+	}
+
+	openaiReq.MaxTokens = tokenValue
+}
+
+func shouldUseMaxCompletionTokens(targetModel string, claudeReq *types.ClaudeRequest, upstream *config.UpstreamConfig) bool {
+	if claudeReq.MaxCompletionTokens > 0 {
+		return true
+	}
+
+	// Kimi/Moonshot 兼容网关更容易接受 max_completion_tokens。
+	if looksLikeKimiOrMoonshot(targetModel) {
+		return true
+	}
+
+	if upstream == nil {
+		return false
+	}
+
+	if looksLikeKimiOrMoonshot(upstream.Name) || looksLikeKimiOrMoonshot(upstream.BaseURL) {
+		return true
+	}
+
+	for sourceModel, mappedModel := range upstream.ModelMapping {
+		if sourceModel == claudeReq.Model && looksLikeKimiOrMoonshot(mappedModel) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func looksLikeKimiOrMoonshot(value string) bool {
+	value = strings.ToLower(value)
+	return strings.Contains(value, "kimi") || strings.Contains(value, "moonshot")
+}
 
 // convertToolChoice 转换 tool_choice
 func (p *OpenAIProvider) convertToolChoice(toolChoice interface{}) interface{} {
