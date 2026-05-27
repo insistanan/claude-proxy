@@ -54,6 +54,13 @@ func Handler(
 			_ = json.Unmarshal(bodyBytes, &responsesReq)
 		}
 
+		hasImage := utils.DetectImageContent(bodyBytes)
+		if responsesReq.PreviousResponseID != "" {
+			if sess, err := sessionManager.GetSessionByResponseID(responsesReq.PreviousResponseID); err == nil && sess.HasVisionContent {
+				hasImage = true
+			}
+		}
+
 		// 提取对话标识用于 Trace 亲和性
 		userID := common.ExtractConversationID(c, bodyBytes)
 
@@ -64,9 +71,9 @@ func Handler(
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindResponses)
 
 		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, startTime)
 		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, startTime)
+			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, hasImage, startTime)
 		}
 	})
 }
@@ -81,6 +88,7 @@ func handleMultiChannel(
 	bodyBytes []byte,
 	responsesReq types.ResponsesRequest,
 	userID string,
+	hasImage bool,
 	startTime time.Time,
 ) {
 	provider := &providers.ResponsesProvider{SessionManager: sessionManager}
@@ -93,6 +101,7 @@ func handleMultiChannel(
 		scheduler.ChannelKindResponses,
 		"Responses",
 		userID,
+		hasImage,
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			channelIndex := selection.ChannelIndex
@@ -133,7 +142,7 @@ func handleMultiChannel(
 					channelScheduler.MarkURLSuccess(scheduler.ChannelKindResponses, channelIndex, url)
 				},
 				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return handleSuccess(c, resp, provider, upstream.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes)
+					return handleSuccess(c, resp, provider, upstream.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
 				},
 			)
 
@@ -163,6 +172,7 @@ func handleSingleChannel(
 	sessionManager *session.SessionManager,
 	bodyBytes []byte,
 	responsesReq types.ResponsesRequest,
+	hasImage bool,
 	startTime time.Time,
 ) {
 	upstream, err := cfgManager.GetCurrentResponsesUpstream()
@@ -216,7 +226,7 @@ func handleSingleChannel(
 		nil,
 		nil,
 		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleSuccess(c, resp, provider, upstream.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes)
+			return handleSuccess(c, resp, provider, upstream.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
 		},
 	)
 	if handled {
@@ -238,13 +248,14 @@ func handleSuccess(
 	startTime time.Time,
 	originalReq *types.ResponsesRequest,
 	originalRequestJSON []byte,
+	hasImage bool,
 ) (*types.Usage, error) {
 	defer resp.Body.Close()
 
 	isStream := originalReq != nil && originalReq.Stream
 
 	if isStream {
-		return handleStreamSuccess(c, resp, upstreamType, envCfg, startTime, originalReq, originalRequestJSON), nil
+		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, hasImage), nil
 	}
 
 	// 非流式响应处理
@@ -309,6 +320,9 @@ func handleSuccess(
 
 			for _, item := range responsesResp.Output {
 				sessionManager.AppendMessage(sess.ID, item, responsesResp.Usage.TotalTokens)
+			}
+			if hasImage {
+				_ = sessionManager.MarkSessionHasVisionContent(sess.ID)
 			}
 
 			sessionManager.UpdateLastResponseID(sess.ID, responsesResp.ID)
@@ -459,9 +473,11 @@ func handleStreamSuccess(
 	resp *http.Response,
 	upstreamType string,
 	envCfg *config.EnvConfig,
+	sessionManager *session.SessionManager,
 	startTime time.Time,
 	originalReq *types.ResponsesRequest,
 	originalRequestJSON []byte,
+	hasImage bool,
 ) *types.Usage {
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
@@ -501,6 +517,7 @@ func handleStreamSuccess(
 	hasUsage := false
 	needTokenPatch := false
 	clientGone := false
+	var streamResponseID string
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -567,6 +584,9 @@ func handleStreamSuccess(
 					eventToSend = patchResponsesCompletedEventUsage(event, originalRequestJSON, outputTextBuffer.String(), &collectedUsage, envCfg)
 				}
 			}
+			if streamResponseID == "" {
+				streamResponseID = extractResponsesCompletedID(eventToSend)
+			}
 
 			// 转发给客户端
 			if !clientGone {
@@ -613,6 +633,32 @@ func handleStreamSuccess(
 				}
 			} else if logBuffer.Len() > 0 {
 				log.Printf("[Responses-Stream] 上游流式响应原始内容:\n%s", logBuffer.String())
+			}
+		}
+	}
+
+	if originalReq != nil && (originalReq.Store == nil || *originalReq.Store) {
+		if sess, err := sessionManager.GetOrCreateSession(originalReq.PreviousResponseID); err == nil {
+			inputItems, _ := parseInputToItems(originalReq.Input)
+			for _, item := range inputItems {
+				_ = sessionManager.AppendMessage(sess.ID, item, 0)
+			}
+
+			if outputText := strings.TrimSpace(outputTextBuffer.String()); outputText != "" {
+				_ = sessionManager.AppendMessage(sess.ID, types.ResponsesItem{
+					Type:    "text",
+					Role:    "assistant",
+					Content: outputText,
+				}, collectedUsage.TotalTokens)
+			}
+
+			if hasImage {
+				_ = sessionManager.MarkSessionHasVisionContent(sess.ID)
+			}
+
+			if streamResponseID != "" {
+				_ = sessionManager.UpdateLastResponseID(sess.ID, streamResponseID)
+				sessionManager.RecordResponseMapping(streamResponseID, sess.ID)
 			}
 		}
 	}
@@ -850,6 +896,41 @@ func updateResponsesStreamUsage(collected *responsesStreamUsage, usageData respo
 func isResponsesCompletedEvent(event string) bool {
 	return strings.Contains(event, `"type":"response.completed"`) ||
 		strings.Contains(event, `"type": "response.completed"`)
+}
+
+func extractResponsesCompletedID(event string) string {
+	for _, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if jsonStr == "" {
+			continue
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+			continue
+		}
+
+		eventType, _ := data["type"].(string)
+		if eventType != "response.completed" {
+			continue
+		}
+
+		response, ok := data["response"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		responseID, _ := response["id"].(string)
+		if responseID != "" {
+			return responseID
+		}
+	}
+
+	return ""
 }
 
 // isClientDisconnectError 判断是否为客户端断开连接错误
@@ -1133,8 +1214,9 @@ func parseInputToItems(input interface{}) ([]types.ResponsesItem, error) {
 				continue
 			}
 			itemType, _ := itemMap["type"].(string)
+			role, _ := itemMap["role"].(string)
 			content := itemMap["content"]
-			items = append(items, types.ResponsesItem{Type: itemType, Content: content})
+			items = append(items, types.ResponsesItem{Type: itemType, Role: role, Content: content})
 		}
 		return items, nil
 	default:

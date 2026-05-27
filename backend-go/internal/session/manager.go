@@ -8,17 +8,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
 
 // Session 会话数据结构
 type Session struct {
-	ID             string                // sess_xxxxx
-	Messages       []types.ResponsesItem // 完整对话历史
-	LastResponseID string                // 最后一个 response ID
-	CreatedAt      time.Time
-	LastAccessAt   time.Time
-	TotalTokens    int
+	ID               string                // sess_xxxxx
+	Messages         []types.ResponsesItem // 完整对话历史
+	LastResponseID   string                // 最后一个 response ID
+	CreatedAt        time.Time
+	LastAccessAt     time.Time
+	TotalTokens      int
+	HasVisionContent bool // 会话历史是否包含图片内容
 }
 
 // SessionManager 会话管理器
@@ -91,6 +93,29 @@ func (sm *SessionManager) RecordResponseMapping(responseID, sessionID string) {
 	log.Printf("[Session-Mapping] 记录映射: %s -> %s", responseID, sessionID)
 }
 
+// GetSessionByResponseID 根据 responseID 获取会话
+func (sm *SessionManager) GetSessionByResponseID(responseID string) (*Session, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if responseID == "" {
+		return nil, fmt.Errorf("response_id 不能为空")
+	}
+
+	sessionID, ok := sm.responseMapping[responseID]
+	if !ok {
+		return nil, fmt.Errorf("无效的 previous_response_id: %s", responseID)
+	}
+
+	session, exists := sm.sessions[sessionID]
+	if !exists {
+		return nil, fmt.Errorf("无效的 previous_response_id: %s", responseID)
+	}
+
+	session.LastAccessAt = time.Now()
+	return session, nil
+}
+
 // AppendMessage 追加消息到会话
 func (sm *SessionManager) AppendMessage(sessionID string, item types.ResponsesItem, tokensUsed int) error {
 	sm.mu.Lock()
@@ -104,7 +129,25 @@ func (sm *SessionManager) AppendMessage(sessionID string, item types.ResponsesIt
 	session.Messages = append(session.Messages, item)
 	session.TotalTokens += tokensUsed
 	session.LastAccessAt = time.Now()
+	if utils.ResponsesItemHasVisionContent(item) {
+		session.HasVisionContent = true
+	}
 
+	return nil
+}
+
+// MarkSessionHasVisionContent 显式标记会话历史含图
+func (sm *SessionManager) MarkSessionHasVisionContent(sessionID string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session, exists := sm.sessions[sessionID]
+	if !exists {
+		return fmt.Errorf("会话不存在: %s", sessionID)
+	}
+
+	session.HasVisionContent = true
+	session.LastAccessAt = time.Now()
 	return nil
 }
 

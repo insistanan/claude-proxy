@@ -160,6 +160,9 @@ func (cm *ConfigManager) UpdateResponsesUpstream(index int, updates UpstreamUpda
 	if updates.LowQuality != nil {
 		upstream.LowQuality = *updates.LowQuality
 	}
+	if updates.VisionCapable != nil {
+		upstream.VisionCapable = *updates.VisionCapable
+	}
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return false, err

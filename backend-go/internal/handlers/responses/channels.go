@@ -37,6 +37,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"promotionUntil":     up.PromotionUntil,
 				"promotionCount":     up.PromotionCount,
 				"lowQuality":         up.LowQuality,
+				"visionCapable":      up.VisionCapable,
 			}
 		}
 

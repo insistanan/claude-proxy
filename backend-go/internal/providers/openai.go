@@ -141,22 +141,18 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 		return messages
 	}
 
-	// 如果是内容数组
-	contents, ok := msg.Content.([]interface{})
-	if !ok {
+	contents := utils.NormalizeContentBlocks(msg.Content)
+	if len(contents) == 0 {
 		return messages
 	}
 
 	textContents := []string{}
 	toolCalls := []types.OpenAIToolCall{}
 	toolResults := []types.OpenAIMessage{}
+	multimodalContents := []map[string]interface{}{}
+	hasVisionContent := false
 
-	for _, c := range contents {
-		content, ok := c.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
+	for _, content := range contents {
 		contentType, _ := content["type"].(string)
 
 		switch contentType {
@@ -165,6 +161,15 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 		case "text":
 			if text, ok := content["text"].(string); ok {
 				textContents = append(textContents, text)
+				multimodalContents = append(multimodalContents, map[string]interface{}{
+					"type": "text",
+					"text": text,
+				})
+			}
+		case "image", "image_url", "input_image":
+			if imageBlock, ok := utils.ToOpenAIImageContentBlock(content); ok {
+				hasVisionContent = true
+				multimodalContents = append(multimodalContents, imageBlock)
 			}
 
 		case "tool_use":
@@ -205,15 +210,17 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 	// 添加工具结果
 	messages = append(messages, toolResults...)
 
-	// 添加文本和工具调用
-	if len(textContents) > 0 || len(toolCalls) > 0 {
+	// 添加文本、图片和工具调用
+	if len(textContents) > 0 || len(toolCalls) > 0 || len(multimodalContents) > 0 {
 		role := normalizeRole(msg.Role)
 		if role != "tool" {
 			openaiMsg := types.OpenAIMessage{
 				Role: role,
 			}
 
-			if len(textContents) > 0 {
+			if hasVisionContent {
+				openaiMsg.Content = multimodalContents
+			} else if len(textContents) > 0 {
 				openaiMsg.Content = strings.Join(textContents, "\n")
 			} else {
 				openaiMsg.Content = nil

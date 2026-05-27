@@ -81,6 +81,7 @@ func (s *ChannelScheduler) SelectChannel(
 	userID string,
 	failedChannels map[int]bool,
 	kind ChannelKind,
+	hasImage bool,
 ) (*SelectionResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -95,6 +96,18 @@ func (s *ChannelScheduler) SelectChannel(
 			return nil, fmt.Errorf("没有可用的活跃 Responses 渠道")
 		default:
 			return nil, fmt.Errorf("没有可用的活跃 Messages 渠道")
+		}
+	}
+
+	originalChannels := activeChannels
+	if hasImage {
+		visionChannels := s.filterVisionChannels(activeChannels, kind)
+		prefix := kindSchedulerLogPrefix(kind)
+		if len(visionChannels) > 0 {
+			activeChannels = visionChannels
+			log.Printf("[%s-Vision] 检测到含图请求，Vision 渠道候选数: %d/%d", prefix, len(visionChannels), len(originalChannels))
+		} else {
+			log.Printf("[%s-Vision] 警告: 检测到含图请求，但没有可用 Vision 渠道，回退全渠道", prefix)
 		}
 	}
 
@@ -127,8 +140,10 @@ func (s *ChannelScheduler) SelectChannel(
 	// 1. 检查 Trace 亲和性（促销渠道失败时或无促销渠道时）
 	if userID != "" {
 		if preferredIdx, ok := s.traceAffinity.GetPreferredChannel(userID); ok {
+			foundPreferredChannel := false
 			for _, ch := range activeChannels {
 				if ch.Index == preferredIdx && !failedChannels[preferredIdx] {
+					foundPreferredChannel = true
 					// 检查渠道状态：只有 active 状态才使用亲和性
 					if ch.Status != "active" {
 						prefix := kindSchedulerLogPrefix(kind)
@@ -147,6 +162,10 @@ func (s *ChannelScheduler) SelectChannel(
 						}, nil
 					}
 				}
+			}
+			if hasImage && !foundPreferredChannel {
+				prefix := kindSchedulerLogPrefix(kind)
+				log.Printf("[%s-Vision] 跳过亲和渠道 [%d]：不在 Vision 候选池中 (user: %s)", prefix, preferredIdx, maskUserID(userID))
 			}
 		}
 	}
@@ -189,6 +208,17 @@ func (s *ChannelScheduler) SelectChannel(
 
 	// 3. 所有健康渠道都失败，选择失败率最低的作为降级
 	return s.selectFallbackChannel(activeChannels, failedChannels, kind)
+}
+
+func (s *ChannelScheduler) filterVisionChannels(channels []ChannelInfo, kind ChannelKind) []ChannelInfo {
+	visionChannels := make([]ChannelInfo, 0, len(channels))
+	for _, ch := range channels {
+		upstream := s.getUpstreamByIndex(ch.Index, kind)
+		if upstream != nil && upstream.VisionCapable {
+			visionChannels = append(visionChannels, ch)
+		}
+	}
+	return visionChannels
 }
 
 // findPromotedChannel 查找处于促销期的渠道

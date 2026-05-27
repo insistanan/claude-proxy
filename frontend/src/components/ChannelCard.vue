@@ -65,6 +65,20 @@
           >
             <span class="font-weight-bold">{{ channel.serviceType.toUpperCase() }}</span>
           </v-chip>
+          <v-tooltip v-if="channel.visionCapable" text="支持图片理解" location="bottom" :open-delay="150">
+            <template #activator="{ props: tooltipProps }">
+              <v-chip
+                v-bind="tooltipProps"
+                color="primary"
+                size="small"
+                variant="tonal"
+                density="comfortable"
+                rounded="pill"
+              >
+                <v-icon size="16">mdi-image-search-outline</v-icon>
+              </v-chip>
+            </template>
+          </v-tooltip>
           <!-- 渠道状态芯片 -->
           <v-chip
             v-if="channel.status === 'disabled'"

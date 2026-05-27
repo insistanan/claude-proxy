@@ -7,6 +7,7 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
 // ============== Responses → Claude Messages ==============
@@ -50,48 +51,35 @@ func ResponsesToClaudeMessages(sess *session.Session, newInput interface{}, inst
 func responsesItemToClaudeMessage(item types.ResponsesItem) (*types.ClaudeMessage, error) {
 	switch item.Type {
 	case "message":
-		// 新格式：嵌套结构（type=message, role=user/assistant, content=[]ContentBlock）
 		role := item.Role
 		if role == "" {
-			role = "user" // 默认为 user
+			role = "user"
 		}
 
-		contentText := extractTextFromContent(item.Content)
-		if contentText == "" {
-			return nil, nil // 空内容，跳过
+		contentBlocks := buildClaudeMessageContent(item.Content)
+		if len(contentBlocks) == 0 {
+			return nil, nil
 		}
 
 		return &types.ClaudeMessage{
-			Role: role,
-			Content: []types.ClaudeContent{
-				{
-					Type: "text",
-					Text: contentText,
-				},
-			},
+			Role:    role,
+			Content: contentBlocks,
 		}, nil
 
 	case "text":
-		// 旧格式：简单 string（向后兼容）
-		contentStr := extractTextFromContent(item.Content)
-		if contentStr == "" {
+		contentBlocks := buildClaudeMessageContent(item.Content)
+		if len(contentBlocks) == 0 {
 			return nil, fmt.Errorf("text 类型的 content 不能为空")
 		}
 
-		// 使用 item.Role（如果存在），否则默认为 user
 		role := "user"
 		if item.Role != "" {
 			role = item.Role
 		}
 
 		return &types.ClaudeMessage{
-			Role: role,
-			Content: []types.ClaudeContent{
-				{
-					Type: "text",
-					Text: contentStr,
-				},
-			},
+			Role:    role,
+			Content: contentBlocks,
 		}, nil
 
 	case "tool_call":
@@ -191,26 +179,24 @@ func ResponsesToOpenAIChatMessages(sess *session.Session, newInput interface{}, 
 func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface{} {
 	switch item.Type {
 	case "message":
-		// 新格式：嵌套结构
 		role := item.Role
 		if role == "" {
 			role = "user"
 		}
 
-		contentText := extractTextFromContent(item.Content)
-		if contentText == "" {
+		content := buildOpenAIMessageContent(item.Content)
+		if content == nil {
 			return nil
 		}
 
 		return map[string]interface{}{
 			"role":    role,
-			"content": contentText,
+			"content": content,
 		}
 
 	case "text":
-		// 旧格式：简单 string
-		contentStr := extractTextFromContent(item.Content)
-		if contentStr == "" {
+		content := buildOpenAIMessageContent(item.Content)
+		if content == nil {
 			return nil
 		}
 
@@ -221,7 +207,7 @@ func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface
 
 		return map[string]interface{}{
 			"role":    role,
-			"content": contentStr,
+			"content": content,
 		}
 	}
 
@@ -331,10 +317,12 @@ func parseResponsesInput(input interface{}) ([]types.ResponsesItem, error) {
 			}
 
 			itemType, _ := itemMap["type"].(string)
+			role, _ := itemMap["role"].(string)
 			content := itemMap["content"]
 
 			items = append(items, types.ResponsesItem{
 				Type:    itemType,
+				Role:    role,
 				Content: content,
 			})
 		}
@@ -387,6 +375,81 @@ func ExtractTextFromResponses(sess *session.Session, newInput interface{}) (stri
 	}
 
 	return strings.Join(texts, "\n"), nil
+}
+
+func buildClaudeMessageContent(content interface{}) []map[string]interface{} {
+	if text, ok := content.(string); ok && text != "" {
+		return []map[string]interface{}{
+			{
+				"type": "text",
+				"text": text,
+			},
+		}
+	}
+
+	blocks := utils.NormalizeContentBlocks(content)
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	claudeBlocks := make([]map[string]interface{}, 0, len(blocks))
+	for _, block := range blocks {
+		if text, ok := utils.ExtractTextFromBlock(block); ok {
+			claudeBlocks = append(claudeBlocks, map[string]interface{}{
+				"type": "text",
+				"text": text,
+			})
+			continue
+		}
+
+		if imageBlock, ok := utils.ToClaudeImageContentBlock(block); ok {
+			claudeBlocks = append(claudeBlocks, imageBlock)
+		}
+	}
+
+	return claudeBlocks
+}
+
+func buildOpenAIMessageContent(content interface{}) interface{} {
+	if text, ok := content.(string); ok && text != "" {
+		return text
+	}
+
+	blocks := utils.NormalizeContentBlocks(content)
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	textParts := []string{}
+	openAIBlocks := []map[string]interface{}{}
+	hasVisionContent := false
+
+	for _, block := range blocks {
+		if text, ok := utils.ExtractTextFromBlock(block); ok {
+			textParts = append(textParts, text)
+			openAIBlocks = append(openAIBlocks, map[string]interface{}{
+				"type": "text",
+				"text": text,
+			})
+			continue
+		}
+
+		if imageBlock, ok := utils.ToOpenAIImageContentBlock(block); ok {
+			hasVisionContent = true
+			openAIBlocks = append(openAIBlocks, imageBlock)
+		}
+	}
+
+	if len(openAIBlocks) == 0 {
+		return nil
+	}
+	if hasVisionContent {
+		return openAIBlocks
+	}
+	if len(textParts) > 0 {
+		return strings.Join(textParts, "\n")
+	}
+	return nil
 }
 
 // OpenAICompletionsResponseToResponses OpenAI Completions 响应转 Responses

@@ -48,6 +48,8 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 			_ = json.Unmarshal(bodyBytes, &claudeReq)
 		}
 
+		hasImage := utils.DetectImageContent(bodyBytes)
+
 		// 提取 user_id 用于 Trace 亲和性
 		userID := common.ExtractUserID(bodyBytes)
 
@@ -58,7 +60,7 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindMessages)
 
 		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, hasImage, startTime)
 		} else {
 			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, startTime)
 		}
@@ -74,6 +76,7 @@ func handleMultiChannel(
 	bodyBytes []byte,
 	claudeReq types.ClaudeRequest,
 	userID string,
+	hasImage bool,
 	startTime time.Time,
 ) {
 	common.HandleMultiChannelFailover(
@@ -83,6 +86,7 @@ func handleMultiChannel(
 		scheduler.ChannelKindMessages,
 		"Messages",
 		userID,
+		hasImage,
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			channelIndex := selection.ChannelIndex

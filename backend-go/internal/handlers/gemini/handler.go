@@ -132,6 +132,7 @@ func handleMultiChannel(
 		scheduler.ChannelKindGemini,
 		"Gemini",
 		userID,
+		false,
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			channelIndex := selection.ChannelIndex

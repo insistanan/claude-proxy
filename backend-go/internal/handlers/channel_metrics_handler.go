@@ -592,6 +592,7 @@ func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.Channe
 				"promotionUntil":     up.PromotionUntil,
 				"promotionCount":     up.PromotionCount,
 				"lowQuality":         up.LowQuality,
+				"visionCapable":      up.VisionCapable,
 			}
 		}
 

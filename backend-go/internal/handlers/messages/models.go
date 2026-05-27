@@ -172,7 +172,7 @@ func tryModelsRequest(c *gin.Context, cfgManager *config.ConfigManager, channelS
 		}
 
 		// 使用调度器选择渠道
-		selection, err := channelScheduler.SelectChannel(c.Request.Context(), "", failedChannels, kind)
+		selection, err := channelScheduler.SelectChannel(c.Request.Context(), "", failedChannels, kind, false)
 		if err != nil {
 			log.Printf("[%s-Models] 渠道无可用: %v", channelType, err)
 			break
