@@ -283,19 +283,19 @@ export const useChannelStore = defineStore('channel', () => {
               await api.reorderChannels(newOrder)
             }
 
-            // 2. 设置5分钟促销期（300秒）
+            // 2. 设置促销期（默认300秒，不限次数）
             if (isGemini) {
-              await api.setGeminiChannelPromotion(newChannel.index, 300)
+              await api.setGeminiChannelPromotion(newChannel.index, 300, 0)
             } else if (isResponses) {
-              await api.setResponsesChannelPromotion(newChannel.index, 300)
+              await api.setResponsesChannelPromotion(newChannel.index, 300, 0)
             } else {
-              await api.setChannelPromotion(newChannel.index, 300)
+              await api.setChannelPromotion(newChannel.index, 300, 0)
             }
 
             return {
               success: true,
               message: '渠道添加成功',
-              quickAddMessage: `渠道 ${channel.name} 已设为最高优先级，5分钟内优先使用`
+              quickAddMessage: `渠道 ${channel.name} 已设为最高优先级（5分钟内优先使用）`
             }
           } catch (err) {
             console.warn('设置快速添加优先级失败:', err)

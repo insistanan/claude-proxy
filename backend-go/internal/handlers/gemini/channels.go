@@ -38,6 +38,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"status":                      status,
 				"priority":                    priority,
 				"promotionUntil":              up.PromotionUntil,
+				"promotionCount":              up.PromotionCount,
 				"lowQuality":                  up.LowQuality,
 				"injectDummyThoughtSignature": up.InjectDummyThoughtSignature,
 				"stripThoughtSignature":       up.StripThoughtSignature,
@@ -293,31 +294,38 @@ func SetChannelPromotion(cfgManager *config.ConfigManager) gin.HandlerFunc {
 		}
 
 		var req struct {
-			Duration int `json:"duration"` // 促销期时长（秒），0 表示清除
+			Duration int `json:"duration"` // 促销期时长（秒），0 表示不设时间限制
+			Count    int `json:"count"`    // 促销请求次数，0 表示不设次数限制
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": "Invalid request body"})
 			return
 		}
 
-		duration := time.Duration(req.Duration) * time.Second
-		if err := cfgManager.SetGeminiChannelPromotion(id, duration); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-
-		if req.Duration <= 0 {
+		if req.Duration <= 0 && req.Count <= 0 {
+			if err := cfgManager.SetGeminiChannelPromotion(id, 0, 0); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
 			c.JSON(200, gin.H{
 				"success": true,
 				"message": "Gemini 渠道促销期已清除",
 			})
-		} else {
-			c.JSON(200, gin.H{
-				"success":  true,
-				"message":  "Gemini 渠道促销期已设置",
-				"duration": req.Duration,
-			})
+			return
 		}
+
+		duration := time.Duration(req.Duration) * time.Second
+		if err := cfgManager.SetGeminiChannelPromotion(id, duration, req.Count); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"success":  true,
+			"message":  "Gemini 渠道促销期已设置",
+			"duration": req.Duration,
+			"count":    req.Count,
+		})
 	}
 }
 

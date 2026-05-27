@@ -26,10 +26,11 @@ type UpstreamConfig struct {
 	InsecureSkipVerify bool              `json:"insecureSkipVerify,omitempty"`
 	ModelMapping       map[string]string `json:"modelMapping,omitempty"`
 	// 多渠道调度相关字段
-	Priority       int        `json:"priority"`                 // 渠道优先级（数字越小优先级越高，默认按索引）
-	Status         string     `json:"status"`                   // 渠道状态：active（正常）, suspended（暂停）, disabled（备用池）
-	PromotionUntil *time.Time `json:"promotionUntil,omitempty"` // 促销期截止时间，在此期间内优先使用此渠道（忽略trace亲和）
-	LowQuality     bool       `json:"lowQuality,omitempty"`     // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
+	Priority        int        `json:"priority"`                 // 渠道优先级（数字越小优先级越高，默认按索引）
+	Status          string     `json:"status"`                   // 渠道状态：active（正常）, suspended（暂停）, disabled（备用池）
+	PromotionUntil  *time.Time `json:"promotionUntil,omitempty"` // 促销期截止时间，在此期间内优先使用此渠道（忽略trace亲和）
+	PromotionCount  int        `json:"promotionCount,omitempty"` // 促销期剩余请求次数，每次成功请求递减，到0自动清除
+	LowQuality      bool       `json:"lowQuality,omitempty"`     // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
 	// Gemini 特定配置
 	InjectDummyThoughtSignature bool `json:"injectDummyThoughtSignature,omitempty"` // 给空 thought_signature 注入 dummy 值（兼容 x666.me 等要求必须有该字段的 API）
 	StripThoughtSignature       bool `json:"stripThoughtSignature,omitempty"`       // 移除 thought_signature 字段（兼容旧版 Gemini API）
@@ -47,10 +48,11 @@ type UpstreamUpdate struct {
 	InsecureSkipVerify *bool             `json:"insecureSkipVerify"`
 	ModelMapping       map[string]string `json:"modelMapping"`
 	// 多渠道调度相关字段
-	Priority       *int       `json:"priority"`
-	Status         *string    `json:"status"`
-	PromotionUntil *time.Time `json:"promotionUntil"`
-	LowQuality     *bool      `json:"lowQuality"`
+	Priority        *int       `json:"priority"`
+	Status          *string    `json:"status"`
+	PromotionUntil  *time.Time `json:"promotionUntil"`
+	PromotionCount  *int       `json:"promotionCount"`
+	LowQuality      *bool      `json:"lowQuality"`
 	// Gemini 特定配置
 	InjectDummyThoughtSignature *bool `json:"injectDummyThoughtSignature"`
 	StripThoughtSignature       *bool `json:"stripThoughtSignature"`

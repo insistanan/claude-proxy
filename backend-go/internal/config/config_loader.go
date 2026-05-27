@@ -13,7 +13,7 @@ import (
 
 const (
 	maxBackups      = 10
-	keyRecoveryTime = 5 * time.Minute
+	keyRecoveryTime = 3 * time.Minute
 	maxFailureCount = 3
 )
 

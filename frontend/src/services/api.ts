@@ -100,6 +100,7 @@ export interface Channel {
   metrics?: ChannelMetrics   // 实时指标
   suspendReason?: string     // 熔断原因
   promotionUntil?: string    // 促销期截止时间（ISO 格式）
+  promotionCount?: number    // 促销期剩余请求次数
   latencyTestTime?: number   // 延迟测试时间戳（用于 5 分钟后自动清除显示）
   lowQuality?: boolean       // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
   injectDummyThoughtSignature?: boolean  // Gemini 特定：为 functionCall 注入 dummy thought_signature（兼容第三方 API）
@@ -598,18 +599,18 @@ class ApiService {
   // ============== 促销期管理 API ==============
 
   // 设置 Messages 渠道促销期
-  async setChannelPromotion(channelId: number, durationSeconds: number): Promise<void> {
+  async setChannelPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void> {
     await this.request(`/messages/channels/${channelId}/promotion`, {
       method: 'POST',
-      body: JSON.stringify({ duration: durationSeconds })
+      body: JSON.stringify({ duration: durationSeconds, count: count || 0 })
     })
   }
 
   // 设置 Responses 渠道促销期
-  async setResponsesChannelPromotion(channelId: number, durationSeconds: number): Promise<void> {
+  async setResponsesChannelPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void> {
     await this.request(`/responses/channels/${channelId}/promotion`, {
       method: 'POST',
-      body: JSON.stringify({ duration: durationSeconds })
+      body: JSON.stringify({ duration: durationSeconds, count: count || 0 })
     })
   }
 
@@ -740,10 +741,10 @@ class ApiService {
     return this.request('/gemini/channels/metrics')
   }
 
-  async setGeminiChannelPromotion(channelId: number, durationSeconds: number): Promise<void> {
+  async setGeminiChannelPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void> {
     await this.request(`/gemini/channels/${channelId}/promotion`, {
       method: 'POST',
-      body: JSON.stringify({ duration: durationSeconds })
+      body: JSON.stringify({ duration: durationSeconds, count: count || 0 })
     })
   }
 

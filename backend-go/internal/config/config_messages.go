@@ -154,6 +154,9 @@ func (cm *ConfigManager) UpdateUpstream(index int, updates UpstreamUpdate) (shou
 	if updates.PromotionUntil != nil {
 		upstream.PromotionUntil = updates.PromotionUntil
 	}
+	if updates.PromotionCount != nil {
+		upstream.PromotionCount = *updates.PromotionCount
+	}
 	if updates.LowQuality != nil {
 		upstream.LowQuality = *updates.LowQuality
 	}
@@ -402,8 +405,9 @@ func (cm *ConfigManager) SetChannelStatus(index int, status string) error {
 	cm.config.Upstream[index].Status = status
 
 	// 暂停时清除促销期
-	if status == "suspended" && cm.config.Upstream[index].PromotionUntil != nil {
+	if status == "suspended" && (cm.config.Upstream[index].PromotionUntil != nil || cm.config.Upstream[index].PromotionCount > 0) {
 		cm.config.Upstream[index].PromotionUntil = nil
+		cm.config.Upstream[index].PromotionCount = 0
 		log.Printf("[Config-Status] 已清除渠道 [%d] %s 的促销期", index, cm.config.Upstream[index].Name)
 	}
 
@@ -415,9 +419,60 @@ func (cm *ConfigManager) SetChannelStatus(index int, status string) error {
 	return nil
 }
 
+// ConsumePromotionCount 消费促销请求次数
+// 如果渠道处于次数促销期且剩余次数>0，递减1次，到0时自动清除所有促销状态
+// 返回 true 表示确实消费了一次
+func (cm *ConfigManager) ConsumePromotionCount(index int, channelType string) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	var upstream *UpstreamConfig
+	switch channelType {
+	case "messages":
+		if index < 0 || index >= len(cm.config.Upstream) {
+			return false
+		}
+		upstream = &cm.config.Upstream[index]
+	case "responses":
+		if index < 0 || index >= len(cm.config.ResponsesUpstream) {
+			return false
+		}
+		upstream = &cm.config.ResponsesUpstream[index]
+	case "gemini":
+		if index < 0 || index >= len(cm.config.GeminiUpstream) {
+			return false
+		}
+		upstream = &cm.config.GeminiUpstream[index]
+	default:
+		return false
+	}
+
+	if upstream.PromotionCount <= 0 {
+		return false
+	}
+
+	upstream.PromotionCount--
+	if upstream.PromotionCount <= 0 {
+		upstream.PromotionCount = 0
+		upstream.PromotionUntil = nil
+		log.Printf("[Config-Promotion] 渠道 [%d] %s 促销次数已耗尽，自动清除促销状态", index, upstream.Name)
+	} else {
+		log.Printf("[Config-Promotion] 渠道 [%d] %s 促销次数剩余 %d 次", index, upstream.Name, upstream.PromotionCount)
+	}
+
+	if err := cm.saveConfigLocked(cm.config); err != nil {
+		log.Printf("[Config-Promotion] 警告: 保存促销计数更新失败: %v", err)
+		return false
+	}
+
+	return true
+}
+
 // SetChannelPromotion 设置渠道促销期
-// duration 为促销持续时间，传入 0 表示清除促销期
-func (cm *ConfigManager) SetChannelPromotion(index int, duration time.Duration) error {
+// duration 为促销持续时间，传入 0 表示清除时间促销
+// count 为促销请求次数，传入 0 表示清除次数促销
+// 两者至少设置一个，否则视为清除所有促销
+func (cm *ConfigManager) SetChannelPromotion(index int, duration time.Duration, count int) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -425,19 +480,35 @@ func (cm *ConfigManager) SetChannelPromotion(index int, duration time.Duration) 
 		return fmt.Errorf("无效的上游索引: %d", index)
 	}
 
-	if duration <= 0 {
+	// 清除所有促销
+	if duration <= 0 && count <= 0 {
 		cm.config.Upstream[index].PromotionUntil = nil
-		log.Printf("[Config-Promotion] 已清除渠道 [%d] %s 的促销期", index, cm.config.Upstream[index].Name)
+		cm.config.Upstream[index].PromotionCount = 0
+		log.Printf("[Config-Promotion] 已清除渠道 [%d] %s 的所有促销", index, cm.config.Upstream[index].Name)
 	} else {
 		// 清除其他渠道的促销期（同一时间只允许一个促销渠道）
 		for i := range cm.config.Upstream {
-			if i != index && cm.config.Upstream[i].PromotionUntil != nil {
-				cm.config.Upstream[i].PromotionUntil = nil
+			if i != index {
+				if cm.config.Upstream[i].PromotionUntil != nil || cm.config.Upstream[i].PromotionCount > 0 {
+					log.Printf("[Config-Promotion] 自动清除渠道 [%d] %s 的促销期（同一时间只允许一个促销渠道）", i, cm.config.Upstream[i].Name)
+					cm.config.Upstream[i].PromotionUntil = nil
+					cm.config.Upstream[i].PromotionCount = 0
+				}
 			}
 		}
-		promotionEnd := time.Now().Add(duration)
-		cm.config.Upstream[index].PromotionUntil = &promotionEnd
-		log.Printf("[Config-Promotion] 已设置渠道 [%d] %s 进入促销期，截止: %s", index, cm.config.Upstream[index].Name, promotionEnd.Format(time.RFC3339))
+		if duration > 0 {
+			promotionEnd := time.Now().Add(duration)
+			cm.config.Upstream[index].PromotionUntil = &promotionEnd
+		} else {
+			cm.config.Upstream[index].PromotionUntil = nil
+		}
+		if count > 0 {
+			cm.config.Upstream[index].PromotionCount = count
+		} else {
+			cm.config.Upstream[index].PromotionCount = 0
+		}
+		log.Printf("[Config-Promotion] 已设置渠道 [%d] %s 进入促销期，时间截止: %v, 剩余次数: %d",
+			index, cm.config.Upstream[index].Name, cm.config.Upstream[index].PromotionUntil, cm.config.Upstream[index].PromotionCount)
 	}
 
 	return cm.saveConfigLocked(cm.config)

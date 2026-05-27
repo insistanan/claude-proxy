@@ -118,10 +118,13 @@ func GetChannelPriority(upstream *UpstreamConfig, index int) int {
 
 // IsChannelInPromotion 检查渠道是否处于促销期
 func IsChannelInPromotion(upstream *UpstreamConfig) bool {
-	if upstream.PromotionUntil == nil {
-		return false
+	if upstream.PromotionUntil != nil && time.Now().Before(*upstream.PromotionUntil) {
+		return true
 	}
-	return time.Now().Before(*upstream.PromotionUntil)
+	if upstream.PromotionCount > 0 {
+		return true
+	}
+	return false
 }
 
 // ============== UpstreamConfig 方法 ==============

@@ -115,7 +115,7 @@
                 class="ml-2"
               >
                 <v-icon start size="12">mdi-rocket-launch</v-icon>
-                {{ formatPromotionRemaining(element.promotionUntil) }}
+                {{ formatPromotionRemaining(element.promotionUntil, element.promotionCount) }}
               </v-chip>
               <!-- 官网链接按钮 -->
               <v-btn
@@ -283,11 +283,11 @@
                     </template>
                     <v-list-item-title>测试延迟</v-list-item-title>
                   </v-list-item>
-                  <v-list-item @click="setPromotion(element)">
+                  <v-list-item @click="openPromotionDialog(element)">
                     <template #prepend>
                       <v-icon size="small" color="info">mdi-rocket-launch</v-icon>
                     </template>
-                    <v-list-item-title>抢优先级 (5分钟)</v-list-item-title>
+                    <v-list-item-title>抢优先级...</v-list-item-title>
                   </v-list-item>
                   <v-list-item v-if="index > 0" :disabled="isSavingOrder" @click="moveChannelToTop(element.index)">
                     <template #prepend>
@@ -446,6 +446,48 @@
       <div v-else class="text-center py-4 text-medium-emphasis text-caption">所有渠道都处于活跃状态</div>
     </div>
   </v-card>
+
+    <v-dialog v-model="showPromotionDialog" max-width="420">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon color="info" class="mr-2">mdi-rocket-launch</v-icon>
+          设置促销期
+          <span v-if="promotionChannel" class="ml-2 text-subtitle-1 text-medium-emphasis"> — {{ promotionChannel.name }}</span>
+        </v-card-title>
+        <v-divider />
+        <v-card-text class="pt-4">
+          <p class="text-body-2 text-medium-emphasis mb-4">
+            促销期渠道将绕过健康检查，获得最高调度优先级。可同时设置时间和次数限制，任一条件满足即自动结束。
+          </p>
+          <v-text-field
+            v-model="promotionDuration"
+            label="促销时长（秒）"
+            type="number"
+            :min="0"
+            hint="0 = 不限时长"
+            persistent-hint
+            density="compact"
+            class="mb-3"
+          />
+          <v-text-field
+            v-model="promotionCount"
+            label="促销请求次数"
+            type="number"
+            :min="0"
+            hint="0 = 不限次数，每次成功请求自动减1"
+            persistent-hint
+            density="compact"
+          />
+        </v-card-text>
+        <v-divider />
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="closePromotionDialog">取消</v-btn>
+          <v-btn color="info" variant="flat" @click="confirmPromotion">确认设置</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
 </template>
 
 <script setup lang="ts">
@@ -496,6 +538,12 @@ const schedulerStats = ref<{
 } | null>(null)
 const isLoadingMetrics = ref(false)
 const isSavingOrder = ref(false)
+
+// 促销弹窗相关
+const showPromotionDialog = ref(false)
+const promotionChannel = ref<Channel | null>(null)
+const promotionDuration = ref(300) // 默认 5 分钟
+const promotionCount = ref(0) // 默认 0 = 不限制次数
 
 // 延迟测试结果有效期（5 分钟）
 const LATENCY_VALID_DURATION = 5 * 60 * 1000
@@ -651,12 +699,14 @@ const isLatencyValid = (channel: Channel): boolean => {
 
 // 判断渠道是否处于促销期
 const isInPromotion = (channel: Channel): boolean => {
+  if (channel.promotionCount && channel.promotionCount > 0) return true
   if (!channel.promotionUntil) return false
   return new Date(channel.promotionUntil) > new Date()
 }
 
 // 格式化促销期剩余时间
-const formatPromotionRemaining = (until?: string): string => {
+const formatPromotionRemaining = (until?: string, count?: number): string => {
+  if (count && count > 0) return `剩 ${count} 次`
   if (!until) return ''
   const remaining = Math.max(0, new Date(until).getTime() - Date.now())
   const minutes = Math.ceil(remaining / 60000)
@@ -1104,12 +1154,25 @@ const resumeChannel = async (channelId: number) => {
   }
 }
 
-// 设置渠道促销期（抢优先级）
-const setPromotion = async (channel: Channel) => {
-  try {
-    const PROMOTION_DURATION = 300 // 5分钟
+const openPromotionDialog = (channel: Channel) => {
+  promotionChannel.value = channel
+  promotionDuration.value = 300
+  promotionCount.value = 0
+  showPromotionDialog.value = true
+}
 
-    // 如果渠道是熔断状态，先恢复它
+const closePromotionDialog = () => {
+  showPromotionDialog.value = false
+  promotionChannel.value = null
+}
+
+const confirmPromotion = async () => {
+  if (!promotionChannel.value) return
+  const channel = promotionChannel.value
+  const duration = promotionDuration.value
+  const count = promotionCount.value
+
+  try {
     if (channel.status === 'suspended') {
       if (props.channelType === 'gemini') {
         await api.resumeGeminiChannel(channel.index)
@@ -1122,19 +1185,23 @@ const setPromotion = async (channel: Channel) => {
     }
 
     if (props.channelType === 'gemini') {
-      await api.setGeminiChannelPromotion(channel.index, PROMOTION_DURATION)
+      await api.setGeminiChannelPromotion(channel.index, duration, count)
     } else if (props.channelType === 'responses') {
-      await api.setResponsesChannelPromotion(channel.index, PROMOTION_DURATION)
+      await api.setResponsesChannelPromotion(channel.index, duration, count)
     } else {
-      await api.setChannelPromotion(channel.index, PROMOTION_DURATION)
+      await api.setChannelPromotion(channel.index, duration, count)
     }
     emit('refresh')
-    // 通知用户
-    emit('success', `渠道 ${channel.name} 已设为最高优先级，5分钟内优先使用`)
+    const durationText = duration > 0 ? `${Math.ceil(duration / 60)}分钟内` : ''
+    const countText = count > 0 ? `${count}次请求内` : ''
+    const combined = [durationText, countText].filter(Boolean).join(' / ')
+    emit('success', `渠道 ${channel.name} 已设为最高优先级${combined ? '（' + combined + '）' : ''}`)
   } catch (error) {
     console.error('Failed to set promotion:', error)
     const errorMessage = error instanceof Error ? error.message : '未知错误'
     emit('error', `设置优先级失败: ${errorMessage}`)
+  } finally {
+    closePromotionDialog()
   }
 }
 

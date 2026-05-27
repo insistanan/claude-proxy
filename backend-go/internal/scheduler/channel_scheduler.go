@@ -367,6 +367,19 @@ func (s *ChannelScheduler) SetTraceAffinity(userID string, channelIndex int) {
 	}
 }
 
+// ConsumePromotionCount 消费促销请求次数
+// 在请求成功后调用，递减促销计数，到 0 时自动清除促销状态
+func (s *ChannelScheduler) ConsumePromotionCount(channelIndex int, kind ChannelKind) {
+	channelType := "messages"
+	switch kind {
+	case ChannelKindResponses:
+		channelType = "responses"
+	case ChannelKindGemini:
+		channelType = "gemini"
+	}
+	s.configManager.ConsumePromotionCount(channelIndex, channelType)
+}
+
 // UpdateTraceAffinity 更新 Trace 亲和时间（续期）
 func (s *ChannelScheduler) UpdateTraceAffinity(userID string) {
 	if userID != "" {

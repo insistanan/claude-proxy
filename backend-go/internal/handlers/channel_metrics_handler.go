@@ -211,7 +211,7 @@ func GetSchedulerStats(sch *scheduler.ChannelScheduler) gin.HandlerFunc {
 	}
 }
 
-// SetChannelPromotion 设置渠道促销期
+// SetChannelPromotion 设置渠道促销期（通用版，通过 ConfigManager 接口调用）
 // 促销期内的渠道会被优先选择，忽略 trace 亲和性
 func SetChannelPromotion(cfgManager ConfigManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -223,32 +223,38 @@ func SetChannelPromotion(cfgManager ConfigManager) gin.HandlerFunc {
 		}
 
 		var req struct {
-			Duration int `json:"duration"` // 促销期时长（秒），0 表示清除
+			Duration int `json:"duration"` // 促销期时长（秒），0 表示不设时间限制
+			Count    int `json:"count"`    // 促销请求次数，0 表示不设次数限制
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": "无效的请求参数"})
 			return
 		}
 
-		// 调用配置管理器设置促销期
-		duration := time.Duration(req.Duration) * time.Second
-		if err := cfgManager.SetChannelPromotion(id, duration); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-
-		if req.Duration <= 0 {
+		if req.Duration <= 0 && req.Count <= 0 {
+			if err := cfgManager.SetChannelPromotion(id, 0, 0); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
 			c.JSON(200, gin.H{
 				"success": true,
 				"message": "渠道促销期已清除",
 			})
-		} else {
-			c.JSON(200, gin.H{
-				"success":  true,
-				"message":  "渠道促销期已设置",
-				"duration": req.Duration,
-			})
+			return
 		}
+
+		duration := time.Duration(req.Duration) * time.Second
+		if err := cfgManager.SetChannelPromotion(id, duration, req.Count); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"success":  true,
+			"message":  "渠道促销期已设置",
+			"duration": req.Duration,
+			"count":    req.Count,
+		})
 	}
 }
 
@@ -263,42 +269,49 @@ func SetResponsesChannelPromotion(cfgManager ResponsesConfigManager) gin.Handler
 		}
 
 		var req struct {
-			Duration int `json:"duration"` // 促销期时长（秒），0 表示清除
+			Duration int `json:"duration"` // 促销期时长（秒），0 表示不设时间限制
+			Count    int `json:"count"`    // 促销请求次数，0 表示不设次数限制
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": "无效的请求参数"})
 			return
 		}
 
-		duration := time.Duration(req.Duration) * time.Second
-		if err := cfgManager.SetResponsesChannelPromotion(id, duration); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-
-		if req.Duration <= 0 {
+		if req.Duration <= 0 && req.Count <= 0 {
+			if err := cfgManager.SetResponsesChannelPromotion(id, 0, 0); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
 			c.JSON(200, gin.H{
 				"success": true,
 				"message": "Responses 渠道促销期已清除",
 			})
-		} else {
-			c.JSON(200, gin.H{
-				"success":  true,
-				"message":  "Responses 渠道促销期已设置",
-				"duration": req.Duration,
-			})
+			return
 		}
+
+		duration := time.Duration(req.Duration) * time.Second
+		if err := cfgManager.SetResponsesChannelPromotion(id, duration, req.Count); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"success":  true,
+			"message":  "Responses 渠道促销期已设置",
+			"duration": req.Duration,
+			"count":    req.Count,
+		})
 	}
 }
 
 // ConfigManager 促销期配置管理接口
 type ConfigManager interface {
-	SetChannelPromotion(index int, duration time.Duration) error
+	SetChannelPromotion(index int, duration time.Duration, count int) error
 }
 
 // ResponsesConfigManager Responses 渠道促销期配置管理接口
 type ResponsesConfigManager interface {
-	SetResponsesChannelPromotion(index int, duration time.Duration) error
+	SetResponsesChannelPromotion(index int, duration time.Duration, count int) error
 }
 
 // MetricsHistoryResponse 历史指标响应
@@ -577,6 +590,7 @@ func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.Channe
 				"status":             status,
 				"priority":           priority,
 				"promotionUntil":     up.PromotionUntil,
+				"promotionCount":     up.PromotionCount,
 				"lowQuality":         up.LowQuality,
 			}
 		}

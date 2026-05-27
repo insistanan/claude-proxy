@@ -35,6 +35,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"status":             status,
 				"priority":           priority,
 				"promotionUntil":     up.PromotionUntil,
+				"promotionCount":     up.PromotionCount,
 				"lowQuality":         up.LowQuality,
 			}
 		}

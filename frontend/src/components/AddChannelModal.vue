@@ -943,35 +943,26 @@ const serviceTypeOptions = computed(() => {
 // 全部源模型选项 - 根据渠道类型动态显示
 const allSourceModelOptions = computed(() => {
   if (props.channelType === 'gemini') {
-    // Gemini API 常用模型别名
+    // Gemini API 常用模型别名（模糊匹配，无需指定版本）
     return [
-      { title: 'gemini-2', value: 'gemini-2' },
-      { title: 'gemini-2.5-flash', value: 'gemini-2.5-flash' },
-      { title: 'gemini-2.5-flash-lite', value: 'gemini-2.5-flash-lite' },
-      { title: 'gemini-2.5-flash-image', value: 'gemini-2.5-flash-image' },
-      { title: 'gemini-2.5-flash-preview-tts', value: 'gemini-2.5-flash-preview-tts' },
-      { title: 'gemini-2.5-flash-native-audio-preview-12-2025', value: 'gemini-2.5-flash-native-audio-preview-12-2025' },
-      { title: 'gemini-2.5-pro', value: 'gemini-2.5-pro' },
-      { title: 'gemini-2.5-pro-preview-tts', value: 'gemini-2.5-pro-preview-tts' },
-      { title: 'gemini-3-pro-preview', value: 'gemini-3-pro-preview' },
-      { title: 'gemini-3-flash-preview', value: 'gemini-3-flash-preview' },
-      { title: 'gemini-3-pro-image-preview', value: 'gemini-3-pro-image-preview' }
+      { title: 'gemini-flash', value: 'gemini-flash' },
+      { title: 'gemini-pro', value: 'gemini-pro' },
     ]
   }
   if (props.channelType === 'responses') {
-    // Responses API (Codex) 常用模型名称
+    // Responses API (Codex) 常用模型名称（模糊匹配，无需指定版本）
     return [
       { title: 'codex', value: 'codex' },
       { title: 'gpt-5', value: 'gpt-5' },
-      { title: 'gpt-5.2-codex', value: 'gpt-5.2-codex' },
       { title: 'gpt-5.2', value: 'gpt-5.2' },
-      { title: 'gpt-5.1-codex-max', value: 'gpt-5.1-codex-max' },
-      { title: 'gpt-5.1-codex', value: 'gpt-5.1-codex' },
-      { title: 'gpt-5.1-codex-mini', value: 'gpt-5.1-codex-mini' },
-      { title: 'gpt-5.1', value: 'gpt-5.1' }
+      { title: 'gpt-5.3', value: 'gpt-5.3' },
+      { title: 'gpt-5.3-codex', value: 'gpt-5.3-codex' },
+      { title: 'gpt-5.4', value: 'gpt-5.4' },
+      { title: 'gpt-5.4-mini', value: 'gpt-5.4-mini' },
+      { title: 'gpt-5.5', value: 'gpt-5.5' },
     ]
   } else {
-    // Messages API (Claude) 常用模型别名
+    // Messages API (Claude) 常用模型别名（模糊匹配，无需指定版本）
     return [
       { title: 'opus', value: 'opus' },
       { title: 'sonnet', value: 'sonnet' },
@@ -989,12 +980,12 @@ const sourceModelOptions = computed(() => {
 // 模型重定向的示例文本 - 根据渠道类型动态显示
 const modelMappingHint = computed(() => {
   if (props.channelType === 'gemini') {
-    return '配置模型名称映射，将请求中的模型名重定向到目标模型。例如：将 "gemini-pro" 重定向到 "gemini-2.0-flash"'
+    return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 gemini-flash 可匹配 gemini-2.5-flash 等版本）。例如：将 "gemini-pro" 重定向到 "gemini-2.5-pro"'
   }
   if (props.channelType === 'responses') {
-    return '配置模型名称映射，将请求中的模型名重定向到目标模型。例如：将 "o3" 重定向到 "gpt-5.1-codex-max"'
+    return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 gpt-5.5 可匹配 gpt-5.5-codex 等变体）。例如：将 "o3" 重定向到 "gpt-5.5"'
   } else {
-    return '配置模型名称映射，将请求中的模型名重定向到目标模型。例如：将 "opus" 重定向到 "claude-3-5-sonnet"'
+    return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 opus 可匹配 claude-opus-4-5-20251101 等版本）。例如：将 "opus" 重定向到 "claude-3-5-sonnet"'
   }
 })
 

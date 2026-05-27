@@ -154,6 +154,9 @@ func (cm *ConfigManager) UpdateGeminiUpstream(index int, updates UpstreamUpdate)
 	if updates.PromotionUntil != nil {
 		upstream.PromotionUntil = updates.PromotionUntil
 	}
+	if updates.PromotionCount != nil {
+		upstream.PromotionCount = *updates.PromotionCount
+	}
 	if updates.LowQuality != nil {
 		upstream.LowQuality = *updates.LowQuality
 	}
@@ -388,8 +391,9 @@ func (cm *ConfigManager) SetGeminiChannelStatus(index int, status string) error 
 	cm.config.GeminiUpstream[index].Status = status
 
 	// 暂停时清除促销期
-	if status == "suspended" && cm.config.GeminiUpstream[index].PromotionUntil != nil {
+	if status == "suspended" && (cm.config.GeminiUpstream[index].PromotionUntil != nil || cm.config.GeminiUpstream[index].PromotionCount > 0) {
 		cm.config.GeminiUpstream[index].PromotionUntil = nil
+		cm.config.GeminiUpstream[index].PromotionCount = 0
 		log.Printf("[Config-Status] 已清除 Gemini 渠道 [%d] %s 的促销期", index, cm.config.GeminiUpstream[index].Name)
 	}
 
@@ -402,7 +406,7 @@ func (cm *ConfigManager) SetGeminiChannelStatus(index int, status string) error 
 }
 
 // SetGeminiChannelPromotion 设置 Gemini 渠道促销期
-func (cm *ConfigManager) SetGeminiChannelPromotion(index int, duration time.Duration) error {
+func (cm *ConfigManager) SetGeminiChannelPromotion(index int, duration time.Duration, count int) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -410,19 +414,33 @@ func (cm *ConfigManager) SetGeminiChannelPromotion(index int, duration time.Dura
 		return fmt.Errorf("无效的 Gemini 上游索引: %d", index)
 	}
 
-	if duration <= 0 {
+	if duration <= 0 && count <= 0 {
 		cm.config.GeminiUpstream[index].PromotionUntil = nil
-		log.Printf("[Config-Promotion] 已清除 Gemini 渠道 [%d] %s 的促销期", index, cm.config.GeminiUpstream[index].Name)
+		cm.config.GeminiUpstream[index].PromotionCount = 0
+		log.Printf("[Config-Promotion] 已清除 Gemini 渠道 [%d] %s 的所有促销", index, cm.config.GeminiUpstream[index].Name)
 	} else {
-		// 清除其他渠道的促销期（同一时间只允许一个促销渠道）
 		for i := range cm.config.GeminiUpstream {
-			if i != index && cm.config.GeminiUpstream[i].PromotionUntil != nil {
-				cm.config.GeminiUpstream[i].PromotionUntil = nil
+			if i != index {
+				if cm.config.GeminiUpstream[i].PromotionUntil != nil || cm.config.GeminiUpstream[i].PromotionCount > 0 {
+					log.Printf("[Config-Promotion] 自动清除 Gemini 渠道 [%d] %s 的促销期（同一时间只允许一个促销渠道）", i, cm.config.GeminiUpstream[i].Name)
+					cm.config.GeminiUpstream[i].PromotionUntil = nil
+					cm.config.GeminiUpstream[i].PromotionCount = 0
+				}
 			}
 		}
-		promotionEnd := time.Now().Add(duration)
-		cm.config.GeminiUpstream[index].PromotionUntil = &promotionEnd
-		log.Printf("[Config-Promotion] 已设置 Gemini 渠道 [%d] %s 进入促销期，截止: %s", index, cm.config.GeminiUpstream[index].Name, promotionEnd.Format(time.RFC3339))
+		if duration > 0 {
+			promotionEnd := time.Now().Add(duration)
+			cm.config.GeminiUpstream[index].PromotionUntil = &promotionEnd
+		} else {
+			cm.config.GeminiUpstream[index].PromotionUntil = nil
+		}
+		if count > 0 {
+			cm.config.GeminiUpstream[index].PromotionCount = count
+		} else {
+			cm.config.GeminiUpstream[index].PromotionCount = 0
+		}
+		log.Printf("[Config-Promotion] 已设置 Gemini 渠道 [%d] %s 进入促销期，时间截止: %v, 剩余次数: %d",
+			index, cm.config.GeminiUpstream[index].Name, cm.config.GeminiUpstream[index].PromotionUntil, cm.config.GeminiUpstream[index].PromotionCount)
 	}
 
 	return cm.saveConfigLocked(cm.config)
