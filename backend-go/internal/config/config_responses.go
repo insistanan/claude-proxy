@@ -48,6 +48,9 @@ func (cm *ConfigManager) AddResponsesUpstream(upstream UpstreamConfig) error {
 	upstream.BaseURLs = deduplicateBaseURLs(upstream.BaseURLs)
 
 	cm.config.ResponsesUpstream = append(cm.config.ResponsesUpstream, upstream)
+	if upstream.VisionCapable {
+		ensureSingleVisionCapable(cm.config.ResponsesUpstream, len(cm.config.ResponsesUpstream)-1, "Responses")
+	}
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return err
@@ -162,6 +165,9 @@ func (cm *ConfigManager) UpdateResponsesUpstream(index int, updates UpstreamUpda
 	}
 	if updates.VisionCapable != nil {
 		upstream.VisionCapable = *updates.VisionCapable
+		if upstream.VisionCapable {
+			ensureSingleVisionCapable(cm.config.ResponsesUpstream, index, "Responses")
+		}
 	}
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {

@@ -519,22 +519,6 @@
               </div>
             </v-col>
 
-            <!-- Vision 能力标记 -->
-            <v-col cols="12">
-              <div class="d-flex align-center justify-space-between">
-                <div class="d-flex align-center ga-2">
-                  <v-icon color="primary">mdi-image-search-outline</v-icon>
-                  <div>
-                    <div class="text-body-1 font-weight-medium">支持图片理解</div>
-                    <div class="text-caption text-medium-emphasis">
-                      启用后，包含图片的请求会优先路由到该渠道
-                    </div>
-                  </div>
-                </div>
-                <v-switch v-model="form.visionCapable" inset color="primary" hide-details />
-              </div>
-            </v-col>
-
             <!-- 注入 Dummy Thought Signature（仅 Gemini 渠道显示） -->
             <v-col v-if="props.channelType === 'gemini'" cols="12">
               <div class="d-flex align-center justify-space-between">

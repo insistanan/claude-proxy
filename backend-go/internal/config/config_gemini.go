@@ -48,6 +48,9 @@ func (cm *ConfigManager) AddGeminiUpstream(upstream UpstreamConfig) error {
 	upstream.BaseURLs = deduplicateBaseURLs(upstream.BaseURLs)
 
 	cm.config.GeminiUpstream = append(cm.config.GeminiUpstream, upstream)
+	if upstream.VisionCapable {
+		ensureSingleVisionCapable(cm.config.GeminiUpstream, len(cm.config.GeminiUpstream)-1, "Gemini")
+	}
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return err
@@ -162,6 +165,9 @@ func (cm *ConfigManager) UpdateGeminiUpstream(index int, updates UpstreamUpdate)
 	}
 	if updates.VisionCapable != nil {
 		upstream.VisionCapable = *updates.VisionCapable
+		if upstream.VisionCapable {
+			ensureSingleVisionCapable(cm.config.GeminiUpstream, index, "Gemini")
+		}
 	}
 	if updates.InjectDummyThoughtSignature != nil {
 		upstream.InjectDummyThoughtSignature = *updates.InjectDummyThoughtSignature

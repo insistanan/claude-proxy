@@ -117,6 +117,26 @@
                 <v-icon start size="12">mdi-rocket-launch</v-icon>
                 {{ formatPromotionRemaining(element.promotionUntil, element.promotionCount) }}
               </v-chip>
+              <v-tooltip
+                v-if="shouldShowVisionDefault(element)"
+                text="图片理解默认模型"
+                location="top"
+                :open-delay="150"
+              >
+                <template #activator="{ props: tooltipProps }">
+                  <v-chip
+                    v-bind="tooltipProps"
+                    size="x-small"
+                    color="primary"
+                    variant="flat"
+                    class="ml-2 vision-default-chip"
+                    @click.stop
+                  >
+                    <v-icon start size="12">mdi-image-search-outline</v-icon>
+                    图片
+                  </v-chip>
+                </template>
+              </v-tooltip>
               <!-- 官网链接按钮 -->
               <v-btn
                 :href="getWebsiteUrl(element)"
@@ -277,6 +297,16 @@
                     </template>
                     <v-list-item-title>编辑</v-list-item-title>
                   </v-list-item>
+                  <v-list-item v-if="supportsVisionDefault" @click="toggleVisionDefault(element)">
+                    <template #prepend>
+                      <v-icon size="small" :color="element.visionCapable ? 'success' : 'primary'">
+                        {{ element.visionCapable ? 'mdi-check-circle' : 'mdi-image-search-outline' }}
+                      </v-icon>
+                    </template>
+                    <v-list-item-title>
+                      {{ element.visionCapable ? '取消图片理解默认模型' : '设为图片理解默认模型' }}
+                    </v-list-item-title>
+                  </v-list-item>
                   <v-list-item @click="$emit('ping', element.index)">
                     <template #prepend>
                       <v-icon size="small">mdi-speedometer</v-icon>
@@ -390,6 +420,25 @@
                 @keydown.space.prevent="$emit('edit', channel)"
               >{{ channel.name }}</span>
               <span class="text-caption text-disabled ml-2">{{ channel.serviceType }}</span>
+              <v-tooltip
+                v-if="shouldShowVisionDefault(channel)"
+                text="图片理解默认模型"
+                location="top"
+                :open-delay="150"
+              >
+                <template #activator="{ props: tooltipProps }">
+                  <v-chip
+                    v-bind="tooltipProps"
+                    size="x-small"
+                    color="primary"
+                    variant="flat"
+                    class="ml-2 vision-default-chip"
+                  >
+                    <v-icon start size="12">mdi-image-search-outline</v-icon>
+                    图片
+                  </v-chip>
+                </template>
+              </v-tooltip>
             </div>
             <div v-if="channel.description" class="channel-info-desc text-caption text-disabled">
               {{ channel.description }}
@@ -423,6 +472,16 @@
                     <v-icon size="small">mdi-pencil</v-icon>
                   </template>
                   <v-list-item-title>编辑</v-list-item-title>
+                </v-list-item>
+                <v-list-item v-if="supportsVisionDefault" @click="toggleVisionDefault(channel)">
+                  <template #prepend>
+                    <v-icon size="small" :color="channel.visionCapable ? 'success' : 'primary'">
+                      {{ channel.visionCapable ? 'mdi-check-circle' : 'mdi-image-search-outline' }}
+                    </v-icon>
+                  </template>
+                  <v-list-item-title>
+                    {{ channel.visionCapable ? '取消图片理解默认模型' : '设为图片理解默认模型' }}
+                  </v-list-item-title>
                 </v-list-item>
                 <v-divider />
                 <v-list-item @click="enableChannel(channel.index)">
@@ -460,8 +519,8 @@
             促销期渠道将绕过健康检查，获得最高调度优先级。可同时设置时间和次数限制，任一条件满足即自动结束。
           </p>
           <v-text-field
-            v-model="promotionDuration"
-            label="促销时长（秒）"
+            v-model.number="promotionDuration"
+            label="促销时长（分钟）"
             type="number"
             :min="0"
             hint="0 = 不限时长"
@@ -470,7 +529,7 @@
             class="mb-3"
           />
           <v-text-field
-            v-model="promotionCount"
+            v-model.number="promotionCount"
             label="促销请求次数"
             type="number"
             :min="0"
@@ -525,6 +584,8 @@ const emit = defineEmits<{
   (_e: 'success', _message: string): void
 }>()
 
+const supportsVisionDefault = computed(() => props.channelType !== 'gemini')
+
 // 状态
 const metrics = ref<ChannelMetrics[]>([])
 const recentActivity = ref<ChannelRecentActivity[]>([])
@@ -542,7 +603,7 @@ const isSavingOrder = ref(false)
 // 促销弹窗相关
 const showPromotionDialog = ref(false)
 const promotionChannel = ref<Channel | null>(null)
-const promotionDuration = ref(300) // 默认 5 分钟
+const promotionDuration = ref(5) // 默认 5 分钟
 const promotionCount = ref(0) // 默认 0 = 不限制次数
 
 // 延迟测试结果有效期（5 分钟）
@@ -714,6 +775,10 @@ const formatPromotionRemaining = (until?: string, count?: number): string => {
   return `${minutes}分钟`
 }
 
+const shouldShowVisionDefault = (channel: Channel): boolean => {
+  return supportsVisionDefault.value && !!channel.visionCapable
+}
+
 // 格式化统计数据：有请求显示"N 请求 (X%)"，无请求显示"--"
 const formatStats = (stats?: TimeWindowStats): string => {
   if (!stats || !stats.requestCount) return '--'
@@ -749,6 +814,29 @@ const getWebsiteUrl = (channel: Channel): string => {
     return `${url.protocol}//${url.host}`
   } catch {
     return channel.baseUrl
+  }
+}
+
+const toggleVisionDefault = async (channel: Channel) => {
+  const nextValue = !channel.visionCapable
+
+  try {
+    if (props.channelType === 'gemini') {
+      await api.updateGeminiChannel(channel.index, { visionCapable: nextValue })
+    } else if (props.channelType === 'responses') {
+      await api.updateResponsesChannel(channel.index, { visionCapable: nextValue })
+    } else {
+      await api.updateChannel(channel.index, { visionCapable: nextValue })
+    }
+
+    emit('refresh')
+    emit('success', nextValue
+      ? `已将 ${channel.name} 设为图片理解默认模型`
+      : `已取消 ${channel.name} 的图片理解默认模型`)
+  } catch (error) {
+    console.error('Failed to update vision default:', error)
+    const errorMessage = error instanceof Error ? error.message : '未知错误'
+    emit('error', `设置图片理解默认模型失败: ${errorMessage}`)
   }
 }
 
@@ -1156,7 +1244,7 @@ const resumeChannel = async (channelId: number) => {
 
 const openPromotionDialog = (channel: Channel) => {
   promotionChannel.value = channel
-  promotionDuration.value = 300
+  promotionDuration.value = 5
   promotionCount.value = 0
   showPromotionDialog.value = true
 }
@@ -1166,11 +1254,28 @@ const closePromotionDialog = () => {
   promotionChannel.value = null
 }
 
+const normalizePromotionInput = (value: unknown): number => {
+  const parsed = typeof value === 'number'
+    ? value
+    : Number(String(value ?? '').trim())
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0
+  }
+
+  return Math.floor(parsed)
+}
+
 const confirmPromotion = async () => {
   if (!promotionChannel.value) return
   const channel = promotionChannel.value
-  const duration = promotionDuration.value
-  const count = promotionCount.value
+  const durationMinutes = normalizePromotionInput(promotionDuration.value)
+  const count = normalizePromotionInput(promotionCount.value)
+
+  promotionDuration.value = durationMinutes
+  promotionCount.value = count
+
+  const durationSeconds = durationMinutes * 60
 
   try {
     if (channel.status === 'suspended') {
@@ -1185,14 +1290,14 @@ const confirmPromotion = async () => {
     }
 
     if (props.channelType === 'gemini') {
-      await api.setGeminiChannelPromotion(channel.index, duration, count)
+      await api.setGeminiChannelPromotion(channel.index, durationSeconds, count)
     } else if (props.channelType === 'responses') {
-      await api.setResponsesChannelPromotion(channel.index, duration, count)
+      await api.setResponsesChannelPromotion(channel.index, durationSeconds, count)
     } else {
-      await api.setChannelPromotion(channel.index, duration, count)
+      await api.setChannelPromotion(channel.index, durationSeconds, count)
     }
     emit('refresh')
-    const durationText = duration > 0 ? `${Math.ceil(duration / 60)}分钟内` : ''
+    const durationText = durationMinutes > 0 ? `${durationMinutes}分钟内` : ''
     const countText = count > 0 ? `${count}次请求内` : ''
     const combined = [durationText, countText].filter(Boolean).join(' / ')
     emit('success', `渠道 ${channel.name} 已设为最高优先级${combined ? '（' + combined + '）' : ''}`)
@@ -1458,6 +1563,10 @@ defineExpose({
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: 2px;
   border-radius: 2px;
+}
+
+.vision-default-chip {
+  flex-shrink: 0;
 }
 
 .channel-metrics {

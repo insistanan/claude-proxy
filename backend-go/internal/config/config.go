@@ -31,7 +31,7 @@ type UpstreamConfig struct {
 	PromotionUntil  *time.Time `json:"promotionUntil,omitempty"` // 促销期截止时间，在此期间内优先使用此渠道（忽略trace亲和）
 	PromotionCount  int        `json:"promotionCount,omitempty"` // 促销期剩余请求次数，每次成功请求递减，到0自动清除
 	LowQuality      bool       `json:"lowQuality,omitempty"`     // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
-	VisionCapable   bool       `json:"visionCapable,omitempty"`  // 是否支持图片理解
+	VisionCapable   bool       `json:"visionCapable,omitempty"`  // 是否作为图片理解默认渠道（同一分组最多一个）
 	// Gemini 特定配置
 	InjectDummyThoughtSignature bool `json:"injectDummyThoughtSignature,omitempty"` // 给空 thought_signature 注入 dummy 值（兼容 x666.me 等要求必须有该字段的 API）
 	StripThoughtSignature       bool `json:"stripThoughtSignature,omitempty"`       // 移除 thought_signature 字段（兼容旧版 Gemini API）
@@ -253,6 +253,22 @@ func (cm *ConfigManager) clearFailedKeysForUpstream(upstream *UpstreamConfig, ap
 			delete(cm.failedKeysCache, key)
 			log.Printf("[%s-Key] 已清理被删除渠道 %s 的失败密钥记录: %s", apiType, upstream.Name, utils.MaskAPIKey(key))
 		}
+	}
+}
+
+// ensureSingleVisionCapable 保证同一分组最多只有一个图片理解默认渠道
+func ensureSingleVisionCapable(upstreams []UpstreamConfig, keepIndex int, groupName string) {
+	if keepIndex < 0 || keepIndex >= len(upstreams) {
+		return
+	}
+
+	for i := range upstreams {
+		if i == keepIndex || !upstreams[i].VisionCapable {
+			continue
+		}
+
+		upstreams[i].VisionCapable = false
+		log.Printf("[Config-Vision] 已取消 %s 渠道 [%d] %s 的图片理解默认模型", groupName, i, upstreams[i].Name)
 	}
 }
 

@@ -48,6 +48,9 @@ func (cm *ConfigManager) AddUpstream(upstream UpstreamConfig) error {
 	upstream.BaseURLs = deduplicateBaseURLs(upstream.BaseURLs)
 
 	cm.config.Upstream = append(cm.config.Upstream, upstream)
+	if upstream.VisionCapable {
+		ensureSingleVisionCapable(cm.config.Upstream, len(cm.config.Upstream)-1, "Messages")
+	}
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return err
@@ -162,6 +165,9 @@ func (cm *ConfigManager) UpdateUpstream(index int, updates UpstreamUpdate) (shou
 	}
 	if updates.VisionCapable != nil {
 		upstream.VisionCapable = *updates.VisionCapable
+		if upstream.VisionCapable {
+			ensureSingleVisionCapable(cm.config.Upstream, index, "Messages")
+		}
 	}
 	if updates.InjectDummyThoughtSignature != nil {
 		upstream.InjectDummyThoughtSignature = *updates.InjectDummyThoughtSignature

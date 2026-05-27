@@ -65,7 +65,7 @@
           >
             <span class="font-weight-bold">{{ channel.serviceType.toUpperCase() }}</span>
           </v-chip>
-          <v-tooltip v-if="channel.visionCapable" text="支持图片理解" location="bottom" :open-delay="150">
+          <v-tooltip v-if="channel.visionCapable" text="图片理解默认模型" location="bottom" :open-delay="150">
             <template #activator="{ props: tooltipProps }">
               <v-chip
                 v-bind="tooltipProps"

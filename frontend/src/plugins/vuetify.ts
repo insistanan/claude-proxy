@@ -100,6 +100,7 @@ import {
   mdiCodeBraces,
   mdiDatabase,
   mdiSignature,
+  mdiImageSearchOutline,
   mdiArrowCollapseUp,
   mdiArrowCollapseDown,
 } from '@mdi/js'
@@ -253,6 +254,7 @@ const iconMap: Record<string, string> = {
 
   // 签名图标
   'signature': mdiSignature,
+  'image-search-outline': mdiImageSearchOutline,
 
   // 置顶/置底操作
   'arrow-collapse-up': mdiArrowCollapseUp,
