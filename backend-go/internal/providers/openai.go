@@ -315,6 +315,19 @@ func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 		return nil, err
 	}
 
+	var usageEnvelope struct {
+		Usage *struct {
+			PromptTokens       int `json:"prompt_tokens"`
+			CompletionTokens   int `json:"completion_tokens"`
+			PromptTokenDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(providerResp.Body, &usageEnvelope); err != nil {
+		return nil, err
+	}
+
 	claudeResp := &types.ClaudeResponse{
 		ID:      generateID(),
 		Type:    "message",
@@ -359,9 +372,15 @@ func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 
 	// 添加使用统计
 	if openaiResp.Usage != nil {
+		cacheReadTokens := 0
+		if usageEnvelope.Usage != nil {
+			cacheReadTokens = usageEnvelope.Usage.PromptTokenDetails.CachedTokens
+		}
+
 		claudeResp.Usage = &types.Usage{
-			InputTokens:  openaiResp.Usage.PromptTokens,
-			OutputTokens: openaiResp.Usage.CompletionTokens,
+			InputTokens:          openaiResp.Usage.PromptTokens,
+			OutputTokens:         openaiResp.Usage.CompletionTokens,
+			CacheReadInputTokens: cacheReadTokens,
 		}
 	}
 

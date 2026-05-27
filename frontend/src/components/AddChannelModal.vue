@@ -1,6 +1,6 @@
 <template>
   <v-dialog :model-value="show" max-width="800" persistent @update:model-value="$emit('update:show', $event)">
-    <v-card rounded="lg">
+    <v-card rounded="lg" class="dialog-card-shell">
       <v-card-title class="d-flex align-center ga-3 pa-6" :class="headerClasses">
         <v-avatar :color="avatarColor" variant="flat" size="40">
           <v-icon :style="headerIconStyle" size="20">{{ isEditing ? 'mdi-pencil' : 'mdi-plus' }}</v-icon>
@@ -13,14 +13,26 @@
             {{ isEditing ? '修改渠道配置信息' : isQuickMode ? '快速批量添加 API 密钥' : '配置API渠道信息和密钥' }}
           </div>
         </div>
-        <!-- 模式切换按钮（仅在添加模式显示） -->
-        <v-btn v-if="!isEditing" variant="outlined" size="small" class="mode-toggle-btn" @click="toggleMode">
-          <v-icon start size="16">{{ isQuickMode ? 'mdi-form-textbox' : 'mdi-lightning-bolt' }}</v-icon>
-          {{ isQuickMode ? '详细配置' : '快速添加' }}
-        </v-btn>
+        <div class="d-flex align-center ga-2 header-actions">
+          <!-- 模式切换按钮（仅在添加模式显示） -->
+          <v-btn v-if="!isEditing" variant="outlined" size="small" class="mode-toggle-btn" @click="toggleMode">
+            <v-icon start size="16">{{ isQuickMode ? 'mdi-form-textbox' : 'mdi-lightning-bolt' }}</v-icon>
+            {{ isQuickMode ? '详细配置' : '快速添加' }}
+          </v-btn>
+          <v-btn
+            icon
+            size="small"
+            variant="text"
+            class="header-action-btn"
+            title="关闭"
+            @click="handleCancel"
+          >
+            <v-icon size="18">mdi-close</v-icon>
+          </v-btn>
+        </div>
       </v-card-title>
 
-      <v-card-text class="pa-6">
+      <v-card-text class="pa-6 dialog-card-body">
         <!-- 快速添加模式 -->
         <div v-if="!isEditing && isQuickMode">
           <v-textarea
@@ -554,7 +566,7 @@
         </v-form>
       </v-card-text>
 
-      <v-card-actions class="pa-6 pt-0">
+      <v-card-actions class="pa-6 dialog-card-actions">
         <v-spacer />
         <v-btn variant="text" @click="handleCancel"> 取消 </v-btn>
         <v-btn
@@ -1681,6 +1693,28 @@ onUnmounted(() => {
   text-transform: none;
 }
 
+.dialog-card-shell {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  overflow: hidden;
+}
+
+.dialog-card-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.dialog-card-actions {
+  flex-shrink: 0;
+  border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  background: rgb(var(--v-theme-surface));
+}
+
+.header-action-btn {
+  color: inherit;
+}
+
 /* 亮色模式下按钮在 primary 背景上显示白色 */
 .bg-primary .mode-toggle-btn {
   color: white !important;
@@ -1690,5 +1724,13 @@ onUnmounted(() => {
 .bg-primary .mode-toggle-btn:hover {
   background-color: rgba(255, 255, 255, 0.15) !important;
   border-color: white !important;
+}
+
+.bg-primary .header-action-btn {
+  color: white !important;
+}
+
+.bg-primary .header-action-btn:hover {
+  background-color: rgba(255, 255, 255, 0.15) !important;
 }
 </style>

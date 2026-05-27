@@ -342,8 +342,18 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 	// 使用统计
 	if usageMetadata, ok := geminiResp["usageMetadata"].(map[string]interface{}); ok {
 		usage := &types.Usage{}
+		cachedTokens := 0
+
+		if cachedContentTokens, ok := usageMetadata["cachedContentTokenCount"].(float64); ok {
+			cachedTokens = int(cachedContentTokens)
+			usage.CacheReadInputTokens = cachedTokens
+		}
+
 		if promptTokens, ok := usageMetadata["promptTokenCount"].(float64); ok {
-			usage.InputTokens = int(promptTokens)
+			usage.InputTokens = int(promptTokens) - cachedTokens
+			if usage.InputTokens < 0 {
+				usage.InputTokens = 0
+			}
 		}
 		if candidatesTokens, ok := usageMetadata["candidatesTokenCount"].(float64); ok {
 			usage.OutputTokens = int(candidatesTokens)

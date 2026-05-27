@@ -92,7 +92,15 @@
             </div>
 
             <!-- 状态指示器 -->
-            <div @click.stop>
+            <div
+              class="channel-status-toggle"
+              role="button"
+              tabindex="0"
+              title="点击切换活跃或熔断"
+              @click.stop="toggleChannelPrimaryStatus(element)"
+              @keydown.enter.stop="toggleChannelPrimaryStatus(element)"
+              @keydown.space.prevent.stop="toggleChannelPrimaryStatus(element)"
+            >
               <ChannelStatusBadge :status="element.status || 'active'" :metrics="getChannelMetrics(element.index)" />
             </div>
 
@@ -317,7 +325,7 @@
                     <template #prepend>
                       <v-icon size="small" color="info">mdi-rocket-launch</v-icon>
                     </template>
-                    <v-list-item-title>抢优先级...</v-list-item-title>
+                    <v-list-item-title>抢优先级</v-list-item-title>
                   </v-list-item>
                   <v-list-item v-if="index > 0" :disabled="isSavingOrder" @click="moveChannelToTop(element.index)">
                     <template #prepend>
@@ -1242,6 +1250,19 @@ const resumeChannel = async (channelId: number) => {
   }
 }
 
+const toggleChannelPrimaryStatus = async (channel: Channel) => {
+  const currentStatus = channel.status || 'active'
+
+  if (currentStatus === 'suspended') {
+    await resumeChannel(channel.index)
+    return
+  }
+
+  if (currentStatus === 'active') {
+    await setChannelStatus(channel.index, 'suspended')
+  }
+}
+
 const openPromotionDialog = (channel: Channel) => {
   promotionChannel.value = channel
   promotionDuration.value = 5
@@ -1567,6 +1588,22 @@ defineExpose({
 
 .vision-default-chip {
   flex-shrink: 0;
+}
+
+.channel-status-toggle {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.channel-status-toggle:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+
+.channel-status-toggle :deep(.badge-content) {
+  cursor: pointer;
 }
 
 .channel-metrics {
