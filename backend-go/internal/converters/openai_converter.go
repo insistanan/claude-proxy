@@ -1,6 +1,9 @@
 package converters
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
@@ -26,7 +29,9 @@ func (c *OpenAIChatConverter) ToProviderRequest(sess *session.Session, req *type
 	}
 
 	// 复制其他参数
-	if req.MaxTokens > 0 {
+	if req.MaxOutputTokens > 0 {
+		openaiReq["max_tokens"] = req.MaxOutputTokens
+	} else if req.MaxTokens > 0 {
 		openaiReq["max_tokens"] = req.MaxTokens
 	}
 	if req.Temperature > 0 {
@@ -49,6 +54,24 @@ func (c *OpenAIChatConverter) ToProviderRequest(sess *session.Session, req *type
 	}
 	if req.StreamOptions != nil {
 		openaiReq["stream_options"] = req.StreamOptions
+	}
+	if tools, err := responsesToolsToOpenAIChatTools(req.Tools); err != nil {
+		return nil, err
+	} else if len(tools) > 0 {
+		openaiReq["tools"] = tools
+	}
+	if toolChoice, err := responsesToolChoiceToOpenAIChat(req.ToolChoice); err != nil {
+		return nil, err
+	} else if toolChoice != nil {
+		openaiReq["tool_choice"] = toolChoice
+	}
+	if req.ParallelToolCalls != nil {
+		openaiReq["parallel_tool_calls"] = *req.ParallelToolCalls
+	}
+	if reasoningEffort, err := responsesReasoningEffortToOpenAIChat(req.Reasoning); err != nil {
+		return nil, err
+	} else if reasoningEffort != "" {
+		openaiReq["reasoning_effort"] = reasoningEffort
 	}
 
 	return openaiReq, nil
@@ -90,7 +113,9 @@ func (c *OpenAICompletionsConverter) ToProviderRequest(sess *session.Session, re
 	}
 
 	// 复制其他参数
-	if req.MaxTokens > 0 {
+	if req.MaxOutputTokens > 0 {
+		completionsReq["max_tokens"] = req.MaxOutputTokens
+	} else if req.MaxTokens > 0 {
 		completionsReq["max_tokens"] = req.MaxTokens
 	}
 	if req.Temperature > 0 {
@@ -111,6 +136,18 @@ func (c *OpenAICompletionsConverter) ToProviderRequest(sess *session.Session, re
 	if req.User != "" {
 		completionsReq["user"] = req.User
 	}
+	if req.Tools != nil {
+		return nil, fmt.Errorf("OpenAI Completions 不支持 tools 字段")
+	}
+	if req.ToolChoice != nil {
+		return nil, fmt.Errorf("OpenAI Completions 不支持 tool_choice 字段")
+	}
+	if req.ParallelToolCalls != nil {
+		return nil, fmt.Errorf("OpenAI Completions 不支持 parallel_tool_calls 字段")
+	}
+	if req.Reasoning != nil {
+		return nil, fmt.Errorf("OpenAI Completions 不支持 reasoning 字段")
+	}
 
 	return completionsReq, nil
 }
@@ -123,4 +160,134 @@ func (c *OpenAICompletionsConverter) FromProviderResponse(resp map[string]interf
 // GetProviderName 获取上游服务名称
 func (c *OpenAICompletionsConverter) GetProviderName() string {
 	return "OpenAI Completions"
+}
+
+func responsesToolsToOpenAIChatTools(raw interface{}) ([]map[string]interface{}, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("Responses tools 序列化失败: %w", err)
+	}
+
+	var tools []map[string]interface{}
+	if err := json.Unmarshal(data, &tools); err != nil {
+		return nil, fmt.Errorf("Responses tools 必须是数组: %w", err)
+	}
+
+	out := make([]map[string]interface{}, 0, len(tools))
+	for i, tool := range tools {
+		toolType, _ := tool["type"].(string)
+		if toolType != "" && toolType != "function" {
+			return nil, fmt.Errorf("OpenAI Chat 不支持第 %d 个 tool 类型 %q", i, toolType)
+		}
+
+		function := map[string]interface{}{}
+		if nested, ok := tool["function"].(map[string]interface{}); ok {
+			for k, v := range nested {
+				function[k] = v
+			}
+		} else {
+			copyToolField(function, tool, "name")
+			copyToolField(function, tool, "description")
+			copyToolField(function, tool, "parameters")
+			copyToolField(function, tool, "strict")
+		}
+
+		name, _ := function["name"].(string)
+		if name == "" {
+			return nil, fmt.Errorf("OpenAI Chat tool 第 %d 项缺少 function.name", i)
+		}
+
+		out = append(out, map[string]interface{}{
+			"type":     "function",
+			"function": function,
+		})
+	}
+
+	return out, nil
+}
+
+func responsesToolChoiceToOpenAIChat(raw interface{}) (interface{}, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	if choice, ok := raw.(string); ok {
+		switch choice {
+		case "auto", "none", "required":
+			return choice, nil
+		default:
+			return nil, fmt.Errorf("OpenAI Chat 不支持 tool_choice=%q", choice)
+		}
+	}
+
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("Responses tool_choice 序列化失败: %w", err)
+	}
+
+	var choice map[string]interface{}
+	if err := json.Unmarshal(data, &choice); err != nil {
+		return nil, fmt.Errorf("Responses tool_choice 必须是字符串或对象: %w", err)
+	}
+
+	choiceType, _ := choice["type"].(string)
+	if choiceType == "" {
+		choiceType = "function"
+	}
+	if choiceType != "function" {
+		return nil, fmt.Errorf("OpenAI Chat 不支持 tool_choice.type=%q", choiceType)
+	}
+
+	if function, ok := choice["function"].(map[string]interface{}); ok {
+		if name, _ := function["name"].(string); name != "" {
+			return map[string]interface{}{
+				"type":     "function",
+				"function": map[string]interface{}{"name": name},
+			}, nil
+		}
+	}
+	if name, _ := choice["name"].(string); name != "" {
+		return map[string]interface{}{
+			"type":     "function",
+			"function": map[string]interface{}{"name": name},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("OpenAI Chat tool_choice 对象缺少 function.name 或 name")
+}
+
+func responsesReasoningEffortToOpenAIChat(raw interface{}) (string, error) {
+	if raw == nil {
+		return "", nil
+	}
+
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return "", fmt.Errorf("Responses reasoning 序列化失败: %w", err)
+	}
+
+	var reasoning map[string]interface{}
+	if err := json.Unmarshal(data, &reasoning); err != nil {
+		return "", fmt.Errorf("Responses reasoning 必须是对象: %w", err)
+	}
+
+	effort, _ := reasoning["effort"].(string)
+	switch effort {
+	case "", "auto":
+		return "", nil
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return effort, nil
+	default:
+		return "", fmt.Errorf("OpenAI Chat 不支持 reasoning.effort=%q", effort)
+	}
+}
+
+func copyToolField(dst, src map[string]interface{}, key string) {
+	if value, ok := src[key]; ok {
+		dst[key] = value
+	}
 }

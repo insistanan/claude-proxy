@@ -1,5 +1,7 @@
 package types
 
+import "encoding/json"
+
 // ============== Responses API 类型定义 ==============
 
 // ResponsesRequest Responses API 请求
@@ -10,6 +12,7 @@ type ResponsesRequest struct {
 	PreviousResponseID string      `json:"previous_response_id,omitempty"`
 	Store              *bool       `json:"store,omitempty"`             // 默认 true
 	MaxTokens          int         `json:"max_tokens,omitempty"`        // 最大 tokens
+	MaxOutputTokens    int         `json:"max_output_tokens,omitempty"` // Responses 原生最大输出 tokens
 	Temperature        float64     `json:"temperature,omitempty"`       // 温度参数
 	TopP               float64     `json:"top_p,omitempty"`             // top_p 参数
 	FrequencyPenalty   float64     `json:"frequency_penalty,omitempty"` // 频率惩罚
@@ -18,6 +21,11 @@ type ResponsesRequest struct {
 	Stop               interface{} `json:"stop,omitempty"`              // 停止序列 (string 或 []string)
 	User               string      `json:"user,omitempty"`              // 用户标识
 	StreamOptions      interface{} `json:"stream_options,omitempty"`    // 流式选项
+	Tools             interface{}            `json:"tools,omitempty"`       // Responses tools
+	ToolChoice        interface{}            `json:"tool_choice,omitempty"` // auto/none/required 或对象
+	ParallelToolCalls *bool                  `json:"parallel_tool_calls,omitempty"`
+	Reasoning         interface{}            `json:"reasoning,omitempty"`
+	Metadata          map[string]interface{} `json:"metadata,omitempty"`
 
 	// TransformerMetadata 转换器元数据（仅内存使用，不序列化）
 	// 用于在单次请求的转换流程中保留原始格式信息，如 system 数组格式等
@@ -27,10 +35,16 @@ type ResponsesRequest struct {
 
 // ResponsesItem Responses API 消息项
 type ResponsesItem struct {
-	Type    string      `json:"type"`           // message, text, tool_call, tool_result
-	Role    string      `json:"role,omitempty"` // user, assistant (用于 type=message)
-	Content interface{} `json:"content"`        // string 或 []ContentBlock
-	ToolUse *ToolUse    `json:"tool_use,omitempty"`
+	ID        string      `json:"id,omitempty"`
+	Type      string      `json:"type"`           // message, text, function_call, tool_call, tool_result
+	Status    string      `json:"status,omitempty"`
+	Role      string      `json:"role,omitempty"` // user, assistant (用于 type=message)
+	Content   interface{} `json:"content,omitempty"`
+	Summary   interface{} `json:"summary,omitempty"`
+	ToolUse   *ToolUse    `json:"tool_use,omitempty"`
+	CallID    string      `json:"call_id,omitempty"`
+	Name      string      `json:"name,omitempty"`
+	Arguments string      `json:"arguments,omitempty"`
 }
 
 // ContentBlock 内容块（用于嵌套 content 数组）
@@ -48,13 +62,99 @@ type ToolUse struct {
 
 // ResponsesResponse Responses API 响应
 type ResponsesResponse struct {
-	ID         string          `json:"id"`
-	Model      string          `json:"model"`
-	Output     []ResponsesItem `json:"output"`
-	Status     string          `json:"status"` // completed, failed
-	PreviousID string          `json:"previous_id,omitempty"`
-	Usage      ResponsesUsage  `json:"usage"`
-	Created    int64           `json:"created,omitempty"`
+	ID                 string          `json:"id"`
+	Object             string          `json:"object,omitempty"`
+	Model              string          `json:"model"`
+	Output             []ResponsesItem `json:"output"`
+	Status             string          `json:"status"` // completed, failed
+	PreviousID         string                 `json:"previous_id,omitempty"`
+	PreviousResponseID string                 `json:"previous_response_id,omitempty"`
+	Usage              ResponsesUsage         `json:"usage"`
+	Created            int64                  `json:"created,omitempty"`
+	CreatedAt          int64                  `json:"created_at,omitempty"`
+	Extra              map[string]interface{} `json:"-"`
+}
+
+func (r ResponsesResponse) MarshalJSON() ([]byte, error) {
+	if len(r.Extra) == 0 {
+		return json.Marshal(responsesResponseWire{
+			ID:                 r.ID,
+			Object:             r.Object,
+			Model:              r.Model,
+			Output:             r.Output,
+			Status:             r.Status,
+			PreviousID:         r.PreviousID,
+			PreviousResponseID: r.PreviousResponseID,
+			Usage:              r.Usage,
+			Created:            r.Created,
+			CreatedAt:          r.CreatedAt,
+		})
+	}
+
+	out := make(map[string]interface{}, len(r.Extra)+8)
+	for k, v := range r.Extra {
+		out[k] = v
+	}
+	if r.ID != "" {
+		out["id"] = r.ID
+	}
+	if r.Object != "" {
+		out["object"] = r.Object
+	}
+	if r.Model != "" {
+		out["model"] = r.Model
+	}
+	if r.Output != nil {
+		_, exists := out["output"]
+		if !exists {
+			out["output"] = r.Output
+		}
+	}
+	if r.Status != "" {
+		out["status"] = r.Status
+	}
+	if r.PreviousID != "" {
+		out["previous_id"] = r.PreviousID
+	}
+	if r.PreviousResponseID != "" {
+		out["previous_response_id"] = r.PreviousResponseID
+	}
+	if !responsesUsageEmpty(r.Usage) {
+		out["usage"] = r.Usage
+	}
+	if r.Created > 0 {
+		out["created"] = r.Created
+	}
+	if r.CreatedAt > 0 {
+		out["created_at"] = r.CreatedAt
+	}
+	return json.Marshal(out)
+}
+
+type responsesResponseWire struct {
+	ID                 string          `json:"id"`
+	Object             string          `json:"object,omitempty"`
+	Model              string          `json:"model"`
+	Output             []ResponsesItem `json:"output"`
+	Status             string          `json:"status"`
+	PreviousID         string          `json:"previous_id,omitempty"`
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	Usage              ResponsesUsage  `json:"usage"`
+	Created            int64           `json:"created,omitempty"`
+	CreatedAt          int64           `json:"created_at,omitempty"`
+}
+
+func responsesUsageEmpty(usage ResponsesUsage) bool {
+	return usage.InputTokens == 0 &&
+		usage.OutputTokens == 0 &&
+		usage.TotalTokens == 0 &&
+		usage.CacheCreationInputTokens == 0 &&
+		usage.CacheCreation5mInputTokens == 0 &&
+		usage.CacheCreation1hInputTokens == 0 &&
+		usage.CacheReadInputTokens == 0 &&
+		usage.CacheTTL == "" &&
+		usage.InputTokensDetails == nil &&
+		usage.OutputTokensDetails == nil
 }
 
 // ResponsesUsage Responses API 使用统计

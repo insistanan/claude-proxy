@@ -35,31 +35,30 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	var providerReq interface{}
+	var reqBody []byte
+	targetModel := ""
+	isStream := false
 
-	// 2. 使用转换器工厂创建转换器
-	converter := converters.NewConverter(upstream.ServiceType)
-
-	// 3. 判断是否为透传模式
-	if _, ok := converter.(*converters.ResponsesPassthroughConverter); ok {
-		// [Mode-Passthrough] 透传模式：使用 map 保留所有字段
-		var reqMap map[string]interface{}
-		if err := json.Unmarshal(bodyBytes, &reqMap); err != nil {
-			return nil, bodyBytes, fmt.Errorf("透传模式下解析请求失败: %w", err)
-		}
-
-		// 只做模型重定向
-		if model, ok := reqMap["model"].(string); ok {
-			reqMap["model"] = config.RedirectModel(model, upstream)
-		}
-
-		providerReq = reqMap
-	} else {
-		// [Mode-Convert] 非透传模式：保持原有逻辑
+	// 2. 根据 Responses 上游协议转换请求体
+	if upstream.ServiceType == converters.ResponsesUpstreamResponses {
 		var responsesReq types.ResponsesRequest
 		if err := json.Unmarshal(bodyBytes, &responsesReq); err != nil {
 			return nil, bodyBytes, fmt.Errorf("解析 Responses 请求失败: %w", err)
 		}
+		model := config.RedirectModel(responsesReq.Model, upstream)
+		targetModel = model
+		isStream = converters.ResponsesRequestStream(bodyBytes)
+		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, model, bodyBytes, isStream, nil, nil)
+		if err != nil {
+			return nil, bodyBytes, err
+		}
+	} else {
+		var responsesReq types.ResponsesRequest
+		if err := json.Unmarshal(bodyBytes, &responsesReq); err != nil {
+			return nil, bodyBytes, fmt.Errorf("解析 Responses 请求失败: %w", err)
+		}
+
+		isStream = responsesReq.Stream
 
 		// 获取或创建会话
 		sess, err := p.SessionManager.GetOrCreateSession(responsesReq.PreviousResponseID)
@@ -69,23 +68,16 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 
 		// 模型重定向
 		responsesReq.Model = config.RedirectModel(responsesReq.Model, upstream)
+		targetModel = responsesReq.Model
 
-		// 转换请求
-		convertedReq, err := converter.ToProviderRequest(sess, &responsesReq)
+		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, responsesReq.Model, bodyBytes, responsesReq.Stream, sess, &responsesReq)
 		if err != nil {
-			return nil, bodyBytes, fmt.Errorf("转换请求失败: %w", err)
+			return nil, bodyBytes, err
 		}
-		providerReq = convertedReq
-	}
-
-	// 4. 序列化请求体（禁用 HTML 转义）
-	reqBody, err := utils.MarshalJSONNoEscape(providerReq)
-	if err != nil {
-		return nil, bodyBytes, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	// 7. 构建 HTTP 请求
-	targetURL := p.buildTargetURL(upstream)
+	targetURL := p.buildTargetURLWithModel(upstream, targetModel, isStream)
 	req, err := http.NewRequestWithContext(c.Request.Context(), "POST", targetURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, bodyBytes, err
@@ -122,6 +114,10 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 // 2. 如果 baseURL 已包含版本号后缀（如 /v1, /v2, /v8, /v1beta），直接拼接端点路径
 // 3. 如果 baseURL 不包含版本号后缀，自动添加 /v1 再拼接端点路径
 func (p *ResponsesProvider) buildTargetURL(upstream *config.UpstreamConfig) string {
+	return p.buildTargetURLWithModel(upstream, "", false)
+}
+
+func (p *ResponsesProvider) buildTargetURLWithModel(upstream *config.UpstreamConfig, model string, stream bool) string {
 	baseURL := upstream.BaseURL
 	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
 	if skipVersionPrefix {
@@ -140,6 +136,15 @@ func (p *ResponsesProvider) buildTargetURL(upstream *config.UpstreamConfig) stri
 		endpoint = "/responses"
 	case "claude":
 		endpoint = "/messages"
+	case "gemini":
+		if model == "" {
+			model = "gemini-pro"
+		}
+		action := "generateContent"
+		if stream {
+			action = "streamGenerateContent?alt=sse"
+		}
+		endpoint = fmt.Sprintf("/models/%s:%s", model, action)
 	default:
 		endpoint = "/chat/completions"
 	}
@@ -164,15 +169,7 @@ func (p *ResponsesProvider) ConvertToResponsesResponse(
 	upstreamType string,
 	sessionID string,
 ) (*types.ResponsesResponse, error) {
-	// 解析响应体为 map
-	respMap, err := converters.JSONToMap(providerResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
-	}
-
-	// 使用转换器工厂
-	converter := converters.NewConverter(upstreamType)
-	return converter.FromProviderResponse(respMap, sessionID)
+	return converters.ConvertUpstreamResponseToResponses(upstreamType, nil, providerResp.Body, sessionID)
 }
 
 // HandleStreamResponse 处理流式响应（暂不实现）

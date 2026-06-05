@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
@@ -18,13 +19,15 @@ func ResponsesToClaudeMessages(sess *session.Session, newInput interface{}, inst
 	messages := []types.ClaudeMessage{}
 
 	// 1. 处理历史消息
-	for _, item := range sess.Messages {
-		msg, err := responsesItemToClaudeMessage(item)
-		if err != nil {
-			return nil, "", fmt.Errorf("转换历史消息失败: %w", err)
-		}
-		if msg != nil {
-			messages = append(messages, *msg)
+	if sess != nil {
+		for _, item := range sess.Messages {
+			msg, err := responsesItemToClaudeMessage(item)
+			if err != nil {
+				return nil, "", fmt.Errorf("转换历史消息失败: %w", err)
+			}
+			if msg != nil {
+				messages = append(messages, *msg)
+			}
 		}
 	}
 
@@ -83,11 +86,15 @@ func responsesItemToClaudeMessage(item types.ResponsesItem) (*types.ClaudeMessag
 		}, nil
 
 	case "tool_call":
-		// 工具调用（暂时简化处理）
-		return nil, nil
+		return responsesItemToClaudeToolMessage(item)
 
 	case "tool_result":
-		// 工具结果（暂时简化处理）
+		return responsesItemToClaudeToolMessage(item)
+
+	case "function_call", "function_call_output":
+		return responsesItemToClaudeToolMessage(item)
+
+	case "reasoning":
 		return nil, nil
 
 	default:
@@ -111,27 +118,31 @@ func ClaudeResponseToResponses(claudeResp map[string]interface{}, sessionID stri
 			continue
 		}
 
-		blockType, _ := contentBlock["type"].(string)
-		if blockType == "text" {
-			text, _ := contentBlock["text"].(string)
-			output = append(output, types.ResponsesItem{
-				Type:    "text",
-				Content: text,
-			})
+		item, ok, err := claudeContentBlockToResponsesItem(contentBlock)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			output = append(output, item)
 		}
 	}
 
 	// 提取 usage（使用统一入口自动检测格式）
 	usage := ExtractUsageMetrics(claudeResp["usage"])
+	status := "completed"
+	if stopReason, _ := claudeResp["stop_reason"].(string); stopReason != "" {
+		status = OpenAIFinishReasonToResponses(AnthropicStopReasonToOpenAI(stopReason))
+	}
 
 	// 生成 response ID
 	responseID := generateResponseID()
 
 	return &types.ResponsesResponse{
 		ID:         responseID,
+		Object:     "response",
 		Model:      model,
 		Output:     output,
-		Status:     "completed",
+		Status:     status,
 		PreviousID: "", // 将在外部设置
 		Usage:      usage,
 	}, nil
@@ -152,10 +163,12 @@ func ResponsesToOpenAIChatMessages(sess *session.Session, newInput interface{}, 
 	}
 
 	// 2. 处理历史消息
-	for _, item := range sess.Messages {
-		msg := responsesItemToOpenAIMessage(item)
-		if msg != nil {
-			messages = append(messages, msg)
+	if sess != nil {
+		for _, item := range sess.Messages {
+			msg := responsesItemToOpenAIMessage(item)
+			if msg != nil {
+				messages = append(messages, msg)
+			}
 		}
 	}
 
@@ -209,6 +222,40 @@ func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface
 			"role":    role,
 			"content": content,
 		}
+
+	case "function_call":
+		callID := item.CallID
+		if callID == "" {
+			callID = item.ID
+		}
+		arguments := item.Arguments
+		if arguments == "" {
+			arguments = "{}"
+		}
+		return map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []map[string]interface{}{
+				{
+					"id":   callID,
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      item.Name,
+						"arguments": arguments,
+					},
+				},
+			},
+		}
+
+	case "function_call_output":
+		content := buildOpenAIMessageContent(item.Content)
+		if content == nil {
+			content = ""
+		}
+		return map[string]interface{}{
+			"role":         "tool",
+			"tool_call_id": item.CallID,
+			"content":      content,
+		}
 	}
 
 	return nil
@@ -224,15 +271,15 @@ func OpenAIChatResponseToResponses(openaiResp map[string]interface{}, sessionID 
 
 	// 提取第一个 choice 的 message
 	output := []types.ResponsesItem{}
+	status := "completed"
 	if len(choices) > 0 {
 		choice, ok := choices[0].(map[string]interface{})
 		if ok {
+			if finishReason, _ := choice["finish_reason"].(string); finishReason != "" {
+				status = OpenAIFinishReasonToResponses(finishReason)
+			}
 			message, _ := choice["message"].(map[string]interface{})
-			content, _ := message["content"].(string)
-			output = append(output, types.ResponsesItem{
-				Type:    "text",
-				Content: content,
-			})
+			output = append(output, openAIChatMessageToResponsesItems(message)...)
 		}
 	}
 
@@ -244,12 +291,77 @@ func OpenAIChatResponseToResponses(openaiResp map[string]interface{}, sessionID 
 
 	return &types.ResponsesResponse{
 		ID:         responseID,
+		Object:     "response",
 		Model:      model,
 		Output:     output,
-		Status:     "completed",
+		Status:     status,
 		PreviousID: "",
 		Usage:      usage,
 	}, nil
+}
+
+func openAIChatMessageToResponsesItems(message map[string]interface{}) []types.ResponsesItem {
+	items := []types.ResponsesItem{}
+
+	if reasoning, _ := message["reasoning_content"].(string); reasoning != "" {
+		items = append(items, types.ResponsesItem{
+			Type:   "reasoning",
+			Status: "completed",
+			Summary: []map[string]interface{}{
+				{
+					"type": "summary_text",
+					"text": reasoning,
+				},
+			},
+		})
+	}
+
+	if content, _ := message["content"].(string); content != "" {
+		items = append(items, types.ResponsesItem{
+			Type:   "message",
+			Status: "completed",
+			Role:   "assistant",
+			Content: []map[string]interface{}{
+				{
+					"type":        "output_text",
+					"text":        content,
+					"annotations": []interface{}{},
+					"logprobs":    []interface{}{},
+				},
+			},
+		})
+	}
+
+	if toolCalls, ok := message["tool_calls"].([]interface{}); ok {
+		for i, rawToolCall := range toolCalls {
+			toolCall, ok := rawToolCall.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			callID, _ := toolCall["id"].(string)
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", i)
+			}
+			function, _ := toolCall["function"].(map[string]interface{})
+			name, _ := function["name"].(string)
+			arguments, _ := function["arguments"].(string)
+			if arguments == "" {
+				arguments = "{}"
+			}
+
+			items = append(items, types.ResponsesItem{
+				ID:        fmt.Sprintf("fc_%s", callID),
+				Type:      "function_call",
+				Status:    "completed",
+				CallID:    callID,
+				Name:      name,
+				Arguments: arguments,
+			})
+		}
+	}
+
+	return items
 }
 
 // ============== 工具函数 ==============
@@ -319,11 +431,29 @@ func parseResponsesInput(input interface{}) ([]types.ResponsesItem, error) {
 			itemType, _ := itemMap["type"].(string)
 			role, _ := itemMap["role"].(string)
 			content := itemMap["content"]
+			summary := itemMap["summary"]
+			id, _ := itemMap["id"].(string)
+			status, _ := itemMap["status"].(string)
+			callID, _ := itemMap["call_id"].(string)
+			name, _ := itemMap["name"].(string)
+			arguments, _ := itemMap["arguments"].(string)
+			if itemType == "" && role != "" {
+				itemType = "message"
+			}
+			if output, ok := itemMap["output"]; ok && content == nil {
+				content = output
+			}
 
 			items = append(items, types.ResponsesItem{
-				Type:    itemType,
-				Role:    role,
-				Content: content,
+				ID:        id,
+				Type:      itemType,
+				Status:    status,
+				Role:      role,
+				Content:   content,
+				Summary:   summary,
+				CallID:    callID,
+				Name:      name,
+				Arguments: arguments,
 			})
 		}
 		return items, nil
@@ -344,7 +474,7 @@ func generateResponseID() string {
 
 // getCurrentTimestamp 获取当前时间戳（毫秒）
 func getCurrentTimestamp() int64 {
-	return 0 // 占位符，实际应使用 time.Now().UnixNano() / 1e6
+	return time.Now().UnixNano() / 1e6
 }
 
 // ExtractTextFromResponses 从 Responses 消息中提取纯文本（用于 OpenAI Completions）
@@ -352,10 +482,12 @@ func ExtractTextFromResponses(sess *session.Session, newInput interface{}) (stri
 	texts := []string{}
 
 	// 历史消息
-	for _, item := range sess.Messages {
-		if item.Type == "text" {
-			if text, ok := item.Content.(string); ok {
-				texts = append(texts, text)
+	if sess != nil {
+		for _, item := range sess.Messages {
+			if item.Type == "text" {
+				if text, ok := item.Content.(string); ok {
+					texts = append(texts, text)
+				}
 			}
 		}
 	}
@@ -458,13 +590,26 @@ func OpenAICompletionsResponseToResponses(completionsResp map[string]interface{}
 	choices, _ := completionsResp["choices"].([]interface{})
 
 	output := []types.ResponsesItem{}
+	status := "completed"
 	if len(choices) > 0 {
 		choice, ok := choices[0].(map[string]interface{})
 		if ok {
+			if finishReason, _ := choice["finish_reason"].(string); finishReason != "" {
+				status = OpenAIFinishReasonToResponses(finishReason)
+			}
 			text, _ := choice["text"].(string)
 			output = append(output, types.ResponsesItem{
-				Type:    "text",
-				Content: text,
+				Type:   "message",
+				Status: "completed",
+				Role:   "assistant",
+				Content: []map[string]interface{}{
+					{
+						"type":        "output_text",
+						"text":        text,
+						"annotations": []interface{}{},
+						"logprobs":    []interface{}{},
+					},
+				},
 			})
 		}
 	}
@@ -476,9 +621,10 @@ func OpenAICompletionsResponseToResponses(completionsResp map[string]interface{}
 
 	return &types.ResponsesResponse{
 		ID:         responseID,
+		Object:     "response",
 		Model:      model,
 		Output:     output,
-		Status:     "completed",
+		Status:     status,
 		PreviousID: "",
 		Usage:      usage,
 	}, nil

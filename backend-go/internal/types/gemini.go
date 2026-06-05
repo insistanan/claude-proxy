@@ -23,6 +23,7 @@ type GeminiRequest struct {
 	Contents          []GeminiContent         `json:"contents"`
 	SystemInstruction *GeminiContent          `json:"systemInstruction,omitempty"`
 	Tools             []GeminiTool            `json:"tools,omitempty"`
+	ToolConfig        *GeminiToolConfig       `json:"toolConfig,omitempty"`
 	GenerationConfig  *GeminiGenerationConfig `json:"generationConfig,omitempty"`
 	SafetySettings    []GeminiSafetySetting   `json:"safetySettings,omitempty"`
 }
@@ -130,6 +131,17 @@ type GeminiTool struct {
 	FunctionDeclarations []GeminiFunctionDeclaration `json:"functionDeclarations,omitempty"`
 }
 
+// GeminiToolConfig 工具调用配置。
+type GeminiToolConfig struct {
+	FunctionCallingConfig *GeminiFunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+}
+
+// GeminiFunctionCallingConfig 控制 Gemini 是否以及如何调用函数。
+type GeminiFunctionCallingConfig struct {
+	Mode                 string   `json:"mode,omitempty"` // AUTO / ANY / NONE / VALIDATED
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
+}
+
 // GeminiFunctionDeclaration 函数声明
 type GeminiFunctionDeclaration struct {
 	Name        string      `json:"name"`
@@ -217,6 +229,11 @@ func sanitizeGeminiToolSchema(v interface{}) interface{} {
 	default:
 		return v
 	}
+}
+
+// SanitizeGeminiToolSchema 清洗 Gemini functionDeclaration 参数 schema。
+func SanitizeGeminiToolSchema(v interface{}) interface{} {
+	return sanitizeGeminiToolSchema(v)
 }
 
 // GeminiGenerationConfig 生成配置

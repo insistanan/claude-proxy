@@ -318,6 +318,22 @@ func estimateResponsesItemTokens(item types.ResponsesItem) int {
 		total += EstimateTokens(string(data))
 	}
 
+	// 处理 Responses 原生 function_call 字段
+	if item.Type == "function_call" {
+		if item.Arguments != "" {
+			total += EstimateTokens(item.Arguments)
+		}
+		if item.Name != "" {
+			total += EstimateTokens(item.Name) + 2
+		}
+	}
+
+	// 处理 reasoning summary 字段
+	if item.Summary != nil {
+		data, _ := json.Marshal(item.Summary)
+		total += EstimateTokens(string(data))
+	}
+
 	// 如果是特殊类型且 content/tool_use 都为空，序列化整个结构估算
 	// 这处理 function_call、reasoning 等类型，其数据可能在其他字段中
 	if total == 0 && item.Type != "" && item.Type != "message" && item.Type != "text" {

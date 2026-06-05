@@ -190,6 +190,9 @@ func (s *StreamSynthesizer) processResponses(data map[string]interface{}) {
 		if args, ok := data["arguments"].(string); ok && args != "" {
 			acc.Arguments = args
 		}
+		if name, ok := data["name"].(string); ok && name != "" {
+			acc.Name = name
+		}
 		if item, ok := data["item"].(map[string]interface{}); ok {
 			if name, ok := item["name"].(string); ok && name != "" {
 				acc.Name = name

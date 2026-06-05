@@ -170,11 +170,22 @@ func TestEstimateResponsesOutputTokensWithTypedItems(t *testing.T) {
 				{Type: "output_text", Text: "This is output text"},
 			},
 		},
+		{
+			Type:      "function_call",
+			Name:      "search",
+			Arguments: `{"query":"weather"}`,
+		},
+		{
+			Type: "reasoning",
+			Summary: []interface{}{
+				map[string]interface{}{"type": "summary_text", "text": "Reasoning summary"},
+			},
+		},
 	}
 
 	result := EstimateResponsesOutputTokens(items)
-	if result < 5 {
-		t.Errorf("EstimateResponsesOutputTokens([]types.ResponsesItem) = %d, want >= 5", result)
+	if result < 10 {
+		t.Errorf("EstimateResponsesOutputTokens([]types.ResponsesItem) = %d, want >= 10", result)
 	}
 }
 

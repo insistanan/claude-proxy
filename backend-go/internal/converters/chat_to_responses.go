@@ -179,11 +179,11 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 
 			// 发送 reasoning delta
 			st.ReasoningBuf.WriteString(reasoningText)
-			msg := `{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"text":""}`
+			msg := `{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"delta":""}`
 			msg, _ = sjson.Set(msg, "sequence_number", nextSeq())
 			msg, _ = sjson.Set(msg, "item_id", st.ReasoningItemID)
 			msg, _ = sjson.Set(msg, "output_index", st.ReasoningIndex)
-			msg, _ = sjson.Set(msg, "text", reasoningText)
+			msg, _ = sjson.Set(msg, "delta", reasoningText)
 			out = append(out, emitResponsesEvent("response.reasoning_summary_text.delta", msg))
 		}
 
@@ -253,6 +253,9 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 				// 初始化 tool call 状态
 				if st.FuncArgsBuf[idx] == nil {
 					st.FuncArgsBuf[idx] = &strings.Builder{}
+				}
+				if st.FuncCallIDs[idx] == "" {
+					st.FuncCallIDs[idx] = fmt.Sprintf("call_%d", idx)
 				}
 
 				// 处理 tool call ID
@@ -516,9 +519,10 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 		}
 
 		// response.function_call_arguments.done
-		fcDone := `{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`
+		fcDone := `{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","name":"","output_index":0,"arguments":""}`
 		fcDone, _ = sjson.Set(fcDone, "sequence_number", nextSeq())
 		fcDone, _ = sjson.Set(fcDone, "item_id", fmt.Sprintf("fc_%s", callID))
+		fcDone, _ = sjson.Set(fcDone, "name", name)
 		fcDone, _ = sjson.Set(fcDone, "output_index", outputIndex)
 		fcDone, _ = sjson.Set(fcDone, "arguments", args)
 		out = append(out, emitResponsesEvent("response.function_call_arguments.done", fcDone))
@@ -806,6 +810,9 @@ func ConvertOpenAIChatToResponsesNonStream(_ context.Context, _ string, original
 		if toolCalls := message.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
 			for _, tc := range toolCalls.Array() {
 				callID := tc.Get("id").String()
+				if callID == "" {
+					callID = fmt.Sprintf("call_%d", len(outputs))
+				}
 				funcName := tc.Get("function.name").String()
 				funcArgs := tc.Get("function.arguments").String()
 				if funcArgs == "" {

@@ -132,6 +132,42 @@ func TestConvertResponsesToOpenAIChatRequest(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesToOpenAIChatRequest_InvalidFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "非 function tool",
+			input: `{"model":"gpt-4o","input":"hi","tools":[{"type":"web_search_preview","name":"search"}]}`,
+		},
+		{
+			name:  "tool 缺少 name",
+			input: `{"model":"gpt-4o","input":"hi","tools":[{"type":"function","parameters":{"type":"object"}}]}`,
+		},
+		{
+			name:  "非法 tool_choice",
+			input: `{"model":"gpt-4o","input":"hi","tool_choice":"always"}`,
+		},
+		{
+			name:  "非法 reasoning effort",
+			input: `{"model":"gpt-4o","input":"hi","reasoning":{"effort":"ultra"}}`,
+		},
+		{
+			name:  "非法 function_call arguments",
+			input: `{"model":"gpt-4o","input":[{"type":"function_call","call_id":"call_bad","name":"lookup","arguments":"{bad-json"}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateResponsesToOpenAIChatRequest([]byte(tt.input)); err == nil {
+				t.Fatal("应该返回协议兼容错误")
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIChatToResponses_Stream(t *testing.T) {
 	ctx := context.Background()
 
@@ -241,6 +277,49 @@ func TestConvertOpenAIChatToResponses_ToolCall(t *testing.T) {
 	}
 	if !hasFuncDone {
 		t.Error("should have function_call_arguments.done event")
+	}
+}
+
+func TestConvertOpenAIChatToResponses_ReasoningDeltaUsesDeltaField(t *testing.T) {
+	ctx := context.Background()
+	sseLines := []string{
+		`data: {"id":"chatcmpl-reasoning","object":"chat.completion.chunk","created":1234567890,"model":"o1-mini","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Thinking"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-reasoning","object":"chat.completion.chunk","created":1234567890,"model":"o1-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}
+
+	originalReq := []byte(`{"model":"o1-mini","input":"Think"}`)
+	var state any
+	var allEvents []string
+	for _, line := range sseLines {
+		events := ConvertOpenAIChatToResponses(ctx, "o1-mini", originalReq, nil, []byte(line), &state)
+		allEvents = append(allEvents, events...)
+	}
+
+	found := false
+	for _, ev := range allEvents {
+		if !strings.Contains(ev, "response.reasoning_summary_text.delta") {
+			continue
+		}
+		found = true
+		payload := ""
+		for _, line := range strings.Split(ev, "\n") {
+			if strings.HasPrefix(line, "data: ") {
+				payload = strings.TrimPrefix(line, "data: ")
+				break
+			}
+		}
+		root := gjson.Parse(payload)
+		if root.Get("delta").String() != "Thinking" {
+			t.Errorf("reasoning delta 应使用 delta 字段")
+		}
+		if root.Get("text").Exists() {
+			t.Errorf("reasoning delta 不应使用 text 字段")
+		}
+	}
+
+	if !found {
+		t.Fatal("should have reasoning_summary_text.delta event")
 	}
 }
 

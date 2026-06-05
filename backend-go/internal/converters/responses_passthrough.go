@@ -1,6 +1,8 @@
 package converters
 
 import (
+	"encoding/json"
+
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
@@ -21,6 +23,7 @@ func (c *ResponsesPassthroughConverter) ToProviderRequest(sess *session.Session,
 		"previous_response_id": req.PreviousResponseID,
 		"store":                req.Store,
 		"max_tokens":           req.MaxTokens,
+		"max_output_tokens":    req.MaxOutputTokens,
 		"temperature":          req.Temperature,
 		"top_p":                req.TopP,
 		"frequency_penalty":    req.FrequencyPenalty,
@@ -29,6 +32,11 @@ func (c *ResponsesPassthroughConverter) ToProviderRequest(sess *session.Session,
 		"stop":                 req.Stop,
 		"user":                 req.User,
 		"stream_options":       req.StreamOptions,
+		"tools":                req.Tools,
+		"tool_choice":          req.ToolChoice,
+		"parallel_tool_calls":  req.ParallelToolCalls,
+		"reasoning":            req.Reasoning,
+		"metadata":             req.Metadata,
 	}, nil
 }
 
@@ -37,23 +45,39 @@ func (c *ResponsesPassthroughConverter) FromProviderResponse(resp map[string]int
 	// 直接解析为 ResponsesResponse
 	// 注意：这里假设上游返回的就是标准 Responses 格式
 	id, _ := resp["id"].(string)
+	object, _ := resp["object"].(string)
 	model, _ := resp["model"].(string)
 	status, _ := resp["status"].(string)
 	previousID, _ := resp["previous_id"].(string)
+	previousResponseID, _ := resp["previous_response_id"].(string)
+	created := int64FromInterface(resp["created"])
+	createdAt := int64FromInterface(resp["created_at"])
 
 	// 解析 output
 	output := []types.ResponsesItem{}
 	if outputArr, ok := resp["output"].([]interface{}); ok {
 		for _, item := range outputArr {
 			if itemMap, ok := item.(map[string]interface{}); ok {
+				itemID, _ := itemMap["id"].(string)
 				itemType, _ := itemMap["type"].(string)
+				itemStatus, _ := itemMap["status"].(string)
 				role, _ := itemMap["role"].(string)
 				content := itemMap["content"]
+				summary := itemMap["summary"]
+				callID, _ := itemMap["call_id"].(string)
+				name, _ := itemMap["name"].(string)
+				arguments, _ := itemMap["arguments"].(string)
 
 				output = append(output, types.ResponsesItem{
-					Type:    itemType,
-					Role:    role,
-					Content: content,
+					ID:        itemID,
+					Type:      itemType,
+					Status:    itemStatus,
+					Role:      role,
+					Content:   content,
+					Summary:   summary,
+					CallID:    callID,
+					Name:      name,
+					Arguments: arguments,
 				})
 			}
 		}
@@ -64,12 +88,33 @@ func (c *ResponsesPassthroughConverter) FromProviderResponse(resp map[string]int
 
 	return &types.ResponsesResponse{
 		ID:         id,
+		Object:     object,
 		Model:      model,
 		Output:     output,
 		Status:     status,
 		PreviousID: previousID,
+		PreviousResponseID: previousResponseID,
 		Usage:      usage,
+		Created:    created,
+		CreatedAt:  createdAt,
+		Extra:      resp,
 	}, nil
+}
+
+func int64FromInterface(value interface{}) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	default:
+		return 0
+	}
 }
 
 // GetProviderName 获取上游服务名称

@@ -80,12 +80,18 @@ func TestOpenAIChatConverter_WithInstructions(t *testing.T) {
 		Messages: []types.ResponsesItem{},
 	}
 
+	parallelToolCalls := true
 	req := &types.ResponsesRequest{
-		Model:        "gpt-4",
-		Instructions: "You are a helpful assistant.",
-		Input:        "Hello!",
-		MaxTokens:    100,
-		Temperature:  0.7,
+		Model:             "gpt-4",
+		Instructions:      "You are a helpful assistant.",
+		Input:             "Hello!",
+		MaxTokens:         100,
+		MaxOutputTokens:   128,
+		Temperature:       0.7,
+		ParallelToolCalls: &parallelToolCalls,
+		Reasoning:         map[string]interface{}{"effort": "minimal"},
+		ToolChoice:        map[string]interface{}{"type": "function", "name": "lookup"},
+		Tools:             []map[string]interface{}{{"name": "lookup", "description": "Lookup data", "parameters": map[string]interface{}{"type": "object"}}},
 	}
 
 	result, err := converter.ToProviderRequest(sess, req)
@@ -130,11 +136,33 @@ func TestOpenAIChatConverter_WithInstructions(t *testing.T) {
 	}
 
 	// 检查其他参数
-	if resultMap["max_tokens"] != 100 {
+	if resultMap["max_tokens"] != 128 {
 		t.Errorf("max_tokens 不匹配")
 	}
 	if resultMap["temperature"] != 0.7 {
 		t.Errorf("temperature 不匹配")
+	}
+	if resultMap["parallel_tool_calls"] != true {
+		t.Errorf("parallel_tool_calls 不匹配")
+	}
+	if resultMap["reasoning_effort"] != "minimal" {
+		t.Errorf("reasoning_effort 不匹配")
+	}
+	tools, ok := resultMap["tools"].([]map[string]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools 不匹配")
+	}
+	function, ok := tools[0]["function"].(map[string]interface{})
+	if !ok || function["name"] != "lookup" {
+		t.Errorf("tool function 不匹配")
+	}
+	toolChoice, ok := resultMap["tool_choice"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool_choice 类型不匹配")
+	}
+	choiceFunction, ok := toolChoice["function"].(map[string]interface{})
+	if !ok || choiceFunction["name"] != "lookup" {
+		t.Errorf("tool_choice function 不匹配")
 	}
 }
 
@@ -178,6 +206,146 @@ func TestOpenAIChatConverter_WithMessageType(t *testing.T) {
 	}
 	if messages[0]["content"] != "Hello from message type!" {
 		t.Errorf("内容不匹配，实际为 '%v'", messages[0]["content"])
+	}
+}
+
+func TestOpenAIChatResponseToResponses_WithReasoningAndToolCalls(t *testing.T) {
+	resp := map[string]interface{}{
+		"model": "gpt-4o",
+		"choices": []interface{}{
+			map[string]interface{}{
+				"finish_reason": "tool_calls",
+				"message": map[string]interface{}{
+					"role":              "assistant",
+					"reasoning_content": "I should call a tool.",
+					"content":           "Checking now.",
+					"tool_calls": []interface{}{
+						map[string]interface{}{
+							"id":   "call_lookup",
+							"type": "function",
+							"function": map[string]interface{}{
+								"name":      "lookup",
+								"arguments": "{\"q\":\"test\"}",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := OpenAIChatResponseToResponses(resp, "sess_test")
+	if err != nil {
+		t.Fatalf("转换失败: %v", err)
+	}
+
+	if result.Object != "response" {
+		t.Errorf("object 不匹配")
+	}
+	if result.Status != "completed" {
+		t.Errorf("status 不匹配")
+	}
+	if len(result.Output) != 3 {
+		t.Fatalf("期望 3 个 output item，实际为 %d", len(result.Output))
+	}
+	if result.Output[0].Type != "reasoning" {
+		t.Errorf("第一个 item 应为 reasoning")
+	}
+	if result.Output[1].Type != "message" || result.Output[1].Role != "assistant" {
+		t.Errorf("第二个 item 应为 assistant message")
+	}
+	if result.Output[2].Type != "function_call" || result.Output[2].CallID != "call_lookup" || result.Output[2].Name != "lookup" {
+		t.Errorf("第三个 item 应为 function_call")
+	}
+}
+
+func TestOpenAICompletionsConverter_MaxOutputTokensAndUnsupportedTools(t *testing.T) {
+	converter := &OpenAICompletionsConverter{}
+	req := &types.ResponsesRequest{
+		Model:           "gpt-3.5-turbo-instruct",
+		Input:           "Hello!",
+		MaxTokens:       100,
+		MaxOutputTokens: 256,
+	}
+
+	result, err := converter.ToProviderRequest(nil, req)
+	if err != nil {
+		t.Fatalf("转换失败: %v", err)
+	}
+
+	resultMap, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatal("结果不是 map[string]interface{}")
+	}
+	if resultMap["max_tokens"] != 256 {
+		t.Errorf("max_tokens 应优先使用 max_output_tokens")
+	}
+
+	req.Tools = []map[string]interface{}{{"name": "lookup"}}
+	if _, err := converter.ToProviderRequest(nil, req); err == nil {
+		t.Fatal("OpenAI Completions 不支持 tools，应返回错误")
+	}
+}
+
+func TestClaudeConverter_InvalidFunctionCallArguments(t *testing.T) {
+	converter := &ClaudeConverter{}
+	req := &types.ResponsesRequest{
+		Model:           "claude-3-5-sonnet",
+		MaxOutputTokens: 2048,
+		Input: []interface{}{
+			map[string]interface{}{
+				"type":      "function_call",
+				"call_id":   "call_bad",
+				"name":      "lookup",
+				"arguments": "{bad-json",
+			},
+		},
+	}
+
+	if _, err := converter.ToProviderRequest(nil, req); err == nil {
+		t.Fatal("非法 function_call arguments 应返回错误")
+	}
+}
+
+func TestResponsesToGemini_InvalidFunctionCallArguments(t *testing.T) {
+	req := &types.ResponsesRequest{
+		Model: "gemini-2.5-flash",
+		Input: []interface{}{
+			map[string]interface{}{
+				"type":      "function_call",
+				"call_id":   "call_bad",
+				"name":      "lookup",
+				"arguments": "{bad-json",
+			},
+		},
+	}
+
+	if _, err := ConvertResponsesToGeminiRequest("gemini-2.5-flash", nil, req); err == nil {
+		t.Fatal("非法 function_call arguments 应返回错误")
+	}
+}
+
+func TestClaudeResponseToResponses_StopReasonMaxTokens(t *testing.T) {
+	resp := map[string]interface{}{
+		"model":       "claude-3-5-sonnet",
+		"stop_reason": "max_tokens",
+		"content": []interface{}{
+			map[string]interface{}{
+				"type": "text",
+				"text": "partial",
+			},
+		},
+	}
+
+	result, err := ClaudeResponseToResponses(resp, "sess_test")
+	if err != nil {
+		t.Fatalf("转换失败: %v", err)
+	}
+	if result.Object != "response" {
+		t.Errorf("object 不匹配")
+	}
+	if result.Status != "incomplete" {
+		t.Errorf("max_tokens 应映射为 incomplete")
 	}
 }
 

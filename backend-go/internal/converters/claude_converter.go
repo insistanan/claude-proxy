@@ -1,6 +1,8 @@
 package converters
 
 import (
+	"fmt"
+
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
@@ -25,15 +27,21 @@ func (c *ClaudeConverter) ToProviderRequest(sess *session.Session, req *types.Re
 		"stream":   req.Stream,
 	}
 
+	effectiveMaxTokens := req.MaxOutputTokens
+	if effectiveMaxTokens <= 0 {
+		effectiveMaxTokens = req.MaxTokens
+	}
+	if effectiveMaxTokens <= 0 {
+		return nil, fmt.Errorf("Responses -> Claude 需要 max_output_tokens 或 max_tokens")
+	}
+
 	// Claude 使用独立的 system 参数（不在 messages 中）
 	if system != "" {
 		claudeReq["system"] = system
 	}
 
 	// 复制其他参数
-	if req.MaxTokens > 0 {
-		claudeReq["max_tokens"] = req.MaxTokens
-	}
+	claudeReq["max_tokens"] = effectiveMaxTokens
 	if req.Temperature > 0 {
 		claudeReq["temperature"] = req.Temperature
 	}
@@ -42,6 +50,35 @@ func (c *ClaudeConverter) ToProviderRequest(sess *session.Session, req *types.Re
 	}
 	if req.Stop != nil {
 		claudeReq["stop_sequences"] = req.Stop // Claude 使用 stop_sequences
+	}
+	if tools, err := ResponsesToolsToClaudeTools(req.Tools); err != nil {
+		return nil, err
+	} else if len(tools) > 0 {
+		claudeReq["tools"] = tools
+	}
+	thinking, err := ResponsesReasoningToClaudeThinking(req.Reasoning, effectiveMaxTokens)
+	if err != nil {
+		return nil, err
+	}
+	if thinking != nil {
+		if err := validateClaudeThinkingToolChoice(req.ToolChoice); err != nil {
+			return nil, err
+		}
+	}
+
+	if toolChoice, err := ResponsesToolChoiceToClaude(req.ToolChoice); err != nil {
+		return nil, err
+	} else if toolChoice != nil {
+		claudeReq["tool_choice"] = toolChoice
+	}
+	if thinking != nil {
+		claudeReq["thinking"] = thinking
+	}
+	if req.Metadata != nil {
+		claudeReq["metadata"] = req.Metadata
+	}
+	if req.ParallelToolCalls != nil {
+		return nil, fmt.Errorf("Claude Messages 不支持 parallel_tool_calls 字段")
 	}
 
 	return claudeReq, nil
