@@ -33,6 +33,25 @@ func (cm *ConfigManager) GetCurrentResponsesUpstream() (*UpstreamConfig, error) 
 	return &cm.config.ResponsesUpstream[0], nil
 }
 
+// GetCurrentResponsesUpstreamWithIndex 获取当前 Responses 上游配置及其渠道索引。
+func (cm *ConfigManager) GetCurrentResponsesUpstreamWithIndex() (*UpstreamConfig, int, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if len(cm.config.ResponsesUpstream) == 0 {
+		return nil, -1, fmt.Errorf("未配置任何 Responses 渠道")
+	}
+
+	for i := range cm.config.ResponsesUpstream {
+		status := cm.config.ResponsesUpstream[i].Status
+		if status == "" || status == "active" {
+			return &cm.config.ResponsesUpstream[i], i, nil
+		}
+	}
+
+	return &cm.config.ResponsesUpstream[0], 0, nil
+}
+
 // AddResponsesUpstream 添加 Responses 上游
 func (cm *ConfigManager) AddResponsesUpstream(upstream UpstreamConfig) error {
 	cm.mu.Lock()

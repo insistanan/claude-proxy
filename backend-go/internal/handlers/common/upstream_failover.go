@@ -8,6 +8,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
@@ -41,6 +44,15 @@ type DeprioritizeKeyFunc func(apiKey string)
 // 注意：实现方需要自行关闭 resp.Body（与现有 handlers 保持一致）。
 type HandleSuccessFunc func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error)
 
+type AttemptLogContext struct {
+	ChannelIndex int
+	Model        string
+	Source       RequestSource
+	LogStore     *metrics.ChannelLogStore
+}
+
+var attemptLogCounter uint64
+
 // TryUpstreamWithAllKeys 尝试一个 upstream 的所有 BaseURL + Key（纯 failover）
 // 返回:
 //   - handled: 是否已向客户端写回响应（成功或非 failover 错误）
@@ -66,6 +78,7 @@ func TryUpstreamWithAllKeys(
 	markURLFailure func(url string),
 	markURLSuccess func(url string),
 	handleSuccess HandleSuccessFunc,
+	logCtx AttemptLogContext,
 ) (handled bool, successKey string, successBaseURLIdx int, failoverErr *FailoverError, usage *types.Usage, lastError error) {
 	if upstream == nil || len(upstream.APIKeys) == 0 {
 		return false, "", 0, nil, nil, nil
@@ -82,6 +95,10 @@ func TryUpstreamWithAllKeys(
 
 	var lastFailoverError *FailoverError
 	deprioritizeCandidates := make(map[string]bool)
+	requestLogID := logCtx.Source.RequestID
+	if requestLogID == "" {
+		requestLogID = nextAttemptLogID("req")
+	}
 
 	// 强制探测模式：基于本次优先尝试的 BaseURL 判断（避免 BaseURL/BaseURLs 不一致导致误判）
 	forceProbeMode := AreAllKeysSuspended(metricsManager, urlResults[0].URL, upstream.APIKeys)
@@ -97,6 +114,7 @@ func TryUpstreamWithAllKeys(
 
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			RestoreRequestBody(c, requestBody)
+			attemptStart := time.Now()
 
 			apiKey, err := nextAPIKey(upstream, failedKeys)
 			if err != nil {
@@ -125,6 +143,7 @@ func TryUpstreamWithAllKeys(
 				lastError = err
 				failedKeys[apiKey] = true
 				channelScheduler.RecordFailure(currentBaseURL, apiKey, kind)
+				recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "build_request", err.Error(), true, isStream)
 				continue
 			}
 
@@ -142,6 +161,7 @@ func TryUpstreamWithAllKeys(
 					// 客户端取消：不计入失败，不触发 failover
 					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", 0, false, attemptStart, "client_cancelled", err.Error(), false, isStream)
 					log.Printf("[%s-Cancel] 请求已取消（SendRequest 阶段）", apiType)
 					return true, "", 0, nil, nil, err
 				}
@@ -153,6 +173,7 @@ func TryUpstreamWithAllKeys(
 				if markURLFailure != nil {
 					markURLFailure(currentBaseURL)
 				}
+				recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "network", err.Error(), true, isStream)
 				log.Printf("[%s-Key] 警告: API密钥失败: %v", apiType, err)
 				continue
 			}
@@ -182,12 +203,14 @@ func TryUpstreamWithAllKeys(
 					if isQuotaRelated {
 						deprioritizeCandidates[apiKey] = true
 					}
+					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, isQuotaRelated), string(respBodyBytes), true, isStream)
 					continue
 				}
 
 				// 非 failover 错误，记录失败指标后返回（请求已处理）
 				metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+				recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, false), string(respBodyBytes), false, isStream)
 				c.Data(resp.StatusCode, "application/json", respBodyBytes)
 				return true, "", 0, nil, nil, nil
 			}
@@ -211,12 +234,14 @@ func TryUpstreamWithAllKeys(
 					// 客户端取消/断开：计入总请求数但不计入失败
 					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", resp.StatusCode, false, attemptStart, "client_cancelled", err.Error(), false, isStream)
 					log.Printf("[%s-Cancel] 请求已取消，停止渠道 failover", apiType)
 				} else {
 					// 真实渠道故障：计入失败指标
 					cfgManager.MarkKeyAsFailed(apiKey, apiType)
 					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "response_processing", err.Error(), false, isStream)
 					log.Printf("[%s-Key] 警告: 响应处理失败: %v", apiType, err)
 				}
 				return true, "", 0, nil, usage, err
@@ -224,6 +249,7 @@ func TryUpstreamWithAllKeys(
 
 			metricsManager.RecordRequestFinalizeSuccess(currentBaseURL, apiKey, requestID, usage)
 			channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+			recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "completed", resp.StatusCode, true, attemptStart, "", "", false, isStream)
 			return true, apiKey, originalIdx, nil, usage, nil
 		}
 
@@ -234,6 +260,96 @@ func TryUpstreamWithAllKeys(
 	}
 
 	return false, "", 0, lastFailoverError, nil, lastError
+}
+
+func recordAttemptLog(
+	logCtx AttemptLogContext,
+	upstream *config.UpstreamConfig,
+	apiType string,
+	requestID string,
+	baseURL string,
+	apiKey string,
+	status string,
+	statusCode int,
+	success bool,
+	start time.Time,
+	errorType string,
+	errorMessage string,
+	retried bool,
+	isStream bool,
+) {
+	if logCtx.LogStore == nil {
+		return
+	}
+
+	channelName := ""
+	if upstream != nil {
+		channelName = upstream.Name
+	}
+
+	source := logCtx.Source
+	if source.ClientName == "" {
+		source.ClientName = "unknown"
+	}
+	if source.Confidence == "" {
+		source.Confidence = "low"
+	}
+
+	logCtx.LogStore.Record(&metrics.ChannelLog{
+		RequestID:        requestID,
+		AttemptID:        nextAttemptLogID("attempt"),
+		Timestamp:        time.Now().Format(time.RFC3339Nano),
+		Status:           status,
+		StatusCode:       statusCode,
+		Success:          success,
+		DurationMs:       time.Since(start).Milliseconds(),
+		APIType:          apiType,
+		Model:            logCtx.Model,
+		ChannelIndex:     logCtx.ChannelIndex,
+		ChannelName:      channelName,
+		BaseURL:          baseURL,
+		KeyMask:          utils.MaskAPIKey(apiKey),
+		ClientName:       source.ClientName,
+		ClientVersion:    source.ClientVersion,
+		SourceConfidence: source.Confidence,
+		SessionID:        source.SessionID,
+		SourceRequestID:  source.RequestID,
+		ErrorType:        errorType,
+		ErrorMessage:     truncateLogMessage(errorMessage, 500),
+		Retried:          retried,
+		Stream:           isStream,
+	})
+}
+
+func nextAttemptLogID(prefix string) string {
+	seq := atomic.AddUint64(&attemptLogCounter, 1)
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), seq)
+}
+
+func classifyUpstreamError(statusCode int, quotaRelated bool) string {
+	if quotaRelated {
+		return "quota"
+	}
+	switch {
+	case statusCode == http.StatusTooManyRequests:
+		return "rate_limit"
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+		return "auth"
+	case statusCode >= 500:
+		return "upstream_5xx"
+	case statusCode >= 400:
+		return "upstream_4xx"
+	default:
+		return "upstream"
+	}
+}
+
+func truncateLogMessage(message string, limit int) string {
+	message = strings.TrimSpace(message)
+	if limit <= 0 || len(message) <= limit {
+		return message
+	}
+	return message[:limit] + "..."
 }
 
 // BuildDefaultURLResults 将 URLs 转为按原始顺序的结果列表（无动态排序）

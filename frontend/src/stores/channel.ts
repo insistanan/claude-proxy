@@ -7,7 +7,7 @@ import { api, type Channel, type ChannelsResponse, type ChannelMetrics, type Cha
  * 渠道数据管理 Store
  *
  * 职责：
- * - 管理三种 API 类型的渠道数据（Messages/Responses/Gemini）
+ * - 管理四种 API 类型的渠道数据（Messages/Responses/Gemini/Chat）
  * - 管理渠道指标和统计数据
  * - 提供渠道操作方法（添加、编辑、删除、测试延迟等）
  * - 管理自动刷新定时器
@@ -16,7 +16,7 @@ export const useChannelStore = defineStore('channel', () => {
   // ===== 状态 =====
 
   // 当前选中的 API 类型
-  type ApiTab = 'messages' | 'responses' | 'gemini'
+  type ApiTab = 'messages' | 'responses' | 'gemini' | 'chat'
   const activeTab = ref<ApiTab>('messages')
 
   // 路由同步：从路由读取当前类型
@@ -24,7 +24,7 @@ export const useChannelStore = defineStore('channel', () => {
   const currentChannelType = computed(() => {
     const route = router.currentRoute.value
     const type = route.params.type as ApiTab
-    return (type === 'messages' || type === 'responses' || type === 'gemini') ? type : 'messages'
+    return (type === 'messages' || type === 'responses' || type === 'gemini' || type === 'chat') ? type : 'messages'
   })
 
   // 监听路由变化，同步 activeTab（确保兼容性）
@@ -32,7 +32,7 @@ export const useChannelStore = defineStore('channel', () => {
     activeTab.value = newType
   }, { immediate: true })
 
-  // 三种 API 类型的渠道数据
+  // 四种 API 类型的渠道数据
   const channelsData = ref<ChannelsResponse>({
     channels: [],
     current: -1,
@@ -46,6 +46,12 @@ export const useChannelStore = defineStore('channel', () => {
   })
 
   const geminiChannelsData = ref<ChannelsResponse>({
+    channels: [],
+    current: -1,
+    loadBalance: 'round-robin'
+  })
+
+  const chatChannelsData = ref<ChannelsResponse>({
     channels: [],
     current: -1,
     loadBalance: 'round-robin'
@@ -70,6 +76,11 @@ export const useChannelStore = defineStore('channel', () => {
       recentActivity: undefined
     },
     gemini: {
+      metrics: [],
+      stats: undefined,
+      recentActivity: undefined
+    },
+    chat: {
       metrics: [],
       stats: undefined,
       recentActivity: undefined
@@ -99,6 +110,7 @@ export const useChannelStore = defineStore('channel', () => {
       case 'messages': return channelsData.value
       case 'responses': return responsesChannelsData.value
       case 'gemini': return geminiChannelsData.value
+      case 'chat': return chatChannelsData.value
       default: return channelsData.value
     }
   })
@@ -156,25 +168,6 @@ export const useChannelStore = defineStore('channel', () => {
 
     const doRefresh = async (tab: ApiTab) => {
       try {
-        // Gemini 使用专用的 dashboard API（降级实现）
-        if (tab === 'gemini') {
-          const dashboard = await api.getGeminiChannelDashboard()
-          geminiChannelsData.value = {
-            channels: mergeChannelsWithLocalData(dashboard.channels, geminiChannelsData.value.channels),
-            current: geminiChannelsData.value.current,
-            loadBalance: dashboard.loadBalance
-          }
-          // 更新 Gemini tab 的独立缓存
-          dashboardCache.value.gemini = {
-            metrics: dashboard.metrics,
-            stats: dashboard.stats,
-            recentActivity: dashboard.recentActivity
-          }
-          lastRefreshSuccess.value = true
-          return
-        }
-
-        // Messages / Responses 使用合并的 dashboard 接口
         const dashboard = await api.getChannelDashboard(tab)
 
         if (tab === 'messages') {
@@ -189,7 +182,7 @@ export const useChannelStore = defineStore('channel', () => {
             stats: dashboard.stats,
             recentActivity: dashboard.recentActivity
           }
-        } else {
+        } else if (tab === 'responses') {
           responsesChannelsData.value = {
             channels: mergeChannelsWithLocalData(dashboard.channels, responsesChannelsData.value.channels),
             current: responsesChannelsData.value.current, // 保留当前选中状态
@@ -197,6 +190,28 @@ export const useChannelStore = defineStore('channel', () => {
           }
           // 更新 Responses tab 的独立缓存
           dashboardCache.value.responses = {
+            metrics: dashboard.metrics,
+            stats: dashboard.stats,
+            recentActivity: dashboard.recentActivity
+          }
+        } else if (tab === 'gemini') {
+          geminiChannelsData.value = {
+            channels: mergeChannelsWithLocalData(dashboard.channels, geminiChannelsData.value.channels),
+            current: geminiChannelsData.value.current,
+            loadBalance: dashboard.loadBalance
+          }
+          dashboardCache.value.gemini = {
+            metrics: dashboard.metrics,
+            stats: dashboard.stats,
+            recentActivity: dashboard.recentActivity
+          }
+        } else {
+          chatChannelsData.value = {
+            channels: mergeChannelsWithLocalData(dashboard.channels, chatChannelsData.value.channels),
+            current: chatChannelsData.value.current,
+            loadBalance: dashboard.loadBalance
+          }
+          dashboardCache.value.chat = {
             metrics: dashboard.metrics,
             stats: dashboard.stats,
             recentActivity: dashboard.recentActivity
@@ -235,11 +250,14 @@ export const useChannelStore = defineStore('channel', () => {
   ) {
     const isResponses = activeTab.value === 'responses'
     const isGemini = activeTab.value === 'gemini'
+    const isChat = activeTab.value === 'chat'
 
     if (editingChannelIndex !== null) {
       // 更新现有渠道
       if (isGemini) {
         await api.updateGeminiChannel(editingChannelIndex, channel)
+      } else if (isChat) {
+        await api.updateChatChannel(editingChannelIndex, channel)
       } else if (isResponses) {
         await api.updateResponsesChannel(editingChannelIndex, channel)
       } else {
@@ -250,6 +268,8 @@ export const useChannelStore = defineStore('channel', () => {
       // 添加新渠道
       if (isGemini) {
         await api.addGeminiChannel(channel)
+      } else if (isChat) {
+        await api.addChatChannel(channel)
       } else if (isResponses) {
         await api.addResponsesChannel(channel)
       } else {
@@ -259,7 +279,7 @@ export const useChannelStore = defineStore('channel', () => {
       // 快速添加模式：将新渠道设为第一优先级并设置5分钟促销期
       if (options?.isQuickAdd) {
         await refreshChannels() // 先刷新获取新渠道的 index
-        const data = isGemini ? geminiChannelsData.value : (isResponses ? responsesChannelsData.value : channelsData.value)
+        const data = isGemini ? geminiChannelsData.value : (isChat ? chatChannelsData.value : (isResponses ? responsesChannelsData.value : channelsData.value))
 
         // 找到新添加的渠道（应该是列表中 index 最大的 active 状态渠道）
         const activeChannels = data.channels?.filter(ch => ch.status !== 'disabled') || []
@@ -277,6 +297,8 @@ export const useChannelStore = defineStore('channel', () => {
 
             if (isGemini) {
               await api.reorderGeminiChannels(newOrder)
+            } else if (isChat) {
+              await api.reorderChatChannels(newOrder)
             } else if (isResponses) {
               await api.reorderResponsesChannels(newOrder)
             } else {
@@ -286,6 +308,8 @@ export const useChannelStore = defineStore('channel', () => {
             // 2. 设置促销期（默认300秒，不限次数）
             if (isGemini) {
               await api.setGeminiChannelPromotion(newChannel.index, 300, 0)
+            } else if (isChat) {
+              await api.setChatChannelPromotion(newChannel.index, 300, 0)
             } else if (isResponses) {
               await api.setResponsesChannelPromotion(newChannel.index, 300, 0)
             } else {
@@ -314,6 +338,8 @@ export const useChannelStore = defineStore('channel', () => {
   async function deleteChannel(channelId: number) {
     if (activeTab.value === 'gemini') {
       await api.deleteGeminiChannel(channelId)
+    } else if (activeTab.value === 'chat') {
+      await api.deleteChatChannel(channelId)
     } else if (activeTab.value === 'responses') {
       await api.deleteResponsesChannel(channelId)
     } else {
@@ -329,11 +355,15 @@ export const useChannelStore = defineStore('channel', () => {
   async function pingChannel(channelId: number) {
     const result = activeTab.value === 'gemini'
       ? await api.pingGeminiChannel(channelId)
-      : await api.pingChannel(channelId)
+      : activeTab.value === 'chat'
+        ? await api.pingChatChannel(channelId)
+        : await api.pingChannel(channelId)
 
     const data = activeTab.value === 'gemini'
       ? geminiChannelsData.value
-      : (activeTab.value === 'messages' ? channelsData.value : responsesChannelsData.value)
+      : activeTab.value === 'chat'
+        ? chatChannelsData.value
+        : (activeTab.value === 'messages' ? channelsData.value : responsesChannelsData.value)
 
     const channel = data.channels?.find(c => c.index === channelId)
     if (channel) {
@@ -354,11 +384,15 @@ export const useChannelStore = defineStore('channel', () => {
     try {
       const results = activeTab.value === 'gemini'
         ? await api.pingAllGeminiChannels()
-        : await api.pingAllChannels()
+        : activeTab.value === 'chat'
+          ? await api.pingAllChatChannels()
+          : await api.pingAllChannels()
 
       const data = activeTab.value === 'gemini'
         ? geminiChannelsData.value
-        : (activeTab.value === 'messages' ? channelsData.value : responsesChannelsData.value)
+        : activeTab.value === 'chat'
+          ? chatChannelsData.value
+          : (activeTab.value === 'messages' ? channelsData.value : responsesChannelsData.value)
 
       const now = Date.now()
       results.forEach(result => {
@@ -382,6 +416,9 @@ export const useChannelStore = defineStore('channel', () => {
     if (activeTab.value === 'gemini') {
       await api.updateGeminiLoadBalance(strategy)
       geminiChannelsData.value.loadBalance = strategy
+    } else if (activeTab.value === 'chat') {
+      await api.updateChatLoadBalance(strategy)
+      chatChannelsData.value.loadBalance = strategy
     } else if (activeTab.value === 'messages') {
       await api.updateLoadBalance(strategy)
       channelsData.value.loadBalance = strategy
@@ -448,6 +485,11 @@ export const useChannelStore = defineStore('channel', () => {
       current: -1,
       loadBalance: 'round-robin'
     }
+    chatChannelsData.value = {
+      channels: [],
+      current: -1,
+      loadBalance: 'round-robin'
+    }
 
     // 清空所有 tab 的独立缓存
     dashboardCache.value = {
@@ -462,6 +504,11 @@ export const useChannelStore = defineStore('channel', () => {
         recentActivity: undefined
       },
       gemini: {
+        metrics: [],
+        stats: undefined,
+        recentActivity: undefined
+      },
+      chat: {
         metrics: [],
         stats: undefined,
         recentActivity: undefined
@@ -480,6 +527,7 @@ export const useChannelStore = defineStore('channel', () => {
     channelsData,
     responsesChannelsData,
     geminiChannelsData,
+    chatChannelsData,
     isPingingAll,
     lastRefreshSuccess,
 

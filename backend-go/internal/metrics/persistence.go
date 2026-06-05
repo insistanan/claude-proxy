@@ -16,7 +16,7 @@ type PersistenceStore interface {
 	CleanupOldRecords(before time.Time) (int64, error)
 
 	// DeleteRecordsByMetricsKeys 按 metrics_key 和 api_type 批量删除记录（用于删除渠道时清理数据）
-	// apiType: 接口类型（messages/responses/gemini），避免误删其他接口的数据
+	// apiType: 接口类型（messages/responses/gemini/chat），避免误删其他接口的数据
 	DeleteRecordsByMetricsKeys(metricsKeys []string, apiType string) (int64, error)
 
 	// Close 关闭存储（会先刷新缓冲区）
@@ -34,5 +34,5 @@ type PersistentRecord struct {
 	OutputTokens        int64     // 输出 Token 数
 	CacheCreationTokens int64     // 缓存创建 Token
 	CacheReadTokens     int64     // 缓存读取 Token
-	APIType             string    // "messages"、"responses" 或 "gemini"
+	APIType             string    // "messages"、"responses"、"gemini" 或 "chat"
 }

@@ -33,6 +33,25 @@ func (cm *ConfigManager) GetCurrentGeminiUpstream() (*UpstreamConfig, error) {
 	return &cm.config.GeminiUpstream[0], nil
 }
 
+// GetCurrentGeminiUpstreamWithIndex 获取当前 Gemini 上游配置及其渠道索引。
+func (cm *ConfigManager) GetCurrentGeminiUpstreamWithIndex() (*UpstreamConfig, int, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if len(cm.config.GeminiUpstream) == 0 {
+		return nil, -1, fmt.Errorf("未配置任何 Gemini 渠道")
+	}
+
+	for i := range cm.config.GeminiUpstream {
+		status := cm.config.GeminiUpstream[i].Status
+		if status == "" || status == "active" {
+			return &cm.config.GeminiUpstream[i], i, nil
+		}
+	}
+
+	return &cm.config.GeminiUpstream[0], 0, nil
+}
+
 // AddGeminiUpstream 添加 Gemini 上游
 func (cm *ConfigManager) AddGeminiUpstream(upstream UpstreamConfig) error {
 	cm.mu.Lock()

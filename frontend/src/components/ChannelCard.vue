@@ -319,7 +319,8 @@ const getServiceChipColor = () => {
   const colorMap: Record<string, string> = {
     openai: 'info',
     claude: 'success',
-    gemini: 'accent'
+    gemini: 'accent',
+    chat: 'primary'
   }
   return colorMap[props.channel.serviceType] || 'primary'
 }
@@ -415,7 +416,8 @@ const getServiceIcon = () => {
   const iconMap: Record<string, string> = {
     'openai': 'mdi-robot',
     'claude': 'mdi-message-processing',
-    'gemini': 'mdi-diamond-stone'
+    'gemini': 'mdi-diamond-stone',
+    'chat': 'mdi-chat-processing'
   }
   return iconMap[props.channel.serviceType] || 'mdi-api'
 }
@@ -425,7 +427,8 @@ const getServiceIconColor = () => {
   const colorMap: Record<string, string> = {
     'openai': 'primary',
     'claude': 'orange',
-    'gemini': 'purple'
+    'gemini': 'purple',
+    'chat': 'primary'
   }
   return colorMap[props.channel.serviceType] || 'grey'
 }
@@ -435,7 +438,8 @@ const getServiceDisplayName = () => {
   const nameMap: Record<string, string> = {
     'openai': 'OpenAI API',
     'claude': 'Claude API',
-    'gemini': 'Gemini API'
+    'gemini': 'Gemini API',
+    'chat': 'OpenAI Chat'
   }
   return nameMap[props.channel.serviceType] || 'Custom API'
 }
@@ -464,7 +468,8 @@ const serviceStyle = computed(() => {
   const map: Record<string, string> = {
     openai: 'var(--v-theme-info)',
     claude: 'var(--v-theme-success)',
-    gemini: 'var(--v-theme-accent)'
+    gemini: 'var(--v-theme-accent)',
+    chat: 'var(--v-theme-primary)'
   }
   const value = map[props.channel.serviceType] || 'var(--v-theme-primary)'
   return {

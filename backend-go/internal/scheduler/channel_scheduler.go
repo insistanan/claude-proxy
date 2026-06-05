@@ -21,19 +21,25 @@ type ChannelScheduler struct {
 	messagesMetricsManager  *metrics.MetricsManager // Messages 渠道指标
 	responsesMetricsManager *metrics.MetricsManager // Responses 渠道指标
 	geminiMetricsManager    *metrics.MetricsManager // Gemini 渠道指标
+	chatMetricsManager      *metrics.MetricsManager // Chat 渠道指标
+	messagesChannelLogStore  *metrics.ChannelLogStore
+	responsesChannelLogStore *metrics.ChannelLogStore
+	geminiChannelLogStore    *metrics.ChannelLogStore
+	chatChannelLogStore      *metrics.ChannelLogStore
 	traceAffinity           *session.TraceAffinityManager
 	urlManager              *warmup.URLManager // URL 管理器（非阻塞，动态排序）
 }
 
 // ChannelKind 标识调度器所处理的渠道类型
 // 注意：这里的 kind 与 upstream.ServiceType（openai/claude/gemini）不同，
-// kind 对应的是本代理对外暴露的三类入口：messages / responses / gemini。
+// kind 对应的是本代理对外暴露的一等公民入口：messages / responses / gemini / chat。
 type ChannelKind string
 
 const (
 	ChannelKindMessages  ChannelKind = "messages"
 	ChannelKindResponses ChannelKind = "responses"
 	ChannelKindGemini    ChannelKind = "gemini"
+	ChannelKindChat      ChannelKind = "chat"
 )
 
 // NewChannelScheduler 创建多渠道调度器
@@ -42,6 +48,7 @@ func NewChannelScheduler(
 	messagesMetrics *metrics.MetricsManager,
 	responsesMetrics *metrics.MetricsManager,
 	geminiMetrics *metrics.MetricsManager,
+	chatMetrics *metrics.MetricsManager,
 	traceAffinity *session.TraceAffinityManager,
 	urlMgr *warmup.URLManager,
 ) *ChannelScheduler {
@@ -50,6 +57,11 @@ func NewChannelScheduler(
 		messagesMetricsManager:  messagesMetrics,
 		responsesMetricsManager: responsesMetrics,
 		geminiMetricsManager:    geminiMetrics,
+		chatMetricsManager:      chatMetrics,
+		messagesChannelLogStore:  metrics.NewChannelLogStore(),
+		responsesChannelLogStore: metrics.NewChannelLogStore(),
+		geminiChannelLogStore:    metrics.NewChannelLogStore(),
+		chatChannelLogStore:      metrics.NewChannelLogStore(),
 		traceAffinity:           traceAffinity,
 		urlManager:              urlMgr,
 	}
@@ -62,8 +74,23 @@ func (s *ChannelScheduler) getMetricsManager(kind ChannelKind) *metrics.MetricsM
 		return s.responsesMetricsManager
 	case ChannelKindGemini:
 		return s.geminiMetricsManager
+	case ChannelKindChat:
+		return s.chatMetricsManager
 	default:
 		return s.messagesMetricsManager
+	}
+}
+
+func (s *ChannelScheduler) GetChannelLogStore(kind ChannelKind) *metrics.ChannelLogStore {
+	switch kind {
+	case ChannelKindResponses:
+		return s.responsesChannelLogStore
+	case ChannelKindGemini:
+		return s.geminiChannelLogStore
+	case ChannelKindChat:
+		return s.chatChannelLogStore
+	default:
+		return s.messagesChannelLogStore
 	}
 }
 
@@ -94,6 +121,8 @@ func (s *ChannelScheduler) SelectChannel(
 			return nil, fmt.Errorf("没有可用的活跃 Gemini 渠道")
 		case ChannelKindResponses:
 			return nil, fmt.Errorf("没有可用的活跃 Responses 渠道")
+		case ChannelKindChat:
+			return nil, fmt.Errorf("没有可用的活跃 Chat 渠道")
 		default:
 			return nil, fmt.Errorf("没有可用的活跃 Messages 渠道")
 		}
@@ -306,6 +335,8 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 		upstreams = cfg.ResponsesUpstream
 	case ChannelKindGemini:
 		upstreams = cfg.GeminiUpstream
+	case ChannelKindChat:
+		upstreams = cfg.ChatUpstream
 	default:
 		upstreams = cfg.Upstream
 	}
@@ -353,6 +384,8 @@ func (s *ChannelScheduler) getUpstreamByIndex(index int, kind ChannelKind) *conf
 		upstreams = cfg.ResponsesUpstream
 	case ChannelKindGemini:
 		upstreams = cfg.GeminiUpstream
+	case ChannelKindChat:
+		upstreams = cfg.ChatUpstream
 	default:
 		upstreams = cfg.Upstream
 	}
@@ -406,6 +439,8 @@ func (s *ChannelScheduler) ConsumePromotionCount(channelIndex int, kind ChannelK
 		channelType = "responses"
 	case ChannelKindGemini:
 		channelType = "gemini"
+	case ChannelKindChat:
+		channelType = "chat"
 	}
 	s.configManager.ConsumePromotionCount(channelIndex, channelType)
 }
@@ -430,6 +465,11 @@ func (s *ChannelScheduler) GetResponsesMetricsManager() *metrics.MetricsManager 
 // GetGeminiMetricsManager 获取 Gemini 渠道指标管理器
 func (s *ChannelScheduler) GetGeminiMetricsManager() *metrics.MetricsManager {
 	return s.geminiMetricsManager
+}
+
+// GetChatMetricsManager 获取 Chat 渠道指标管理器
+func (s *ChannelScheduler) GetChatMetricsManager() *metrics.MetricsManager {
+	return s.chatMetricsManager
 }
 
 // GetTraceAffinityManager 获取 Trace 亲和性管理器
@@ -550,6 +590,8 @@ func kindSchedulerLogPrefix(kind ChannelKind) string {
 		return "Scheduler-Responses"
 	case ChannelKindGemini:
 		return "Scheduler-Gemini"
+	case ChannelKindChat:
+		return "Scheduler-Chat"
 	default:
 		return "Scheduler"
 	}
@@ -566,6 +608,8 @@ func urlManagerChannelKeyOrdinal(kind ChannelKind) int {
 		return 1
 	case ChannelKindGemini:
 		return 2
+	case ChannelKindChat:
+		return 3
 	default:
 		return 0
 	}

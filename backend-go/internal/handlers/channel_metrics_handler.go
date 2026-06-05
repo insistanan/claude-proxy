@@ -11,16 +11,36 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func upstreamsByKind(cfg config.Config, kind scheduler.ChannelKind) ([]config.UpstreamConfig, string) {
+	switch kind {
+	case scheduler.ChannelKindResponses:
+		return cfg.ResponsesUpstream, cfg.ResponsesLoadBalance
+	case scheduler.ChannelKindGemini:
+		return cfg.GeminiUpstream, cfg.GeminiLoadBalance
+	case scheduler.ChannelKindChat:
+		return cfg.ChatUpstream, cfg.ChatLoadBalance
+	default:
+		return cfg.Upstream, cfg.LoadBalance
+	}
+}
+
+func channelKindFromLegacyFlag(isResponses bool) scheduler.ChannelKind {
+	if isResponses {
+		return scheduler.ChannelKindResponses
+	}
+	return scheduler.ChannelKindMessages
+}
+
 // GetChannelMetricsWithConfig 获取渠道指标（需要配置管理器来获取 baseURL 和 keys）
 func GetChannelMetricsWithConfig(metricsManager *metrics.MetricsManager, cfgManager *config.ConfigManager, isResponses bool) gin.HandlerFunc {
+	return GetChannelMetricsWithKind(metricsManager, cfgManager, channelKindFromLegacyFlag(isResponses))
+}
+
+// GetChannelMetricsWithKind 获取指定一等公民渠道类型的指标
+func GetChannelMetricsWithKind(metricsManager *metrics.MetricsManager, cfgManager *config.ConfigManager, kind scheduler.ChannelKind) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := cfgManager.GetConfig()
-		var upstreams []config.UpstreamConfig
-		if isResponses {
-			upstreams = cfg.ResponsesUpstream
-		} else {
-			upstreams = cfg.Upstream
-		}
+		upstreams, _ := upstreamsByKind(cfg, kind)
 
 		result := make([]gin.H, 0, len(upstreams))
 		for i, upstream := range upstreams {
@@ -157,6 +177,11 @@ func GetResponsesChannelMetrics(metricsManager *metrics.MetricsManager) gin.Hand
 // ResumeChannel 恢复熔断渠道（重置熔断状态，保留历史统计）
 // isResponses 参数指定是 Messages 渠道还是 Responses 渠道
 func ResumeChannel(sch *scheduler.ChannelScheduler, isResponses bool) gin.HandlerFunc {
+	return ResumeChannelByKind(sch, channelKindFromLegacyFlag(isResponses))
+}
+
+// ResumeChannelByKind 恢复指定一等公民渠道的熔断状态
+func ResumeChannelByKind(sch *scheduler.ChannelScheduler, kind scheduler.ChannelKind) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		idStr := c.Param("id")
 		id, err := strconv.Atoi(idStr)
@@ -165,11 +190,6 @@ func ResumeChannel(sch *scheduler.ChannelScheduler, isResponses bool) gin.Handle
 			return
 		}
 
-		// 重置渠道所有 Key 的熔断状态（保留历史统计）
-		kind := scheduler.ChannelKindMessages
-		if isResponses {
-			kind = scheduler.ChannelKindResponses
-		}
 		sch.ResetChannelMetrics(id, kind)
 
 		c.JSON(200, gin.H{
@@ -182,19 +202,24 @@ func ResumeChannel(sch *scheduler.ChannelScheduler, isResponses bool) gin.Handle
 // GetSchedulerStats 获取调度器统计信息
 func GetSchedulerStats(sch *scheduler.ChannelScheduler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 获取 isResponses 参数
-		isResponses := strings.ToLower(c.Query("type")) == "responses"
 		kind := scheduler.ChannelKindMessages
-		if isResponses {
+		switch strings.ToLower(c.Query("type")) {
+		case "responses":
 			kind = scheduler.ChannelKindResponses
+		case "gemini":
+			kind = scheduler.ChannelKindGemini
+		case "chat":
+			kind = scheduler.ChannelKindChat
 		}
 
-		// 根据类型选择对应的指标管理器
-		var metricsManager *metrics.MetricsManager
-		if isResponses {
+		metricsManager := sch.GetMessagesMetricsManager()
+		switch kind {
+		case scheduler.ChannelKindResponses:
 			metricsManager = sch.GetResponsesMetricsManager()
-		} else {
-			metricsManager = sch.GetMessagesMetricsManager()
+		case scheduler.ChannelKindGemini:
+			metricsManager = sch.GetGeminiMetricsManager()
+		case scheduler.ChannelKindChat:
+			metricsManager = sch.GetChatMetricsManager()
 		}
 
 		stats := gin.H{
@@ -314,6 +339,49 @@ type ResponsesConfigManager interface {
 	SetResponsesChannelPromotion(index int, duration time.Duration, count int) error
 }
 
+// ChatConfigManager Chat 渠道促销期配置管理接口
+type ChatConfigManager interface {
+	SetChatChannelPromotion(index int, duration time.Duration, count int) error
+}
+
+// SetChatChannelPromotion 设置 Chat 渠道促销期
+func SetChatChannelPromotion(cfgManager ChatConfigManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		idStr := c.Param("id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "无效的渠道 ID"})
+			return
+		}
+
+		var req struct {
+			Duration int `json:"duration"`
+			Count    int `json:"count"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": "无效的请求参数"})
+			return
+		}
+
+		if req.Duration <= 0 && req.Count <= 0 {
+			if err := cfgManager.SetChatChannelPromotion(id, 0, 0); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"success": true, "message": "Chat 渠道促销期已清除"})
+			return
+		}
+
+		duration := time.Duration(req.Duration) * time.Second
+		if err := cfgManager.SetChatChannelPromotion(id, duration, req.Count); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{"success": true, "message": "Chat 渠道促销期已设置", "duration": req.Duration, "count": req.Count})
+	}
+}
+
 // MetricsHistoryResponse 历史指标响应
 type MetricsHistoryResponse struct {
 	ChannelIndex int                        `json:"channelIndex"`
@@ -326,6 +394,11 @@ type MetricsHistoryResponse struct {
 //   - duration: 时间范围 (1h, 6h, 24h)，默认 24h
 //   - interval: 时间间隔 (5m, 15m, 1h)，默认根据 duration 自动选择
 func GetChannelMetricsHistory(metricsManager *metrics.MetricsManager, cfgManager *config.ConfigManager, isResponses bool) gin.HandlerFunc {
+	return GetChannelMetricsHistoryByKind(metricsManager, cfgManager, channelKindFromLegacyFlag(isResponses))
+}
+
+// GetChannelMetricsHistoryByKind 获取指定一等公民渠道的指标历史数据
+func GetChannelMetricsHistoryByKind(metricsManager *metrics.MetricsManager, cfgManager *config.ConfigManager, kind scheduler.ChannelKind) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 解析 duration 参数
 		durationStr := c.DefaultQuery("duration", "24h")
@@ -370,12 +443,7 @@ func GetChannelMetricsHistory(metricsManager *metrics.MetricsManager, cfgManager
 		}
 
 		cfg := cfgManager.GetConfig()
-		var upstreams []config.UpstreamConfig
-		if isResponses {
-			upstreams = cfg.ResponsesUpstream
-		} else {
-			upstreams = cfg.Upstream
-		}
+		upstreams, _ := upstreamsByKind(cfg, kind)
 
 		result := make([]MetricsHistoryResponse, 0, len(upstreams))
 		for i, upstream := range upstreams {
@@ -419,6 +487,11 @@ var keyColors = []string{
 // GetChannelKeyMetricsHistory 获取渠道下各 Key 的历史数据（用于 Key 趋势图表）
 // GET /api/channels/:id/keys/metrics/history?duration=6h
 func GetChannelKeyMetricsHistory(metricsManager *metrics.MetricsManager, cfgManager *config.ConfigManager, isResponses bool) gin.HandlerFunc {
+	return GetChannelKeyMetricsHistoryByKind(metricsManager, cfgManager, channelKindFromLegacyFlag(isResponses))
+}
+
+// GetChannelKeyMetricsHistoryByKind 获取指定一等公民渠道下各 Key 的历史数据
+func GetChannelKeyMetricsHistoryByKind(metricsManager *metrics.MetricsManager, cfgManager *config.ConfigManager, kind scheduler.ChannelKind) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 解析 duration 参数
 		durationStr := c.DefaultQuery("duration", "6h")
@@ -484,12 +557,7 @@ func GetChannelKeyMetricsHistory(metricsManager *metrics.MetricsManager, cfgMana
 		}
 
 		cfg := cfgManager.GetConfig()
-		var upstreams []config.UpstreamConfig
-		if isResponses {
-			upstreams = cfg.ResponsesUpstream
-		} else {
-			upstreams = cfg.Upstream
-		}
+		upstreams, _ := upstreamsByKind(cfg, kind)
 
 		// 检查 channel ID 是否有效
 		if channelID < 0 || channelID >= len(upstreams) {
@@ -543,30 +611,30 @@ func truncateKeyMask(keyMask string, maxLen int) string {
 }
 
 // GetChannelDashboard 获取渠道仪表盘数据（合并 channels + metrics + stats）
-// GET /api/channels/dashboard?type=messages|responses
+// GET /api/channels/dashboard?type=messages|responses|gemini|chat
 // 将原本需要 3 个请求的数据合并为 1 个请求，减少网络开销
 func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 获取 type 参数，默认为 messages
-		isResponses := strings.ToLower(c.Query("type")) == "responses"
 		kind := scheduler.ChannelKindMessages
-		if isResponses {
+		switch strings.ToLower(c.Query("type")) {
+		case "responses":
 			kind = scheduler.ChannelKindResponses
+		case "gemini":
+			kind = scheduler.ChannelKindGemini
+		case "chat":
+			kind = scheduler.ChannelKindChat
 		}
 
 		cfg := cfgManager.GetConfig()
-		var upstreams []config.UpstreamConfig
-		var loadBalance string
-		var metricsManager *metrics.MetricsManager
-
-		if isResponses {
-			upstreams = cfg.ResponsesUpstream
-			loadBalance = cfg.ResponsesLoadBalance
+		upstreams, loadBalance := upstreamsByKind(cfg, kind)
+		metricsManager := sch.GetMessagesMetricsManager()
+		switch kind {
+		case scheduler.ChannelKindResponses:
 			metricsManager = sch.GetResponsesMetricsManager()
-		} else {
-			upstreams = cfg.Upstream
-			loadBalance = cfg.LoadBalance
-			metricsManager = sch.GetMessagesMetricsManager()
+		case scheduler.ChannelKindGemini:
+			metricsManager = sch.GetGeminiMetricsManager()
+		case scheduler.ChannelKindChat:
+			metricsManager = sch.GetChatMetricsManager()
 		}
 
 		// 1. 构建 channels 数据

@@ -76,7 +76,7 @@ import { api, type MetricsHistoryResponse } from '../services/api'
 const apexchart = VueApexCharts
 
 const props = defineProps<{
-  channelType: 'messages' | 'responses'
+  channelType: 'messages' | 'responses' | 'gemini' | 'chat'
   channelIndex: number  // 单渠道模式：指定渠道索引
   channelName: string   // 渠道名称（用于图例）
 }>()
@@ -236,6 +236,10 @@ const refreshData = async () => {
     let allData: MetricsHistoryResponse[]
     if (props.channelType === 'messages') {
       allData = await api.getChannelMetricsHistory(selectedDuration.value)
+    } else if (props.channelType === 'gemini') {
+      allData = await api.getGeminiChannelMetricsHistory(selectedDuration.value)
+    } else if (props.channelType === 'chat') {
+      allData = await api.getChatChannelMetricsHistory(selectedDuration.value)
     } else {
       allData = await api.getResponsesChannelMetricsHistory(selectedDuration.value)
     }

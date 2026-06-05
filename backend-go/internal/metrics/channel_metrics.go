@@ -87,7 +87,7 @@ type MetricsManager struct {
 
 	// 持久化存储（可选）
 	store   PersistenceStore
-	apiType string // "messages"、"responses" 或 "gemini"
+	apiType string // "messages"、"responses"、"gemini" 或 "chat"
 }
 
 // NewMetricsManager 创建指标管理器

@@ -75,6 +75,10 @@ type Config struct {
 	GeminiUpstream    []UpstreamConfig `json:"geminiUpstream"`
 	GeminiLoadBalance string           `json:"geminiLoadBalance"`
 
+	// Chat Completions 接口专用配置（独立于 Claude/Responses/Gemini）
+	ChatUpstream    []UpstreamConfig `json:"chatUpstream"`
+	ChatLoadBalance string           `json:"chatLoadBalance"`
+
 	// Fuzzy 模式：启用时模糊处理错误，所有非 2xx 错误都尝试 failover
 	FuzzyModeEnabled bool `json:"fuzzyModeEnabled"`
 }
@@ -129,6 +133,13 @@ func (cm *ConfigManager) GetConfig() Config {
 		cloned.GeminiUpstream = make([]UpstreamConfig, len(cm.config.GeminiUpstream))
 		for i := range cm.config.GeminiUpstream {
 			cloned.GeminiUpstream[i] = *cm.config.GeminiUpstream[i].Clone()
+		}
+	}
+
+	if cm.config.ChatUpstream != nil {
+		cloned.ChatUpstream = make([]UpstreamConfig, len(cm.config.ChatUpstream))
+		for i := range cm.config.ChatUpstream {
+			cloned.ChatUpstream[i] = *cm.config.ChatUpstream[i].Clone()
 		}
 	}
 

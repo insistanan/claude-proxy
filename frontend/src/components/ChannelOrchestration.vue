@@ -321,6 +321,12 @@
                     </template>
                     <v-list-item-title>测试延迟</v-list-item-title>
                   </v-list-item>
+                  <v-list-item @click="openLogsDialog(element)">
+                    <template #prepend>
+                      <v-icon size="small">mdi-text-box-search-outline</v-icon>
+                    </template>
+                    <v-list-item-title>请求日志</v-list-item-title>
+                  </v-list-item>
                   <v-list-item @click="openPromotionDialog(element)">
                     <template #prepend>
                       <v-icon size="small" color="info">mdi-rocket-launch</v-icon>
@@ -555,19 +561,84 @@
       </v-card>
     </v-dialog>
 
+    <v-dialog v-model="showLogsDialog" max-width="1100">
+      <v-card>
+        <v-card-title class="d-flex align-center justify-space-between">
+          <div class="d-flex align-center">
+            <v-icon class="mr-2">mdi-text-box-search-outline</v-icon>
+            <span>{{ logsChannel?.name || '渠道' }} 请求日志</span>
+          </div>
+          <v-btn icon variant="text" size="small" @click="closeLogsDialog">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+        <v-divider />
+        <v-card-text>
+          <div v-if="isLoadingLogs" class="d-flex align-center justify-center py-8">
+            <v-progress-circular indeterminate color="primary" />
+          </div>
+          <v-alert v-else-if="logsError" type="error" variant="tonal" density="compact">
+            {{ logsError }}
+          </v-alert>
+          <v-table v-else density="compact" class="channel-logs-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>状态</th>
+                <th>来源</th>
+                <th>模型</th>
+                <th>上游</th>
+                <th>Key</th>
+                <th>耗时</th>
+                <th>失败明细</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="channelLogs.length === 0">
+                <td colspan="8" class="text-center text-medium-emphasis py-6">暂无请求日志</td>
+              </tr>
+              <tr v-for="log in channelLogs" :key="log.attemptId">
+                <td class="text-no-wrap">{{ formatLogTime(log.timestamp) }}</td>
+                <td>
+                  <v-chip size="x-small" :color="getLogStatusColor(log.status)" variant="tonal">
+                    {{ formatLogStatus(log.status, log.statusCode) }}
+                  </v-chip>
+                </td>
+                <td>
+                  <div class="log-client">{{ log.clientName }}</div>
+                  <div class="text-caption text-medium-emphasis">{{ log.sourceConfidence }}</div>
+                </td>
+                <td class="log-model">{{ log.model || '--' }}</td>
+                <td class="log-base-url">{{ log.baseUrl }}</td>
+                <td class="text-no-wrap">{{ log.keyMask }}</td>
+                <td class="text-no-wrap">{{ log.durationMs }}ms</td>
+                <td class="log-error">
+                  <template v-if="log.errorType || log.errorMessage">
+                    <div class="font-weight-medium">{{ log.errorType || 'error' }}</div>
+                    <div class="text-caption text-medium-emphasis">{{ log.errorMessage }}</div>
+                  </template>
+                  <span v-else class="text-medium-emphasis">--</span>
+                </td>
+              </tr>
+            </tbody>
+          </v-table>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
+
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import draggable from 'vuedraggable'
-import { api, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity } from '../services/api'
+import { api, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
 import KeyTrendChart from './KeyTrendChart.vue'
 
 const props = defineProps<{
   channels: Channel[]
   currentChannelIndex: number
-  channelType: 'messages' | 'responses' | 'gemini'
+  channelType: 'messages' | 'responses' | 'gemini' | 'chat'
   // 可选：从父组件传入的 metrics 和 stats（使用 dashboard 接口时）
   dashboardMetrics?: ChannelMetrics[]
   dashboardStats?: {
@@ -607,6 +678,12 @@ const schedulerStats = ref<{
 } | null>(null)
 const isLoadingMetrics = ref(false)
 const isSavingOrder = ref(false)
+
+const showLogsDialog = ref(false)
+const logsChannel = ref<Channel | null>(null)
+const channelLogs = ref<ChannelLogEntry[]>([])
+const isLoadingLogs = ref(false)
+const logsError = ref('')
 
 // 促销弹窗相关
 const showPromotionDialog = ref(false)
@@ -831,6 +908,8 @@ const toggleVisionDefault = async (channel: Channel) => {
   try {
     if (props.channelType === 'gemini') {
       await api.updateGeminiChannel(channel.index, { visionCapable: nextValue })
+    } else if (props.channelType === 'chat') {
+      await api.updateChatChannel(channel.index, { visionCapable: nextValue })
     } else if (props.channelType === 'responses') {
       await api.updateResponsesChannel(channel.index, { visionCapable: nextValue })
     } else {
@@ -1145,6 +1224,8 @@ const refreshMetrics = async () => {
     const [metricsData, statsData] = await Promise.all([
       props.channelType === 'gemini'
         ? api.getGeminiChannelMetrics()
+        : props.channelType === 'chat'
+          ? api.getChatChannelMetrics()
         : props.channelType === 'responses'
           ? api.getResponsesChannelMetrics()
           : api.getChannelMetrics(),
@@ -1172,6 +1253,8 @@ const saveOrder = async () => {
     const order = activeChannels.value.map(ch => ch.index)
     if (props.channelType === 'gemini') {
       await api.reorderGeminiChannels(order)
+    } else if (props.channelType === 'chat') {
+      await api.reorderChatChannels(order)
     } else if (props.channelType === 'responses') {
       await api.reorderResponsesChannels(order)
     } else {
@@ -1216,6 +1299,8 @@ const setChannelStatus = async (channelId: number, status: ChannelStatus) => {
   try {
     if (props.channelType === 'gemini') {
       await api.setGeminiChannelStatus(channelId, status)
+    } else if (props.channelType === 'chat') {
+      await api.setChatChannelStatus(channelId, status)
     } else if (props.channelType === 'responses') {
       await api.setResponsesChannelStatus(channelId, status)
     } else {
@@ -1239,6 +1324,8 @@ const resumeChannel = async (channelId: number) => {
   try {
     if (props.channelType === 'gemini') {
       await api.resumeGeminiChannel(channelId)
+    } else if (props.channelType === 'chat') {
+      await api.resumeChatChannel(channelId)
     } else if (props.channelType === 'responses') {
       await api.resumeResponsesChannel(channelId)
     } else {
@@ -1275,6 +1362,47 @@ const closePromotionDialog = () => {
   promotionChannel.value = null
 }
 
+const openLogsDialog = async (channel: Channel) => {
+  logsChannel.value = channel
+  showLogsDialog.value = true
+  logsError.value = ''
+  channelLogs.value = []
+  isLoadingLogs.value = true
+  try {
+    const response = await api.getChannelLogs(props.channelType, channel.index)
+    channelLogs.value = response.logs || []
+  } catch (error) {
+    console.error('Failed to load channel logs:', error)
+    logsError.value = error instanceof Error ? error.message : '加载请求日志失败'
+  } finally {
+    isLoadingLogs.value = false
+  }
+}
+
+const closeLogsDialog = () => {
+  showLogsDialog.value = false
+  logsChannel.value = null
+  channelLogs.value = []
+  logsError.value = ''
+}
+
+const formatLogTime = (value: string): string => {
+  if (!value) return '--'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
+const getLogStatusColor = (status: string): string => {
+  if (status === 'completed') return 'success'
+  if (status === 'cancelled') return 'grey'
+  return 'error'
+}
+
+const formatLogStatus = (status: string, statusCode?: number): string => {
+  return statusCode ? `${status} ${statusCode}` : status
+}
+
 const normalizePromotionInput = (value: unknown): number => {
   const parsed = typeof value === 'number'
     ? value
@@ -1302,6 +1430,8 @@ const confirmPromotion = async () => {
     if (channel.status === 'suspended') {
       if (props.channelType === 'gemini') {
         await api.resumeGeminiChannel(channel.index)
+      } else if (props.channelType === 'chat') {
+        await api.resumeChatChannel(channel.index)
       } else if (props.channelType === 'responses') {
         await api.resumeResponsesChannel(channel.index)
       } else {
@@ -1312,6 +1442,8 @@ const confirmPromotion = async () => {
 
     if (props.channelType === 'gemini') {
       await api.setGeminiChannelPromotion(channel.index, durationSeconds, count)
+    } else if (props.channelType === 'chat') {
+      await api.setChatChannelPromotion(channel.index, durationSeconds, count)
     } else if (props.channelType === 'responses') {
       await api.setResponsesChannelPromotion(channel.index, durationSeconds, count)
     } else {
@@ -1859,5 +1991,28 @@ defineExpose({
 .metrics-tooltip-row span:last-child {
   font-weight: 500;
   color: rgb(var(--v-theme-on-surface));
+}
+
+.channel-logs-table {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.channel-logs-table th,
+.channel-logs-table td {
+  vertical-align: top;
+}
+
+.log-client,
+.log-model,
+.log-base-url,
+.log-error {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+}
+
+.log-base-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
 }
 </style>

@@ -13,6 +13,7 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/handlers"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/chat"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/gemini"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/messages"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/responses"
@@ -85,8 +86,8 @@ func main() {
 		log.Printf("[Metrics-Init] 指标持久化已禁用，使用纯内存模式")
 	}
 
-	// 初始化多渠道调度器（Messages、Responses 和 Gemini 使用独立的指标管理器）
-	var messagesMetricsManager, responsesMetricsManager, geminiMetricsManager *metrics.MetricsManager
+	// 初始化多渠道调度器（Messages、Responses、Gemini 和 Chat 使用独立的指标管理器）
+	var messagesMetricsManager, responsesMetricsManager, geminiMetricsManager, chatMetricsManager *metrics.MetricsManager
 	if metricsStore != nil {
 		messagesMetricsManager = metrics.NewMetricsManagerWithPersistence(
 			envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, "messages")
@@ -94,10 +95,13 @@ func main() {
 			envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, "responses")
 		geminiMetricsManager = metrics.NewMetricsManagerWithPersistence(
 			envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, "gemini")
+		chatMetricsManager = metrics.NewMetricsManagerWithPersistence(
+			envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, "chat")
 	} else {
 		messagesMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
 		responsesMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
 		geminiMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
+		chatMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
 	}
 	traceAffinityManager := session.NewTraceAffinityManager()
 
@@ -105,7 +109,7 @@ func main() {
 	urlManager := warmup.NewURLManager(30*time.Second, 3) // 30秒冷却期，连续3次失败后移到末尾
 	log.Printf("[URLManager-Init] URL管理器已初始化 (冷却期: 30秒, 最大连续失败: 3)")
 
-	channelScheduler := scheduler.NewChannelScheduler(cfgManager, messagesMetricsManager, responsesMetricsManager, geminiMetricsManager, traceAffinityManager, urlManager)
+	channelScheduler := scheduler.NewChannelScheduler(cfgManager, messagesMetricsManager, responsesMetricsManager, geminiMetricsManager, chatMetricsManager, traceAffinityManager, urlManager)
 	log.Printf("[Scheduler-Init] 多渠道调度器已初始化 (失败率阈值: %.0f%%, 滑动窗口: %d)",
 		messagesMetricsManager.GetFailureThreshold()*100, messagesMetricsManager.GetWindowSize())
 
@@ -157,6 +161,7 @@ func main() {
 		apiGroup.GET("/messages/channels/metrics", handlers.GetChannelMetricsWithConfig(messagesMetricsManager, cfgManager, false))
 		apiGroup.GET("/messages/channels/metrics/history", handlers.GetChannelMetricsHistory(messagesMetricsManager, cfgManager, false))
 		apiGroup.GET("/messages/channels/:id/keys/metrics/history", handlers.GetChannelKeyMetricsHistory(messagesMetricsManager, cfgManager, false))
+		apiGroup.GET("/messages/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindMessages))
 		apiGroup.GET("/messages/channels/scheduler/stats", handlers.GetSchedulerStats(channelScheduler))
 		apiGroup.GET("/messages/global/stats/history", handlers.GetGlobalStatsHistory(messagesMetricsManager))
 		apiGroup.GET("/messages/channels/dashboard", handlers.GetChannelDashboard(cfgManager, channelScheduler))
@@ -181,6 +186,7 @@ func main() {
 		apiGroup.GET("/responses/channels/metrics", handlers.GetChannelMetricsWithConfig(responsesMetricsManager, cfgManager, true))
 		apiGroup.GET("/responses/channels/metrics/history", handlers.GetChannelMetricsHistory(responsesMetricsManager, cfgManager, true))
 		apiGroup.GET("/responses/channels/:id/keys/metrics/history", handlers.GetChannelKeyMetricsHistory(responsesMetricsManager, cfgManager, true))
+		apiGroup.GET("/responses/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindResponses))
 		apiGroup.GET("/responses/global/stats/history", handlers.GetGlobalStatsHistory(responsesMetricsManager))
 
 		// Gemini 渠道管理
@@ -202,9 +208,35 @@ func main() {
 		apiGroup.GET("/gemini/channels/metrics", handlers.GetGeminiChannelMetrics(geminiMetricsManager, cfgManager))
 		apiGroup.GET("/gemini/channels/metrics/history", handlers.GetGeminiChannelMetricsHistory(geminiMetricsManager, cfgManager))
 		apiGroup.GET("/gemini/channels/:id/keys/metrics/history", handlers.GetGeminiChannelKeyMetricsHistory(geminiMetricsManager, cfgManager))
+		apiGroup.GET("/gemini/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindGemini))
 		apiGroup.GET("/gemini/global/stats/history", handlers.GetGlobalStatsHistory(geminiMetricsManager))
 		apiGroup.GET("/gemini/ping/:id", gemini.PingChannel(cfgManager))
 		apiGroup.GET("/gemini/ping", gemini.PingAllChannels(cfgManager))
+
+		// Chat 渠道管理
+		apiGroup.GET("/chat/channels", chat.GetUpstreams(cfgManager))
+		apiGroup.POST("/chat/channels", chat.AddUpstream(cfgManager))
+		apiGroup.PUT("/chat/channels/:id", chat.UpdateUpstream(cfgManager, channelScheduler))
+		apiGroup.DELETE("/chat/channels/:id", chat.DeleteUpstream(cfgManager, channelScheduler))
+		apiGroup.POST("/chat/channels/:id/keys", chat.AddApiKey(cfgManager))
+		apiGroup.DELETE("/chat/channels/:id/keys/:apiKey", chat.DeleteApiKey(cfgManager))
+		apiGroup.POST("/chat/channels/:id/keys/:apiKey/top", chat.MoveApiKeyToTop(cfgManager))
+		apiGroup.POST("/chat/channels/:id/keys/:apiKey/bottom", chat.MoveApiKeyToBottom(cfgManager))
+
+		// Chat 多渠道调度 API
+		apiGroup.POST("/chat/channels/reorder", chat.ReorderChannels(cfgManager))
+		apiGroup.PATCH("/chat/channels/:id/status", chat.SetChannelStatus(cfgManager))
+		apiGroup.POST("/chat/channels/:id/resume", handlers.ResumeChannelByKind(channelScheduler, scheduler.ChannelKindChat))
+		apiGroup.POST("/chat/channels/:id/promotion", chat.SetChannelPromotion(cfgManager))
+		apiGroup.PUT("/chat/loadbalance", chat.UpdateLoadBalance(cfgManager))
+		apiGroup.GET("/chat/channels/dashboard", chat.GetDashboard(cfgManager, channelScheduler))
+		apiGroup.GET("/chat/channels/metrics", handlers.GetChannelMetricsWithKind(chatMetricsManager, cfgManager, scheduler.ChannelKindChat))
+		apiGroup.GET("/chat/channels/metrics/history", handlers.GetChannelMetricsHistoryByKind(chatMetricsManager, cfgManager, scheduler.ChannelKindChat))
+		apiGroup.GET("/chat/channels/:id/keys/metrics/history", handlers.GetChannelKeyMetricsHistoryByKind(chatMetricsManager, cfgManager, scheduler.ChannelKindChat))
+		apiGroup.GET("/chat/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindChat))
+		apiGroup.GET("/chat/global/stats/history", handlers.GetGlobalStatsHistory(chatMetricsManager))
+		apiGroup.GET("/chat/ping/:id", chat.PingChannel(cfgManager))
+		apiGroup.GET("/chat/ping", chat.PingAllChannels(cfgManager))
 
 		// Fuzzy 模式设置
 		apiGroup.GET("/settings/fuzzy-mode", handlers.GetFuzzyMode(cfgManager))
@@ -223,6 +255,12 @@ func main() {
 	r.POST("/v1/responses", responses.Handler(envCfg, cfgManager, sessionManager, channelScheduler))
 	r.POST("/v1/responses/compact", responses.CompactHandler(envCfg, cfgManager, sessionManager, channelScheduler))
 
+	// 代理端点 - Chat Completions API (OpenAI-compatible 原生协议)
+	r.POST("/v1/chat/completions", chat.Handler(envCfg, cfgManager, channelScheduler))
+	r.POST("/v1/images/generations", chat.ImagesHandler(envCfg, cfgManager, channelScheduler, "/images/generations"))
+	r.POST("/v1/images/edits", chat.ImagesHandler(envCfg, cfgManager, channelScheduler, "/images/edits"))
+	r.POST("/v1/images/variations", chat.ImagesHandler(envCfg, cfgManager, channelScheduler, "/images/variations"))
+
 	// 代理端点 - Gemini API (原生协议)
 	// 使用通配符捕获 model:action 格式，如 gemini-pro:generateContent
 	// 路径格式：/v1beta/models/{model}:generateContent (Gemini 原生格式)
@@ -237,11 +275,15 @@ func main() {
 			c.JSON(200, gin.H{
 				"name":    "Claude API Proxy",
 				"mode":    "API Only",
-				"version": "1.0.0",
+				"version": Version,
 				"endpoints": gin.H{
-					"health": "/health",
-					"proxy":  "/v1/messages",
-					"config": "/admin/config/save",
+					"chat":      "/v1/chat/completions",
+					"config":    "/admin/config/save",
+					"gemini":    "/v1beta/models/*modelAction",
+					"health":    "/health",
+					"images":    "/v1/images/generations",
+					"messages":  "/v1/messages",
+					"responses": "/v1/responses",
 				},
 				"message": "Web界面已禁用，此服务器运行在纯API模式下",
 			})
@@ -262,6 +304,8 @@ func main() {
 	fmt.Printf("[Server-Info] API 地址: http://localhost:%d/v1\n", envCfg.Port)
 	fmt.Printf("[Server-Info] Claude Messages: POST /v1/messages\n")
 	fmt.Printf("[Server-Info] Codex Responses: POST /v1/responses\n")
+	fmt.Printf("[Server-Info] OpenAI Chat: POST /v1/chat/completions\n")
+	fmt.Printf("[Server-Info] OpenAI Images: POST /v1/images/{generations|edits|variations}\n")
 	fmt.Printf("[Server-Info] Gemini API: POST /v1beta/models/{model}:generateContent\n")
 	fmt.Printf("[Server-Info] Gemini API: POST /v1beta/models/{model}:streamGenerateContent\n")
 	fmt.Printf("[Server-Info] 健康检查: GET /health\n")

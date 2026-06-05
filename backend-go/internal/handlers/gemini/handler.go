@@ -82,6 +82,7 @@ func Handler(
 
 		// 提取对话标识用于 Trace 亲和性
 		userID := common.ExtractConversationID(c, bodyBytes)
+		source := common.DetectRequestSource(c, bodyBytes, userID)
 
 		// 记录原始请求信息
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Gemini")
@@ -90,9 +91,9 @@ func Handler(
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindGemini)
 
 		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, source, startTime)
 		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, startTime)
+			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, source, startTime)
 		}
 	})
 }
@@ -122,6 +123,7 @@ func handleMultiChannel(
 	model string,
 	isStream bool,
 	userID string,
+	source common.RequestSource,
 	startTime time.Time,
 ) {
 	metricsManager := channelScheduler.GetGeminiMetricsManager()
@@ -163,7 +165,9 @@ func handleMultiChannel(
 					return buildProviderRequest(c, upstreamCopy, upstreamCopy.BaseURL, apiKey, geminiReq, model, isStream)
 				},
 				func(apiKey string) {
-					_ = cfgManager.DeprioritizeAPIKey(apiKey)
+					if err := cfgManager.MoveGeminiAPIKeyToBottom(channelIndex, apiKey); err != nil {
+						log.Printf("[Gemini-Key] 警告: 密钥降级失败: %v", err)
+					}
 				},
 				func(url string) {
 					channelScheduler.MarkURLFailure(scheduler.ChannelKindGemini, channelIndex, url)
@@ -173,6 +177,12 @@ func handleMultiChannel(
 				},
 				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
 					return handleSuccess(c, resp, upstreamCopy.ServiceType, envCfg, startTime, geminiReq, model, isStream)
+				},
+				common.AttemptLogContext{
+					ChannelIndex: channelIndex,
+					Model:        model,
+					Source:       source,
+					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
 				},
 			)
 
@@ -203,9 +213,10 @@ func handleSingleChannel(
 	geminiReq *types.GeminiRequest,
 	model string,
 	isStream bool,
+	source common.RequestSource,
 	startTime time.Time,
 ) {
-	upstream, err := cfgManager.GetCurrentGeminiUpstream()
+	upstream, channelIndex, err := cfgManager.GetCurrentGeminiUpstreamWithIndex()
 	if err != nil {
 		c.JSON(503, types.GeminiError{
 			Error: types.GeminiErrorDetail{
@@ -251,12 +262,20 @@ func handleSingleChannel(
 			return buildProviderRequest(c, upstreamCopy, upstreamCopy.BaseURL, apiKey, geminiReq, model, isStream)
 		},
 		func(apiKey string) {
-			_ = cfgManager.DeprioritizeAPIKey(apiKey)
+			if err := cfgManager.MoveGeminiAPIKeyToBottom(channelIndex, apiKey); err != nil {
+				log.Printf("[Gemini-Key] 警告: 密钥降级失败: %v", err)
+			}
 		},
 		nil,
 		nil,
 		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
 			return handleSuccess(c, resp, upstreamCopy.ServiceType, envCfg, startTime, geminiReq, model, isStream)
+		},
+		common.AttemptLogContext{
+			ChannelIndex: channelIndex,
+			Model:        model,
+			Source:       source,
+			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
 		},
 	)
 	if handled {

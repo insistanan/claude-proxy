@@ -63,6 +63,7 @@ func Handler(
 
 		// 提取对话标识用于 Trace 亲和性
 		userID := common.ExtractConversationID(c, bodyBytes)
+		source := common.DetectRequestSource(c, bodyBytes, userID)
 
 		// 记录原始请求信息（仅在入口处记录一次）
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Responses")
@@ -71,9 +72,9 @@ func Handler(
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindResponses)
 
 		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, source, hasImage, startTime)
 		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, hasImage, startTime)
+			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, source, hasImage, startTime)
 		}
 	})
 }
@@ -88,6 +89,7 @@ func handleMultiChannel(
 	bodyBytes []byte,
 	responsesReq types.ResponsesRequest,
 	userID string,
+	source common.RequestSource,
 	hasImage bool,
 	startTime time.Time,
 ) {
@@ -133,7 +135,9 @@ func handleMultiChannel(
 					return req, err
 				},
 				func(apiKey string) {
-					_ = cfgManager.DeprioritizeAPIKey(apiKey)
+					if err := cfgManager.MoveResponsesAPIKeyToBottom(channelIndex, apiKey); err != nil {
+						log.Printf("[Responses-Key] 警告: 密钥降级失败: %v", err)
+					}
 				},
 				func(url string) {
 					channelScheduler.MarkURLFailure(scheduler.ChannelKindResponses, channelIndex, url)
@@ -142,7 +146,13 @@ func handleMultiChannel(
 					channelScheduler.MarkURLSuccess(scheduler.ChannelKindResponses, channelIndex, url)
 				},
 				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return handleSuccess(c, resp, provider, upstream.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
+					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
+				},
+				common.AttemptLogContext{
+					ChannelIndex: channelIndex,
+					Model:        responsesReq.Model,
+					Source:       source,
+					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
 				},
 			)
 
@@ -172,10 +182,11 @@ func handleSingleChannel(
 	sessionManager *session.SessionManager,
 	bodyBytes []byte,
 	responsesReq types.ResponsesRequest,
+	source common.RequestSource,
 	hasImage bool,
 	startTime time.Time,
 ) {
-	upstream, err := cfgManager.GetCurrentResponsesUpstream()
+	upstream, channelIndex, err := cfgManager.GetCurrentResponsesUpstreamWithIndex()
 	if err != nil {
 		c.JSON(503, gin.H{
 			"error": "未配置任何 Responses 渠道，请先在管理界面添加渠道",
@@ -219,14 +230,20 @@ func handleSingleChannel(
 			return req, err
 		},
 		func(apiKey string) {
-			if err := cfgManager.DeprioritizeAPIKey(apiKey); err != nil {
+			if err := cfgManager.MoveResponsesAPIKeyToBottom(channelIndex, apiKey); err != nil {
 				log.Printf("[Responses-Key] 警告: 密钥降级失败: %v", err)
 			}
 		},
 		nil,
 		nil,
 		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleSuccess(c, resp, provider, upstream.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
+			return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
+		},
+		common.AttemptLogContext{
+			ChannelIndex: channelIndex,
+			Model:        responsesReq.Model,
+			Source:       source,
+			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
 		},
 	)
 	if handled {
@@ -293,14 +310,7 @@ func handleSuccess(
 		}
 	}
 
-	providerResp := &types.ProviderResponse{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Header,
-		Body:       bodyBytes,
-		Stream:     false,
-	}
-
-	responsesResp, err := provider.ConvertToResponsesResponse(providerResp, upstreamType, "")
+	responsesResp, err := converters.ConvertUpstreamResponseToResponses(upstreamType, originalRequestJSON, bodyBytes, "")
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to convert response"})
 		return nil, err
@@ -313,6 +323,7 @@ func handleSuccess(
 	if originalReq.Store == nil || *originalReq.Store {
 		sess, err := sessionManager.GetOrCreateSession(originalReq.PreviousResponseID)
 		if err == nil {
+			previousResponseID := sess.LastResponseID
 			inputItems, _ := parseInputToItems(originalReq.Input)
 			for _, item := range inputItems {
 				sessionManager.AppendMessage(sess.ID, item, 0)
@@ -328,8 +339,9 @@ func handleSuccess(
 			sessionManager.UpdateLastResponseID(sess.ID, responsesResp.ID)
 			sessionManager.RecordResponseMapping(responsesResp.ID, sess.ID)
 
-			if sess.LastResponseID != "" {
-				responsesResp.PreviousID = sess.LastResponseID
+			if previousResponseID != "" {
+				responsesResp.PreviousID = previousResponseID
+				responsesResp.PreviousResponseID = previousResponseID
 			}
 		}
 	}
@@ -462,6 +474,11 @@ func estimateResponsesOutputFromItems(output []types.ResponsesItem) int {
 				total += utils.EstimateTokens(contentStr)
 			}
 		}
+
+		if item.Summary != nil {
+			data, _ := json.Marshal(item.Summary)
+			total += utils.EstimateTokens(string(data))
+		}
 	}
 
 	return total
@@ -499,7 +516,6 @@ func handleStreamSuccess(
 		synthesizer = utils.NewStreamSynthesizer(upstreamType)
 	}
 
-	needConvert := upstreamType != "responses"
 	var converterState any
 
 	c.Status(resp.StatusCode)
@@ -532,19 +548,19 @@ func handleStreamSuccess(
 		// 处理转换后的事件
 		var eventsToProcess []string
 
-		if needConvert {
-			events := converters.ConvertOpenAIChatToResponses(
-				c.Request.Context(),
-				originalReq.Model,
-				originalRequestJSON,
-				nil,
-				[]byte(line),
-				&converterState,
-			)
-			eventsToProcess = events
-		} else {
-			eventsToProcess = []string{line + "\n"}
+		events, err := converters.ConvertUpstreamStreamLineToResponses(
+			c.Request.Context(),
+			upstreamType,
+			originalReq.Model,
+			originalRequestJSON,
+			[]byte(line),
+			&converterState,
+		)
+		if err != nil {
+			log.Printf("[Responses-Stream] 流式响应转换失败: %v", err)
+			break
 		}
+		eventsToProcess = events
 
 		for _, event := range eventsToProcess {
 			// 提取文本内容用于估算（限制缓冲区大小）
@@ -714,7 +730,9 @@ func extractResponsesTextFromEvent(event string, buf *bytes.Buffer) {
 				buf.WriteString(delta)
 			}
 		case "response.reasoning_summary_text.delta":
-			if text, ok := data["text"].(string); ok {
+			if delta, ok := data["delta"].(string); ok {
+				buf.WriteString(delta)
+			} else if text, ok := data["text"].(string); ok {
 				buf.WriteString(text)
 			}
 		case "response.output_json.delta":
@@ -1216,7 +1234,29 @@ func parseInputToItems(input interface{}) ([]types.ResponsesItem, error) {
 			itemType, _ := itemMap["type"].(string)
 			role, _ := itemMap["role"].(string)
 			content := itemMap["content"]
-			items = append(items, types.ResponsesItem{Type: itemType, Role: role, Content: content})
+			summary := itemMap["summary"]
+			id, _ := itemMap["id"].(string)
+			status, _ := itemMap["status"].(string)
+			callID, _ := itemMap["call_id"].(string)
+			name, _ := itemMap["name"].(string)
+			arguments, _ := itemMap["arguments"].(string)
+			if itemType == "" && role != "" {
+				itemType = "message"
+			}
+			if output, ok := itemMap["output"]; ok && content == nil {
+				content = output
+			}
+			items = append(items, types.ResponsesItem{
+				ID:        id,
+				Type:      itemType,
+				Status:    status,
+				Role:      role,
+				Content:   content,
+				Summary:   summary,
+				CallID:    callID,
+				Name:      name,
+				Arguments: arguments,
+			})
 		}
 		return items, nil
 	default:

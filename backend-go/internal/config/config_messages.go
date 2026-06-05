@@ -33,6 +33,25 @@ func (cm *ConfigManager) GetCurrentUpstream() (*UpstreamConfig, error) {
 	return &cm.config.Upstream[0], nil
 }
 
+// GetCurrentUpstreamWithIndex 获取当前 Messages 上游配置及其渠道索引。
+func (cm *ConfigManager) GetCurrentUpstreamWithIndex() (*UpstreamConfig, int, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if len(cm.config.Upstream) == 0 {
+		return nil, -1, fmt.Errorf("未配置任何上游渠道")
+	}
+
+	for i := range cm.config.Upstream {
+		status := cm.config.Upstream[i].Status
+		if status == "" || status == "active" {
+			return &cm.config.Upstream[i], i, nil
+		}
+	}
+
+	return &cm.config.Upstream[0], 0, nil
+}
+
 // AddUpstream 添加上游
 func (cm *ConfigManager) AddUpstream(upstream UpstreamConfig) error {
 	cm.mu.Lock()
@@ -452,6 +471,11 @@ func (cm *ConfigManager) ConsumePromotionCount(index int, channelType string) bo
 			return false
 		}
 		upstream = &cm.config.GeminiUpstream[index]
+	case "chat":
+		if index < 0 || index >= len(cm.config.ChatUpstream) {
+			return false
+		}
+		upstream = &cm.config.ChatUpstream[index]
 	default:
 		return false
 	}

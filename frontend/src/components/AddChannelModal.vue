@@ -111,7 +111,7 @@
                   <div class="flex-grow-1">
                     <div class="text-body-2 font-weight-medium">渠道类型</div>
                     <div class="text-caption text-medium-emphasis">
-                      {{ props.channelType === 'gemini' ? 'Gemini' : props.channelType === 'responses' ? 'Responses (Codex)' : 'Claude (Messages)' }} -
+                      {{ props.channelType === 'gemini' ? 'Gemini' : props.channelType === 'responses' ? 'Responses (Codex)' : props.channelType === 'chat' ? 'OpenAI Chat' : 'Claude (Messages)' }} -
                       {{ getDefaultServiceType() }}
                     </div>
                   </div>
@@ -608,7 +608,7 @@ import {
 interface Props {
   show: boolean
   channel?: Channel | null
-  channelType?: 'messages' | 'responses' | 'gemini'
+  channelType?: 'messages' | 'responses' | 'gemini' | 'chat'
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -634,7 +634,7 @@ const quickInput = ref('')
 const detectedBaseUrl = ref('')
 const detectedBaseUrls = ref<string[]>([])
 const detectedApiKeys = ref<string[]>([])
-const detectedServiceType = ref<'openai' | 'gemini' | 'claude' | 'responses' | null>(null)
+const detectedServiceType = ref<'openai' | 'gemini' | 'claude' | 'responses' | 'chat' | null>(null)
 
 // 详细表单预期请求 URL 预览（防止输入时抖动）
 const formBaseUrlPreview = ref('')
@@ -684,16 +684,22 @@ const getDefaultServiceType = (): string => {
   if (props.channelType === 'responses') {
     return 'Responses (原生接口)'
   }
+  if (props.channelType === 'chat') {
+    return 'OpenAI Chat'
+  }
   return 'Claude'
 }
 
 // 获取默认服务类型值
-const getDefaultServiceTypeValue = (): 'openai' | 'gemini' | 'claude' | 'responses' => {
+const getDefaultServiceTypeValue = (): 'openai' | 'gemini' | 'claude' | 'responses' | 'chat' => {
   if (props.channelType === 'gemini') {
     return 'gemini'
   }
   if (props.channelType === 'responses') {
     return 'responses'
+  }
+  if (props.channelType === 'chat') {
+    return 'openai'
   }
   return 'claude'
 }
@@ -704,6 +710,9 @@ const _getDefaultBaseUrl = (): string => {
     return 'https://generativelanguage.googleapis.com'
   }
   if (props.channelType === 'responses') {
+    return 'https://api.openai.com/v1'
+  }
+  if (props.channelType === 'chat') {
     return 'https://api.openai.com/v1'
   }
   return 'https://api.anthropic.com'
@@ -784,6 +793,8 @@ const _expectedRequestUrl = computed(() => {
     } else {
       endpoint = '/chat/completions'
     }
+  } else if (props.channelType === 'chat') {
+    endpoint = '/chat/completions'
   } else {
     // messages 渠道：根据检测到的服务类型决定端点
     if (serviceType === 'claude') {
@@ -825,6 +836,8 @@ const getExpectedRequestUrl = (inputBaseUrl: string): string => {
     } else {
       endpoint = '/chat/completions'
     }
+  } else if (props.channelType === 'chat') {
+    endpoint = '/chat/completions'
   } else {
     if (serviceType === 'claude') {
       endpoint = '/messages'
@@ -879,6 +892,8 @@ const formExpectedRequestUrls = computed(() => {
     } else {
       endpoint = '/chat/completions'
     }
+  } else if (props.channelType === 'chat') {
+    endpoint = '/chat/completions'
   } else {
     // messages 渠道
     if (form.serviceType === 'claude') {
@@ -937,6 +952,11 @@ const serviceTypeOptions = computed(() => {
       { title: 'Claude', value: 'claude' }
     ]
   }
+  if (props.channelType === 'chat') {
+    return [
+      { title: 'OpenAI Chat', value: 'openai' }
+    ]
+  }
   if (props.channelType === 'responses') {
     return [
       { title: 'Responses (原生接口)', value: 'responses' },
@@ -973,6 +993,15 @@ const allSourceModelOptions = computed(() => {
       { title: 'gpt-5.4-mini', value: 'gpt-5.4-mini' },
       { title: 'gpt-5.5', value: 'gpt-5.5' },
     ]
+  }
+  if (props.channelType === 'chat') {
+    return [
+      { title: 'gpt-4o', value: 'gpt-4o' },
+      { title: 'gpt-4.1', value: 'gpt-4.1' },
+      { title: 'gpt-5', value: 'gpt-5' },
+      { title: 'o3', value: 'o3' },
+      { title: 'o4-mini', value: 'o4-mini' },
+    ]
   } else {
     // Messages API (Claude) 常用模型别名（模糊匹配，无需指定版本）
     return [
@@ -996,6 +1025,9 @@ const modelMappingHint = computed(() => {
   }
   if (props.channelType === 'responses') {
     return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 gpt-5.5 可匹配 gpt-5.5-codex 等变体）。例如：将 "o3" 重定向到 "gpt-5.5"'
+  }
+  if (props.channelType === 'chat') {
+    return '配置模型名称映射，将请求中的 Chat 模型名重定向到目标模型。例如：将 "gpt-4o" 重定向到 "gpt-4.1"'
   } else {
     return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 opus 可匹配 claude-opus-4-5-20251101 等版本）。例如：将 "opus" 重定向到 "claude-3-5-sonnet"'
   }
@@ -1007,6 +1039,9 @@ const targetModelPlaceholder = computed(() => {
   }
   if (props.channelType === 'responses') {
     return '例如：gpt-5.1-codex-max'
+  }
+  if (props.channelType === 'chat') {
+    return '例如：gpt-4.1'
   } else {
     return '例如：claude-3-5-sonnet'
   }
@@ -1015,7 +1050,7 @@ const targetModelPlaceholder = computed(() => {
 // 表单数据
 const form = reactive({
   name: '',
-  serviceType: '' as 'openai' | 'gemini' | 'claude' | 'responses' | '',
+  serviceType: '' as 'openai' | 'gemini' | 'claude' | 'responses' | 'chat' | '',
   baseUrl: '',
   baseUrls: [] as string[],
   website: '',
@@ -1535,7 +1570,7 @@ const handleSubmit = async () => {
   // 构建渠道数据
   const channelData: Omit<Channel, 'index' | 'latency' | 'status'> = {
     name: form.name.trim(),
-    serviceType: form.serviceType as 'openai' | 'gemini' | 'claude' | 'responses',
+    serviceType: form.serviceType as 'openai' | 'gemini' | 'claude' | 'responses' | 'chat',
     baseUrl: deduplicatedUrls[0] || '',
     website: form.website.trim(), // 空字符串也需要传递，以便清除已有值
     insecureSkipVerify: form.insecureSkipVerify,

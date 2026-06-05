@@ -278,7 +278,7 @@ func (s *SQLiteStore) CleanupOldRecords(before time.Time) (int64, error) {
 }
 
 // DeleteRecordsByMetricsKeys 按 metrics_key 和 api_type 批量删除记录
-// apiType: 接口类型（messages/responses/gemini），避免误删其他接口的数据
+// apiType: 接口类型（messages/responses/gemini/chat），避免误删其他接口的数据
 func (s *SQLiteStore) DeleteRecordsByMetricsKeys(metricsKeys []string, apiType string) (int64, error) {
 	if len(metricsKeys) == 0 {
 		return 0, nil

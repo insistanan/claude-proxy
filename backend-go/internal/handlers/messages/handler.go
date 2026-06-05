@@ -52,6 +52,7 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 
 		// 提取 user_id 用于 Trace 亲和性
 		userID := common.ExtractUserID(bodyBytes)
+		source := common.DetectRequestSource(c, bodyBytes, userID)
 
 		// 记录原始请求信息（仅在入口处记录一次）
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Messages")
@@ -60,9 +61,9 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindMessages)
 
 		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, hasImage, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, source, hasImage, startTime)
 		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, startTime)
+			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, source, startTime)
 		}
 	})
 }
@@ -76,6 +77,7 @@ func handleMultiChannel(
 	bodyBytes []byte,
 	claudeReq types.ClaudeRequest,
 	userID string,
+	source common.RequestSource,
 	hasImage bool,
 	startTime time.Time,
 ) {
@@ -124,7 +126,7 @@ func handleMultiChannel(
 					return req, err
 				},
 				func(apiKey string) {
-					if err := cfgManager.DeprioritizeAPIKey(apiKey); err != nil {
+					if err := cfgManager.MoveAPIKeyToBottom(channelIndex, apiKey); err != nil {
 						log.Printf("[Messages-Key] 警告: 密钥降级失败: %v", err)
 					}
 				},
@@ -139,6 +141,12 @@ func handleMultiChannel(
 						return common.HandleStreamResponse(c, resp, provider, envCfg, startTime, upstreamCopy, bodyBytes, claudeReq.Model)
 					}
 					return handleNormalResponse(c, resp, provider, envCfg, startTime, bodyBytes, upstreamCopy, apiKey)
+				},
+				common.AttemptLogContext{
+					ChannelIndex: channelIndex,
+					Model:        claudeReq.Model,
+					Source:       source,
+					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
 				},
 			)
 
@@ -167,9 +175,10 @@ func handleSingleChannel(
 	channelScheduler *scheduler.ChannelScheduler,
 	bodyBytes []byte,
 	claudeReq types.ClaudeRequest,
+	source common.RequestSource,
 	startTime time.Time,
 ) {
-	upstream, err := cfgManager.GetCurrentUpstream()
+	upstream, channelIndex, err := cfgManager.GetCurrentUpstreamWithIndex()
 	if err != nil {
 		c.JSON(503, gin.H{
 			"error": "未配置任何渠道，请先在管理界面添加渠道",
@@ -217,7 +226,7 @@ func handleSingleChannel(
 			return req, err
 		},
 		func(apiKey string) {
-			if err := cfgManager.DeprioritizeAPIKey(apiKey); err != nil {
+			if err := cfgManager.MoveAPIKeyToBottom(channelIndex, apiKey); err != nil {
 				log.Printf("[Messages-Key] 警告: 密钥降级失败: %v", err)
 			}
 		},
@@ -228,6 +237,12 @@ func handleSingleChannel(
 				return common.HandleStreamResponse(c, resp, provider, envCfg, startTime, upstreamCopy, bodyBytes, claudeReq.Model)
 			}
 			return handleNormalResponse(c, resp, provider, envCfg, startTime, bodyBytes, upstreamCopy, apiKey)
+		},
+		common.AttemptLogContext{
+			ChannelIndex: channelIndex,
+			Model:        claudeReq.Model,
+			Source:       source,
+			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
 		},
 	)
 	if handled {

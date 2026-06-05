@@ -103,6 +103,8 @@ func (cm *ConfigManager) createDefaultConfig() error {
 		ResponsesLoadBalance:     "failover",
 		GeminiUpstream:           []UpstreamConfig{},
 		GeminiLoadBalance:        "failover",
+		ChatUpstream:             []UpstreamConfig{},
+		ChatLoadBalance:          "failover",
 		FuzzyModeEnabled:         true, // 默认启用 Fuzzy 模式
 	}
 
@@ -127,6 +129,9 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 	}
 	if cm.config.GeminiLoadBalance == "" {
 		cm.config.GeminiLoadBalance = "failover"
+	}
+	if cm.config.ChatLoadBalance == "" {
+		cm.config.ChatLoadBalance = "failover"
 	}
 
 	// FuzzyModeEnabled 默认值处理：
@@ -249,6 +254,21 @@ func (cm *ConfigManager) validateChannelKeys() bool {
 			upstream.Status = "suspended"
 			modified = true
 			log.Printf("[Config-Validate] 警告: Gemini 渠道 [%d] %s 没有配置 API key，已自动暂停", i, upstream.Name)
+		}
+	}
+
+	// 检查 Chat 渠道
+	for i := range cm.config.ChatUpstream {
+		upstream := &cm.config.ChatUpstream[i]
+		status := upstream.Status
+		if status == "" {
+			status = "active"
+		}
+
+		if status == "active" && len(upstream.APIKeys) == 0 {
+			upstream.Status = "suspended"
+			modified = true
+			log.Printf("[Config-Validate] 警告: Chat 渠道 [%d] %s 没有配置 API key，已自动暂停", i, upstream.Name)
 		}
 	}
 
