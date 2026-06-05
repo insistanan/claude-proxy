@@ -649,7 +649,7 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			}
 
 			// 处理结束原因
-			if finishReason, ok := choice["finish_reason"].(string); ok {
+			if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" && finishReason != "none" && finishReason != "null" {
 				// 关闭所有未关闭的块
 				closeThinkingBlock()
 				closeTextBlock()
