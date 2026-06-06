@@ -142,7 +142,7 @@ class VersionService {
 
       // 使用 /releases 端点获取最近的发布列表，然后过滤出第一个正式版本
       const response = await fetch(
-        'https://api.github.com/repos/BenedictKing/claude-proxy/releases?per_page=10',
+        'https://api.github.com/repos/insistanan/claude-proxy/releases?per_page=10',
         {
           headers: {
             Accept: 'application/vnd.github.v3+json',

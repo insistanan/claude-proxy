@@ -292,98 +292,237 @@ func ExtractConversationID(c *gin.Context, bodyBytes []byte) string {
 }
 
 func ExtractFirstPromptFromClaude(messages []types.ClaudeMessage) string {
+	return firstPrompt(ExtractPromptsFromClaude(messages))
+}
+
+func ExtractPromptsFromClaude(messages []types.ClaudeMessage) []string {
+	prompts := make([]string, 0, 3)
 	for _, msg := range messages {
 		if strings.EqualFold(msg.Role, "user") {
-			if prompt := firstTextFromContent(msg.Content); prompt != "" {
-				return truncatePrompt(prompt)
-			}
+			appendPromptsFromContent(&prompts, msg.Content, 3)
 		}
 	}
-	return ""
+	return prompts
 }
 
 func ExtractFirstPromptFromOpenAI(messages []types.OpenAIMessage) string {
+	return firstPrompt(ExtractPromptsFromOpenAI(messages))
+}
+
+func ExtractPromptsFromOpenAI(messages []types.OpenAIMessage) []string {
+	prompts := make([]string, 0, 3)
 	for _, msg := range messages {
 		if strings.EqualFold(msg.Role, "user") {
-			if prompt := firstTextFromContent(msg.Content); prompt != "" {
-				return truncatePrompt(prompt)
-			}
+			appendPromptsFromContent(&prompts, msg.Content, 3)
 		}
 	}
-	return ""
+	return prompts
 }
 
 func ExtractFirstPromptFromResponsesInput(input interface{}) string {
-	if prompt := firstTextFromContent(input); prompt != "" {
-		return truncatePrompt(prompt)
-	}
-	return ""
+	return firstPrompt(ExtractPromptsFromResponsesInput(input))
+}
+
+func ExtractPromptsFromResponsesInput(input interface{}) []string {
+	prompts := make([]string, 0, 3)
+	appendResponsesInputPrompts(&prompts, input, 3)
+	return prompts
 }
 
 func ExtractFirstPromptFromGemini(contents []types.GeminiContent) string {
+	return firstPrompt(ExtractPromptsFromGemini(contents))
+}
+
+func ExtractPromptsFromGemini(contents []types.GeminiContent) []string {
+	prompts := make([]string, 0, 3)
 	for _, content := range contents {
 		if content.Role != "" && !strings.EqualFold(content.Role, "user") {
 			continue
 		}
 		for _, part := range content.Parts {
-			if strings.TrimSpace(part.Text) != "" {
-				return truncatePrompt(part.Text)
-			}
+			appendPrompt(&prompts, part.Text, 3)
 		}
 	}
-	return ""
+	return prompts
 }
 
 func ExtractPromptJSONField(bodyBytes []byte, field string) string {
-	var payload map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-		return ""
-	}
-	if prompt := firstTextFromContent(payload[field]); prompt != "" {
-		return truncatePrompt(prompt)
-	}
-	return ""
+	return firstPrompt(ExtractPromptJSONFieldPrompts(bodyBytes, field))
 }
 
-func firstTextFromContent(content interface{}) string {
+func ExtractPromptJSONFieldPrompts(bodyBytes []byte, field string) []string {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return nil
+	}
+	prompts := make([]string, 0, 3)
+	appendPromptsFromContent(&prompts, payload[field], 3)
+	return prompts
+}
+
+func firstPrompt(prompts []string) string {
+	if len(prompts) == 0 {
+		return ""
+	}
+	return prompts[0]
+}
+
+func appendResponsesInputPrompts(prompts *[]string, input interface{}, limit int) {
+	if len(*prompts) >= limit {
+		return
+	}
+	switch value := input.(type) {
+	case []types.ResponsesItem:
+		for _, item := range value {
+			if len(*prompts) >= limit {
+				return
+			}
+			if item.Role != "" && !strings.EqualFold(item.Role, "user") {
+				continue
+			}
+			appendPromptsFromContent(prompts, item.Content, limit)
+		}
+	case []interface{}:
+		for _, item := range value {
+			if len(*prompts) >= limit {
+				return
+			}
+			if msg, ok := item.(map[string]interface{}); ok {
+				if role, _ := msg["role"].(string); role != "" && !strings.EqualFold(role, "user") {
+					continue
+				}
+			}
+			appendPromptsFromContent(prompts, item, limit)
+		}
+	default:
+		appendPromptsFromContent(prompts, input, limit)
+	}
+}
+
+func appendPromptsFromContent(prompts *[]string, content interface{}, limit int) {
+	if len(*prompts) >= limit {
+		return
+	}
 	switch value := content.(type) {
 	case string:
-		return strings.TrimSpace(value)
+		appendPrompt(prompts, value, limit)
 	case []types.ClaudeContent:
 		for _, block := range utils.NormalizeContentBlocks(value) {
 			if text, ok := utils.ExtractTextFromBlock(block); ok {
-				return strings.TrimSpace(text)
+				appendPrompt(prompts, text, limit)
 			}
 		}
 	case []types.ContentBlock:
 		for _, block := range utils.NormalizeContentBlocks(value) {
 			if text, ok := utils.ExtractTextFromBlock(block); ok {
-				return strings.TrimSpace(text)
+				appendPrompt(prompts, text, limit)
 			}
 		}
 	case []interface{}:
 		for _, item := range value {
-			if prompt := firstTextFromContent(item); prompt != "" {
-				return prompt
+			appendPromptsFromContent(prompts, item, limit)
+			if len(*prompts) >= limit {
+				return
 			}
 		}
 	case map[string]interface{}:
 		if text, ok := utils.ExtractTextFromBlock(value); ok {
-			return strings.TrimSpace(text)
+			appendPrompt(prompts, text, limit)
 		}
 		for _, key := range []string{"content", "text", "input_text"} {
-			if prompt := firstTextFromContent(value[key]); prompt != "" {
-				return prompt
+			appendPromptsFromContent(prompts, value[key], limit)
+			if len(*prompts) >= limit {
+				return
 			}
 		}
 	}
-	return ""
+}
+
+func appendPrompt(prompts *[]string, prompt string, limit int) {
+	prompt = truncatePrompt(prompt)
+	if prompt == "" || len(*prompts) >= limit {
+		return
+	}
+	for _, current := range *prompts {
+		if current == prompt {
+			return
+		}
+	}
+	*prompts = append(*prompts, prompt)
+}
+
+func firstTextFromContent(content interface{}) string {
+	prompts := make([]string, 0, 1)
+	appendPromptsFromContent(&prompts, content, 1)
+	return firstPrompt(prompts)
 }
 
 func truncatePrompt(prompt string) string {
+	prompt = cleanAndExtractRealPrompt(prompt)
 	prompt = strings.Join(strings.Fields(prompt), " ")
 	if len(prompt) <= 300 {
 		return prompt
 	}
 	return prompt[:300] + "..."
+}
+
+func cleanAndExtractRealPrompt(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return ""
+	}
+
+	// 1. 如果包含 <user_query> 标签，优先提取其中的真实内容
+	if strings.Contains(prompt, "<user_query>") && strings.Contains(prompt, "</user_query>") {
+		startIdx := strings.Index(prompt, "<user_query>") + len("<user_query>")
+		endIdx := strings.Index(prompt, "</user_query>")
+		if endIdx > startIdx {
+			queryText := strings.TrimSpace(prompt[startIdx:endIdx])
+			if queryText != "" {
+				return queryText
+			}
+		}
+	}
+
+	// 2. 剥离掉一些常见的系统元数据标签（如整个标签块）
+	// 例如：<user_info>...</user_info>
+	for {
+		startTagIdx := strings.Index(prompt, "<user_info>")
+		if startTagIdx == -1 {
+			break
+		}
+		endTagIdx := strings.Index(prompt, "</user_info>")
+		if endTagIdx == -1 || endTagIdx <= startTagIdx {
+			break
+		}
+		prompt = prompt[:startTagIdx] + prompt[endTagIdx+len("</user_info>"):]
+	}
+
+	// 例如：<system_reminder>...</system_reminder>
+	for {
+		startTagIdx := strings.Index(prompt, "<system_reminder>")
+		if startTagIdx == -1 {
+			break
+		}
+		endTagIdx := strings.Index(prompt, "</system_reminder>")
+		if endTagIdx == -1 || endTagIdx <= startTagIdx {
+			break
+		}
+		prompt = prompt[:startTagIdx] + prompt[endTagIdx+len("</system_reminder>"):]
+	}
+
+	// 例如：<agent_notification>...</agent_notification>
+	for {
+		startTagIdx := strings.Index(prompt, "<agent_notification>")
+		if startTagIdx == -1 {
+			break
+		}
+		endTagIdx := strings.Index(prompt, "</agent_notification>")
+		if endTagIdx == -1 || endTagIdx <= startTagIdx {
+			break
+		}
+		prompt = prompt[:startTagIdx] + prompt[endTagIdx+len("</agent_notification>"):]
+	}
+
+	return strings.TrimSpace(prompt)
 }

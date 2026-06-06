@@ -56,6 +56,8 @@ func main() {
 	if err := logger.Setup(logCfg); err != nil {
 		log.Fatalf("初始化日志系统失败: %v", err)
 	}
+	requestLogStore := metrics.NewRequestLogStore(envCfg.LogDir, 7)
+	defer requestLogStore.Close()
 
 	cfgManager, err := config.NewConfigManager(".config/config.json")
 	if err != nil {
@@ -113,6 +115,7 @@ func main() {
 	log.Printf("[URLManager-Init] URL管理器已初始化 (冷却期: 30秒, 最大连续失败: 3)")
 
 	channelScheduler := scheduler.NewChannelScheduler(cfgManager, messagesMetricsManager, responsesMetricsManager, geminiMetricsManager, chatMetricsManager, traceAffinityManager, urlManager)
+	channelScheduler.SetRequestLogStore(requestLogStore)
 	channelScheduler.SetConversationRegistry(conversationRegistry)
 	log.Printf("[Scheduler-Init] 多渠道调度器已初始化 (失败率阈值: %.0f%%, 滑动窗口: %d)",
 		messagesMetricsManager.GetFailureThreshold()*100, messagesMetricsManager.GetWindowSize())
@@ -147,6 +150,8 @@ func main() {
 	// Web 管理界面 API 路由
 	apiGroup := r.Group("/api")
 	{
+		apiGroup.GET("/request-logs", handlers.GetRequestLogs(requestLogStore))
+
 		// Messages 渠道管理
 		apiGroup.GET("/messages/channels", messages.GetUpstreams(cfgManager))
 		apiGroup.POST("/messages/channels", messages.AddUpstream(cfgManager))

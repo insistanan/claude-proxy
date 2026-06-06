@@ -21,6 +21,7 @@ type Observation struct {
 	ConversationID string
 	FallbackKey    string
 	FirstPrompt    string
+	Prompts        []string
 }
 
 type RouteOverride struct {
@@ -43,6 +44,7 @@ type Record struct {
 	LastModel         string         `json:"lastModel,omitempty"`
 	LastResolvedModel string         `json:"lastResolvedModel,omitempty"`
 	FirstPrompt       string         `json:"firstPrompt,omitempty"`
+	Prompts           []string       `json:"prompts,omitempty"`
 	Stream            bool           `json:"stream"`
 	IsSending         bool           `json:"isSending"`
 	ActiveRequests    int64          `json:"activeRequests,omitempty"`
@@ -110,7 +112,7 @@ func (r *Registry) ObserveRequest(obs Observation) *Record {
 			ID:            generateID("conv"),
 			APIKind:       firstNonEmpty(obs.APIKind, "unknown"),
 			LastModel:     obs.Model,
-			FirstPrompt:   truncate(obs.FirstPrompt, 300),
+			FirstPrompt:   firstPromptFromObservation(obs),
 			Stream:        obs.Stream,
 			IsSending:     true,
 			FirstSeenAt:   now,
@@ -118,6 +120,7 @@ func (r *Registry) ObserveRequest(obs Observation) *Record {
 			LastRequestAt: now,
 			identityKey:   identityKey,
 		}
+		appendPrompts(rec, promptsFromObservation(obs)...)
 		r.records[rec.ID] = rec
 		r.identityIndex[identityKey] = rec.ID
 	}
@@ -125,8 +128,9 @@ func (r *Registry) ObserveRequest(obs Observation) *Record {
 	rec.APIKind = firstNonEmpty(obs.APIKind, rec.APIKind)
 	rec.LastModel = firstNonEmpty(obs.Model, rec.LastModel)
 	if rec.FirstPrompt == "" {
-		rec.FirstPrompt = truncate(obs.FirstPrompt, 300)
+		rec.FirstPrompt = firstPromptFromObservation(obs)
 	}
+	appendPrompts(rec, promptsFromObservation(obs)...)
 	rec.Stream = obs.Stream
 	if rec.ActiveRequests < 0 {
 		rec.ActiveRequests = 0
@@ -361,6 +365,10 @@ func cloneRecord(src *Record) *Record {
 		resolved := *src.LastResolved
 		dst.LastResolved = &resolved
 	}
+	if src.Prompts != nil {
+		dst.Prompts = make([]string, len(src.Prompts))
+		copy(dst.Prompts, src.Prompts)
+	}
 	return &dst
 }
 
@@ -381,6 +389,64 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstPromptFromObservation(obs Observation) string {
+	prompts := promptsFromObservation(obs)
+	if len(prompts) > 0 {
+		return prompts[0]
+	}
+	return truncate(obs.FirstPrompt, 300)
+}
+
+func promptsFromObservation(obs Observation) []string {
+	values := make([]string, 0, len(obs.Prompts)+1)
+	if obs.FirstPrompt != "" {
+		values = append(values, obs.FirstPrompt)
+	}
+	values = append(values, obs.Prompts...)
+	return cleanPromptList(values, 3)
+}
+
+func appendPrompts(rec *Record, prompts ...string) {
+	if rec == nil || len(rec.Prompts) >= 3 {
+		return
+	}
+	for _, prompt := range cleanPromptList(prompts, 3) {
+		if len(rec.Prompts) >= 3 {
+			return
+		}
+		exists := false
+		for _, current := range rec.Prompts {
+			if current == prompt {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			rec.Prompts = append(rec.Prompts, prompt)
+		}
+	}
+}
+
+func cleanPromptList(values []string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	result := make([]string, 0, limit)
+	seen := make(map[string]bool)
+	for _, value := range values {
+		prompt := truncate(value, 300)
+		if prompt == "" || seen[prompt] {
+			continue
+		}
+		seen[prompt] = true
+		result = append(result, prompt)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result
 }
 
 func truncate(value string, limit int) string {

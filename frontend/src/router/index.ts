@@ -13,6 +13,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/logs',
+    name: 'request-logs',
+    component: () => import('@/views/RequestLogsView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/channels/:type',  // 动态参数匹配 messages/responses/gemini/chat
     name: 'channels',
     component: () => import('@/views/ChannelsView.vue'),  // 懒加载

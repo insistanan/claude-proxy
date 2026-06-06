@@ -60,8 +60,8 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		if userID == "" {
 			userID = common.ExtractConversationID(c, bodyBytes)
 		}
-		firstPrompt := common.ExtractFirstPromptFromOpenAI(chatReq.Messages)
-		userID = common.ObserveConversation(channelScheduler, scheduler.ChannelKindChat, userID, chatReq.Model, firstPrompt, chatReq.Stream)
+		prompts := common.ExtractPromptsFromOpenAI(chatReq.Messages)
+		userID = common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindChat, userID, chatReq.Model, prompts, chatReq.Stream)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindChat)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Chat")
@@ -144,10 +144,11 @@ func handleMultiChannel(
 					return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, bodyBytes)
 				},
 				common.AttemptLogContext{
-					ChannelIndex:   channelIndex,
-					Model:          chatReq.Model,
-					ConversationID: userID,
-					LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+					ChannelIndex:    channelIndex,
+					Model:           chatReq.Model,
+					ConversationID:  userID,
+					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+					RequestLogStore: channelScheduler.GetRequestLogStore(),
 				},
 			)
 
@@ -250,10 +251,11 @@ func handleRoutedChat(
 			return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, routedBody)
 		},
 		common.AttemptLogContext{
-			ChannelIndex:   route.ChannelIndex,
-			Model:          chatReq.Model,
-			ConversationID: userID,
-			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+			ChannelIndex:    route.ChannelIndex,
+			Model:           chatReq.Model,
+			ConversationID:  userID,
+			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+			RequestLogStore: channelScheduler.GetRequestLogStore(),
 		},
 	)
 	if handled {
@@ -364,10 +366,11 @@ func handleSingleChannel(
 			return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, bodyBytes)
 		},
 		common.AttemptLogContext{
-			ChannelIndex:   channelIndex,
-			Model:          chatReq.Model,
-			ConversationID: userID,
-			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+			ChannelIndex:    channelIndex,
+			Model:           chatReq.Model,
+			ConversationID:  userID,
+			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+			RequestLogStore: channelScheduler.GetRequestLogStore(),
 		},
 	)
 	if handled {
@@ -491,6 +494,7 @@ func handleSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig
 	}
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
+	common.MarkRequestLogFirstToken(c)
 	c.Data(resp.StatusCode, "application/json", bodyBytes)
 	return usage, nil
 }
@@ -520,6 +524,7 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 		if usage := extractChatUsageFromSSELine(line); usage != nil {
 			streamUsage = mergeChatUsage(streamUsage, usage)
 		}
+		common.MarkRequestLogFirstToken(c)
 		if _, err := c.Writer.Write([]byte(line + "\n")); err != nil {
 			return nil, err
 		}
@@ -665,8 +670,8 @@ func ImagesHandler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, c
 		}
 
 		model := extractImagesModel(c.GetHeader("Content-Type"), bodyBytes)
-		firstPrompt := common.ExtractPromptJSONField(bodyBytes, "prompt")
-		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindChat, common.ExtractConversationID(c, bodyBytes), model, firstPrompt, false)
+		prompts := common.ExtractPromptJSONFieldPrompts(bodyBytes, "prompt")
+		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindChat, common.ExtractConversationID(c, bodyBytes), model, prompts, false)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindChat)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Images")
@@ -742,10 +747,11 @@ func handleImagesMultiChannel(
 					return handleImagesSuccess(c, resp, envCfg, startTime)
 				},
 				common.AttemptLogContext{
-					ChannelIndex:   channelIndex,
-					Model:          model,
-					ConversationID: userID,
-					LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+					ChannelIndex:    channelIndex,
+					Model:           model,
+					ConversationID:  userID,
+					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+					RequestLogStore: channelScheduler.GetRequestLogStore(),
 				},
 			)
 
@@ -833,10 +839,11 @@ func handleImagesSingleChannel(
 			return handleImagesSuccess(c, resp, envCfg, startTime)
 		},
 		common.AttemptLogContext{
-			ChannelIndex:   channelIndex,
-			Model:          model,
-			ConversationID: userID,
-			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+			ChannelIndex:    channelIndex,
+			Model:           model,
+			ConversationID:  userID,
+			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+			RequestLogStore: channelScheduler.GetRequestLogStore(),
 		},
 	)
 	if handled {
@@ -1012,6 +1019,7 @@ func handleImagesSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 	if contentType == "" {
 		contentType = "application/json"
 	}
+	common.MarkRequestLogFirstToken(c)
 	c.Data(resp.StatusCode, contentType, bodyBytes)
 	return nil, nil
 }

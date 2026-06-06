@@ -45,13 +45,35 @@ type DeprioritizeKeyFunc func(apiKey string)
 type HandleSuccessFunc func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error)
 
 type AttemptLogContext struct {
-	ChannelIndex   int
-	Model          string
-	ConversationID string
-	LogStore       *metrics.ChannelLogStore
+	ChannelIndex    int
+	Model           string
+	ConversationID  string
+	LogStore        *metrics.ChannelLogStore
+	RequestLogStore *metrics.RequestLogStore
 }
 
 var attemptLogCounter uint64
+
+const requestLogFirstTokenAtKey = "__request_log_first_token_at"
+
+func ResetRequestLogFirstToken(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(requestLogFirstTokenAtKey, time.Time{})
+}
+
+func MarkRequestLogFirstToken(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	if value, ok := c.Get(requestLogFirstTokenAtKey); ok {
+		if markedAt, ok := value.(time.Time); ok && !markedAt.IsZero() {
+			return
+		}
+	}
+	c.Set(requestLogFirstTokenAtKey, time.Now())
+}
 
 // TryUpstreamWithAllKeys 尝试一个 upstream 的所有 BaseURL + Key（纯 failover）
 // 返回:
@@ -111,6 +133,7 @@ func TryUpstreamWithAllKeys(
 
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			RestoreRequestBody(c, requestBody)
+			ResetRequestLogFirstToken(c)
 			attemptStart := time.Now()
 
 			apiKey, err := nextAPIKey(upstream, failedKeys)
@@ -141,7 +164,7 @@ func TryUpstreamWithAllKeys(
 				lastError = err
 				failedKeys[apiKey] = true
 				channelScheduler.RecordFailure(currentBaseURL, apiKey, kind)
-				recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "build_request", err.Error(), true, isStream, nil)
+				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "build_request", err.Error(), true, isStream, nil)
 				continue
 			}
 
@@ -159,7 +182,7 @@ func TryUpstreamWithAllKeys(
 					// 客户端取消：不计入失败，不触发 failover
 					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
-					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", 0, false, attemptStart, "client_cancelled", err.Error(), false, isStream, nil)
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", 0, false, attemptStart, "client_cancelled", err.Error(), false, isStream, nil)
 					log.Printf("[%s-Cancel] 请求已取消（SendRequest 阶段）", apiType)
 					return true, "", 0, nil, nil, err
 				}
@@ -171,7 +194,7 @@ func TryUpstreamWithAllKeys(
 				if markURLFailure != nil {
 					markURLFailure(currentBaseURL)
 				}
-				recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "network", err.Error(), true, isStream, nil)
+				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "network", err.Error(), true, isStream, nil)
 				log.Printf("[%s-Key] 警告: API密钥失败: %v", apiType, err)
 				continue
 			}
@@ -201,14 +224,14 @@ func TryUpstreamWithAllKeys(
 					if isQuotaRelated {
 						deprioritizeCandidates[apiKey] = true
 					}
-					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, isQuotaRelated), string(respBodyBytes), true, isStream, nil)
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, isQuotaRelated), string(respBodyBytes), true, isStream, nil)
 					continue
 				}
 
 				// 非 failover 错误，记录失败指标后返回（请求已处理）
 				metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
-				recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, false), string(respBodyBytes), false, isStream, nil)
+				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, false), string(respBodyBytes), false, isStream, nil)
 				c.Data(resp.StatusCode, "application/json", respBodyBytes)
 				return true, "", 0, nil, nil, nil
 			}
@@ -232,7 +255,7 @@ func TryUpstreamWithAllKeys(
 					// 客户端取消/断开：计入总请求数但不计入失败
 					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
-					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", resp.StatusCode, false, attemptStart, "client_cancelled", err.Error(), false, isStream, usage)
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", resp.StatusCode, false, attemptStart, "client_cancelled", err.Error(), false, isStream, usage)
 					log.Printf("[%s-Cancel] 请求已取消，停止渠道 failover", apiType)
 				} else {
 					// 真实渠道故障：计入失败指标
@@ -240,7 +263,7 @@ func TryUpstreamWithAllKeys(
 					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
 					shouldRetryResponseProcessing := !c.Writer.Written()
-					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "response_processing", err.Error(), shouldRetryResponseProcessing, isStream, usage)
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "response_processing", err.Error(), shouldRetryResponseProcessing, isStream, usage)
 					log.Printf("[%s-Key] 警告: 响应处理失败: %v", apiType, err)
 					if shouldRetryResponseProcessing {
 						failedKeys[apiKey] = true
@@ -259,7 +282,7 @@ func TryUpstreamWithAllKeys(
 
 			metricsManager.RecordRequestFinalizeSuccess(currentBaseURL, apiKey, requestID, usage)
 			channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
-			recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "completed", resp.StatusCode, true, attemptStart, "", "", false, isStream, usage)
+			recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "completed", resp.StatusCode, true, attemptStart, "", "", false, isStream, usage)
 			return true, apiKey, originalIdx, nil, usage, nil
 		}
 
@@ -288,6 +311,7 @@ func recordConversationAttempt(channelScheduler *scheduler.ChannelScheduler, kin
 }
 
 func recordAttemptLog(
+	c *gin.Context,
 	logCtx AttemptLogContext,
 	upstream *config.UpstreamConfig,
 	apiType string,
@@ -304,40 +328,99 @@ func recordAttemptLog(
 	isStream bool,
 	usage *types.Usage,
 ) {
-	if logCtx.LogStore == nil {
+	if logCtx.LogStore == nil && logCtx.RequestLogStore == nil {
 		return
 	}
 
 	channelName := ""
+	resolvedModel := logCtx.Model
 	if upstream != nil {
 		channelName = upstream.Name
+		resolvedModel = config.ResolveUpstreamModel(logCtx.Model, upstream)
 	}
+	transform := ""
+	if strings.TrimSpace(logCtx.Model) != "" && strings.TrimSpace(resolvedModel) != "" && logCtx.Model != resolvedModel {
+		transform = logCtx.Model + " -> " + resolvedModel
+	}
+	timestamp := time.Now().Format(time.RFC3339Nano)
+	attemptID := nextAttemptLogID("attempt")
+	durationMs := time.Since(start).Milliseconds()
+	errorMessage = truncateLogMessage(errorMessage, 500)
 
-	logCtx.LogStore.Record(&metrics.ChannelLog{
-		RequestID:             requestID,
-		AttemptID:             nextAttemptLogID("attempt"),
-		Timestamp:             time.Now().Format(time.RFC3339Nano),
-		Status:                status,
-		StatusCode:            statusCode,
-		Success:               success,
-		DurationMs:            time.Since(start).Milliseconds(),
-		APIType:               apiType,
-		Model:                 logCtx.Model,
-		InputTokens:           usageInputTokens(usage),
-		OutputTokens:          usageOutputTokens(usage),
-		CacheCreationTokens:   usageCacheCreationTokens(usage),
-		CacheReadTokens:       usageCacheReadTokens(usage),
-		CacheCreation5mTokens: usageCacheCreation5mTokens(usage),
-		CacheCreation1hTokens: usageCacheCreation1hTokens(usage),
-		ChannelIndex:          logCtx.ChannelIndex,
-		ChannelName:           channelName,
-		BaseURL:               baseURL,
-		KeyMask:               utils.MaskAPIKey(apiKey),
-		ErrorType:             errorType,
-		ErrorMessage:          truncateLogMessage(errorMessage, 500),
-		Retried:               retried,
-		Stream:                isStream,
-	})
+	if logCtx.LogStore != nil {
+		logCtx.LogStore.Record(&metrics.ChannelLog{
+			RequestID:             requestID,
+			AttemptID:             attemptID,
+			Timestamp:             timestamp,
+			Status:                status,
+			StatusCode:            statusCode,
+			Success:               success,
+			DurationMs:            durationMs,
+			APIType:               apiType,
+			Model:                 logCtx.Model,
+			InputTokens:           usageInputTokens(usage),
+			OutputTokens:          usageOutputTokens(usage),
+			CacheCreationTokens:   usageCacheCreationTokens(usage),
+			CacheReadTokens:       usageCacheReadTokens(usage),
+			CacheCreation5mTokens: usageCacheCreation5mTokens(usage),
+			CacheCreation1hTokens: usageCacheCreation1hTokens(usage),
+			ChannelIndex:          logCtx.ChannelIndex,
+			ChannelName:           channelName,
+			BaseURL:               baseURL,
+			KeyMask:               utils.MaskAPIKey(apiKey),
+			ErrorType:             errorType,
+			ErrorMessage:          errorMessage,
+			Retried:               retried,
+			Stream:                isStream,
+		})
+	}
+	if logCtx.RequestLogStore != nil {
+		logCtx.RequestLogStore.Record(metrics.RequestLogEntry{
+			RequestID:             requestID,
+			AttemptID:             attemptID,
+			Timestamp:             timestamp,
+			APIType:               apiType,
+			Status:                status,
+			StatusCode:            statusCode,
+			Success:               success,
+			DurationMs:            durationMs,
+			FirstTokenMs:          requestLogFirstTokenMs(c, start),
+			Model:                 logCtx.Model,
+			ResolvedModel:         resolvedModel,
+			Transform:             transform,
+			InputTokens:           usageInputTokens(usage),
+			OutputTokens:          usageOutputTokens(usage),
+			CacheCreationTokens:   usageCacheCreationTokens(usage),
+			CacheReadTokens:       usageCacheReadTokens(usage),
+			CacheCreation5mTokens: usageCacheCreation5mTokens(usage),
+			CacheCreation1hTokens: usageCacheCreation1hTokens(usage),
+			CacheTTL:              usageCacheTTL(usage),
+			ChannelIndex:          logCtx.ChannelIndex,
+			ChannelName:           channelName,
+			BaseURL:               baseURL,
+			KeyMask:               utils.MaskAPIKey(apiKey),
+			ErrorType:             errorType,
+			ErrorMessage:          errorMessage,
+			Retried:               retried,
+			Stream:                isStream,
+			ConversationID:        logCtx.ConversationID,
+		})
+	}
+}
+
+func requestLogFirstTokenMs(c *gin.Context, start time.Time) int64 {
+	if c == nil {
+		return 0
+	}
+	value, ok := c.Get(requestLogFirstTokenAtKey)
+	if !ok {
+		return 0
+	}
+	markedAt, ok := value.(time.Time)
+	if !ok || markedAt.IsZero() || markedAt.Before(start) {
+		return 0
+	}
+	return markedAt.Sub(start).Milliseconds()
 }
 
 func usageInputTokens(usage *types.Usage) int {
@@ -389,6 +472,13 @@ func usageCacheCreation1hTokens(usage *types.Usage) int {
 		return 0
 	}
 	return usage.CacheCreation1hInputTokens
+}
+
+func usageCacheTTL(usage *types.Usage) string {
+	if usage == nil {
+		return ""
+	}
+	return usage.CacheTTL
 }
 
 func nextAttemptLogID(prefix string) string {

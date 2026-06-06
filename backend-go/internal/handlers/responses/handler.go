@@ -64,8 +64,8 @@ func Handler(
 		}
 
 		// 提取对话标识
-		firstPrompt := common.ExtractFirstPromptFromResponsesInput(responsesReq.Input)
-		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindResponses, common.ExtractConversationID(c, bodyBytes), responsesReq.Model, firstPrompt, responsesReq.Stream)
+		prompts := common.ExtractPromptsFromResponsesInput(responsesReq.Input)
+		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindResponses, common.ExtractConversationID(c, bodyBytes), responsesReq.Model, prompts, responsesReq.Stream)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindResponses)
 
 		// 记录原始请求信息（仅在入口处记录一次）
@@ -151,10 +151,11 @@ func handleMultiChannel(
 					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
 				},
 				common.AttemptLogContext{
-					ChannelIndex:   channelIndex,
-					Model:          responsesReq.Model,
-					ConversationID: userID,
-					LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
+					ChannelIndex:    channelIndex,
+					Model:           responsesReq.Model,
+					ConversationID:  userID,
+					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
+					RequestLogStore: channelScheduler.GetRequestLogStore(),
 				},
 			)
 
@@ -259,10 +260,11 @@ func handleSingleChannel(
 			return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
 		},
 		common.AttemptLogContext{
-			ChannelIndex:   channelIndex,
-			Model:          responsesReq.Model,
-			ConversationID: userID,
-			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
+			ChannelIndex:    channelIndex,
+			Model:           responsesReq.Model,
+			ConversationID:  userID,
+			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
+			RequestLogStore: channelScheduler.GetRequestLogStore(),
 		},
 	)
 	if handled {
@@ -372,6 +374,7 @@ func handleSuccess(
 	}
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
+	common.MarkRequestLogFirstToken(c)
 	c.JSON(200, responsesResp)
 
 	// 返回 usage 数据用于指标记录
@@ -631,6 +634,7 @@ func handleStreamSuccess(
 
 			// 转发给客户端
 			if !clientGone {
+				common.MarkRequestLogFirstToken(c)
 				_, err := c.Writer.Write([]byte(eventToSend))
 				if err != nil {
 					clientGone = true

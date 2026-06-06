@@ -17,6 +17,17 @@ func ObserveConversation(
 	firstPrompt string,
 	stream bool,
 ) string {
+	return ObserveConversationPrompts(channelScheduler, kind, conversationID, model, []string{firstPrompt}, stream)
+}
+
+func ObserveConversationPrompts(
+	channelScheduler *scheduler.ChannelScheduler,
+	kind scheduler.ChannelKind,
+	conversationID string,
+	model string,
+	prompts []string,
+	stream bool,
+) string {
 	if channelScheduler == nil {
 		return conversationID
 	}
@@ -25,6 +36,10 @@ func ObserveConversation(
 		return conversationID
 	}
 
+	firstPrompt := ""
+	if len(prompts) > 0 {
+		firstPrompt = prompts[0]
+	}
 	fallbackKey := buildConversationFallbackKey(model, firstPrompt)
 	record := registry.ObserveRequest(conversation.Observation{
 		APIKind:        string(kind),
@@ -33,6 +48,7 @@ func ObserveConversation(
 		ConversationID: conversationID,
 		FallbackKey:    fallbackKey,
 		FirstPrompt:    firstPrompt,
+		Prompts:        prompts,
 	})
 	if record == nil {
 		return conversationID

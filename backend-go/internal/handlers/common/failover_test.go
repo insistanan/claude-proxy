@@ -736,3 +736,51 @@ func TestShouldRetryWithNextKey_SensitiveWordsDetected(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanAndExtractRealPrompt(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{
+			name:   "empty",
+			input:  "",
+			expect: "",
+		},
+		{
+			name:   "normal user prompt",
+			input:  "Who are you?",
+			expect: "Who are you?",
+		},
+		{
+			name:   "cursor environment tags",
+			input:  "<user_info>\nOS Version: win32 10.0.26100\nShell: powershell\n</user_info>\n<user_query>\nWho are you?\n</user_query>",
+			expect: "Who are you?",
+		},
+		{
+			name:   "contains system reminder and user query",
+			input:  "<system_reminder>\nBe polite.\n</system_reminder>\n<user_query>\nHello!\n</user_query>",
+			expect: "Hello!",
+		},
+		{
+			name:   "nested tags stripped",
+			input:  "<user_info>some system info</user_info>Who are you?",
+			expect: "Who are you?",
+		},
+		{
+			name:   "nested agent notification stripped",
+			input:  "<agent_notification>something</agent_notification>Tell me a joke",
+			expect: "Tell me a joke",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cleanAndExtractRealPrompt(tt.input)
+			if got != tt.expect {
+				t.Errorf("cleanAndExtractRealPrompt(%q) = %q, want %q", tt.input, got, tt.expect)
+			}
+		})
+	}
+}

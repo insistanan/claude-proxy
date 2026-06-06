@@ -27,6 +27,7 @@ type ChannelScheduler struct {
 	responsesChannelLogStore *metrics.ChannelLogStore
 	geminiChannelLogStore    *metrics.ChannelLogStore
 	chatChannelLogStore      *metrics.ChannelLogStore
+	requestLogStore          *metrics.RequestLogStore
 	traceAffinity            *session.TraceAffinityManager
 	conversationRegistry     *conversation.Registry
 	urlManager               *warmup.URLManager // URL 管理器（非阻塞，动态排序）
@@ -94,6 +95,24 @@ func (s *ChannelScheduler) GetChannelLogStore(kind ChannelKind) *metrics.Channel
 	default:
 		return s.messagesChannelLogStore
 	}
+}
+
+func (s *ChannelScheduler) SetRequestLogStore(store *metrics.RequestLogStore) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requestLogStore = store
+}
+
+func (s *ChannelScheduler) GetRequestLogStore() *metrics.RequestLogStore {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.requestLogStore
 }
 
 func (s *ChannelScheduler) SetConversationRegistry(registry *conversation.Registry) {

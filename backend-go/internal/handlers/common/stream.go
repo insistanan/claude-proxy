@@ -136,6 +136,14 @@ func ProcessStreamEvents(
 ) (*types.Usage, error) {
 	for {
 		select {
+		case <-c.Request.Context().Done():
+			ctx.ClientGone = true
+			if envCfg.ShouldLog("info") {
+				log.Printf("[Messages-Stream] 客户端上下文已取消: %v", c.Request.Context().Err())
+			}
+			logPartialResponse(ctx, envCfg)
+			return nil, c.Request.Context().Err()
+
 		case event, ok := <-eventChan:
 			if !ok {
 				usage := logStreamCompletion(ctx, envCfg, startTime)
@@ -145,6 +153,7 @@ func ProcessStreamEvents(
 
 		case err, ok := <-errChan:
 			if !ok {
+				errChan = nil
 				continue
 			}
 			if err != nil {
@@ -248,6 +257,7 @@ func ProcessStreamEvent(
 		if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
 			log.Printf("[Messages-Stream-Token] 上游无usage, 注入本地估算事件")
 		}
+		MarkRequestLogFirstToken(c)
 		w.Write([]byte(usageEvent))
 		flusher.Flush()
 		ctx.HasUsage = true
@@ -263,6 +273,7 @@ func ProcessStreamEvent(
 			if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
 				log.Printf("[Messages-Stream-Patch] 上游缺少 message_start，自动注入")
 			}
+			MarkRequestLogFirstToken(c)
 			w.Write([]byte(syntheticStart))
 			flusher.Flush()
 			ctx.SeenMessageStart = true
@@ -348,6 +359,7 @@ func ProcessStreamEvent(
 
 	// 转发给客户端
 	if !ctx.ClientGone {
+		MarkRequestLogFirstToken(c)
 		if _, err := w.Write([]byte(eventToSend)); err != nil {
 			ctx.ClientGone = true
 			if !IsClientDisconnectError(err) {

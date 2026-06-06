@@ -83,8 +83,8 @@ func Handler(
 		isStream := strings.Contains(c.Request.URL.Path, "streamGenerateContent")
 
 		// 提取对话标识
-		firstPrompt := common.ExtractFirstPromptFromGemini(geminiReq.Contents)
-		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindGemini, common.ExtractConversationID(c, bodyBytes), model, firstPrompt, isStream)
+		prompts := common.ExtractPromptsFromGemini(geminiReq.Contents)
+		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindGemini, common.ExtractConversationID(c, bodyBytes), model, prompts, isStream)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindGemini)
 
 		// 记录原始请求信息
@@ -181,10 +181,11 @@ func handleMultiChannel(
 					return handleSuccess(c, resp, upstreamCopy.ServiceType, envCfg, startTime, geminiReq, model, isStream)
 				},
 				common.AttemptLogContext{
-					ChannelIndex:   channelIndex,
-					Model:          model,
-					ConversationID: userID,
-					LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
+					ChannelIndex:    channelIndex,
+					Model:           model,
+					ConversationID:  userID,
+					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
+					RequestLogStore: channelScheduler.GetRequestLogStore(),
 				},
 			)
 
@@ -297,10 +298,11 @@ func handleSingleChannel(
 			return handleSuccess(c, resp, upstreamCopy.ServiceType, envCfg, startTime, geminiReq, model, isStream)
 		},
 		common.AttemptLogContext{
-			ChannelIndex:   channelIndex,
-			Model:          model,
-			ConversationID: userID,
-			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
+			ChannelIndex:    channelIndex,
+			Model:           model,
+			ConversationID:  userID,
+			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
+			RequestLogStore: channelScheduler.GetRequestLogStore(),
 		},
 	)
 	if handled {
@@ -537,6 +539,7 @@ func handleSuccess(
 	case "gemini":
 		// 直接解析 Gemini 响应
 		if err := json.Unmarshal(bodyBytes, &geminiResp); err != nil {
+			common.MarkRequestLogFirstToken(c)
 			c.Data(resp.StatusCode, "application/json", bodyBytes)
 			return nil, nil
 		}
@@ -545,11 +548,13 @@ func handleSuccess(
 		// 转换 Claude 响应为 Gemini 格式
 		var claudeResp map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &claudeResp); err != nil {
+			common.MarkRequestLogFirstToken(c)
 			c.Data(resp.StatusCode, "application/json", bodyBytes)
 			return nil, nil
 		}
 		geminiResp, err = converters.ClaudeResponseToGemini(claudeResp)
 		if err != nil {
+			common.MarkRequestLogFirstToken(c)
 			c.Data(resp.StatusCode, "application/json", bodyBytes)
 			return nil, nil
 		}
@@ -558,17 +563,20 @@ func handleSuccess(
 		// 转换 OpenAI 响应为 Gemini 格式
 		var openaiResp map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &openaiResp); err != nil {
+			common.MarkRequestLogFirstToken(c)
 			c.Data(resp.StatusCode, "application/json", bodyBytes)
 			return nil, nil
 		}
 		geminiResp, err = converters.OpenAIResponseToGemini(openaiResp)
 		if err != nil {
+			common.MarkRequestLogFirstToken(c)
 			c.Data(resp.StatusCode, "application/json", bodyBytes)
 			return nil, nil
 		}
 
 	default:
 		// 默认直接返回
+		common.MarkRequestLogFirstToken(c)
 		c.Data(resp.StatusCode, "application/json", bodyBytes)
 		return nil, nil
 	}
@@ -576,18 +584,21 @@ func handleSuccess(
 	// 返回 Gemini 格式响应
 	respBytes, err := json.Marshal(geminiResp)
 	if err != nil {
+		common.MarkRequestLogFirstToken(c)
 		c.Data(resp.StatusCode, "application/json", bodyBytes)
 		return nil, nil
 	}
 
+	common.MarkRequestLogFirstToken(c)
 	c.Data(resp.StatusCode, "application/json", respBytes)
 
 	// 提取 usage 统计
 	var usage *types.Usage
 	if geminiResp.UsageMetadata != nil {
 		usage = &types.Usage{
-			InputTokens:  geminiResp.UsageMetadata.PromptTokenCount - geminiResp.UsageMetadata.CachedContentTokenCount,
-			OutputTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
+			InputTokens:          geminiResp.UsageMetadata.PromptTokenCount - geminiResp.UsageMetadata.CachedContentTokenCount,
+			OutputTokens:         geminiResp.UsageMetadata.CandidatesTokenCount,
+			CacheReadInputTokens: geminiResp.UsageMetadata.CachedContentTokenCount,
 		}
 	}
 

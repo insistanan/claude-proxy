@@ -90,6 +90,10 @@
           <router-link to="/conversations" class="api-type-text" :class="{ active: topNavActive === 'conversations' }">
             对话
           </router-link>
+          <span class="api-type-text separator">/</span>
+          <router-link to="/logs" class="api-type-text" :class="{ active: topNavActive === 'logs' }">
+            日志
+          </router-link>
           <span class="brand-text d-none d-sm-inline">API Proxy</span>
         </div>
       </div>
@@ -156,7 +160,7 @@
     <!-- 主要内容 -->
     <v-main>
       <v-container fluid class="pa-4 pa-md-6">
-        <template v-if="isAuthenticated && !isConversationPage">
+        <template v-if="isAuthenticated && !isStandalonePage">
         <!-- 全局统计顶部可折叠卡片（根据当前 Tab 显示对应统计） -->
         <v-card class="mb-4 global-stats-panel">
           <div
@@ -380,6 +384,8 @@ const authStore = useAuthStore()
 const channelStore = useChannelStore()
 const route = useRoute()
 const isConversationPage = computed(() => route.name === 'conversations')
+const isLogsPage = computed(() => route.name === 'request-logs')
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -399,6 +405,9 @@ const systemStore = useSystemStore()
 const topNavActive = computed(() => {
   if (isConversationPage.value) {
     return 'conversations'
+  }
+  if (isLogsPage.value) {
+    return 'logs'
   }
   const type = route.params.type
   return typeof type === 'string' ? type : 'messages'

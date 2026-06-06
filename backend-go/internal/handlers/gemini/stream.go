@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/gin-gonic/gin"
 )
@@ -80,16 +81,20 @@ func streamGeminiToGemini(
 			if err := json.Unmarshal([]byte(jsonData), &chunk); err == nil {
 				if chunk.UsageMetadata != nil {
 					totalUsage = &types.Usage{
-						InputTokens:  chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount,
-						OutputTokens: chunk.UsageMetadata.CandidatesTokenCount,
+						InputTokens:          chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount,
+						OutputTokens:         chunk.UsageMetadata.CandidatesTokenCount,
+						CacheReadInputTokens: chunk.UsageMetadata.CachedContentTokenCount,
 					}
 				}
 			}
 
+			common.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "%s\n", line)
 		} else if line != "" {
+			common.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "%s\n", line)
 		} else {
+			common.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "\n")
 		}
 
@@ -161,6 +166,7 @@ func streamClaudeToGemini(
 				}
 
 				chunkBytes, _ := json.Marshal(geminiChunk)
+				common.MarkRequestLogFirstToken(c)
 				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 				if flusher != nil {
 					flusher.Flush()
@@ -172,15 +178,35 @@ func streamClaudeToGemini(
 			if usage, ok := event["usage"].(map[string]interface{}); ok {
 				inputTokens := 0
 				outputTokens := 0
+				cacheCreationTokens := 0
+				cacheReadTokens := 0
+				cacheCreation5mTokens := 0
+				cacheCreation1hTokens := 0
 				if v, ok := usage["input_tokens"].(float64); ok {
 					inputTokens = int(v)
 				}
 				if v, ok := usage["output_tokens"].(float64); ok {
 					outputTokens = int(v)
 				}
+				if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
+					cacheCreationTokens = int(v)
+				}
+				if v, ok := usage["cache_read_input_tokens"].(float64); ok {
+					cacheReadTokens = int(v)
+				}
+				if v, ok := usage["cache_creation_5m_input_tokens"].(float64); ok {
+					cacheCreation5mTokens = int(v)
+				}
+				if v, ok := usage["cache_creation_1h_input_tokens"].(float64); ok {
+					cacheCreation1hTokens = int(v)
+				}
 				totalUsage = &types.Usage{
-					InputTokens:  inputTokens,
-					OutputTokens: outputTokens,
+					InputTokens:                inputTokens,
+					OutputTokens:               outputTokens,
+					CacheCreationInputTokens:   cacheCreationTokens,
+					CacheReadInputTokens:       cacheReadTokens,
+					CacheCreation5mInputTokens: cacheCreation5mTokens,
+					CacheCreation1hInputTokens: cacheCreation1hTokens,
 				}
 
 				// 发送带 finishReason 和 usage 的最终块
@@ -197,6 +223,7 @@ func streamClaudeToGemini(
 					},
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
+				common.MarkRequestLogFirstToken(c)
 				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 				if flusher != nil {
 					flusher.Flush()
@@ -265,6 +292,7 @@ func streamOpenAIToGemini(
 					},
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
+				common.MarkRequestLogFirstToken(c)
 				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 				if flusher != nil {
 					flusher.Flush()
@@ -295,6 +323,7 @@ func streamOpenAIToGemini(
 					},
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
+				common.MarkRequestLogFirstToken(c)
 				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 				if flusher != nil {
 					flusher.Flush()
@@ -322,6 +351,7 @@ func streamOpenAIToGemini(
 			}
 
 			chunkBytes, _ := json.Marshal(geminiChunk)
+			common.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 			if flusher != nil {
 				flusher.Flush()
@@ -339,6 +369,7 @@ func streamOpenAIToGemini(
 				},
 			}
 			chunkBytes, _ := json.Marshal(geminiChunk)
+			common.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 			if flusher != nil {
 				flusher.Flush()

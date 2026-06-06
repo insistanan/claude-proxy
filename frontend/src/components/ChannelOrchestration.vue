@@ -690,19 +690,22 @@
       </v-card>
     </v-dialog>
 
-    <v-dialog v-model="showLogsDialog" max-width="1100">
-      <v-card>
-        <v-card-title class="d-flex align-center justify-space-between">
-          <div class="d-flex align-center">
-            <v-icon class="mr-2">mdi-text-box-search-outline</v-icon>
-            <span>{{ logsChannel?.name || '渠道' }} 请求日志</span>
+    <v-dialog v-model="showLogsDialog" max-width="1280">
+      <v-card class="channel-logs-dialog-card">
+        <v-card-title class="channel-logs-title">
+          <div class="channel-logs-title-main">
+            <v-icon size="20" color="primary">mdi-text-box-search-outline</v-icon>
+            <div class="channel-logs-title-text">
+              <span>{{ logsChannel?.name || '渠道' }} 请求日志</span>
+              <span class="channel-logs-subtitle">{{ channelLogs.length }} 条记录</span>
+            </div>
           </div>
           <v-btn icon variant="text" size="small" @click="closeLogsDialog">
             <v-icon>mdi-close</v-icon>
           </v-btn>
         </v-card-title>
         <v-divider />
-        <v-card-text>
+        <v-card-text class="channel-logs-dialog-body">
           <div v-if="isLoadingLogs" class="d-flex align-center justify-center py-8">
             <v-progress-circular indeterminate color="primary" />
           </div>
@@ -710,8 +713,8 @@
             {{ logsError }}
           </v-alert>
           <div v-else>
-            <div v-if="channelLogs.length > 0" class="log-trend-panel mb-4">
-              <div class="d-flex align-center justify-space-between mb-2">
+            <div v-if="channelLogs.length > 0" class="log-trend-panel">
+              <div class="log-trend-header">
                 <div class="text-subtitle-2 font-weight-bold">调用用量趋势</div>
                 <div class="text-caption text-medium-emphasis">
                   按分钟聚合，展示请求数、Token I/O 和缓存 R/W
@@ -719,60 +722,77 @@
               </div>
               <apexchart
                 type="line"
-                height="240"
+                height="220"
                 :options="logTrendChartOptions"
                 :series="logTrendSeries"
               />
             </div>
 
-          <v-table density="compact" class="channel-logs-table">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>状态</th>
-                <th>模型</th>
-                <th>Token I/O</th>
-                <th>缓存 R/W</th>
-                <th>上游</th>
-                <th>Key</th>
-                <th>耗时</th>
-                <th>失败明细</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="channelLogs.length === 0">
-                <td colspan="9" class="text-center text-medium-emphasis py-6">暂无请求日志</td>
-              </tr>
-              <tr v-for="log in channelLogs" :key="log.attemptId">
-                <td class="text-no-wrap">{{ formatLogTime(log.timestamp) }}</td>
-                <td>
-                  <v-chip size="x-small" :color="getLogStatusColor(log.status)" variant="tonal">
-                    {{ formatLogStatus(log.status, log.statusCode) }}
-                  </v-chip>
-                </td>
-                <td class="log-model">{{ log.model || '--' }}</td>
-                <td class="text-no-wrap">
-                  <span class="font-weight-medium">{{ formatLogTokenPair(log.inputTokens, log.outputTokens) }}</span>
-                </td>
-                <td class="text-no-wrap">
-                  <span class="font-weight-medium">{{ formatLogTokenPair(log.cacheCreationTokens, log.cacheReadTokens) }}</span>
-                  <div v-if="(log.cacheCreation5mTokens || 0) + (log.cacheCreation1hTokens || 0) > 0" class="text-caption text-medium-emphasis">
-                    5m {{ formatNumber(log.cacheCreation5mTokens) }} / 1h {{ formatNumber(log.cacheCreation1hTokens) }}
-                  </div>
-                </td>
-                <td class="log-base-url">{{ log.baseUrl }}</td>
-                <td class="text-no-wrap">{{ log.keyMask }}</td>
-                <td class="text-no-wrap">{{ log.durationMs }}ms</td>
-                <td class="log-error">
-                  <template v-if="log.errorType || log.errorMessage">
-                    <div class="font-weight-medium">{{ log.errorType || 'error' }}</div>
-                    <div class="text-caption text-medium-emphasis">{{ log.errorMessage }}</div>
-                  </template>
-                  <span v-else class="text-medium-emphasis">--</span>
-                </td>
-              </tr>
-            </tbody>
-          </v-table>
+            <div class="channel-logs-table-shell">
+              <v-table density="compact" class="channel-logs-table">
+                <colgroup>
+                  <col class="log-col-time">
+                  <col class="log-col-status">
+                  <col class="log-col-model">
+                  <col class="log-col-token">
+                  <col class="log-col-cache">
+                  <col class="log-col-upstream">
+                  <col class="log-col-key">
+                  <col class="log-col-duration">
+                  <col class="log-col-error">
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>状态</th>
+                    <th>模型</th>
+                    <th>Token I/O</th>
+                    <th>缓存 R/W</th>
+                    <th>上游</th>
+                    <th>Key</th>
+                    <th>耗时</th>
+                    <th>失败明细</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-if="channelLogs.length === 0">
+                    <td colspan="9" class="text-center text-medium-emphasis py-6">暂无请求日志</td>
+                  </tr>
+                  <tr v-for="log in channelLogs" :key="log.attemptId">
+                    <td class="log-time-cell">{{ formatLogTime(log.timestamp) }}</td>
+                    <td>
+                      <v-chip size="x-small" :color="getLogStatusColor(log.status)" variant="tonal">
+                        {{ formatLogStatus(log.status, log.statusCode) }}
+                      </v-chip>
+                    </td>
+                    <td>
+                      <div class="log-model" :title="log.model || '--'">{{ log.model || '--' }}</div>
+                    </td>
+                    <td class="log-number-cell">
+                      {{ formatLogTokenPair(log.inputTokens, log.outputTokens) }}
+                    </td>
+                    <td class="log-number-cell">
+                      <div>{{ formatLogTokenPair(log.cacheCreationTokens, log.cacheReadTokens) }}</div>
+                      <div v-if="(log.cacheCreation5mTokens || 0) + (log.cacheCreation1hTokens || 0) > 0" class="log-cell-note">
+                        5m {{ formatNumber(log.cacheCreation5mTokens) }} / 1h {{ formatNumber(log.cacheCreation1hTokens) }}
+                      </div>
+                    </td>
+                    <td>
+                      <div class="log-base-url" :title="log.baseUrl">{{ formatLogBaseUrl(log.baseUrl) }}</div>
+                    </td>
+                    <td class="log-key-cell">{{ log.keyMask }}</td>
+                    <td class="log-duration-cell">{{ formatDurationMs(log.durationMs) }}</td>
+                    <td>
+                      <div v-if="log.errorType || log.errorMessage" class="log-error" :title="formatLogError(log)">
+                        <div class="log-error-type">{{ log.errorType || 'error' }}</div>
+                        <div class="log-error-message">{{ log.errorMessage || '--' }}</div>
+                      </div>
+                      <span v-else class="text-medium-emphasis">--</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </v-table>
+            </div>
           </div>
         </v-card-text>
       </v-card>
@@ -1731,7 +1751,36 @@ const getLogStatusColor = (status: string): string => {
 }
 
 const formatLogStatus = (status: string, statusCode?: number): string => {
-  return statusCode ? `${status} ${statusCode}` : status
+  const labels: Record<string, string> = {
+    completed: '成功',
+    failed: '失败',
+    cancelled: '取消'
+  }
+  const label = labels[status] || status || '--'
+  return statusCode ? `${label} ${statusCode}` : label
+}
+
+const formatLogBaseUrl = (value?: string): string => {
+  const raw = String(value || '').trim()
+  if (!raw) return '--'
+  try {
+    const url = new URL(raw)
+    const path = url.pathname && url.pathname !== '/' ? url.pathname : ''
+    return `${url.host}${path}`
+  } catch {
+    return raw
+  }
+}
+
+const formatDurationMs = (value?: number): string => {
+  const numeric = Number(value ?? 0)
+  if (!Number.isFinite(numeric) || numeric <= 0) return '0ms'
+  if (numeric >= 1000) return `${(numeric / 1000).toFixed(numeric >= 10000 ? 0 : 1)}s`
+  return `${Math.round(numeric)}ms`
+}
+
+const formatLogError = (log: ChannelLogEntry): string => {
+  return [log.errorType, log.errorMessage].filter(Boolean).join('\n') || '--'
 }
 
 const formatNumber = (value?: number): string => {
@@ -2343,18 +2392,6 @@ defineExpose({
   color: rgb(var(--v-theme-on-surface));
 }
 
-.channel-logs-table {
-  max-height: 70vh;
-  overflow: auto;
-}
-
-.log-trend-panel {
-  border: 1px solid rgba(var(--v-theme-outline), 0.18);
-  border-radius: 12px;
-  padding: 12px;
-  background: rgba(var(--v-theme-surface-variant), 0.28);
-}
-
 .model-preview-chip {
   max-width: 260px;
   overflow: hidden;
@@ -2366,21 +2403,192 @@ defineExpose({
   white-space: nowrap;
 }
 
+.channel-logs-dialog-card {
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+
+.channel-logs-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+}
+
+.channel-logs-title-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.channel-logs-title-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.channel-logs-subtitle {
+  color: rgba(var(--v-theme-on-surface), 0.58);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.channel-logs-dialog-body {
+  overflow: auto;
+  padding: 16px 18px 18px;
+}
+
+.log-trend-panel {
+  border: 1px solid rgba(var(--v-theme-outline), 0.16);
+  border-radius: 8px;
+  padding: 12px 14px 4px;
+  margin-bottom: 14px;
+  background: rgba(var(--v-theme-surface-variant), 0.22);
+}
+
+.log-trend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.channel-logs-table-shell {
+  max-height: min(46vh, 520px);
+  overflow: auto;
+  border: 1px solid rgba(var(--v-theme-outline), 0.16);
+  border-radius: 8px;
+  background: rgb(var(--v-theme-surface));
+}
+
+.channel-logs-table {
+  min-width: 1160px;
+}
+
+.channel-logs-table :deep(table) {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.log-col-time {
+  width: 172px;
+}
+
+.log-col-status {
+  width: 108px;
+}
+
+.log-col-model {
+  width: 150px;
+}
+
+.log-col-token {
+  width: 116px;
+}
+
+.log-col-cache {
+  width: 142px;
+}
+
+.log-col-upstream {
+  width: 210px;
+}
+
+.log-col-key {
+  width: 142px;
+}
+
+.log-col-duration {
+  width: 90px;
+}
+
+.log-col-error {
+  width: 230px;
+}
+
 .channel-logs-table th,
 .channel-logs-table td {
-  vertical-align: top;
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
-.log-client,
-.log-model,
-.log-base-url,
-.log-error {
-  max-width: 260px;
-  overflow-wrap: anywhere;
-}
-
-.log-base-url {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+.channel-logs-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.62);
   font-size: 12px;
+  font-weight: 700;
+  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.16);
+}
+
+.channel-logs-table td {
+  height: 48px;
+  color: rgba(var(--v-theme-on-surface), 0.86);
+  font-size: 13px;
+  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.1);
+}
+
+.log-time-cell,
+.log-key-cell,
+.log-duration-cell,
+.log-number-cell,
+.log-base-url {
+  font-variant-numeric: tabular-nums;
+}
+
+.log-key-cell,
+.log-duration-cell,
+.log-number-cell,
+.log-base-url,
+.log-model {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.log-model,
+.log-base-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-error {
+  min-width: 0;
+}
+
+.log-error-type {
+  overflow: hidden;
+  color: rgb(var(--v-theme-error));
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-error-message {
+  display: -webkit-box;
+  overflow: hidden;
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.log-cell-note {
+  color: rgba(var(--v-theme-on-surface), 0.58);
+  font-size: 11px;
+  line-height: 1.3;
 }
 </style>

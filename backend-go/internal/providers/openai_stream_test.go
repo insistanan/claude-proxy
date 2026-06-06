@@ -89,3 +89,64 @@ func TestOpenAIProviderHandleStreamResponse_MapsCachedUsage(t *testing.T) {
 		t.Fatalf("missing input_tokens_details.cached_tokens; events:\n%s", got)
 	}
 }
+
+func TestOpenAIProviderHandleStreamResponse_StreamsToolCallArguments(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl_test","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_test","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"run_command","arguments":"{"}}]},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_test","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"cmd\":\"pwd\""}}]},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_test","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_test","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		``,
+	}, "\n")
+
+	p := &OpenAIProvider{}
+	eventChan, errChan, err := p.HandleStreamResponse(io.NopCloser(strings.NewReader(body)))
+	if err != nil {
+		t.Fatalf("HandleStreamResponse() err = %v", err)
+	}
+
+	var events strings.Builder
+	for event := range eventChan {
+		events.WriteString(event)
+	}
+	select {
+	case err := <-errChan:
+		if err != nil {
+			t.Fatalf("stream err = %v", err)
+		}
+	default:
+	}
+
+	got := events.String()
+	if !strings.Contains(got, `"type":"tool_use"`) {
+		t.Fatalf("missing streamed tool_use start event:\n%s", got)
+	}
+	if !strings.Contains(got, `"input":{}`) {
+		t.Fatalf("missing initial tool_use input object:\n%s", got)
+	}
+	if count := strings.Count(got, `"type":"input_json_delta"`); count != 3 {
+		t.Fatalf("input_json_delta count = %d, want 3; events:\n%s", count, got)
+	}
+	if strings.Index(got, `"type":"tool_use"`) > strings.Index(got, `"type":"input_json_delta"`) {
+		t.Fatalf("tool_use start should precede argument deltas:\n%s", got)
+	}
+}
+
+func TestProcessToolUsePartIncludesInitialInputObject(t *testing.T) {
+	events := strings.Join(processToolUsePart("call_1", "edit_file", map[string]interface{}{"path": "main.go"}, 0), "")
+
+	if !strings.Contains(events, `"type":"tool_use"`) {
+		t.Fatalf("missing tool_use start event:\n%s", events)
+	}
+	if !strings.Contains(events, `"input":{}`) {
+		t.Fatalf("missing initial tool_use input object:\n%s", events)
+	}
+	if !strings.Contains(events, `"type":"input_json_delta"`) {
+		t.Fatalf("missing input_json_delta event:\n%s", events)
+	}
+}

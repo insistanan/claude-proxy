@@ -53,8 +53,8 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		hasImage := utils.DetectImageContent(bodyBytes)
 
 		// 提取对话标识
-		firstPrompt := common.ExtractFirstPromptFromClaude(claudeReq.Messages)
-		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindMessages, common.ExtractUserID(bodyBytes), claudeReq.Model, firstPrompt, claudeReq.Stream)
+		prompts := common.ExtractPromptsFromClaude(claudeReq.Messages)
+		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindMessages, common.ExtractUserID(bodyBytes), claudeReq.Model, prompts, claudeReq.Stream)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindMessages)
 
 		// 记录原始请求信息（仅在入口处记录一次）
@@ -145,10 +145,11 @@ func handleMultiChannel(
 					return handleNormalResponse(c, resp, provider, envCfg, startTime, bodyBytes, upstreamCopy, apiKey)
 				},
 				common.AttemptLogContext{
-					ChannelIndex:   channelIndex,
-					Model:          claudeReq.Model,
-					ConversationID: userID,
-					LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
+					ChannelIndex:    channelIndex,
+					Model:           claudeReq.Model,
+					ConversationID:  userID,
+					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
+					RequestLogStore: channelScheduler.GetRequestLogStore(),
 				},
 			)
 
@@ -258,10 +259,11 @@ func handleSingleChannel(
 			return handleNormalResponse(c, resp, provider, envCfg, startTime, bodyBytes, upstreamCopy, apiKey)
 		},
 		common.AttemptLogContext{
-			ChannelIndex:   channelIndex,
-			Model:          claudeReq.Model,
-			ConversationID: userID,
-			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
+			ChannelIndex:    channelIndex,
+			Model:           claudeReq.Model,
+			ConversationID:  userID,
+			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
+			RequestLogStore: channelScheduler.GetRequestLogStore(),
 		},
 	)
 	if handled {
@@ -391,6 +393,7 @@ func handleNormalResponse(
 	// 转发上游响应头
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 
+	common.MarkRequestLogFirstToken(c)
 	c.JSON(200, claudeResp)
 
 	if envCfg.EnableResponseLogs {

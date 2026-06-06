@@ -221,6 +221,22 @@ export interface ChannelLogsResponse {
 
 export type ConversationKind = 'messages' | 'responses' | 'gemini' | 'chat'
 
+export interface RequestLogEntry extends ChannelLogEntry {
+  apiType: ConversationKind
+  entry?: 'claude' | 'codex' | 'gemini' | 'chat'
+  firstTokenMs?: number
+  resolvedModel?: string
+  transform?: string
+  cacheTTL?: string
+  tpm?: number
+  conversationId?: string
+}
+
+export interface RequestLogsResponse {
+  logs: RequestLogEntry[]
+  limit: number
+}
+
 export interface ConversationRouteOverride {
   kind: ConversationKind
   channelIndex: number
@@ -241,6 +257,7 @@ export interface ConversationEntry {
   lastModel?: string
   lastResolvedModel?: string
   firstPrompt?: string
+  prompts?: string[]
   stream: boolean
   isSending?: boolean
   firstSeenAt: string
@@ -801,6 +818,14 @@ class ApiService {
 
   async getChannelLogs(type: 'messages' | 'responses' | 'gemini' | 'chat', channelId: number): Promise<ChannelLogsResponse> {
     return this.request(`/${type}/channels/${channelId}/logs`)
+  }
+
+  async getRequestLogs(params: { type?: ConversationKind | ''; limit?: number } = {}): Promise<RequestLogsResponse> {
+    const search = new URLSearchParams()
+    if (params.type) search.set('type', params.type)
+    if (params.limit) search.set('limit', String(params.limit))
+    const query = search.toString()
+    return this.request(`/request-logs${query ? `?${query}` : ''}`)
   }
 
   async getConversations(params?: { q?: string; kind?: ConversationKind }): Promise<ConversationsResponse> {

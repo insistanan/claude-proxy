@@ -43,13 +43,26 @@
         item-key="id"
         density="compact"
       >
+        <template #item.id="{ item }">
+          <span class="clickable-id font-mono text-primary font-weight-bold" title="点击查看对话详情" @click="openDetailDialog(item)">
+            {{ item.id }}
+          </span>
+        </template>
+
         <template #item.apiKind="{ item }">
           <v-chip size="small" variant="tonal">{{ item.apiKind }}</v-chip>
         </template>
 
         <template #item.firstPrompt="{ item }">
-          <div v-if="item.firstPrompt" class="conversation-prompt" :title="item.firstPrompt">
-            {{ item.firstPrompt }}
+          <div v-if="conversationPrompts(item).length > 0" class="conversation-prompts clickable-prompt" title="点击查看对话详情" @click="openDetailDialog(item)">
+            <div
+              v-for="(prompt, idx) in conversationPrompts(item)"
+              :key="idx"
+              class="conversation-prompt-line"
+            >
+              <span class="prompt-index">{{ idx + 1 }}</span>
+              <span class="conversation-prompt-text">{{ prompt }}</span>
+            </div>
           </div>
           <span v-else class="text-medium-emphasis">--</span>
         </template>
@@ -146,6 +159,154 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- 详情 Dialog -->
+    <v-dialog v-model="detailDialog" max-width="720">
+      <v-card rounded="lg" class="pa-2">
+        <v-card-title class="d-flex align-center justify-between border-b pb-2">
+          <span class="text-h6 font-weight-bold">💬 对话可观测详情</span>
+          <v-spacer />
+          <v-btn icon="mdi-close" variant="text" size="small" @click="detailDialog = false" />
+        </v-card-title>
+        
+        <v-card-text class="pt-4 pb-2">
+          <!-- ID & Meta -->
+          <div class="d-flex flex-wrap align-center justify-space-between mb-4 ga-2">
+            <div class="d-flex align-center ga-2">
+              <span class="text-subtitle-1 font-weight-bold font-mono">{{ selectedConversation?.id }}</span>
+              <v-btn icon="mdi-content-copy" size="x-small" variant="text" color="primary" title="复制ID" @click="copyText(selectedConversation?.id || '')" />
+            </div>
+            <div class="d-flex align-center ga-2">
+              <v-chip size="small" color="primary" variant="tonal" class="text-uppercase">{{ selectedConversation?.apiKind }}</v-chip>
+              <v-chip v-if="selectedConversation?.isSending" size="small" color="success" variant="tonal" prepend-icon="mdi-loading" class="sending-chip">发送中</v-chip>
+              <v-chip v-else size="small" color="grey" variant="tonal">已完成/空闲</v-chip>
+            </div>
+          </div>
+
+          <!-- Grid Info -->
+          <v-row class="mb-2" dense>
+            <v-col cols="12" sm="6">
+              <div class="info-card">
+                <span class="info-label">请求模型</span>
+                <span class="info-value font-mono">{{ selectedConversation?.lastModel || '--' }}</span>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="6">
+              <div class="info-card">
+                <span class="info-label">实际路由模型</span>
+                <span class="info-value font-mono">{{ selectedConversation?.lastResolvedModel || '--' }}</span>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="6">
+              <div class="info-card">
+                <span class="info-label">首次看到时间</span>
+                <span class="info-value text-caption">{{ selectedConversation?.firstSeenAt ? new Date(selectedConversation.firstSeenAt).toLocaleString() : '--' }}</span>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="6">
+              <div class="info-card">
+                <span class="info-label">最近活动时间</span>
+                <span class="info-value text-caption">{{ selectedConversation?.lastSeenAt ? new Date(selectedConversation.lastSeenAt).toLocaleString() : '--' }}</span>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="4">
+              <div class="info-card text-center">
+                <span class="info-label">总请求次数</span>
+                <span class="info-value text-h6 text-primary">{{ selectedConversation?.requestCount || 0 }}</span>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="4">
+              <div class="info-card text-center">
+                <span class="info-label">总错误次数</span>
+                <span class="info-value text-h6 text-error">{{ selectedConversation?.errorCount || 0 }}</span>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="4">
+              <div class="info-card text-center">
+                <span class="info-label">固定渠道</span>
+                <span class="info-value text-body-2">
+                  <span v-if="selectedConversation?.routeOverride">
+                    #{{ selectedConversation.routeOverride.channelIndex }}
+                  </span>
+                  <span v-else class="text-medium-emphasis">默认调度</span>
+                </span>
+              </div>
+            </v-col>
+          </v-row>
+
+          <!-- 错误信息 (如果有) -->
+          <v-alert
+            v-if="selectedConversation?.lastError"
+            type="error"
+            variant="tonal"
+            icon="mdi-alert-circle"
+            title="最近一次请求报错"
+            class="mb-4 text-caption border-error border"
+            density="compact"
+          >
+            <div class="d-flex align-start justify-space-between mt-1">
+              <pre class="error-pre">{{ selectedConversation.lastError }}</pre>
+              <v-btn size="x-small" icon="mdi-content-copy" variant="text" color="error" title="复制报错" @click="copyText(selectedConversation.lastError || '')" />
+            </div>
+          </v-alert>
+
+          <!-- 提示词详情 -->
+          <div class="mt-4">
+            <div class="text-subtitle-2 font-weight-bold mb-3 d-flex align-center ga-2">
+              <span class="prompt-section-marker" aria-hidden="true"></span>
+              <span>对话提示词历史</span>
+            </div>
+            <div class="text-caption text-medium-emphasis mb-2">
+              最多保存该会话前 3 条不同的真实用户输入，以便快速识别会话内容
+            </div>
+
+            <!-- 无提示词 -->
+            <div v-if="!selectedConversation || conversationPrompts(selectedConversation).length === 0" class="text-center py-4 border rounded text-medium-emphasis text-body-2 bg-grey-lighten-4">
+              暂无提示词记录
+            </div>
+
+            <!-- 提示词卡片列表 -->
+            <div v-else class="d-flex flex-column ga-3">
+              <div
+                v-for="(prompt, idx) in conversationPrompts(selectedConversation)"
+                :key="idx"
+                class="prompt-detail-card"
+              >
+                <div class="prompt-card-header">
+                  <v-chip size="x-small" color="primary" variant="flat" class="font-weight-bold">
+                    输入 #{{ idx + 1 }}
+                  </v-chip>
+                  <v-spacer />
+                  <v-btn
+                    size="x-small"
+                    variant="text"
+                    icon="mdi-content-copy"
+                    color="primary"
+                    title="复制提示词"
+                    @click="copyText(prompt)"
+                  />
+                </div>
+                <div class="prompt-card-body">
+                  {{ prompt }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </v-card-text>
+
+        <v-card-actions class="border-t mt-2 pt-2">
+          <v-spacer />
+          <v-btn color="primary" variant="tonal" prepend-icon="mdi-swap-horizontal" @click="openRouteOverrideFromDetail()">
+            去固定该会话渠道
+          </v-btn>
+          <v-btn variant="outlined" @click="detailDialog = false">关闭</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <v-snackbar v-model="snackbar" :color="snackbarColor" timeout="2000">
+      {{ snackbarText }}
+    </v-snackbar>
   </div>
 </template>
 
@@ -155,7 +316,7 @@ import { api, type ConversationEntry, type ConversationKind, type ConversationRo
 
 const headers = [
   { title: 'ID', key: 'id' },
-  { title: '首个提示词', key: 'firstPrompt', sortable: false },
+  { title: '提示词', key: 'firstPrompt', sortable: false },
   { title: '类型', key: 'apiKind' },
   { title: '模型', key: 'lastModel' },
   { title: '状态', key: 'activity', sortable: false },
@@ -191,16 +352,62 @@ const routeOptions = ref<Record<ConversationKind, RouteSelectItem[]>>({
 let clockTimer: ReturnType<typeof setInterval> | null = null
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
+const detailDialog = ref(false)
+const selectedConversation = ref<ConversationEntry | null>(null)
+const snackbar = ref(false)
+const snackbarText = ref('')
+const snackbarColor = ref('success')
+
+const openDetailDialog = (item: ConversationEntry) => {
+  selectedConversation.value = item
+  detailDialog.value = true
+}
+
+const openRouteOverrideFromDetail = () => {
+  if (!selectedConversation.value) return
+  detailDialog.value = false
+  openRouteDialog(selectedConversation.value)
+}
+
+const copyText = async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text)
+    snackbarText.value = '已复制到剪贴板'
+    snackbarColor.value = 'success'
+    snackbar.value = true
+  } catch (e) {
+    snackbarText.value = '复制失败，请手动选择复制'
+    snackbarColor.value = 'error'
+    snackbar.value = true
+  }
+}
+
 const filteredConversations = computed(() => {
   const q = searchText.value.trim().toLowerCase()
   return conversations.value.filter(item => {
     if (kindFilter.value && item.apiKind !== kindFilter.value) return false
     if (!q) return true
+    const promptMatch = item.prompts && item.prompts.some(p => p.toLowerCase().includes(q))
     return [item.id, item.firstPrompt, item.lastModel, item.lastResolvedModel, item.lastError, item.routeOverride?.channelName, item.lastResolved?.channelName]
       .filter(Boolean)
-      .some(value => String(value).toLowerCase().includes(q))
+      .some(value => String(value).toLowerCase().includes(q)) || promptMatch
   })
 })
+
+const conversationPrompts = (item?: ConversationEntry | null): string[] => {
+  if (!item) return []
+  const prompts = Array.isArray(item.prompts) ? item.prompts : []
+  const values = prompts.length > 0 ? prompts : [item.firstPrompt || '']
+  const seen = new Set<string>()
+  return values
+    .map(value => String(value || '').trim())
+    .filter(value => {
+      if (!value || seen.has(value)) return false
+      seen.add(value)
+      return true
+    })
+    .slice(0, 3)
+}
 
 const routeChannelItems = computed(() => {
   const kind = editingConversation.value?.apiKind
@@ -380,11 +587,127 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.conversation-prompt {
+.conversation-prompts {
   max-width: 420px;
+}
+
+.conversation-prompt-line {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+
+.conversation-prompt-line + .conversation-prompt-line {
+  margin-top: 2px;
+}
+
+.prompt-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary));
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.conversation-prompt-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.clickable-id {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.clickable-id:hover {
+  opacity: 0.8;
+}
+
+.clickable-prompt {
+  cursor: pointer;
+}
+.clickable-prompt:hover {
+  text-decoration: underline;
+  color: rgb(var(--v-theme-primary));
+}
+
+.info-card {
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.info-label {
+  font-size: 11px;
+  color: #6c757d;
+  font-weight: 500;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+.info-value {
+  font-size: 13px;
+  color: #212529;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.error-pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 11px;
+  max-height: 120px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.prompt-detail-card {
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.prompt-section-marker {
+  display: inline-block;
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: rgb(var(--v-theme-primary));
+  flex: 0 0 auto;
+}
+
+.prompt-card-header {
+  background: #f8f9fa;
+  border-bottom: 1px solid #dee2e6;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+}
+
+.prompt-card-body {
+  padding: 12px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #333;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 150px;
+  overflow-y: auto;
 }
 
 .model-chain {

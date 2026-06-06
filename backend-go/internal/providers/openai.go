@@ -515,28 +515,82 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			textBlockStarted = false
 			textBlockIndex = -1
 		}
-		flushToolCall := func(index int) {
-			acc := toolCallAccumulator[index]
-			if acc == nil || acc.ID == "" || acc.Name == "" {
+		emitToolCallStart := func(acc *ToolCallAccumulator) {
+			startEvent := map[string]interface{}{
+				"type":  "content_block_start",
+				"index": acc.BlockIndex,
+				"content_block": map[string]interface{}{
+					"type":  "tool_use",
+					"id":    acc.ID,
+					"name":  acc.Name,
+					"input": map[string]interface{}{},
+				},
+			}
+			startJSON, _ := json.Marshal(startEvent)
+			eventChan <- fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON)
+		}
+		emitToolCallArgumentDelta := func(acc *ToolCallAccumulator, partialJSON string) {
+			if partialJSON == "" {
 				return
 			}
-			argsText := strings.TrimSpace(acc.Arguments)
-			if argsText == "" {
-				argsText = "{}"
+			deltaEvent := map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": acc.BlockIndex,
+				"delta": map[string]string{
+					"type":         "input_json_delta",
+					"partial_json": partialJSON,
+				},
 			}
-			var args interface{}
-			if err := json.Unmarshal([]byte(argsText), &args); err != nil {
-				return
+			deltaJSON, _ := json.Marshal(deltaEvent)
+			eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON)
+		}
+		emitContentBlockStop := func(index int) {
+			stopEvent := map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": index,
 			}
-
-			toolUseBlockIndex := nextBlockIndex
+			stopJSON, _ := json.Marshal(stopEvent)
+			eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
+		}
+		ensureToolCallStarted := func(acc *ToolCallAccumulator) bool {
+			if acc == nil {
+				return false
+			}
+			if acc.Started {
+				return true
+			}
+			if acc.ID == "" || acc.Name == "" {
+				return false
+			}
+			acc.BlockIndex = nextBlockIndex
 			nextBlockIndex++
-			for _, event := range processToolUsePart(acc.ID, acc.Name, args, toolUseBlockIndex) {
-				eventChan <- event
+			acc.Started = true
+			emitToolCallStart(acc)
+			if acc.Arguments != "" {
+				emitToolCallArgumentDelta(acc, acc.Arguments)
+				acc.EmittedArgumentLen = len(acc.Arguments)
+			}
+			return true
+		}
+		emitPendingToolCallArgumentDelta := func(acc *ToolCallAccumulator) {
+			if acc == nil || !acc.Started || acc.EmittedArgumentLen >= len(acc.Arguments) {
+				return
+			}
+			emitToolCallArgumentDelta(acc, acc.Arguments[acc.EmittedArgumentLen:])
+			acc.EmittedArgumentLen = len(acc.Arguments)
+		}
+		closeToolCall := func(index int) {
+			acc := toolCallAccumulator[index]
+			if acc == nil {
+				return
+			}
+			if ensureToolCallStarted(acc) {
+				emitPendingToolCallArgumentDelta(acc)
+				emitContentBlockStop(acc.BlockIndex)
 			}
 			delete(toolCallAccumulator, index)
 		}
-		flushAllToolCalls := func() {
+		closeAllToolCalls := func() {
 			if len(toolCallAccumulator) == 0 {
 				return
 			}
@@ -546,13 +600,13 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			}
 			sort.Ints(indexes)
 			for _, index := range indexes {
-				flushToolCall(index)
+				closeToolCall(index)
 			}
 		}
 		finishStream := func() {
 			closeThinkingBlock()
 			closeTextBlock()
-			flushAllToolCalls()
+			closeAllToolCalls()
 			if pendingStopReason == "" && messageStartEmitted {
 				pendingStopReason = "end_turn"
 			}
@@ -717,7 +771,7 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 
 					// 获取或创建累加器
 					if _, exists := toolCallAccumulator[index]; !exists {
-						toolCallAccumulator[index] = &ToolCallAccumulator{}
+						toolCallAccumulator[index] = &ToolCallAccumulator{BlockIndex: -1}
 					}
 					acc := toolCallAccumulator[index]
 
@@ -735,8 +789,8 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 						}
 					}
 
-					if acc.ID != "" && acc.Name != "" && acc.Arguments != "" && json.Valid([]byte(acc.Arguments)) {
-						flushToolCall(index)
+					if ensureToolCallStarted(acc) {
+						emitPendingToolCallArgumentDelta(acc)
 					}
 				}
 			}
@@ -746,7 +800,7 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				// 关闭所有未关闭的块
 				closeThinkingBlock()
 				closeTextBlock()
-				flushAllToolCalls()
+				closeAllToolCalls()
 
 				// 根据 finish_reason 确定 stop_reason
 				stopReason := "end_turn"
@@ -784,9 +838,12 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 
 // ToolCallAccumulator 工具调用累加器
 type ToolCallAccumulator struct {
-	ID        string
-	Name      string
-	Arguments string
+	ID                 string
+	Name               string
+	Arguments          string
+	BlockIndex         int
+	Started            bool
+	EmittedArgumentLen int
 }
 
 type openAIUsageEnvelope struct {
@@ -951,9 +1008,10 @@ func processToolUsePart(id, name string, input interface{}, index int) []string 
 		"type":  "content_block_start",
 		"index": index,
 		"content_block": map[string]interface{}{
-			"type": "tool_use",
-			"id":   id,
-			"name": name,
+			"type":  "tool_use",
+			"id":    id,
+			"name":  name,
+			"input": map[string]interface{}{},
 		},
 	}
 	startJSON, _ := json.Marshal(startEvent)
