@@ -52,8 +52,8 @@ func (c *OpenAIChatConverter) ToProviderRequest(sess *session.Session, req *type
 	if req.User != "" {
 		openaiReq["user"] = req.User
 	}
-	if req.StreamOptions != nil {
-		openaiReq["stream_options"] = req.StreamOptions
+	if streamOptions := openAIChatStreamOptions(req); streamOptions != nil {
+		openaiReq["stream_options"] = streamOptions
 	}
 	if tools, err := responsesToolsToOpenAIChatTools(req.Tools); err != nil {
 		return nil, err
@@ -290,4 +290,25 @@ func copyToolField(dst, src map[string]interface{}, key string) {
 	if value, ok := src[key]; ok {
 		dst[key] = value
 	}
+}
+
+func openAIChatStreamOptions(req *types.ResponsesRequest) interface{} {
+	if req == nil || !req.Stream {
+		return nil
+	}
+	if req.StreamOptions == nil {
+		return map[string]interface{}{"include_usage": true}
+	}
+	options, ok := req.StreamOptions.(map[string]interface{})
+	if !ok {
+		return req.StreamOptions
+	}
+	cloned := make(map[string]interface{}, len(options)+1)
+	for key, value := range options {
+		cloned[key] = value
+	}
+	if _, exists := cloned["include_usage"]; !exists {
+		cloned["include_usage"] = true
+	}
+	return cloned
 }

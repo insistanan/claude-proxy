@@ -235,15 +235,21 @@ func removeEmptySignaturesInMessages(data map[string]interface{}) (bool, int) {
 	return modified, removedCount
 }
 
-// ExtractUserID 从请求体中提取 user_id（用于 Messages API）
+// ExtractUserID 从请求体中提取对话标识（用于 Messages API）
 func ExtractUserID(bodyBytes []byte) string {
 	var req struct {
-		Metadata struct {
-			UserID string `json:"user_id"`
-		} `json:"metadata"`
+		PromptCacheKey string                 `json:"prompt_cache_key"`
+		Metadata       map[string]interface{} `json:"metadata"`
 	}
 	if err := json.Unmarshal(bodyBytes, &req); err == nil {
-		return req.Metadata.UserID
+		if req.PromptCacheKey != "" {
+			return req.PromptCacheKey
+		}
+		for _, key := range []string{"user_id", "conversation_id", "session_id", "thread_id"} {
+			if value, ok := req.Metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
 	}
 	return ""
 }

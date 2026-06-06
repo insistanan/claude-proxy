@@ -1,6 +1,10 @@
 package common
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
+	"strings"
+
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 )
@@ -13,7 +17,7 @@ func ObserveConversation(
 	firstPrompt string,
 	stream bool,
 ) string {
-	if channelScheduler == nil || conversationID == "" {
+	if channelScheduler == nil {
 		return conversationID
 	}
 	registry := channelScheduler.GetConversationRegistry()
@@ -21,18 +25,29 @@ func ObserveConversation(
 		return conversationID
 	}
 
+	fallbackKey := buildConversationFallbackKey(model, firstPrompt)
 	record := registry.ObserveRequest(conversation.Observation{
 		APIKind:        string(kind),
 		Model:          model,
 		Stream:         stream,
 		ConversationID: conversationID,
-		FallbackKey:    conversationID,
+		FallbackKey:    fallbackKey,
 		FirstPrompt:    firstPrompt,
 	})
 	if record == nil {
 		return conversationID
 	}
 	return record.ID
+}
+
+func buildConversationFallbackKey(model string, firstPrompt string) string {
+	model = strings.TrimSpace(model)
+	firstPrompt = strings.TrimSpace(firstPrompt)
+	if model == "" && firstPrompt == "" {
+		return ""
+	}
+	sum := sha1.Sum([]byte(model + "\n" + firstPrompt))
+	return "fallback_" + hex.EncodeToString(sum[:8])
 }
 
 func MarkConversationSuccess(channelScheduler *scheduler.ChannelScheduler, conversationID string, kind scheduler.ChannelKind, channelIndex int, channelName string) {

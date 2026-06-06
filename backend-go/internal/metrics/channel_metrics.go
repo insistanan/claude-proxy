@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ type RequestRecord struct {
 	OutputTokens             int64
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
+	Model                    string
 }
 
 // KeyMetrics 单个 Key 的指标（绑定到 BaseURL + Key 组合）
@@ -187,6 +189,7 @@ func (m *MetricsManager) loadFromStore() error {
 			OutputTokens:             r.OutputTokens,
 			CacheCreationInputTokens: r.CacheCreationTokens,
 			CacheReadInputTokens:     r.CacheReadTokens,
+			Model:                    r.Model,
 		})
 
 		// 更新聚合计数
@@ -389,12 +392,12 @@ func (m *MetricsManager) recordFailureLocked(baseURL, apiKey string, now time.Ti
 
 // RecordRequestConnected 记录“开始发起上游请求（TCP 建连阶段）”的请求（用于更实时的活跃度统计）。
 // 返回 requestID，用于后续在请求结束时回写成功/失败与 token。
-func (m *MetricsManager) RecordRequestConnected(baseURL, apiKey string) uint64 {
-	return m.RecordRequestConnectedAt(baseURL, apiKey, time.Now())
+func (m *MetricsManager) RecordRequestConnected(baseURL, apiKey string, model string) uint64 {
+	return m.RecordRequestConnectedAt(baseURL, apiKey, model, time.Now())
 }
 
 // RecordRequestConnectedAt 与 RecordRequestConnected 相同，但允许注入时间戳（用于测试）。
-func (m *MetricsManager) RecordRequestConnectedAt(baseURL, apiKey string, timestamp time.Time) uint64 {
+func (m *MetricsManager) RecordRequestConnectedAt(baseURL, apiKey string, model string, timestamp time.Time) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -411,6 +414,7 @@ func (m *MetricsManager) RecordRequestConnectedAt(baseURL, apiKey string, timest
 	metrics.requestHistory = append(metrics.requestHistory, RequestRecord{
 		Timestamp: timestamp,
 		Success:   true, // 先按成功计数；结束时会回写真实结果
+		Model:     model,
 	})
 	metrics.pendingHistoryIdx[requestID] = len(metrics.requestHistory) - 1
 
@@ -484,6 +488,7 @@ func (m *MetricsManager) RecordRequestFinalizeSuccess(baseURL, apiKey string, re
 			BaseURL:             baseURL,
 			KeyMask:             metrics.KeyMask,
 			Timestamp:           record.Timestamp,
+			Model:               record.Model,
 			Success:             true,
 			InputTokens:         inputTokens,
 			OutputTokens:        outputTokens,
@@ -1843,6 +1848,8 @@ type KeyHistoryDataPoint struct {
 	OutputTokens             int64     `json:"outputTokens"`
 	CacheCreationInputTokens int64     `json:"cacheCreationTokens"`
 	CacheReadInputTokens     int64     `json:"cacheReadTokens"`
+	Model                    string    `json:"model"`
+	CacheHitRate             float64   `json:"cacheHitRate"`
 }
 
 // GetHistoricalStats 获取历史统计数据（按时间间隔聚合）
@@ -2214,6 +2221,9 @@ func (m *MetricsManager) GetKeyHistoricalStatsMultiURL(baseURLs []string, apiKey
 					b.outputTokens += record.OutputTokens
 					b.cacheCreationTokens += record.CacheCreationInputTokens
 					b.cacheReadTokens += record.CacheReadInputTokens
+					if record.Model != "" {
+						b.models = append(b.models, record.Model)
+					}
 				}
 			}
 		}
@@ -2239,6 +2249,27 @@ func (m *MetricsManager) GetKeyHistoricalStatsMultiURL(baseURLs []string, apiKey
 		if b.requestCount > 0 {
 			successRate = float64(b.successCount) / float64(b.requestCount) * 100
 		}
+
+		// 去重并逗号连接 models
+		var modelStr string
+		if len(b.models) > 0 {
+			uniqueModels := make(map[string]bool)
+			var modelList []string
+			for _, mdl := range b.models {
+				if mdl != "" && !uniqueModels[mdl] {
+					uniqueModels[mdl] = true
+					modelList = append(modelList, mdl)
+				}
+			}
+			modelStr = strings.Join(modelList, ", ")
+		}
+
+		// 计算缓存命中率
+		var cacheHitRate float64
+		if b.cacheReadTokens+b.inputTokens > 0 {
+			cacheHitRate = float64(b.cacheReadTokens) / float64(b.cacheReadTokens+b.inputTokens) * 100
+		}
+
 		result[i] = KeyHistoryDataPoint{
 			Timestamp:                startTime.Add(time.Duration(i+1) * interval),
 			RequestCount:             b.requestCount,
@@ -2249,6 +2280,8 @@ func (m *MetricsManager) GetKeyHistoricalStatsMultiURL(baseURLs []string, apiKey
 			OutputTokens:             b.outputTokens,
 			CacheCreationInputTokens: b.cacheCreationTokens,
 			CacheReadInputTokens:     b.cacheReadTokens,
+			Model:                    modelStr,
+			CacheHitRate:             cacheHitRate,
 		}
 	}
 
@@ -2264,6 +2297,7 @@ type keyBucketData struct {
 	outputTokens        int64
 	cacheCreationTokens int64
 	cacheReadTokens     int64
+	models              []string
 }
 
 // ============ 全局统计数据结构和方法（用于全局流量统计图表）============

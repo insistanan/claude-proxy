@@ -47,12 +47,7 @@ func shouldRetryWithNextKeyFuzzy(statusCode int, bodyBytes []byte, apiType strin
 		return false, false
 	}
 
-	if statusCode >= 500 {
-		log.Printf("[%s-Failover-Fuzzy] 状态码 %d 为上游服务端错误，优先进行 failover", apiType, statusCode)
-		return true, false
-	}
-
-	// 检查是否为不可重试错误（内容审核等）
+	// 1. 检查是否为不可重试错误（内容审核等），无论是 500 还是其他状态码，这类错误都不应重试
 	if len(bodyBytes) > 0 {
 		if isNonRetryableError(bodyBytes) {
 			log.Printf("[%s-Failover-Fuzzy] 检测到不可重试错误，不进行 failover", apiType)
@@ -60,14 +55,12 @@ func shouldRetryWithNextKeyFuzzy(statusCode int, bodyBytes []byte, apiType strin
 		}
 	}
 
-	// 状态码直接标记为配额相关
+	// 2. 优先检查消息体是否包含配额相关关键词，或者状态码直接为配额相关
+	// 这样 500 + "Quota exceeded" 或者是 403 + "预扣费额度" 消息 → isQuotaRelated=true
 	if statusCode == 402 || statusCode == 429 {
 		log.Printf("[%s-Failover-Fuzzy] 状态码 %d 直接标记为配额相关", apiType, statusCode)
 		return true, true
 	}
-
-	// 对于其他状态码，检查消息体是否包含配额相关关键词
-	// 这样 403 + "预扣费额度" 消息 → isQuotaRelated=true
 	if len(bodyBytes) > 0 {
 		_, msgQuota := classifyByErrorMessage(bodyBytes, apiType)
 		if msgQuota {
@@ -76,6 +69,13 @@ func shouldRetryWithNextKeyFuzzy(statusCode int, bodyBytes []byte, apiType strin
 		}
 	}
 
+	// 3. 服务端错误，进行 failover (非配额相关)
+	if statusCode >= 500 {
+		log.Printf("[%s-Failover-Fuzzy] 状态码 %d 为上游服务端错误，进行 failover", apiType, statusCode)
+		return true, false
+	}
+
+	// 4. Fuzzy 模式下，其他所有非 2xx 状态码都进行 failover (非配额相关)
 	log.Printf("[%s-Failover-Fuzzy] Fuzzy 模式结果: shouldFailover=true, isQuotaRelated=false", apiType)
 	return true, false
 }

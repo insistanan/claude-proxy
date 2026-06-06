@@ -26,20 +26,20 @@
     </div>
 
     <!-- Loading state -->
-    <div v-if="isLoading" class="d-flex justify-center align-center" style="height: 150px">
+    <div v-if="isLoading" class="d-flex justify-center align-center" style="height: 200px">
       <v-progress-circular indeterminate size="24" color="primary" />
     </div>
 
     <!-- Empty state -->
-    <div v-else-if="!hasData" class="d-flex flex-column justify-center align-center text-medium-emphasis" style="height: 150px">
+    <div v-else-if="!hasData" class="d-flex flex-column justify-center align-center text-medium-emphasis" style="height: 200px">
       <v-icon size="32" color="grey-lighten-1">mdi-chart-line-variant</v-icon>
       <div class="text-caption mt-1">选定时间范围内没有请求记录</div>
     </div>
 
     <!-- Charts -->
     <div v-else class="charts-wrapper">
+      <!-- 第一行：请求数和成功率 -->
       <div class="chart-row">
-        <!-- Request count chart -->
         <div class="chart-item">
           <div class="text-caption text-medium-emphasis mb-1">请求数量</div>
           <apexchart
@@ -50,7 +50,6 @@
           />
         </div>
 
-        <!-- Success rate chart -->
         <div class="chart-item">
           <div class="text-caption text-medium-emphasis mb-1">成功率</div>
           <apexchart
@@ -58,6 +57,29 @@
             height="120"
             :options="successRateOptions"
             :series="successRateSeries"
+          />
+        </div>
+      </div>
+
+      <!-- 第二行：Token 使用量 -->
+      <div class="chart-row mt-3">
+        <div class="chart-item">
+          <div class="text-caption text-medium-emphasis mb-1">Token 使用量</div>
+          <apexchart
+            type="area"
+            height="120"
+            :options="tokenUsageOptions"
+            :series="tokenUsageSeries"
+          />
+        </div>
+
+        <div class="chart-item">
+          <div class="text-caption text-medium-emphasis mb-1">缓存统计</div>
+          <apexchart
+            type="area"
+            height="120"
+            :options="cacheStatsOptions"
+            :series="cacheStatsSeries"
           />
         </div>
       </div>
@@ -70,7 +92,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useTheme } from 'vuetify'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
-import { api, type MetricsHistoryResponse } from '../services/api'
+import { api, type ChannelKeyMetricsHistoryResponse } from '../services/api'
 
 // Register apexchart component
 const apexchart = VueApexCharts
@@ -90,23 +112,20 @@ const theme = useTheme()
 // State
 const selectedDuration = ref<'1h' | '6h' | '24h'>('6h')
 const isLoading = ref(false)
-const historyData = ref<MetricsHistoryResponse | null>(null)
+const keyHistoryData = ref<ChannelKeyMetricsHistoryResponse | null>(null)
 const showError = ref(false)
 const errorMessage = ref('')
 
 // Computed: check if has data
 const hasData = computed(() => {
-  if (!historyData.value) return false
-  return historyData.value.dataPoints &&
-    historyData.value.dataPoints.length > 0 &&
-    historyData.value.dataPoints.some(dp => dp.requestCount > 0)
+  if (!keyHistoryData.value || !keyHistoryData.value.keys.length) return false
+  return keyHistoryData.value.keys.some(key => 
+    key.dataPoints.length > 0 && key.dataPoints.some(dp => dp.requestCount > 0)
+  )
 })
 
 // Computed: is dark mode
 const isDark = computed(() => theme.global.current.value.dark)
-
-// Chart color - single channel uses primary color
-const chartColor = '#2196F3'
 
 // Common chart options
 const baseChartOptions = computed<ApexOptions>(() => ({
@@ -146,7 +165,13 @@ const baseChartOptions = computed<ApexOptions>(() => ({
     }
   },
   legend: {
-    show: false
+    show: true,
+    position: 'top',
+    horizontalAlign: 'left',
+    fontSize: '10px',
+    markers: {
+      size: 8
+    }
   },
   stroke: {
     curve: 'smooth' as const,
@@ -157,7 +182,11 @@ const baseChartOptions = computed<ApexOptions>(() => ({
 // Request count chart options
 const requestCountOptions = computed<ApexOptions>(() => ({
   ...baseChartOptions.value,
-  colors: [chartColor],
+  legend: {
+    ...baseChartOptions.value.legend,
+    show: false
+  },
+  colors: ['#2196F3'],
   fill: {
     type: 'gradient' as const,
     gradient: {
@@ -182,6 +211,10 @@ const requestCountOptions = computed<ApexOptions>(() => ({
 // Success rate chart options
 const successRateOptions = computed<ApexOptions>(() => ({
   ...baseChartOptions.value,
+  legend: {
+    ...baseChartOptions.value.legend,
+    show: false
+  },
   colors: ['#4CAF50'],
   yaxis: {
     min: 0,
@@ -202,13 +235,127 @@ const successRateOptions = computed<ApexOptions>(() => ({
   }
 }))
 
+// Token usage chart options
+const tokenUsageOptions = computed<ApexOptions>(() => ({
+  ...baseChartOptions.value,
+  colors: ['#3b82f6', '#f97316'],
+  fill: {
+    type: 'gradient' as const,
+    gradient: {
+      shadeIntensity: 1,
+      opacityFrom: 0.3,
+      opacityTo: 0.05,
+      stops: [0, 90, 100]
+    }
+  },
+  yaxis: {
+    min: 0,
+    labels: {
+      formatter: (val: number) => {
+        if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`
+        if (val >= 1000) return `${(val / 1000).toFixed(1)}K`
+        return Math.round(val).toString()
+      },
+      style: { fontSize: '10px' }
+    }
+  },
+  dataLabels: {
+    enabled: false
+  },
+  tooltip: {
+    ...baseChartOptions.value.tooltip,
+    y: {
+      formatter: (val: number) => val.toLocaleString()
+    }
+  }
+}))
+
+// Cache stats chart options
+const cacheStatsOptions = computed<ApexOptions>(() => ({
+  ...baseChartOptions.value,
+  colors: ['#10b981', '#8b5cf6'],
+  fill: {
+    type: 'gradient' as const,
+    gradient: {
+      shadeIntensity: 1,
+      opacityFrom: 0.3,
+      opacityTo: 0.05,
+      stops: [0, 90, 100]
+    }
+  },
+  yaxis: {
+    min: 0,
+    labels: {
+      formatter: (val: number) => {
+        if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`
+        if (val >= 1000) return `${(val / 1000).toFixed(1)}K`
+        return Math.round(val).toString()
+      },
+      style: { fontSize: '10px' }
+    }
+  },
+  dataLabels: {
+    enabled: false
+  },
+  tooltip: {
+    ...baseChartOptions.value.tooltip,
+    y: {
+      formatter: (val: number) => val.toLocaleString()
+    }
+  }
+}))
+
+// Aggregate data points from all keys
+const aggregatedData = computed(() => {
+  if (!keyHistoryData.value || !keyHistoryData.value.keys.length) return []
+
+  const timeMap = new Map<number, {
+    timestamp: number
+    requestCount: number
+    successCount: number
+    failureCount: number
+    inputTokens: number
+    outputTokens: number
+    cacheCreationTokens: number
+    cacheReadTokens: number
+  }>()
+
+  keyHistoryData.value.keys.forEach(key => {
+    key.dataPoints.forEach(dp => {
+      const time = new Date(dp.timestamp).getTime()
+      const existing = timeMap.get(time) || {
+        timestamp: time,
+        requestCount: 0,
+        successCount: 0,
+        failureCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0
+      }
+
+      existing.requestCount += dp.requestCount
+      existing.successCount += dp.successCount
+      existing.failureCount += dp.failureCount
+      existing.inputTokens += dp.inputTokens
+      existing.outputTokens += dp.outputTokens
+      existing.cacheCreationTokens += dp.cacheCreationTokens
+      existing.cacheReadTokens += dp.cacheReadTokens
+
+      timeMap.set(time, existing)
+    })
+  })
+
+  return Array.from(timeMap.values()).sort((a, b) => a.timestamp - b.timestamp)
+})
+
 // Request count series data
 const requestCountSeries = computed(() => {
-  if (!historyData.value || !historyData.value.dataPoints) return []
+  if (!aggregatedData.value.length) return []
   return [{
     name: '请求数',
-    data: historyData.value.dataPoints.map(dp => ({
-      x: new Date(dp.timestamp).getTime(),
+    data: aggregatedData.value.map(dp => ({
+      x: dp.timestamp,
       y: dp.requestCount
     }))
   }]
@@ -216,16 +363,58 @@ const requestCountSeries = computed(() => {
 
 // Success rate series data
 const successRateSeries = computed(() => {
-  if (!historyData.value || !historyData.value.dataPoints) return []
+  if (!aggregatedData.value.length) return []
   return [{
     name: '成功率',
-    data: historyData.value.dataPoints
+    data: aggregatedData.value
       .filter(dp => dp.requestCount > 0)
       .map(dp => ({
-        x: new Date(dp.timestamp).getTime(),
-        y: dp.successRate
+        x: dp.timestamp,
+        y: (dp.successCount / dp.requestCount) * 100
       }))
   }]
+})
+
+// Token usage series data
+const tokenUsageSeries = computed(() => {
+  if (!aggregatedData.value.length) return []
+  return [
+    {
+      name: '输入 Token',
+      data: aggregatedData.value.map(dp => ({
+        x: dp.timestamp,
+        y: dp.inputTokens
+      }))
+    },
+    {
+      name: '输出 Token',
+      data: aggregatedData.value.map(dp => ({
+        x: dp.timestamp,
+        y: dp.outputTokens
+      }))
+    }
+  ]
+})
+
+// Cache stats series data
+const cacheStatsSeries = computed(() => {
+  if (!aggregatedData.value.length) return []
+  return [
+    {
+      name: '缓存读取',
+      data: aggregatedData.value.map(dp => ({
+        x: dp.timestamp,
+        y: dp.cacheReadTokens
+      }))
+    },
+    {
+      name: '缓存创建',
+      data: aggregatedData.value.map(dp => ({
+        x: dp.timestamp,
+        y: dp.cacheCreationTokens
+      }))
+    }
+  ]
 })
 
 // Fetch data for single channel
@@ -233,23 +422,20 @@ const refreshData = async () => {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    let allData: MetricsHistoryResponse[]
     if (props.channelType === 'messages') {
-      allData = await api.getChannelMetricsHistory(selectedDuration.value)
+      keyHistoryData.value = await api.getChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
     } else if (props.channelType === 'gemini') {
-      allData = await api.getGeminiChannelMetricsHistory(selectedDuration.value)
+      keyHistoryData.value = await api.getGeminiChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
     } else if (props.channelType === 'chat') {
-      allData = await api.getChatChannelMetricsHistory(selectedDuration.value)
+      keyHistoryData.value = await api.getChatChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
     } else {
-      allData = await api.getResponsesChannelMetricsHistory(selectedDuration.value)
+      keyHistoryData.value = await api.getResponsesChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
     }
-    // Find the specific channel data
-    historyData.value = allData.find(ch => ch.channelIndex === props.channelIndex) || null
   } catch (error) {
-    console.error('Failed to fetch metrics history:', error)
+    console.error('Failed to fetch key metrics history:', error)
     errorMessage.value = error instanceof Error ? error.message : '获取历史数据失败'
     showError.value = true
-    historyData.value = null
+    keyHistoryData.value = null
   } finally {
     isLoading.value = false
   }

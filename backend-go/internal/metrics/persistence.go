@@ -29,6 +29,7 @@ type PersistentRecord struct {
 	BaseURL             string    // 上游 BaseURL
 	KeyMask             string    // 脱敏的 API Key
 	Timestamp           time.Time // 请求时间
+	Model               string    // 请求的模型名称
 	Success             bool      // 是否成功
 	InputTokens         int64     // 输入 Token 数
 	OutputTokens        int64     // 输出 Token 数

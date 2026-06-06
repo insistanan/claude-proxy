@@ -100,17 +100,17 @@ const isLocalStorageAvailable = (): boolean => {
 
 const loadSavedPreferences = (channelType: string): { view: ViewMode; duration: Duration } => {
   if (!isLocalStorageAvailable()) {
-    return { view: 'traffic', duration: '1h' }
+    return { view: 'tokens', duration: '1h' }
   }
   try {
     const savedView = window.localStorage.getItem(getStorageKey(channelType, 'viewMode')) as ViewMode | null
     const savedDuration = window.localStorage.getItem(getStorageKey(channelType, 'duration')) as Duration | null
     return {
-      view: savedView && ['traffic', 'tokens', 'cache'].includes(savedView) ? savedView : 'traffic',
+      view: savedView && ['traffic', 'tokens', 'cache'].includes(savedView) ? savedView : 'tokens',
       duration: savedDuration && ['1h', '6h', '24h', 'today'].includes(savedDuration) ? savedDuration : '1h'
     }
   } catch {
-    return { view: 'traffic', duration: '1h' }
+    return { view: 'tokens', duration: '1h' }
   }
 }
 
@@ -418,7 +418,7 @@ const chartOptions = computed<ApexOptions>(() => {
       y: {
         formatter: (val: number) => formatTooltipValue(val, mode)
       },
-      custom: mode === 'traffic' ? buildTrafficTooltip : undefined
+      custom: mode === 'traffic' ? buildTrafficTooltip : buildDualTooltip
     },
     legend: {
       show: false
@@ -533,7 +533,7 @@ const buildTrafficTooltip = ({ seriesIndex, dataPointIndex, w }: any): string =>
   })
 
   // 收集该时间点所有 key 的数据
-  const keyStats: { keyMask: string; success: number; failure: number; total: number; color: string }[] = []
+  const keyStats: { keyMask: string; success: number; failure: number; total: number; color: string; model: string }[] = []
   let grandTotal = 0
   let grandFailure = 0
 
@@ -561,13 +561,21 @@ const buildTrafficTooltip = ({ seriesIndex, dataPointIndex, w }: any): string =>
     if (matchingPoints.length > 0) {
       // 累加所有匹配点的统计数据
       const aggregated = matchingPoints.reduce(
-        (acc, dp) => ({
-          success: acc.success + dp.successCount,
-          failure: acc.failure + dp.failureCount,
-          total: acc.total + dp.requestCount
-        }),
-        { success: 0, failure: 0, total: 0 }
+        (acc, dp) => {
+          acc.success += dp.successCount
+          acc.failure += dp.failureCount
+          acc.total += dp.requestCount
+          if (dp.model) {
+            acc.models.push(dp.model)
+          }
+          return acc
+        },
+        { success: 0, failure: 0, total: 0, models: [] as string[] }
       )
+
+      // 去重模型
+      const uniqueModels = Array.from(new Set(aggregated.models.flatMap(m => m.split(', '))).values()).filter(m => !!m)
+      const modelStr = escapeHtml(uniqueModels.join(', '))
 
       if (aggregated.total > 0) {
         keyStats.push({
@@ -575,7 +583,8 @@ const buildTrafficTooltip = ({ seriesIndex, dataPointIndex, w }: any): string =>
           success: aggregated.success,
           failure: aggregated.failure,
           total: aggregated.total,
-          color: keyColors[keyIndex % keyColors.length]
+          color: keyColors[keyIndex % keyColors.length],
+          model: modelStr
         })
         grandTotal += aggregated.total
         grandFailure += aggregated.failure
@@ -598,7 +607,7 @@ const buildTrafficTooltip = ({ seriesIndex, dataPointIndex, w }: any): string =>
     const hasKeyFailure = stat.failure > 0
     html += `<div style="display: flex; align-items: center; margin: 4px 0;">`
     html += `<span style="width: 10px; height: 10px; border-radius: 50%; background: ${stat.color}; margin-right: 6px;"></span>`
-    html += `<span style="flex: 1;">${stat.keyMask}</span>`
+    html += `<span style="flex: 1;">${stat.keyMask}${stat.model ? ` <span style="font-size: 10px; color: #888; font-weight: normal;">(${stat.model})</span>` : ''}</span>`
     html += `<span style="margin-left: 12px; font-weight: 500;">${stat.total}</span>`
     if (hasKeyFailure) {
       html += `<span style="margin-left: 6px; color: #ef4444; font-size: 11px;">(${stat.failure}失败, ${failureRate}%)</span>`
@@ -615,6 +624,128 @@ const buildTrafficTooltip = ({ seriesIndex, dataPointIndex, w }: any): string =>
     }
     html += `</div>`
   }
+
+  html += `</div>`
+  return html
+}
+
+// Helper: build custom tooltip for tokens/cache mode (shows input/output values and model)
+const buildDualTooltip = ({ seriesIndex, dataPointIndex, w }: any): string => {
+  if (!historyData.value?.keys) return ''
+
+  const timestamp = w.globals.seriesX[seriesIndex][dataPointIndex]
+  const date = new Date(timestamp)
+  const timeStr = date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+
+  const mode = selectedView.value
+  const interval = getAggregationInterval(selectedDuration.value)
+  const alignedTimestamp = alignToBucket(timestamp, interval)
+
+  // 收集该时间点所有 key 的数据
+  const keyStats: {
+    keyMask: string
+    color: string
+    model: string
+    val1: number // Input 或 Cache Read
+    val2: number // Output 或 Cache Write
+    cacheHitRate?: number
+  }[] = []
+
+  // HTML 转义函数
+  const escapeHtml = (str: string): string => {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  }
+
+  historyData.value.keys.forEach((keyData, keyIndex) => {
+    const matchingPoints = keyData.dataPoints?.filter(p => {
+      const dpTimestamp = new Date(p.timestamp).getTime()
+      return alignToBucket(dpTimestamp, interval) === alignedTimestamp
+    }) || []
+
+    if (matchingPoints.length > 0) {
+      const aggregated = matchingPoints.reduce(
+        (acc, dp) => {
+          if (mode === 'tokens') {
+            acc.val1 += dp.inputTokens
+            acc.val2 += dp.outputTokens
+          } else {
+            acc.val1 += dp.cacheReadTokens
+            acc.val2 += dp.cacheCreationTokens
+          }
+          if (dp.model) {
+            acc.models.push(dp.model)
+          }
+          return acc
+        },
+        { val1: 0, val2: 0, models: [] as string[] }
+      )
+
+      // 去重模型
+      const uniqueModels = Array.from(new Set(aggregated.models.flatMap(m => m.split(', '))).values()).filter(m => !!m)
+      const modelStr = escapeHtml(uniqueModels.join(', '))
+
+      // 计算缓存命中率（在 cache 模式）
+      let cacheHitRate: number | undefined
+      if (mode === 'cache') {
+        const totalRead = aggregated.val1
+        const totalInput = matchingPoints.reduce((sum, p) => sum + p.inputTokens, 0)
+        if (totalRead + totalInput > 0) {
+          cacheHitRate = (totalRead / (totalRead + totalInput)) * 100
+        }
+      }
+
+      if (aggregated.val1 > 0 || aggregated.val2 > 0) {
+        keyStats.push({
+          keyMask: escapeHtml(keyData.keyMask),
+          color: keyColors[keyIndex % keyColors.length],
+          model: modelStr,
+          val1: aggregated.val1,
+          val2: aggregated.val2,
+          cacheHitRate
+        })
+      }
+    }
+  })
+
+  if (keyStats.length === 0) return ''
+
+  // 构建 HTML
+  let html = `<div style="padding: 8px 12px; font-size: 12px; min-width: 200px;">`
+  html += `<div style="font-weight: 600; margin-bottom: 6px;">${timeStr}</div>`
+
+  const label1 = mode === 'tokens' ? 'Input' : 'Cache Read'
+  const label2 = mode === 'tokens' ? 'Output' : 'Cache Write'
+
+  keyStats.forEach(stat => {
+    html += `<div style="margin-bottom: 8px; border-bottom: 1px dashed rgba(128,128,128,0.15); padding-bottom: 4px;">`
+    // Key名称 + 模型
+    html += `<div style="display: flex; align-items: center; font-weight: 500; margin-bottom: 2px;">`
+    html += `<span style="width: 8px; height: 8px; border-radius: 50%; background: ${stat.color}; margin-right: 6px; display: inline-block;"></span>`
+    html += `<span style="flex: 1;">${stat.keyMask}${stat.model ? ` <span style="font-size: 10px; color: #888; font-weight: normal;">(${stat.model})</span>` : ''}</span>`
+    html += `</div>`
+    // 数据明细
+    html += `<div style="padding-left: 14px; font-size: 11px; color: #888; display: flex; justify-content: space-between; gap: 10px;">`
+    html += `<span>${label1}: <b>${formatNumber(stat.val1)}</b></span>`
+    html += `<span>${label2}: <b>${formatNumber(stat.val2)}</b></span>`
+    html += `</div>`
+    // 缓存命中率
+    if (stat.cacheHitRate !== undefined) {
+      html += `<div style="padding-left: 14px; font-size: 11px; color: #10b981; margin-top: 1px;">`
+      html += `缓存命中率: <b>${stat.cacheHitRate.toFixed(1)}%</b>`
+      html += `</div>`
+    }
+    html += `</div>`
+  })
 
   html += `</div>`
   return html

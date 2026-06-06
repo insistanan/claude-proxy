@@ -167,6 +167,7 @@ type OpenAIRequest struct {
 	MaxTokens           int             `json:"max_tokens,omitempty"`
 	Temperature         float64         `json:"temperature,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
+	StreamOptions       interface{}     `json:"stream_options,omitempty"`
 	Tools               []OpenAITool    `json:"tools,omitempty"`
 	ToolChoice          interface{}     `json:"tool_choice,omitempty"`      // string 或 object
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"` // none/minimal/low/medium/high/xhigh

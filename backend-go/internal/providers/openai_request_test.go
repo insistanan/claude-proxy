@@ -65,4 +65,31 @@ func TestOpenAIProviderConvertToProviderRequest_UsesSingleTokenField(t *testing.
 			t.Fatalf("MaxTokens = %d, want 0", got.MaxTokens)
 		}
 	})
+
+	t.Run("stream requests include usage chunk", func(t *testing.T) {
+		c := newGinContext(http.MethodPost, "/v1/messages", []byte(`{"model":"gpt-4o","stream":true,"messages":[]}`), nil)
+		upstream := &config.UpstreamConfig{
+			BaseURL:     "https://api.example.com",
+			ServiceType: "openai",
+		}
+
+		p := &OpenAIProvider{}
+		req, _, err := p.ConvertToProviderRequest(c, upstream, "sk-test")
+		if err != nil {
+			t.Fatalf("ConvertToProviderRequest() err = %v", err)
+		}
+
+		var got map[string]interface{}
+		if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+
+		streamOptions, ok := got["stream_options"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("stream_options missing: %#v", got["stream_options"])
+		}
+		if includeUsage, ok := streamOptions["include_usage"].(bool); !ok || !includeUsage {
+			t.Fatalf("stream_options.include_usage = %#v, want true", streamOptions["include_usage"])
+		}
+	})
 }

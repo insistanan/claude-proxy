@@ -169,6 +169,8 @@ export interface KeyHistoryDataPoint {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  model?: string
+  cacheHitRate?: number
 }
 
 // 单个 Key 的历史数据

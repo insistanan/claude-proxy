@@ -149,7 +149,7 @@ func TryUpstreamWithAllKeys(
 			channelScheduler.RecordRequestStart(currentBaseURL, apiKey, kind)
 
 			// TCP 建连开始即计数：将活跃度统计提前到发起上游请求之前
-			requestID := metricsManager.RecordRequestConnected(currentBaseURL, apiKey)
+			requestID := metricsManager.RecordRequestConnected(currentBaseURL, apiKey, logCtx.Model)
 
 			resp, err := SendRequest(req, upstream, envCfg, isStream, apiType)
 			if err != nil {

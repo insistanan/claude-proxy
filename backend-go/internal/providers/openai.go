@@ -44,6 +44,9 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 		Stream:      claudeReq.Stream,
 		Temperature: claudeReq.Temperature,
 	}
+	if claudeReq.Stream {
+		openaiReq.StreamOptions = map[string]interface{}{"include_usage": true}
+	}
 
 	// 只发送一个 token 限制字段，避免部分 OpenAI 兼容网关因同时收到
 	// max_tokens 和 max_completion_tokens 而返回 invalid_request。
@@ -330,15 +333,7 @@ func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 		return nil, err
 	}
 
-	var usageEnvelope struct {
-		Usage *struct {
-			PromptTokens       int `json:"prompt_tokens"`
-			CompletionTokens   int `json:"completion_tokens"`
-			PromptTokenDetails struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"prompt_tokens_details"`
-		} `json:"usage"`
-	}
+	var usageEnvelope openAIUsageEnvelope
 	if err := json.Unmarshal(providerResp.Body, &usageEnvelope); err != nil {
 		return nil, err
 	}
@@ -387,15 +382,16 @@ func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 
 	// 添加使用统计
 	if openaiResp.Usage != nil {
-		cacheReadTokens := 0
-		if usageEnvelope.Usage != nil {
-			cacheReadTokens = usageEnvelope.Usage.PromptTokenDetails.CachedTokens
-		}
+		normalizedUsage := normalizeOpenAIUsage(openaiResp.Usage, usageEnvelope.Usage)
 
 		claudeResp.Usage = &types.Usage{
-			InputTokens:          openaiResp.Usage.PromptTokens,
-			OutputTokens:         openaiResp.Usage.CompletionTokens,
-			CacheReadInputTokens: cacheReadTokens,
+			InputTokens:                normalizedUsage.InputTokens,
+			OutputTokens:               normalizedUsage.OutputTokens,
+			CacheCreationInputTokens:   normalizedUsage.CacheCreationInputTokens,
+			CacheReadInputTokens:       normalizedUsage.CacheReadInputTokens,
+			CacheCreation5mInputTokens: normalizedUsage.CacheCreation5mInputTokens,
+			CacheCreation1hInputTokens: normalizedUsage.CacheCreation1hInputTokens,
+			CacheTTL:                   normalizedUsage.CacheTTL,
 		}
 	}
 
@@ -431,10 +427,25 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 		// message_start 事件状态
 		messageStartEmitted := false
 		var streamModel string
+		var textDeltaBuffer strings.Builder
+		var streamUsage types.Usage
+		hasStreamUsage := false
+		pendingStopReason := ""
+		messageDeltaEmitted := false
 
 		// 发送 message_stop 的辅助函数
 		emitMessageStop := func() {
 			eventChan <- "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		}
+		emitMessageDelta := func(stopReason string) {
+			if messageDeltaEmitted {
+				return
+			}
+			if stopReason == "" {
+				stopReason = "end_turn"
+			}
+			eventChan <- buildOpenAIMessageDeltaEvent(stopReason, streamUsage, hasStreamUsage)
+			messageDeltaEmitted = true
 		}
 
 		// 关闭 thinking 块的辅助函数
@@ -465,11 +476,36 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			thinkingBlockIndex = -1
 		}
 
+		emitTextDelta := func(text string) {
+			if text == "" {
+				return
+			}
+			deltaEvent := map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": textBlockIndex,
+				"delta": map[string]string{
+					"type": "text_delta",
+					"text": text,
+				},
+			}
+			deltaJSON, _ := json.Marshal(deltaEvent)
+			eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON)
+		}
+
+		flushTextDelta := func() {
+			if !textBlockStarted || textDeltaBuffer.Len() == 0 {
+				return
+			}
+			emitTextDelta(textDeltaBuffer.String())
+			textDeltaBuffer.Reset()
+		}
+
 		// 关闭文本块的辅助函数
 		closeTextBlock := func() {
 			if !textBlockStarted {
 				return
 			}
+			flushTextDelta()
 			stopEvent := map[string]interface{}{
 				"type":  "content_block_stop",
 				"index": textBlockIndex,
@@ -513,13 +549,29 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				flushToolCall(index)
 			}
 		}
+		finishStream := func() {
+			closeThinkingBlock()
+			closeTextBlock()
+			flushAllToolCalls()
+			if pendingStopReason == "" && messageStartEmitted {
+				pendingStopReason = "end_turn"
+			}
+			if pendingStopReason != "" {
+				emitMessageDelta(pendingStopReason)
+			}
+			emitMessageStop()
+		}
 
 		for scanner.Scan() {
 			line := scanner.Text()
 			line = strings.TrimSpace(line)
 
-			if line == "" || line == "data: [DONE]" {
+			if line == "" {
 				continue
+			}
+			if line == "data: [DONE]" {
+				finishStream()
+				return
 			}
 
 			if !strings.HasPrefix(line, "data: ") {
@@ -531,6 +583,9 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			var chunk map[string]interface{}
 			if err := json.Unmarshal([]byte(jsonStr), &chunk); err != nil {
 				continue
+			}
+			if mergeOpenAIUsageFromChunk(chunk, &streamUsage) {
+				hasStreamUsage = true
 			}
 
 			// 检查是否有错误
@@ -636,17 +691,10 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 					textBlockStarted = true
 				}
 
-				// 发送 content_block_delta
-				deltaEvent := map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": textBlockIndex,
-					"delta": map[string]string{
-						"type": "text_delta",
-						"text": content,
-					},
+				textDeltaBuffer.WriteString(content)
+				if shouldFlushOpenAITextDelta(textDeltaBuffer.String(), content) {
+					flushTextDelta()
 				}
-				deltaJSON, _ := json.Marshal(deltaEvent)
-				eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON)
 			}
 
 			// 处理工具调用。部分 OpenAI 兼容上游会在普通文本 delta 中携带空 tool_calls: []，
@@ -707,27 +755,13 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				} else if finishReason == "length" {
 					stopReason = "max_tokens"
 				}
-
-				// 发送 message_delta（包含 stop_reason）
-				deltaEvent := map[string]interface{}{
-					"type": "message_delta",
-					"delta": map[string]interface{}{
-						"stop_reason":   stopReason,
-						"stop_sequence": nil,
-					},
-					"usage": map[string]interface{}{
-						"output_tokens": 0,
-					},
+				pendingStopReason = stopReason
+				if stopReason == "tool_use" {
+					finishStream()
+					return
 				}
-				deltaJSON, _ := json.Marshal(deltaEvent)
-				eventChan <- fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON)
 			}
 		}
-
-		// 确保流结束时关闭任何未关闭的块
-		closeThinkingBlock()
-		closeTextBlock()
-		flushAllToolCalls()
 
 		if err := scanner.Err(); err != nil {
 			errMsg := err.Error()
@@ -735,14 +769,14 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				strings.Contains(errMsg, "connection reset") ||
 				strings.Contains(errMsg, "EOF") {
 				// 客户端主动断开，仍然发送 message_stop
-				emitMessageStop()
+				finishStream()
 				return
 			}
 			errChan <- err
 		}
 
 		// 流正常结束，发送 message_stop
-		emitMessageStop()
+		finishStream()
 	}()
 
 	return eventChan, errChan, nil
@@ -753,6 +787,159 @@ type ToolCallAccumulator struct {
 	ID        string
 	Name      string
 	Arguments string
+}
+
+type openAIUsageEnvelope struct {
+	Usage *openAIUsageDetails `json:"usage"`
+}
+
+type openAIUsageDetails struct {
+	InputTokens                int                `json:"input_tokens"`
+	OutputTokens               int                `json:"output_tokens"`
+	PromptTokens               int                `json:"prompt_tokens"`
+	CompletionTokens           int                `json:"completion_tokens"`
+	CacheCreationInputTokens   int                `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens       int                `json:"cache_read_input_tokens"`
+	CacheCreation5mInputTokens int                `json:"cache_creation_5m_input_tokens"`
+	CacheCreation1hInputTokens int                `json:"cache_creation_1h_input_tokens"`
+	CacheTTL                   string             `json:"cache_ttl"`
+	CachedContentTokenCount    int                `json:"cachedContentTokenCount"`
+	PromptTokenDetails         openAITokenDetails `json:"prompt_tokens_details"`
+	InputTokenDetails          openAITokenDetails `json:"input_tokens_details"`
+}
+
+type openAITokenDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+func normalizeOpenAIUsage(base *types.Usage, details *openAIUsageDetails) types.Usage {
+	var usage types.Usage
+	if base != nil {
+		usage = *base
+	}
+	if details != nil {
+		usage.InputTokens = firstPositiveInt(details.InputTokens, details.PromptTokens, usage.InputTokens, usage.PromptTokens)
+		usage.OutputTokens = firstPositiveInt(details.OutputTokens, details.CompletionTokens, usage.OutputTokens, usage.CompletionTokens)
+		usage.CacheCreationInputTokens = firstPositiveInt(details.CacheCreationInputTokens, usage.CacheCreationInputTokens)
+		cacheReadFromDetails := firstPositiveInt(
+			details.InputTokenDetails.CachedTokens,
+			details.PromptTokenDetails.CachedTokens,
+			details.CachedContentTokenCount,
+		)
+		usage.CacheReadInputTokens = firstPositiveInt(
+			details.CacheReadInputTokens,
+			cacheReadFromDetails,
+			usage.CacheReadInputTokens,
+		)
+		usage.CacheCreation5mInputTokens = firstPositiveInt(details.CacheCreation5mInputTokens, usage.CacheCreation5mInputTokens)
+		usage.CacheCreation1hInputTokens = firstPositiveInt(details.CacheCreation1hInputTokens, usage.CacheCreation1hInputTokens)
+		if details.CacheTTL != "" {
+			usage.CacheTTL = details.CacheTTL
+		}
+		if cacheReadFromDetails > 0 && usage.InputTokens > cacheReadFromDetails {
+			usage.InputTokens -= cacheReadFromDetails
+		}
+	}
+	return usage
+}
+
+func mergeOpenAIUsageFromChunk(chunk map[string]interface{}, dst *types.Usage) bool {
+	if chunk == nil || dst == nil {
+		return false
+	}
+	usageRaw, ok := chunk["usage"]
+	if !ok || usageRaw == nil {
+		return false
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{"usage": usageRaw})
+	if err != nil {
+		return false
+	}
+	var envelope openAIUsageEnvelope
+	if err := json.Unmarshal(payload, &envelope); err != nil || envelope.Usage == nil {
+		return false
+	}
+	normalized := normalizeOpenAIUsage(dst, envelope.Usage)
+	*dst = normalized
+	return openAIUsageHasData(normalized)
+}
+
+func buildOpenAIMessageDeltaEvent(stopReason string, usage types.Usage, hasUsage bool) string {
+	usageMap := map[string]interface{}{
+		"output_tokens": usage.OutputTokens,
+	}
+	if hasUsage {
+		if usage.InputTokens > 0 {
+			usageMap["input_tokens"] = usage.InputTokens
+		}
+		if usage.CacheCreationInputTokens > 0 {
+			usageMap["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+		}
+		if usage.CacheReadInputTokens > 0 {
+			usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
+			usageMap["input_tokens_details"] = map[string]interface{}{
+				"cached_tokens": usage.CacheReadInputTokens,
+			}
+		}
+		if usage.CacheCreation5mInputTokens > 0 {
+			usageMap["cache_creation_5m_input_tokens"] = usage.CacheCreation5mInputTokens
+		}
+		if usage.CacheCreation1hInputTokens > 0 {
+			usageMap["cache_creation_1h_input_tokens"] = usage.CacheCreation1hInputTokens
+		}
+		if usage.CacheTTL != "" {
+			usageMap["cache_ttl"] = usage.CacheTTL
+		}
+	}
+	deltaEvent := map[string]interface{}{
+		"type": "message_delta",
+		"delta": map[string]interface{}{
+			"stop_reason":   stopReason,
+			"stop_sequence": nil,
+		},
+		"usage": usageMap,
+	}
+	deltaJSON, _ := json.Marshal(deltaEvent)
+	return fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON)
+}
+
+func openAIUsageHasData(usage types.Usage) bool {
+	return usage.InputTokens > 0 ||
+		usage.OutputTokens > 0 ||
+		usage.CacheCreationInputTokens > 0 ||
+		usage.CacheReadInputTokens > 0 ||
+		usage.CacheCreation5mInputTokens > 0 ||
+		usage.CacheCreation1hInputTokens > 0
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func shouldFlushOpenAITextDelta(buffer string, latest string) bool {
+	if len(buffer) >= 96 {
+		return true
+	}
+	if strings.Contains(latest, "\n") {
+		return true
+	}
+	trimmed := strings.TrimSpace(buffer)
+	if trimmed == "" {
+		return false
+	}
+	for _, r := range []rune(trimmed) {
+		switch r {
+		case '。', '！', '？', '；', '：', '.', '!', '?', ';', ':':
+			return true
+		}
+	}
+	return false
 }
 
 // processToolUsePart 处理工具使用部分

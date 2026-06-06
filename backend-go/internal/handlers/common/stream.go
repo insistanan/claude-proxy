@@ -573,6 +573,12 @@ func checkUsageFieldsWithPatch(usage interface{}) (bool, bool, bool) {
 
 			cacheCreation, _ := u["cache_creation_input_tokens"].(float64)
 			cacheRead, _ := u["cache_read_input_tokens"].(float64)
+			if cacheRead <= 0 {
+				cacheRead = nestedCachedTokens(u["input_tokens_details"])
+			}
+			if cacheRead <= 0 {
+				cacheRead = nestedCachedTokens(u["prompt_tokens_details"])
+			}
 			hasCacheTokens := cacheCreation > 0 || cacheRead > 0
 
 			if hasInput {
@@ -610,6 +616,16 @@ func extractUsageFromMap(usage map[string]interface{}) CollectedUsageData {
 	if v, ok := usage["cache_read_input_tokens"].(float64); ok {
 		data.CacheReadInputTokens = int(v)
 	}
+	if data.CacheReadInputTokens == 0 {
+		if cached := nestedCachedTokens(usage["input_tokens_details"]); cached > 0 {
+			data.CacheReadInputTokens = int(cached)
+		}
+	}
+	if data.CacheReadInputTokens == 0 {
+		if cached := nestedCachedTokens(usage["prompt_tokens_details"]); cached > 0 {
+			data.CacheReadInputTokens = int(cached)
+		}
+	}
 
 	var has5m, has1h bool
 	if v, ok := usage["cache_creation_5m_input_tokens"].(float64); ok {
@@ -630,6 +646,15 @@ func extractUsageFromMap(usage map[string]interface{}) CollectedUsageData {
 	}
 
 	return data
+}
+
+func nestedCachedTokens(raw interface{}) float64 {
+	if details, ok := raw.(map[string]interface{}); ok {
+		if cached, ok := details["cached_tokens"].(float64); ok {
+			return cached
+		}
+	}
+	return 0
 }
 
 // logUsageDetection 统一格式输出 usage 检测日志

@@ -122,7 +122,8 @@ func initSchema(db *sql.DB) error {
 			output_tokens INTEGER DEFAULT 0,
 			cache_creation_tokens INTEGER DEFAULT 0,
 			cache_read_tokens INTEGER DEFAULT 0,
-			api_type TEXT NOT NULL DEFAULT 'messages'
+			api_type TEXT NOT NULL DEFAULT 'messages',
+			model TEXT NOT NULL DEFAULT ''
 		);
 
 		-- 索引：按 api_type 和时间查询
@@ -135,7 +136,13 @@ func initSchema(db *sql.DB) error {
 	`
 
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// 尝试向旧表添加 model 列（忽略已存在的错误，用于平滑迁移）
+	_, _ = db.Exec("ALTER TABLE request_records ADD COLUMN model TEXT NOT NULL DEFAULT ''")
+	return nil
 }
 
 // AddRecord 添加记录到写入缓冲区（非阻塞）
@@ -203,8 +210,8 @@ func (s *SQLiteStore) batchInsertRecords(records []PersistentRecord) error {
 	stmt, err := tx.Prepare(`
 		INSERT INTO request_records
 		(metrics_key, base_url, key_mask, timestamp, success,
-		 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, api_type)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, api_type, model)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -218,7 +225,7 @@ func (s *SQLiteStore) batchInsertRecords(records []PersistentRecord) error {
 		}
 		_, err := stmt.Exec(
 			r.MetricsKey, r.BaseURL, r.KeyMask, r.Timestamp.Unix(), success,
-			r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens, r.APIType,
+			r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens, r.APIType, r.Model,
 		)
 		if err != nil {
 			return err
@@ -232,7 +239,7 @@ func (s *SQLiteStore) batchInsertRecords(records []PersistentRecord) error {
 func (s *SQLiteStore) LoadRecords(since time.Time, apiType string) ([]PersistentRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT metrics_key, base_url, key_mask, timestamp, success,
-		       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens
+		       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, model
 		FROM request_records
 		WHERE timestamp >= ? AND api_type = ?
 		ORDER BY timestamp ASC
@@ -250,7 +257,7 @@ func (s *SQLiteStore) LoadRecords(since time.Time, apiType string) ([]Persistent
 
 		err := rows.Scan(
 			&r.MetricsKey, &r.BaseURL, &r.KeyMask, &ts, &success,
-			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
+			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens, &r.Model,
 		)
 		if err != nil {
 			return nil, err
