@@ -187,12 +187,7 @@ func (fd *GeminiFunctionDeclaration) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// sanitizeGeminiToolSchema 清洗工具参数 schema，以兼容部分上游对 parameters 字段的严格校验。
-//
-// 已知不兼容字段：
-// - $schema
-// - additionalProperties
-// - const（转换为 enum: [const]）
+// sanitizeGeminiToolSchema 清洗工具参数 schema，以兼容 Gemini functionDeclaration.parameters 的严格校验。
 func sanitizeGeminiToolSchema(v interface{}) interface{} {
 	switch vv := v.(type) {
 	case map[string]interface{}:
@@ -202,14 +197,46 @@ func sanitizeGeminiToolSchema(v interface{}) interface{} {
 
 		for k, val := range vv {
 			switch k {
-			case "$schema", "additionalProperties":
+			case "$schema", "$id", "$ref", "$defs", "definitions",
+				"additionalProperties", "unevaluatedProperties", "propertyNames", "patternProperties",
+				"oneOf", "allOf", "not", "if", "then", "else",
+				"dependentRequired", "dependentSchemas", "contains", "minContains", "maxContains",
+				"prefixItems", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "examples":
 				continue
 			case "const":
 				constValue = val
 				hasConst = true
 				continue
-			default:
+			case "type":
+				if schemaType, nullable, ok := sanitizeGeminiSchemaType(val); ok {
+					out[k] = schemaType
+					if nullable {
+						out["nullable"] = true
+					}
+				}
+			case "properties":
+				if properties, ok := val.(map[string]interface{}); ok {
+					cleanedProperties := make(map[string]interface{}, len(properties))
+					for name, propertySchema := range properties {
+						cleanedProperties[name] = sanitizeGeminiToolSchema(propertySchema)
+					}
+					out[k] = cleanedProperties
+				}
+			case "items":
 				out[k] = sanitizeGeminiToolSchema(val)
+			case "anyOf":
+				if values, ok := val.([]interface{}); ok {
+					cleanedValues := make([]interface{}, 0, len(values))
+					for _, value := range values {
+						cleanedValues = append(cleanedValues, sanitizeGeminiToolSchema(value))
+					}
+					out[k] = cleanedValues
+				}
+			case "format", "title", "description", "nullable", "enum",
+				"maxItems", "minItems", "required", "minProperties", "maxProperties",
+				"minLength", "maxLength", "pattern", "example", "propertyOrdering",
+				"default", "minimum", "maximum":
+				out[k] = val
 			}
 		}
 
@@ -218,6 +245,7 @@ func sanitizeGeminiToolSchema(v interface{}) interface{} {
 				out["enum"] = []interface{}{sanitizeGeminiToolSchema(constValue)}
 			}
 		}
+		normalizeGeminiSchemaShape(out)
 
 		return out
 	case []interface{}:
@@ -229,6 +257,70 @@ func sanitizeGeminiToolSchema(v interface{}) interface{} {
 	default:
 		return v
 	}
+}
+
+func sanitizeGeminiSchemaType(v interface{}) (interface{}, bool, bool) {
+	if str, ok := v.(string); ok {
+		if str == "" {
+			return nil, false, false
+		}
+		return str, false, true
+	}
+
+	values, ok := v.([]interface{})
+	if !ok {
+		return nil, false, false
+	}
+
+	nullable := false
+	for _, value := range values {
+		str, ok := value.(string)
+		if ok && str == "null" {
+			nullable = true
+		}
+		if ok && str != "" && str != "null" {
+			return str, nullable, true
+		}
+	}
+	return nil, nullable, false
+}
+
+func normalizeGeminiSchemaShape(schema map[string]interface{}) {
+	if _, hasType := schema["type"]; !hasType {
+		if _, hasProperties := schema["properties"]; hasProperties {
+			schema["type"] = "object"
+		} else if _, hasItems := schema["items"]; hasItems {
+			schema["type"] = "array"
+		} else if enumValues, ok := schema["enum"].([]interface{}); ok {
+			if inferredType, ok := inferGeminiSchemaTypeFromValues(enumValues); ok {
+				schema["type"] = inferredType
+			}
+		}
+	}
+
+	if schema["type"] == "object" {
+		if _, hasProperties := schema["properties"]; !hasProperties {
+			schema["properties"] = map[string]interface{}{}
+		}
+	}
+}
+
+func inferGeminiSchemaTypeFromValues(values []interface{}) (string, bool) {
+	for _, value := range values {
+		switch value.(type) {
+		case string:
+			return "string", true
+		case bool:
+			return "boolean", true
+		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			return "number", true
+		case []interface{}:
+			return "array", true
+		case map[string]interface{}:
+			return "object", true
+		}
+	}
+	return "", false
 }
 
 // SanitizeGeminiToolSchema 清洗 Gemini functionDeclaration 参数 schema。

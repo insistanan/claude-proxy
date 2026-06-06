@@ -1,5 +1,10 @@
 package types
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 // ClaudeRequest Claude 请求结构
 type ClaudeRequest struct {
 	Model               string                 `json:"model"`
@@ -10,9 +15,107 @@ type ClaudeRequest struct {
 	Temperature         float64                `json:"temperature,omitempty"`
 	Stream              bool                   `json:"stream,omitempty"`
 	Tools               []ClaudeTool           `json:"tools,omitempty"`
-	ToolChoice          interface{}            `json:"tool_choice,omitempty"`  // string 或 object
-	Thinking            interface{}            `json:"thinking,omitempty"`    // {type: "enabled"/"adaptive", budget_tokens: N}
-	Metadata            map[string]interface{} `json:"metadata,omitempty"`    // Claude Code CLI 等客户端发送的元数据
+	ToolChoice          interface{}            `json:"tool_choice,omitempty"`   // string 或 object
+	Thinking            interface{}            `json:"thinking,omitempty"`      // {type: "enabled"/"adaptive", budget_tokens: N}
+	OutputConfig        map[string]interface{} `json:"output_config,omitempty"` // Claude Code effort 等扩展配置
+	Metadata            map[string]interface{} `json:"metadata,omitempty"`      // Claude Code CLI 等客户端发送的元数据
+}
+
+// UnmarshalJSON 兼容 Claude Code 的 tools 字符串数组，同时保留标准 Anthropic 工具对象。
+func (r *ClaudeRequest) UnmarshalJSON(data []byte) error {
+	type claudeRequestWire struct {
+		Model               string                 `json:"model"`
+		Messages            []ClaudeMessage        `json:"messages"`
+		System              interface{}            `json:"system,omitempty"`
+		MaxTokens           int                    `json:"max_tokens,omitempty"`
+		MaxCompletionTokens int                    `json:"max_completion_tokens,omitempty"`
+		Temperature         float64                `json:"temperature,omitempty"`
+		Stream              bool                   `json:"stream,omitempty"`
+		Tools               json.RawMessage        `json:"tools,omitempty"`
+		ToolChoice          interface{}            `json:"tool_choice,omitempty"`
+		Thinking            interface{}            `json:"thinking,omitempty"`
+		OutputConfig        map[string]interface{} `json:"output_config,omitempty"`
+		Metadata            map[string]interface{} `json:"metadata,omitempty"`
+	}
+
+	var wire claudeRequestWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+
+	tools, err := decodeClaudeTools(wire.Tools)
+	if err != nil {
+		return err
+	}
+
+	r.Model = wire.Model
+	r.Messages = wire.Messages
+	r.System = wire.System
+	r.MaxTokens = wire.MaxTokens
+	r.MaxCompletionTokens = wire.MaxCompletionTokens
+	r.Temperature = wire.Temperature
+	r.Stream = wire.Stream
+	r.Tools = tools
+	r.ToolChoice = wire.ToolChoice
+	r.Thinking = wire.Thinking
+	r.OutputConfig = wire.OutputConfig
+	r.Metadata = wire.Metadata
+	return nil
+}
+
+func decodeClaudeTools(raw json.RawMessage) ([]ClaudeTool, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, err
+	}
+
+	tools := make([]ClaudeTool, 0, len(items))
+	for _, item := range items {
+		item = bytes.TrimSpace(item)
+		if len(item) == 0 || bytes.Equal(item, []byte("null")) {
+			continue
+		}
+
+		switch item[0] {
+		case '"':
+			var name string
+			if err := json.Unmarshal(item, &name); err != nil {
+				return nil, err
+			}
+			if name == "" {
+				continue
+			}
+			tools = append(tools, ClaudeTool{
+				Name: name,
+				InputSchema: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			})
+		case '{':
+			var tool ClaudeTool
+			if err := json.Unmarshal(item, &tool); err != nil {
+				return nil, err
+			}
+			if tool.Name == "" {
+				continue
+			}
+			if tool.InputSchema == nil {
+				tool.InputSchema = map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				}
+			}
+			tools = append(tools, tool)
+		}
+	}
+
+	return tools, nil
 }
 
 // ClaudeMessage Claude 消息
@@ -65,8 +168,8 @@ type OpenAIRequest struct {
 	Temperature         float64         `json:"temperature,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	Tools               []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice          interface{}     `json:"tool_choice,omitempty"`        // string 或 object
-	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`   // none/minimal/low/medium/high/xhigh
+	ToolChoice          interface{}     `json:"tool_choice,omitempty"`      // string 或 object
+	ReasoningEffort     string          `json:"reasoning_effort,omitempty"` // none/minimal/low/medium/high/xhigh
 }
 
 // OpenAIMessage OpenAI 消息

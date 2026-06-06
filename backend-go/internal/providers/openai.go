@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -148,9 +149,41 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 
 	textContents := []string{}
 	toolCalls := []types.OpenAIToolCall{}
-	toolResults := []types.OpenAIMessage{}
 	multimodalContents := []map[string]interface{}{}
 	hasVisionContent := false
+	flushAssistantOrUserMessage := func() {
+		if len(textContents) == 0 && len(toolCalls) == 0 && len(multimodalContents) == 0 {
+			return
+		}
+		role := normalizeRole(msg.Role)
+		if role == "tool" {
+			textContents = nil
+			toolCalls = nil
+			multimodalContents = nil
+			hasVisionContent = false
+			return
+		}
+
+		openaiMsg := types.OpenAIMessage{
+			Role: role,
+		}
+		if hasVisionContent {
+			openaiMsg.Content = multimodalContents
+		} else if len(textContents) > 0 {
+			openaiMsg.Content = strings.Join(textContents, "")
+		} else {
+			openaiMsg.Content = nil
+		}
+		if len(toolCalls) > 0 {
+			openaiMsg.ToolCalls = toolCalls
+		}
+
+		messages = append(messages, openaiMsg)
+		textContents = nil
+		toolCalls = nil
+		multimodalContents = nil
+		hasVisionContent = false
+	}
 
 	for _, content := range contents {
 		contentType, _ := content["type"].(string)
@@ -188,6 +221,10 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 			})
 
 		case "tool_result":
+			if normalizeRole(msg.Role) != "user" {
+				flushAssistantOrUserMessage()
+			}
+
 			toolUseID, _ := content["tool_use_id"].(string)
 			resultContent := content["content"]
 
@@ -199,7 +236,7 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 				contentStr = string(contentJSON)
 			}
 
-			toolResults = append(toolResults, types.OpenAIMessage{
+			messages = append(messages, types.OpenAIMessage{
 				Role:       "tool",
 				ToolCallID: toolUseID,
 				Content:    contentStr,
@@ -207,32 +244,7 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 		}
 	}
 
-	// 添加工具结果
-	messages = append(messages, toolResults...)
-
-	// 添加文本、图片和工具调用
-	if len(textContents) > 0 || len(toolCalls) > 0 || len(multimodalContents) > 0 {
-		role := normalizeRole(msg.Role)
-		if role != "tool" {
-			openaiMsg := types.OpenAIMessage{
-				Role: role,
-			}
-
-			if hasVisionContent {
-				openaiMsg.Content = multimodalContents
-			} else if len(textContents) > 0 {
-				openaiMsg.Content = strings.Join(textContents, "\n")
-			} else {
-				openaiMsg.Content = nil
-			}
-
-			if len(toolCalls) > 0 {
-				openaiMsg.ToolCalls = toolCalls
-			}
-
-			messages = append(messages, openaiMsg)
-		}
-	}
+	flushAssistantOrUserMessage()
 
 	return messages
 }
@@ -242,6 +254,9 @@ func (p *OpenAIProvider) convertTools(claudeTools []types.ClaudeTool) []types.Op
 	tools := []types.OpenAITool{}
 
 	for _, tool := range claudeTools {
+		if tool.Name == "" || tool.Name == "BatchTool" {
+			continue
+		}
 		tools = append(tools, types.OpenAITool{
 			Type: "function",
 			Function: types.OpenAIToolFunction{
@@ -402,16 +417,16 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 		const maxScannerBufferSize = 1024 * 1024 // 1MB
 		scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBufferSize)
 
-		toolUseBlockIndex := 0
 		toolCallAccumulator := make(map[int]*ToolCallAccumulator)
+		nextBlockIndex := 0
 
 		// 文本块状态跟踪
 		textBlockStarted := false
-		textBlockIndex := 0
+		textBlockIndex := -1
 
 		// thinking 块状态跟踪
 		thinkingBlockStarted := false
-		thinkingBlockIndex := 0
+		thinkingBlockIndex := -1
 
 		// message_start 事件状态
 		messageStartEmitted := false
@@ -447,7 +462,7 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			stopJSON, _ := json.Marshal(stopEvent)
 			eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
 			thinkingBlockStarted = false
-			thinkingBlockIndex++
+			thinkingBlockIndex = -1
 		}
 
 		// 关闭文本块的辅助函数
@@ -462,7 +477,41 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			stopJSON, _ := json.Marshal(stopEvent)
 			eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
 			textBlockStarted = false
-			textBlockIndex++
+			textBlockIndex = -1
+		}
+		flushToolCall := func(index int) {
+			acc := toolCallAccumulator[index]
+			if acc == nil || acc.ID == "" || acc.Name == "" {
+				return
+			}
+			argsText := strings.TrimSpace(acc.Arguments)
+			if argsText == "" {
+				argsText = "{}"
+			}
+			var args interface{}
+			if err := json.Unmarshal([]byte(argsText), &args); err != nil {
+				return
+			}
+
+			toolUseBlockIndex := nextBlockIndex
+			nextBlockIndex++
+			for _, event := range processToolUsePart(acc.ID, acc.Name, args, toolUseBlockIndex) {
+				eventChan <- event
+			}
+			delete(toolCallAccumulator, index)
+		}
+		flushAllToolCalls := func() {
+			if len(toolCallAccumulator) == 0 {
+				return
+			}
+			indexes := make([]int, 0, len(toolCallAccumulator))
+			for index := range toolCallAccumulator {
+				indexes = append(indexes, index)
+			}
+			sort.Ints(indexes)
+			for _, index := range indexes {
+				flushToolCall(index)
+			}
 		}
 
 		for scanner.Scan() {
@@ -535,6 +584,8 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				closeTextBlock()
 
 				if !thinkingBlockStarted {
+					thinkingBlockIndex = nextBlockIndex
+					nextBlockIndex++
 					// 发送 thinking content_block_start
 					startEvent := map[string]interface{}{
 						"type":  "content_block_start",
@@ -570,6 +621,8 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 
 				// 如果是第一个文本块,发送 content_block_start
 				if !textBlockStarted {
+					textBlockIndex = nextBlockIndex
+					nextBlockIndex++
 					startEvent := map[string]interface{}{
 						"type":  "content_block_start",
 						"index": textBlockIndex,
@@ -596,8 +649,9 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON)
 			}
 
-			// 处理工具调用
-			if toolCalls, ok := delta["tool_calls"].([]interface{}); ok {
+			// 处理工具调用。部分 OpenAI 兼容上游会在普通文本 delta 中携带空 tool_calls: []，
+			// 不能因此关闭文本块，否则 Claude Code 会把连续文本拆成多个 content block 显示。
+			if toolCalls, ok := delta["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
 				// 如果有 thinking/文本块正在进行,先关闭它们
 				closeThinkingBlock()
 				closeTextBlock()
@@ -633,17 +687,8 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 						}
 					}
 
-					// 检查是否完整
-					if acc.ID != "" && acc.Name != "" && acc.Arguments != "" {
-						var args interface{}
-						if err := json.Unmarshal([]byte(acc.Arguments), &args); err == nil {
-							events := processToolUsePart(acc.ID, acc.Name, args, toolUseBlockIndex)
-							for _, event := range events {
-								eventChan <- event
-							}
-							toolUseBlockIndex++
-							delete(toolCallAccumulator, index)
-						}
+					if acc.ID != "" && acc.Name != "" && acc.Arguments != "" && json.Valid([]byte(acc.Arguments)) {
+						flushToolCall(index)
 					}
 				}
 			}
@@ -653,6 +698,7 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				// 关闭所有未关闭的块
 				closeThinkingBlock()
 				closeTextBlock()
+				flushAllToolCalls()
 
 				// 根据 finish_reason 确定 stop_reason
 				stopReason := "end_turn"
@@ -681,6 +727,7 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 		// 确保流结束时关闭任何未关闭的块
 		closeThinkingBlock()
 		closeTextBlock()
+		flushAllToolCalls()
 
 		if err := scanner.Err(); err != nil {
 			errMsg := err.Error()

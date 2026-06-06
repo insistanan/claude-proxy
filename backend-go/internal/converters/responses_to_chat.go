@@ -129,10 +129,6 @@ func ConvertResponsesToOpenAIChatRequest(modelName string, inputRawJSON []byte, 
 		out, _ = sjson.Set(out, "max_tokens", maxTokens.Int())
 	}
 
-	if parallelToolCalls := root.Get("parallel_tool_calls"); parallelToolCalls.Exists() {
-		out, _ = sjson.Set(out, "parallel_tool_calls", parallelToolCalls.Bool())
-	}
-
 	if temperature := root.Get("temperature"); temperature.Exists() {
 		out, _ = sjson.Set(out, "temperature", temperature.Float())
 	}
@@ -165,8 +161,9 @@ func ConvertResponsesToOpenAIChatRequest(modelName string, inputRawJSON []byte, 
 	}
 
 	// 转换 tools
+	toolsConverted := false
 	if tools := root.Get("tools"); tools.Exists() && tools.IsArray() {
-		out = convertToolsToOpenAIFormat(tools, out)
+		out, toolsConverted = convertToolsToOpenAIFormat(tools, out)
 	}
 
 	// 转换 reasoning.effort → reasoning_effort
@@ -191,11 +188,14 @@ func ConvertResponsesToOpenAIChatRequest(modelName string, inputRawJSON []byte, 
 	}
 
 	// 转换 tool_choice
-	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
-		if toolChoice.Type == gjson.String {
-			out, _ = sjson.Set(out, "tool_choice", toolChoice.String())
-		} else {
-			out, _ = sjson.SetRaw(out, "tool_choice", toolChoice.Raw)
+	if toolsConverted {
+		if parallelToolCalls := root.Get("parallel_tool_calls"); parallelToolCalls.Exists() {
+			out, _ = sjson.Set(out, "parallel_tool_calls", parallelToolCalls.Bool())
+		}
+		if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
+			if normalized, ok := normalizeResponsesToolChoiceForChat(toolChoice); ok {
+				out, _ = sjson.Set(out, "tool_choice", normalized)
+			}
 		}
 	}
 
@@ -235,8 +235,44 @@ func gjsonResultIsObject(result gjson.Result) bool {
 	return result.Type == gjson.JSON && strings.HasPrefix(strings.TrimSpace(result.Raw), "{")
 }
 
+func normalizeResponsesToolChoiceForChat(toolChoice gjson.Result) (interface{}, bool) {
+	if toolChoice.Type == gjson.String {
+		return toolChoice.String(), true
+	}
+	if !gjsonResultIsObject(toolChoice) {
+		return nil, false
+	}
+	name := toolChoice.Get("function.name").String()
+	if name == "" {
+		name = toolChoice.Get("name").String()
+	}
+	if name == "" {
+		return nil, false
+	}
+	return map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name": name,
+		},
+	}, true
+}
+
 // convertInputArrayToMessages 将 input 数组转换为 messages 数组
 func convertInputArrayToMessages(input gjson.Result, out string) string {
+	pendingToolCalls := make([]interface{}, 0)
+	flushPendingToolCalls := func() {
+		if len(pendingToolCalls) == 0 {
+			return
+		}
+		assistantMessage := map[string]interface{}{
+			"role":       "assistant",
+			"content":    nil,
+			"tool_calls": pendingToolCalls,
+		}
+		out, _ = sjson.Set(out, "messages.-1", assistantMessage)
+		pendingToolCalls = nil
+	}
+
 	input.ForEach(func(_, item gjson.Result) bool {
 		itemType := item.Get("type").String()
 
@@ -247,18 +283,23 @@ func convertInputArrayToMessages(input gjson.Result, out string) string {
 
 		switch itemType {
 		case "message":
+			flushPendingToolCalls()
 			out = convertMessageItem(item, out)
 
 		case "function_call":
-			out = convertFunctionCallItem(item, out)
+			pendingToolCalls = append(pendingToolCalls, convertFunctionCallItem(item))
 
 		case "function_call_output":
+			flushPendingToolCalls()
 			out = convertFunctionCallOutputItem(item, out)
+		default:
+			flushPendingToolCalls()
 		}
 
 		return true
 	})
 
+	flushPendingToolCalls()
 	return out
 }
 
@@ -317,14 +358,11 @@ func convertResponsesContentArrayToOpenAIContent(content gjson.Result) interface
 	if hasImage {
 		return blocks
 	}
-	return strings.Join(texts, "\n")
+	return strings.Join(texts, "")
 }
 
 // convertFunctionCallItem 转换 function_call 类型的 item
-func convertFunctionCallItem(item gjson.Result, out string) string {
-	// function_call → assistant message with tool_calls
-	assistantMessage := `{"role":"assistant","tool_calls":[]}`
-
+func convertFunctionCallItem(item gjson.Result) interface{} {
 	toolCall := `{"id":"","type":"function","function":{"name":"","arguments":""}}`
 
 	if callID := item.Get("call_id"); callID.Exists() {
@@ -339,10 +377,7 @@ func convertFunctionCallItem(item gjson.Result, out string) string {
 		toolCall, _ = sjson.Set(toolCall, "function.arguments", arguments.String())
 	}
 
-	assistantMessage, _ = sjson.SetRaw(assistantMessage, "tool_calls.0", toolCall)
-	out, _ = sjson.SetRaw(out, "messages.-1", assistantMessage)
-
-	return out
+	return gjson.Parse(toolCall).Value()
 }
 
 // convertFunctionCallOutputItem 转换 function_call_output 类型的 item
@@ -369,7 +404,7 @@ func convertFunctionCallOutputItem(item gjson.Result, out string) string {
 }
 
 // convertToolsToOpenAIFormat 将 Responses tools 转换为 OpenAI Chat Completions tools 格式
-func convertToolsToOpenAIFormat(tools gjson.Result, out string) string {
+func convertToolsToOpenAIFormat(tools gjson.Result, out string) (string, bool) {
 	var chatCompletionsTools []interface{}
 
 	tools.ForEach(func(_, tool gjson.Result) bool {
@@ -392,6 +427,10 @@ func convertToolsToOpenAIFormat(tools gjson.Result, out string) string {
 			}
 		}
 
+		if !name.Exists() || name.String() == "" {
+			return true
+		}
+
 		if name.Exists() {
 			function, _ = sjson.Set(function, "name", name.String())
 		}
@@ -412,7 +451,8 @@ func convertToolsToOpenAIFormat(tools gjson.Result, out string) string {
 
 	if len(chatCompletionsTools) > 0 {
 		out, _ = sjson.Set(out, "tools", chatCompletionsTools)
+		return out, true
 	}
 
-	return out
+	return out, false
 }

@@ -108,8 +108,9 @@ func GeminiToOpenAIRequest(geminiReq *types.GeminiRequest, model string) (map[st
 	}
 
 	// 2. 转换 contents -> messages
+	var pendingToolCallIDs []string
 	for _, content := range geminiReq.Contents {
-		msg, err := geminiContentToOpenAIMessage(&content)
+		msg, err := geminiContentToOpenAIMessage(&content, &pendingToolCallIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -405,7 +406,7 @@ func geminiContentToClaudeMessage(content *types.GeminiContent) (map[string]inte
 }
 
 // geminiContentToOpenAIMessage 将 Gemini Content 转换为 OpenAI Message
-func geminiContentToOpenAIMessage(content *types.GeminiContent) (map[string]interface{}, error) {
+func geminiContentToOpenAIMessage(content *types.GeminiContent, pendingToolCallIDs *[]string) (map[string]interface{}, error) {
 	if content == nil || len(content.Parts) == 0 {
 		return nil, nil
 	}
@@ -432,9 +433,14 @@ func geminiContentToOpenAIMessage(content *types.GeminiContent) (map[string]inte
 		}
 
 		if part.FunctionCall != nil {
+			callID := fmt.Sprintf("call_%d", i)
+			if pendingToolCallIDs != nil {
+				callID = fmt.Sprintf("call_%d", len(*pendingToolCallIDs))
+				*pendingToolCallIDs = append(*pendingToolCallIDs, callID)
+			}
 			argsJSON, _ := JSONMarshal(part.FunctionCall.Args)
 			toolCalls = append(toolCalls, map[string]interface{}{
-				"id":   fmt.Sprintf("call_%d", i),
+				"id":   callID,
 				"type": "function",
 				"function": map[string]interface{}{
 					"name":      part.FunctionCall.Name,
@@ -445,7 +451,12 @@ func geminiContentToOpenAIMessage(content *types.GeminiContent) (map[string]inte
 
 		if part.FunctionResponse != nil {
 			hasToolResponse = true
-			toolResponseName = part.FunctionResponse.Name
+			if pendingToolCallIDs != nil && len(*pendingToolCallIDs) > 0 {
+				toolResponseName = (*pendingToolCallIDs)[0]
+				*pendingToolCallIDs = (*pendingToolCallIDs)[1:]
+			} else {
+				toolResponseName = part.FunctionResponse.Name
+			}
 			toolResponseContent = part.FunctionResponse.Response
 		}
 	}
@@ -474,14 +485,14 @@ func geminiContentToOpenAIMessage(content *types.GeminiContent) (map[string]inte
 	if len(toolCalls) > 0 {
 		// 助手消息带工具调用
 		if len(textParts) > 0 {
-			msg["content"] = strings.Join(textParts, "\n")
+			msg["content"] = strings.Join(textParts, "")
 		} else {
 			msg["content"] = nil
 		}
 		msg["tool_calls"] = toolCalls
 	} else {
 		// 普通消息
-		msg["content"] = strings.Join(textParts, "\n")
+		msg["content"] = strings.Join(textParts, "")
 	}
 
 	return msg, nil
