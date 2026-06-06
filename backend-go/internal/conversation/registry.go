@@ -11,15 +11,16 @@ import (
 
 const (
 	defaultMaxIdle         = 24 * time.Hour
-	defaultCleanupInterval  = 10 * time.Minute
+	defaultCleanupInterval = 10 * time.Minute
 )
 
 type Observation struct {
-	APIKind       string
-	Model         string
-	Stream        bool
+	APIKind        string
+	Model          string
+	Stream         bool
 	ConversationID string
-	FallbackKey   string
+	FallbackKey    string
+	FirstPrompt    string
 }
 
 type RouteOverride struct {
@@ -37,17 +38,23 @@ type ChannelRef struct {
 }
 
 type Record struct {
-	ID            string         `json:"id"`
-	APIKind       string         `json:"apiKind"`
-	LastModel     string         `json:"lastModel,omitempty"`
-	Stream        bool           `json:"stream"`
-	FirstSeenAt   time.Time      `json:"firstSeenAt"`
-	LastSeenAt    time.Time      `json:"lastSeenAt"`
-	RequestCount  int64          `json:"requestCount"`
-	ErrorCount    int64          `json:"errorCount"`
-	LastError     string         `json:"lastError,omitempty"`
-	RouteOverride *RouteOverride `json:"routeOverride,omitempty"`
-	LastResolved  *ChannelRef    `json:"lastResolved,omitempty"`
+	ID                string         `json:"id"`
+	APIKind           string         `json:"apiKind"`
+	LastModel         string         `json:"lastModel,omitempty"`
+	LastResolvedModel string         `json:"lastResolvedModel,omitempty"`
+	FirstPrompt       string         `json:"firstPrompt,omitempty"`
+	Stream            bool           `json:"stream"`
+	IsSending         bool           `json:"isSending"`
+	ActiveRequests    int64          `json:"activeRequests,omitempty"`
+	FirstSeenAt       time.Time      `json:"firstSeenAt"`
+	LastSeenAt        time.Time      `json:"lastSeenAt"`
+	LastRequestAt     time.Time      `json:"lastRequestAt"`
+	LastCompletedAt   time.Time      `json:"lastCompletedAt,omitempty"`
+	RequestCount      int64          `json:"requestCount"`
+	ErrorCount        int64          `json:"errorCount"`
+	LastError         string         `json:"lastError,omitempty"`
+	RouteOverride     *RouteOverride `json:"routeOverride,omitempty"`
+	LastResolved      *ChannelRef    `json:"lastResolved,omitempty"`
 
 	identityKey string
 }
@@ -100,13 +107,16 @@ func (r *Registry) ObserveRequest(obs Observation) *Record {
 	}
 	if rec == nil {
 		rec = &Record{
-			ID:           generateID("conv"),
-			APIKind:      firstNonEmpty(obs.APIKind, "unknown"),
-			LastModel:    obs.Model,
-			Stream:       obs.Stream,
-			FirstSeenAt:  now,
-			LastSeenAt:   now,
-			identityKey:  identityKey,
+			ID:            generateID("conv"),
+			APIKind:       firstNonEmpty(obs.APIKind, "unknown"),
+			LastModel:     obs.Model,
+			FirstPrompt:   truncate(obs.FirstPrompt, 300),
+			Stream:        obs.Stream,
+			IsSending:     true,
+			FirstSeenAt:   now,
+			LastSeenAt:    now,
+			LastRequestAt: now,
+			identityKey:   identityKey,
 		}
 		r.records[rec.ID] = rec
 		r.identityIndex[identityKey] = rec.ID
@@ -114,11 +124,47 @@ func (r *Registry) ObserveRequest(obs Observation) *Record {
 
 	rec.APIKind = firstNonEmpty(obs.APIKind, rec.APIKind)
 	rec.LastModel = firstNonEmpty(obs.Model, rec.LastModel)
+	if rec.FirstPrompt == "" {
+		rec.FirstPrompt = truncate(obs.FirstPrompt, 300)
+	}
 	rec.Stream = obs.Stream
+	if rec.ActiveRequests < 0 {
+		rec.ActiveRequests = 0
+	}
+	rec.ActiveRequests++
+	rec.IsSending = rec.ActiveRequests > 0
 	rec.LastSeenAt = now
+	rec.LastRequestAt = now
 	rec.RequestCount++
 
 	return cloneRecord(rec)
+}
+
+func (r *Registry) MarkAttempt(recordID string, kind string, channelIndex int, channelName string, requestedModel string, resolvedModel string, stream bool) {
+	if strings.TrimSpace(recordID) == "" {
+		return
+	}
+	now := time.Now()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rec := r.records[recordID]
+	if rec == nil {
+		return
+	}
+	rec.APIKind = firstNonEmpty(kind, rec.APIKind)
+	rec.LastModel = firstNonEmpty(requestedModel, rec.LastModel)
+	rec.LastResolvedModel = firstNonEmpty(resolvedModel, rec.LastResolvedModel)
+	rec.Stream = stream
+	rec.IsSending = rec.ActiveRequests > 0
+	rec.LastSeenAt = now
+	rec.LastResolved = &ChannelRef{
+		Kind:         kind,
+		ChannelIndex: channelIndex,
+		ChannelName:  channelName,
+		UpdatedAt:    now,
+	}
 }
 
 func (r *Registry) MarkSuccess(recordID string, kind string, channelIndex int, channelName string) {
@@ -136,6 +182,8 @@ func (r *Registry) MarkSuccess(recordID string, kind string, channelIndex int, c
 	}
 	rec.APIKind = firstNonEmpty(kind, rec.APIKind)
 	rec.LastSeenAt = now
+	rec.LastCompletedAt = now
+	rec.LastError = ""
 	rec.LastResolved = &ChannelRef{
 		Kind:         kind,
 		ChannelIndex: channelIndex,
@@ -159,8 +207,31 @@ func (r *Registry) MarkFailure(recordID string, kind string, errorMessage string
 	}
 	rec.APIKind = firstNonEmpty(kind, rec.APIKind)
 	rec.LastSeenAt = now
+	rec.LastCompletedAt = now
 	rec.ErrorCount++
 	rec.LastError = truncate(errorMessage, 500)
+}
+
+func (r *Registry) MarkComplete(recordID string, kind string) {
+	if strings.TrimSpace(recordID) == "" {
+		return
+	}
+	now := time.Now()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rec := r.records[recordID]
+	if rec == nil {
+		return
+	}
+	rec.APIKind = firstNonEmpty(kind, rec.APIKind)
+	if rec.ActiveRequests > 0 {
+		rec.ActiveRequests--
+	}
+	rec.IsSending = rec.ActiveRequests > 0
+	rec.LastSeenAt = now
+	rec.LastCompletedAt = now
 }
 
 func (r *Registry) List() []*Record {

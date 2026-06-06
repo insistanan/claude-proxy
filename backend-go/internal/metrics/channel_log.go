@@ -9,23 +9,29 @@ import (
 const defaultChannelLogLimit = 200
 
 type ChannelLog struct {
-	RequestID        string `json:"requestId"`
-	AttemptID        string `json:"attemptId"`
-	Timestamp        string `json:"timestamp"`
-	Status           string `json:"status"`
-	StatusCode       int    `json:"statusCode,omitempty"`
-	Success          bool   `json:"success"`
-	DurationMs       int64  `json:"durationMs"`
-	APIType          string `json:"apiType"`
-	Model            string `json:"model,omitempty"`
-	ChannelIndex     int    `json:"channelIndex"`
-	ChannelName      string `json:"channelName,omitempty"`
-	BaseURL          string `json:"baseUrl"`
-	KeyMask          string `json:"keyMask"`
-	ErrorType        string `json:"errorType,omitempty"`
-	ErrorMessage     string `json:"errorMessage,omitempty"`
-	Retried          bool   `json:"retried"`
-	Stream           bool   `json:"stream"`
+	RequestID             string `json:"requestId"`
+	AttemptID             string `json:"attemptId"`
+	Timestamp             string `json:"timestamp"`
+	Status                string `json:"status"`
+	StatusCode            int    `json:"statusCode,omitempty"`
+	Success               bool   `json:"success"`
+	DurationMs            int64  `json:"durationMs"`
+	APIType               string `json:"apiType"`
+	Model                 string `json:"model,omitempty"`
+	InputTokens           int    `json:"inputTokens,omitempty"`
+	OutputTokens          int    `json:"outputTokens,omitempty"`
+	CacheCreationTokens   int    `json:"cacheCreationTokens,omitempty"`
+	CacheReadTokens       int    `json:"cacheReadTokens,omitempty"`
+	CacheCreation5mTokens int    `json:"cacheCreation5mTokens,omitempty"`
+	CacheCreation1hTokens int    `json:"cacheCreation1hTokens,omitempty"`
+	ChannelIndex          int    `json:"channelIndex"`
+	ChannelName           string `json:"channelName,omitempty"`
+	BaseURL               string `json:"baseUrl"`
+	KeyMask               string `json:"keyMask"`
+	ErrorType             string `json:"errorType,omitempty"`
+	ErrorMessage          string `json:"errorMessage,omitempty"`
+	Retried               bool   `json:"retried"`
+	Stream                bool   `json:"stream"`
 }
 
 type ChannelLogStore struct {

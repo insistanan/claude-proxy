@@ -19,12 +19,15 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 		metricsManager := sch.GetGeminiMetricsManager()
 
 		// 1. 构建 channels 数据
-		channels := make([]gin.H, len(upstreams))
+		channels := make([]gin.H, 0, len(upstreams))
 		for i, up := range upstreams {
+			if config.GetChannelStatus(&up) == config.ChannelStatusDeleted {
+				continue
+			}
 			status := config.GetChannelStatus(&up)
 			priority := config.GetChannelPriority(&up, i)
 
-			channels[i] = gin.H{
+			channels = append(channels, gin.H{
 				"index":                       i,
 				"name":                        up.Name,
 				"serviceType":                 up.ServiceType,
@@ -43,12 +46,15 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 				"visionCapable":               up.VisionCapable,
 				"injectDummyThoughtSignature": up.InjectDummyThoughtSignature,
 				"stripThoughtSignature":       up.StripThoughtSignature,
-			}
+			})
 		}
 
 		// 2. 构建 metrics 数据
 		metricsResult := make([]gin.H, 0, len(upstreams))
 		for i, upstream := range upstreams {
+			if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted {
+				continue
+			}
 			resp := metricsManager.ToResponseMultiURL(i, upstream.GetAllBaseURLs(), upstream.APIKeys, 0, upstream.HistoricalAPIKeys)
 
 			item := gin.H{
@@ -90,9 +96,12 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 		}
 
 		// 4. 构建 recentActivity 数据（最近 15 分钟分段活跃度）
-		recentActivity := make([]*metrics.ChannelRecentActivity, len(upstreams))
+		recentActivity := make([]*metrics.ChannelRecentActivity, 0, len(upstreams))
 		for i, upstream := range upstreams {
-			recentActivity[i] = metricsManager.GetRecentActivityMultiURL(i, upstream.GetAllBaseURLs(), upstream.APIKeys)
+			if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted {
+				continue
+			}
+			recentActivity = append(recentActivity, metricsManager.GetRecentActivityMultiURL(i, upstream.GetAllBaseURLs(), upstream.APIKeys))
 		}
 
 		// 返回合并数据

@@ -19,12 +19,15 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := cfgManager.GetConfig()
 
-		upstreams := make([]gin.H, len(cfg.ChatUpstream))
+		upstreams := make([]gin.H, 0, len(cfg.ChatUpstream))
 		for i, up := range cfg.ChatUpstream {
+			if config.GetChannelStatus(&up) == config.ChannelStatusDeleted {
+				continue
+			}
 			status := config.GetChannelStatus(&up)
 			priority := config.GetChannelPriority(&up, i)
 
-			upstreams[i] = gin.H{
+			upstreams = append(upstreams, gin.H{
 				"index":              i,
 				"name":               up.Name,
 				"serviceType":        up.ServiceType,
@@ -43,7 +46,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"promotionCount":     up.PromotionCount,
 				"lowQuality":         up.LowQuality,
 				"visionCapable":      up.VisionCapable,
-			}
+			})
 		}
 
 		c.JSON(200, gin.H{

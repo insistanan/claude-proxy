@@ -16,10 +16,13 @@ type routeOverrideRequest struct {
 }
 
 type routeOptionChannel struct {
-	Kind         string `json:"kind"`
-	ChannelIndex int    `json:"channelIndex"`
-	ChannelName  string `json:"channelName"`
-	Status       string `json:"status"`
+	Kind         string            `json:"kind"`
+	ChannelIndex int               `json:"channelIndex"`
+	ChannelName  string            `json:"channelName"`
+	ServiceType  string            `json:"serviceType"`
+	Status       string            `json:"status"`
+	DefaultModel string            `json:"defaultModel,omitempty"`
+	ModelMapping map[string]string `json:"modelMapping,omitempty"`
 }
 
 type routeOptionGroup struct {
@@ -159,11 +162,17 @@ func buildRouteOptionGroup(cfgManager *config.ConfigManager, kind scheduler.Chan
 	upstreams := getConfigUpstreams(cfg, kind)
 	channels := make([]routeOptionChannel, 0, len(upstreams))
 	for index, upstream := range upstreams {
+		if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted {
+			continue
+		}
 		channels = append(channels, routeOptionChannel{
 			Kind:         string(kind),
 			ChannelIndex: index,
 			ChannelName:  upstream.Name,
+			ServiceType:  upstream.ServiceType,
 			Status:       upstream.Status,
+			DefaultModel: upstream.DefaultModel,
+			ModelMapping: upstream.ModelMapping,
 		})
 	}
 	return routeOptionGroup{
@@ -209,6 +218,7 @@ func matchConversationQuery(item *conversation.Record, query string) bool {
 		item.ID,
 		item.APIKind,
 		item.LastModel,
+		item.FirstPrompt,
 		item.RouteOverrideString(),
 	}
 	for _, value := range values {

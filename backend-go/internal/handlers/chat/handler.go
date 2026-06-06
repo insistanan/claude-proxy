@@ -59,7 +59,9 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		if userID == "" {
 			userID = common.ExtractConversationID(c, bodyBytes)
 		}
-		userID = common.ObserveConversation(channelScheduler, scheduler.ChannelKindChat, userID, chatReq.Model, chatReq.Stream)
+		firstPrompt := common.ExtractFirstPromptFromOpenAI(chatReq.Messages)
+		userID = common.ObserveConversation(channelScheduler, scheduler.ChannelKindChat, userID, chatReq.Model, firstPrompt, chatReq.Stream)
+		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindChat)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Chat")
 
@@ -136,9 +138,10 @@ func handleMultiChannel(
 					return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, bodyBytes)
 				},
 				common.AttemptLogContext{
-					ChannelIndex: channelIndex,
-					Model:        chatReq.Model,
-					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+					ChannelIndex:   channelIndex,
+					Model:          chatReq.Model,
+					ConversationID: userID,
+					LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 				},
 			)
 
@@ -235,9 +238,10 @@ func handleSingleChannel(
 			return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, bodyBytes)
 		},
 		common.AttemptLogContext{
-			ChannelIndex: channelIndex,
-			Model:        chatReq.Model,
-			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+			ChannelIndex:   channelIndex,
+			Model:          chatReq.Model,
+			ConversationID: userID,
+			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 		},
 	)
 	if handled {
@@ -284,8 +288,8 @@ func applyChatModelMapping(bodyBytes []byte, upstream *config.UpstreamConfig) ([
 	if !ok || strings.TrimSpace(model) == "" {
 		return nil, fmt.Errorf("model is required")
 	}
-	if upstream != nil && strings.TrimSpace(upstream.DefaultModel) != "" {
-		payload["model"] = strings.TrimSpace(upstream.DefaultModel)
+	if mappedModel := config.ResolveUpstreamModel(model, upstream); strings.TrimSpace(mappedModel) != "" {
+		payload["model"] = mappedModel
 	}
 
 	return utils.MarshalJSONNoEscape(payload)
@@ -434,7 +438,9 @@ func ImagesHandler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, c
 		}
 
 		model := extractImagesModel(c.GetHeader("Content-Type"), bodyBytes)
-		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindChat, common.ExtractConversationID(c, bodyBytes), model, false)
+		firstPrompt := common.ExtractPromptJSONField(bodyBytes, "prompt")
+		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindChat, common.ExtractConversationID(c, bodyBytes), model, firstPrompt, false)
+		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindChat)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Images")
 
@@ -509,9 +515,10 @@ func handleImagesMultiChannel(
 					return handleImagesSuccess(c, resp, envCfg, startTime)
 				},
 				common.AttemptLogContext{
-					ChannelIndex: channelIndex,
-					Model:        model,
-					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+					ChannelIndex:   channelIndex,
+					Model:          model,
+					ConversationID: userID,
+					LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 				},
 			)
 
@@ -599,9 +606,10 @@ func handleImagesSingleChannel(
 			return handleImagesSuccess(c, resp, envCfg, startTime)
 		},
 		common.AttemptLogContext{
-			ChannelIndex: channelIndex,
-			Model:        model,
-			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+			ChannelIndex:   channelIndex,
+			Model:          model,
+			ConversationID: userID,
+			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 		},
 	)
 	if handled {
@@ -664,7 +672,7 @@ func applyImagesModelMapping(contentType string, bodyBytes []byte, upstream *con
 	}
 
 	if model, ok := payload["model"].(string); ok && strings.TrimSpace(model) != "" {
-		payload["model"] = config.RedirectModel(model, upstream)
+		payload["model"] = config.ResolveUpstreamModel(model, upstream)
 	}
 
 	mappedBody, err := utils.MarshalJSONNoEscape(payload)
@@ -705,7 +713,7 @@ func applyImagesMultipartModelMapping(boundary string, bodyBytes []byte, upstrea
 		if part.FormName() == "model" {
 			model := strings.TrimSpace(string(partBody))
 			if model != "" {
-				partBody = []byte(config.RedirectModel(model, upstream))
+				partBody = []byte(config.ResolveUpstreamModel(model, upstream))
 			}
 		}
 

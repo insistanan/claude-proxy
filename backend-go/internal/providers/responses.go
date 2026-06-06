@@ -45,7 +45,7 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 		if err := json.Unmarshal(bodyBytes, &responsesReq); err != nil {
 			return nil, bodyBytes, fmt.Errorf("解析 Responses 请求失败: %w", err)
 		}
-		model := config.RedirectModel(responsesReq.Model, upstream)
+		model := config.ResolveUpstreamModel(responsesReq.Model, upstream)
 		targetModel = model
 		isStream = converters.ResponsesRequestStream(bodyBytes)
 		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, model, bodyBytes, isStream, nil, nil)
@@ -67,7 +67,7 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 		}
 
 		// 模型重定向
-		responsesReq.Model = config.RedirectModel(responsesReq.Model, upstream)
+		responsesReq.Model = config.ResolveUpstreamModel(responsesReq.Model, upstream)
 		targetModel = responsesReq.Model
 
 		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, responsesReq.Model, bodyBytes, responsesReq.Stream, sess, &responsesReq)

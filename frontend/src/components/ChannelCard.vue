@@ -102,6 +102,17 @@
             <v-icon start size="small">mdi-pause-circle</v-icon>
             熔断
           </v-chip>
+          <v-chip
+            v-else-if="channel.status === 'deprecated'"
+            color="grey"
+            size="small"
+            variant="flat"
+            density="comfortable"
+            rounded="lg"
+          >
+            <v-icon start size="small">mdi-archive-clock-outline</v-icon>
+            弃用
+          </v-chip>
         </div>
       </v-card-title>
     </div>
@@ -328,6 +339,10 @@ const getServiceChipColor = () => {
 // 获取状态对应的颜色
 const getStatusColor = () => {
   const colorMap: Record<string, string> = {
+    'active': 'success',
+    'suspended': 'warning',
+    'disabled': 'grey',
+    'deprecated': 'grey',
     'healthy': 'success',
     'error': 'error',
     'unknown': 'warning'
@@ -338,6 +353,10 @@ const getStatusColor = () => {
 // 获取状态图标
 const getStatusIcon = () => {
   const iconMap: Record<string, string> = {
+    'active': 'mdi-check-circle',
+    'suspended': 'mdi-pause-circle',
+    'disabled': 'mdi-stop-circle',
+    'deprecated': 'mdi-archive-clock-outline',
     'healthy': 'mdi-check-circle',
     'error': 'mdi-alert-circle',
     'unknown': 'mdi-help-circle'
@@ -348,6 +367,10 @@ const getStatusIcon = () => {
 // 获取状态文本
 const getStatusText = () => {
   const textMap: Record<string, string> = {
+    'active': '活跃',
+    'suspended': '熔断',
+    'disabled': '备用',
+    'deprecated': '弃用',
     'healthy': '健康',
     'error': '错误',
     'unknown': '未检测'
@@ -360,6 +383,10 @@ const getStatusTooltip = () => {
   const status = props.channel.status || 'unknown'
   if (status === 'healthy') return '连接正常：最近一次检测通过'
   if (status === 'error') return '连接异常：请检查基础 URL、网络或 API 密钥'
+  if (status === 'active') return '活跃渠道：会参与故障转移调度'
+  if (status === 'suspended') return '熔断渠道：暂时后置，可手动恢复'
+  if (status === 'disabled') return '备用渠道：不参与故障转移调度'
+  if (status === 'deprecated') return '弃用渠道：不参与调度，超过 3 天会自动清理'
   return '尚未检测：请点击“测试延迟”进行检测'
 }
 

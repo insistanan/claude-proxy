@@ -150,6 +150,30 @@ const extractTokens = (input: string): string[] => {
     .filter(t => t.length > 0)
 }
 
+const extractChannelName = (input: string): string => {
+  const lines = input
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+
+  for (const line of lines) {
+    const match = line.match(/^(?:name|channel|渠道|渠道名称)\s*[:：=]\s*(.+)$/i)
+    if (match?.[1]) {
+      return match[1].trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    }
+  }
+
+  for (const line of lines) {
+    const tokens = extractTokens(line)
+    const hasConfigValue = tokens.some(token => isValidUrl(token) || isValidApiKey(token) || looksLikeConfigKey(token))
+    if (!hasConfigValue && line.length >= 2 && line.length <= 40) {
+      return line.replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    }
+  }
+
+  return ''
+}
+
 /**
  * 根据 URL 路径检测服务类型，并返回清理后的 baseUrl
  * /messages → claude, /chat/completions → openai, /responses → responses
@@ -210,11 +234,13 @@ export const parseQuickInput = (
   detectedBaseUrl: string
   detectedBaseUrls: string[]
   detectedApiKeys: string[]
+  detectedChannelName: string
   detectedServiceType: 'openai' | 'gemini' | 'claude' | 'responses' | null
 } => {
   const detectedBaseUrls: string[] = []
   let detectedServiceType: 'openai' | 'gemini' | 'claude' | 'responses' | null = null
   const detectedApiKeys: string[] = []
+  const detectedChannelName = extractChannelName(input)
 
   const tokens = extractTokens(input)
 
@@ -253,6 +279,7 @@ export const parseQuickInput = (
     detectedBaseUrl: detectedBaseUrls[0] || '',
     detectedBaseUrls,
     detectedApiKeys,
+    detectedChannelName,
     detectedServiceType
   }
 }

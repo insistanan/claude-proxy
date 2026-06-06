@@ -159,7 +159,9 @@ func main() {
 
 		// Messages 多渠道调度 API
 		apiGroup.POST("/messages/channels/reorder", messages.ReorderChannels(cfgManager))
+		apiGroup.POST("/messages/channels/tidy", handlers.TidyProblemChannels(cfgManager, scheduler.ChannelKindMessages))
 		apiGroup.PATCH("/messages/channels/:id/status", messages.SetChannelStatus(cfgManager))
+		apiGroup.POST("/messages/channels/:id/duplicate", handlers.DuplicateChannel(cfgManager, scheduler.ChannelKindMessages))
 		apiGroup.POST("/messages/channels/:id/resume", handlers.ResumeChannel(channelScheduler, false))
 		apiGroup.POST("/messages/channels/:id/promotion", messages.SetChannelPromotion(cfgManager))
 		apiGroup.GET("/messages/channels/metrics", handlers.GetChannelMetricsWithConfig(messagesMetricsManager, cfgManager, false))
@@ -184,7 +186,9 @@ func main() {
 
 		// Responses 多渠道调度 API
 		apiGroup.POST("/responses/channels/reorder", responses.ReorderChannels(cfgManager))
+		apiGroup.POST("/responses/channels/tidy", handlers.TidyProblemChannels(cfgManager, scheduler.ChannelKindResponses))
 		apiGroup.PATCH("/responses/channels/:id/status", responses.SetChannelStatus(cfgManager))
+		apiGroup.POST("/responses/channels/:id/duplicate", handlers.DuplicateChannel(cfgManager, scheduler.ChannelKindResponses))
 		apiGroup.POST("/responses/channels/:id/resume", handlers.ResumeChannel(channelScheduler, true))
 		apiGroup.POST("/responses/channels/:id/promotion", handlers.SetResponsesChannelPromotion(cfgManager))
 		apiGroup.GET("/responses/channels/metrics", handlers.GetChannelMetricsWithConfig(responsesMetricsManager, cfgManager, true))
@@ -205,7 +209,9 @@ func main() {
 
 		// Gemini 多渠道调度 API
 		apiGroup.POST("/gemini/channels/reorder", gemini.ReorderChannels(cfgManager))
+		apiGroup.POST("/gemini/channels/tidy", handlers.TidyProblemChannels(cfgManager, scheduler.ChannelKindGemini))
 		apiGroup.PATCH("/gemini/channels/:id/status", gemini.SetChannelStatus(cfgManager))
+		apiGroup.POST("/gemini/channels/:id/duplicate", handlers.DuplicateChannel(cfgManager, scheduler.ChannelKindGemini))
 		apiGroup.POST("/gemini/channels/:id/promotion", gemini.SetChannelPromotion(cfgManager))
 		apiGroup.PUT("/gemini/loadbalance", gemini.UpdateLoadBalance(cfgManager))
 		apiGroup.GET("/gemini/channels/dashboard", gemini.GetDashboard(cfgManager, channelScheduler))
@@ -229,7 +235,9 @@ func main() {
 
 		// Chat 多渠道调度 API
 		apiGroup.POST("/chat/channels/reorder", chat.ReorderChannels(cfgManager))
+		apiGroup.POST("/chat/channels/tidy", handlers.TidyProblemChannels(cfgManager, scheduler.ChannelKindChat))
 		apiGroup.PATCH("/chat/channels/:id/status", chat.SetChannelStatus(cfgManager))
+		apiGroup.POST("/chat/channels/:id/duplicate", handlers.DuplicateChannel(cfgManager, scheduler.ChannelKindChat))
 		apiGroup.POST("/chat/channels/:id/resume", handlers.ResumeChannelByKind(channelScheduler, scheduler.ChannelKindChat))
 		apiGroup.POST("/chat/channels/:id/promotion", chat.SetChannelPromotion(cfgManager))
 		apiGroup.PUT("/chat/loadbalance", chat.UpdateLoadBalance(cfgManager))

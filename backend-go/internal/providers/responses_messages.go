@@ -3,11 +3,15 @@ package providers
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -20,6 +24,21 @@ import (
 
 // MessagesResponsesProvider 将 Claude Messages 入口请求转换为 OpenAI Responses 上游协议。
 type MessagesResponsesProvider struct{}
+
+type claudeResponsesRequest struct {
+	Model                string                 `json:"model"`
+	Instructions         string                 `json:"instructions,omitempty"`
+	Input                []interface{}          `json:"input"`
+	Stream               bool                   `json:"stream"`
+	MaxOutputTokens      int                    `json:"max_output_tokens,omitempty"`
+	Temperature          float64                `json:"temperature,omitempty"`
+	Tools                []interface{}          `json:"tools,omitempty"`
+	ToolChoice           interface{}            `json:"tool_choice,omitempty"`
+	Reasoning            interface{}            `json:"reasoning,omitempty"`
+	Metadata             map[string]interface{} `json:"metadata,omitempty"`
+	PromptCacheKey       string                 `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string                 `json:"prompt_cache_retention,omitempty"`
+}
 
 func (p *MessagesResponsesProvider) ConvertToProviderRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string) (*http.Request, []byte, error) {
 	originalBodyBytes, err := io.ReadAll(c.Request.Body)
@@ -98,36 +117,124 @@ func (p *MessagesResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-
 	return eventChan, errChan, nil
 }
 
-func claudeRequestToResponsesRequest(claudeReq *types.ClaudeRequest, upstream *config.UpstreamConfig) (map[string]interface{}, error) {
-	req := map[string]interface{}{
-		"model":  config.RedirectModel(claudeReq.Model, upstream),
-		"input":  claudeMessagesToResponsesInput(claudeReq.Messages),
-		"stream": claudeReq.Stream,
+func claudeRequestToResponsesRequest(claudeReq *types.ClaudeRequest, upstream *config.UpstreamConfig) (*claudeResponsesRequest, error) {
+	model := config.ResolveUpstreamModel(claudeReq.Model, upstream)
+	req := &claudeResponsesRequest{
+		Model:  model,
+		Input:  claudeMessagesToResponsesInput(claudeReq.Messages),
+		Stream: claudeReq.Stream,
 	}
 	if systemText := extractSystemText(claudeReq.System); systemText != "" {
-		req["instructions"] = systemText
+		req.Instructions = systemText
 	}
 	if claudeReq.MaxCompletionTokens > 0 {
-		req["max_output_tokens"] = claudeReq.MaxCompletionTokens
+		req.MaxOutputTokens = claudeReq.MaxCompletionTokens
 	} else if claudeReq.MaxTokens > 0 {
-		req["max_output_tokens"] = claudeReq.MaxTokens
+		req.MaxOutputTokens = claudeReq.MaxTokens
 	}
 	if claudeReq.Temperature > 0 {
-		req["temperature"] = claudeReq.Temperature
+		req.Temperature = claudeReq.Temperature
 	}
 	if len(claudeReq.Tools) > 0 {
-		req["tools"] = claudeToolsToResponsesTools(claudeReq.Tools)
+		req.Tools = claudeToolsToResponsesTools(claudeReq.Tools)
 	}
 	if toolChoice := claudeToolChoiceToResponses(claudeReq.ToolChoice); toolChoice != nil {
-		req["tool_choice"] = toolChoice
+		req.ToolChoice = toolChoice
 	}
 	if reasoning := claudeReasoningToResponsesReasoning(claudeReq); reasoning != nil {
-		req["reasoning"] = reasoning
+		req.Reasoning = reasoning
 	}
 	if len(claudeReq.Metadata) > 0 {
-		req["metadata"] = claudeReq.Metadata
+		req.Metadata = claudeReq.Metadata
+	}
+	if supportsOpenAIPromptCaching(upstream) {
+		req.PromptCacheKey = buildClaudeResponsesPromptCacheKey(claudeReq, upstream, model)
+		req.PromptCacheRetention = "24h"
 	}
 	return req, nil
+}
+
+func supportsOpenAIPromptCaching(upstream *config.UpstreamConfig) bool {
+	if upstream == nil {
+		return false
+	}
+	u, err := url.Parse(strings.TrimRight(upstream.GetEffectiveBaseURL(), "#"))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "api.openai.com" || strings.HasSuffix(host, ".api.openai.com")
+}
+
+func buildClaudeResponsesPromptCacheKey(claudeReq *types.ClaudeRequest, upstream *config.UpstreamConfig, model string) string {
+	channel := ""
+	baseURL := ""
+	if upstream != nil {
+		channel = strings.TrimSpace(upstream.Name)
+		baseURL = strings.TrimRight(upstream.GetEffectiveBaseURL(), "/#")
+	}
+	stableParts := map[string]interface{}{
+		"protocol": "claude-messages-to-openai-responses-v1",
+		"model":    model,
+		"channel":  channel,
+		"baseURL":  baseURL,
+		"system":   claudeReq.System,
+		"tools":    claudeReq.Tools,
+	}
+	sum := sha256.Sum256([]byte(canonicalJSON(stableParts)))
+	return "claude-resp-" + hex.EncodeToString(sum[:])[:24]
+}
+
+func canonicalJSON(v interface{}) string {
+	switch value := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		data, _ := json.Marshal(value)
+		return string(data)
+	case bool:
+		if value {
+			return "true"
+		}
+		return "false"
+	case float64, float32, int, int64, int32, uint, uint64, uint32, json.Number:
+		data, _ := json.Marshal(value)
+		return string(data)
+	case []types.ClaudeTool:
+		items := make([]interface{}, 0, len(value))
+		for _, item := range value {
+			items = append(items, item)
+		}
+		return canonicalJSON(items)
+	case []interface{}:
+		parts := make([]string, 0, len(value))
+		for _, item := range value {
+			parts = append(parts, canonicalJSON(item))
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	case map[string]interface{}:
+		keys := make([]string, 0, len(value))
+		for key := range value {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			keyJSON, _ := json.Marshal(key)
+			parts = append(parts, string(keyJSON)+":"+canonicalJSON(value[key]))
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprint(value)
+		}
+		var normalized interface{}
+		if err := json.Unmarshal(data, &normalized); err != nil {
+			return string(data)
+		}
+		return canonicalJSON(normalized)
+	}
 }
 
 func buildResponsesURL(baseURL string) string {

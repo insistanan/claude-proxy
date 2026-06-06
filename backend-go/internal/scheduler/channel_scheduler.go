@@ -400,8 +400,8 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 			status = "active" // 默认为活跃
 		}
 
-		// 只选择 active 状态的渠道（suspended 也算在活跃序列中，但会被健康检查过滤）
-		if status != "disabled" {
+		// 只选择故障转移序列中的渠道（suspended 也显示在序列中，备用/弃用/删除占位排除）
+		if config.IsChannelSchedulable(&upstream) {
 			priority := upstream.Priority
 			if priority == 0 {
 				priority = i // 默认优先级为索引
@@ -539,6 +539,19 @@ func (s *ChannelScheduler) MarkConversationSuccess(userID string, kind ChannelKi
 	registry.MarkSuccess(userID, string(kind), channelIndex, channelName)
 }
 
+func (s *ChannelScheduler) MarkConversationAttempt(userID string, kind ChannelKind, channelIndex int, channelName string, requestedModel string, resolvedModel string, stream bool) {
+	if userID == "" || s == nil {
+		return
+	}
+	s.mu.RLock()
+	registry := s.conversationRegistry
+	s.mu.RUnlock()
+	if registry == nil {
+		return
+	}
+	registry.MarkAttempt(userID, string(kind), channelIndex, channelName, requestedModel, resolvedModel, stream)
+}
+
 func (s *ChannelScheduler) MarkConversationFailure(userID string, kind ChannelKind, errorMessage string) {
 	if userID == "" || s == nil {
 		return
@@ -550,6 +563,19 @@ func (s *ChannelScheduler) MarkConversationFailure(userID string, kind ChannelKi
 		return
 	}
 	registry.MarkFailure(userID, string(kind), errorMessage)
+}
+
+func (s *ChannelScheduler) MarkConversationComplete(userID string, kind ChannelKind) {
+	if userID == "" || s == nil {
+		return
+	}
+	s.mu.RLock()
+	registry := s.conversationRegistry
+	s.mu.RUnlock()
+	if registry == nil {
+		return
+	}
+	registry.MarkComplete(userID, string(kind))
 }
 
 // GetMessagesMetricsManager 获取 Messages 渠道指标管理器

@@ -64,6 +64,12 @@ const STATUS_CONFIG: Record<string, { icon: string; color: string; label: string
     label: '禁用',
     class: 'status-disabled'
   },
+  deprecated: {
+    icon: 'mdi-archive-clock-outline',
+    color: 'grey',
+    label: '弃用',
+    class: 'status-deprecated'
+  },
   error: {
     icon: 'mdi-alert-circle',
     color: 'error',
@@ -213,6 +219,26 @@ const formatTime = (dateStr: string): string => {
 
 .v-theme--dark .status-disabled .badge-content .status-icon {
   color: #9ca3af !important;
+}
+
+.status-deprecated .badge-content {
+  background: #f3f4f6;
+  color: #4b5563;
+  border-color: #4b5563;
+}
+
+.status-deprecated .badge-content .status-icon {
+  color: #4b5563 !important;
+}
+
+.v-theme--dark .status-deprecated .badge-content {
+  background: #1f2937;
+  color: #d1d5db;
+  border-color: #d1d5db;
+}
+
+.v-theme--dark .status-deprecated .badge-content .status-icon {
+  color: #d1d5db !important;
 }
 
 .status-error .badge-content {

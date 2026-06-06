@@ -10,6 +10,7 @@ func ObserveConversation(
 	kind scheduler.ChannelKind,
 	conversationID string,
 	model string,
+	firstPrompt string,
 	stream bool,
 ) string {
 	if channelScheduler == nil || conversationID == "" {
@@ -21,11 +22,12 @@ func ObserveConversation(
 	}
 
 	record := registry.ObserveRequest(conversation.Observation{
-		APIKind:       string(kind),
-		Model:         model,
-		Stream:        stream,
+		APIKind:        string(kind),
+		Model:          model,
+		Stream:         stream,
 		ConversationID: conversationID,
-		FallbackKey:   conversationID,
+		FallbackKey:    conversationID,
+		FirstPrompt:    firstPrompt,
 	})
 	if record == nil {
 		return conversationID
@@ -38,6 +40,13 @@ func MarkConversationSuccess(channelScheduler *scheduler.ChannelScheduler, conve
 		return
 	}
 	channelScheduler.MarkConversationSuccess(conversationID, kind, channelIndex, channelName)
+}
+
+func MarkConversationComplete(channelScheduler *scheduler.ChannelScheduler, conversationID string, kind scheduler.ChannelKind) {
+	if channelScheduler == nil || conversationID == "" {
+		return
+	}
+	channelScheduler.MarkConversationComplete(conversationID, kind)
 }
 
 func MarkConversationFailure(channelScheduler *scheduler.ChannelScheduler, conversationID string, kind scheduler.ChannelKind, err error) {

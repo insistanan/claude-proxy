@@ -105,6 +105,10 @@ import {
   mdiImageSearchOutline,
   mdiArrowCollapseUp,
   mdiArrowCollapseDown,
+  mdiArchiveClockOutline,
+  mdiFormatListBulleted,
+  mdiSort,
+  mdiTimerSand,
 } from '@mdi/js'
 
 // 图标名称到 SVG path 的映射 (使用 kebab-case)
@@ -161,6 +165,7 @@ const iconMap: Record<string, string> = {
   'dots-vertical': mdiDotsVertical,
   'logout': mdiLogout,
   'archive-outline': mdiArchiveOutline,
+  'archive-clock-outline': mdiArchiveClockOutline,
   'menu-down': mdiMenuDown,
   'menu-up': mdiMenuUp,
 
@@ -263,6 +268,13 @@ const iconMap: Record<string, string> = {
   // 置顶/置底操作
   'arrow-collapse-up': mdiArrowCollapseUp,
   'arrow-collapse-down': mdiArrowCollapseDown,
+
+  // 列表/格式化
+  'format-list-bulleted': mdiFormatListBulleted,
+  'sort': mdiSort,
+
+  // 临时/沙漏
+  'timer-sand': mdiTimerSand,
 }
 
 // 自定义 SVG iconset - 处理 mdi-xxx 字符串格式

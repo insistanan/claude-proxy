@@ -1,12 +1,27 @@
 package config
 
 import (
+	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
 )
 
 // ============== 工具函数 ==============
+
+const (
+	ChannelStatusActive     = "active"
+	ChannelStatusSuspended  = "suspended"
+	ChannelStatusDisabled   = "disabled"
+	ChannelStatusDeprecated = "deprecated"
+	ChannelStatusDeleted    = "deleted"
+
+	temporaryChannelTTL       = 24 * time.Hour
+	deprecatedChannelTTL      = 72 * time.Hour
+	channelLifecycleTick      = time.Hour
+	deprecatedCleanupInterval = 12 * time.Hour
+)
 
 // deduplicateStrings 去重字符串切片，保持原始顺序
 func deduplicateStrings(items []string) []string {
@@ -98,6 +113,17 @@ func RedirectModel(model string, upstream *UpstreamConfig) string {
 	return model
 }
 
+func ResolveUpstreamModel(model string, upstream *UpstreamConfig) string {
+	model = strings.TrimSpace(model)
+	if upstream == nil {
+		return model
+	}
+	if strings.TrimSpace(upstream.DefaultModel) != "" {
+		return strings.TrimSpace(upstream.DefaultModel)
+	}
+	return RedirectModel(model, upstream)
+}
+
 // ============== 渠道状态与优先级辅助函数 ==============
 
 // GetChannelStatus 获取渠道状态（带默认值处理）
@@ -116,6 +142,11 @@ func GetChannelPriority(upstream *UpstreamConfig, index int) int {
 	return upstream.Priority
 }
 
+func IsChannelSchedulable(upstream *UpstreamConfig) bool {
+	status := GetChannelStatus(upstream)
+	return status != ChannelStatusDisabled && status != ChannelStatusDeprecated && status != ChannelStatusDeleted
+}
+
 // IsChannelInPromotion 检查渠道是否处于促销期
 func IsChannelInPromotion(upstream *UpstreamConfig) bool {
 	if upstream.PromotionUntil != nil && time.Now().Before(*upstream.PromotionUntil) {
@@ -125,6 +156,197 @@ func IsChannelInPromotion(upstream *UpstreamConfig) bool {
 		return true
 	}
 	return false
+}
+
+func normalizeChannelStatus(status string) (string, error) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "", ChannelStatusActive:
+		return ChannelStatusActive, nil
+	case ChannelStatusSuspended, ChannelStatusDisabled, ChannelStatusDeprecated, ChannelStatusDeleted:
+		return status, nil
+	default:
+		return "", fmt.Errorf("无效的状态: %s (允许值: active, suspended, disabled, deprecated)", status)
+	}
+}
+
+func prepareUpstreamLifecycle(upstream *UpstreamConfig, now time.Time) {
+	if upstream == nil {
+		return
+	}
+	if upstream.Status == "" {
+		upstream.Status = ChannelStatusActive
+	}
+	if upstream.Status == ChannelStatusDeprecated {
+		upstream.Temporary = false
+		upstream.TemporaryUntil = nil
+		if upstream.DeprecatedAt == nil {
+			deprecatedAt := now
+			upstream.DeprecatedAt = &deprecatedAt
+		}
+		return
+	}
+	if upstream.Status == ChannelStatusDeleted {
+		upstream.Temporary = false
+		upstream.TemporaryUntil = nil
+		upstream.PromotionUntil = nil
+		upstream.PromotionCount = 0
+		return
+	}
+	if upstream.Temporary {
+		if upstream.TemporaryUntil == nil {
+			until := now.Add(temporaryChannelTTL)
+			upstream.TemporaryUntil = &until
+		}
+	} else {
+		upstream.TemporaryUntil = nil
+	}
+	if upstream.Status != ChannelStatusDeprecated {
+		upstream.DeprecatedAt = nil
+	}
+}
+
+func setUpstreamStatus(upstream *UpstreamConfig, status string, now time.Time) error {
+	normalized, err := normalizeChannelStatus(status)
+	if err != nil {
+		return err
+	}
+	upstream.Status = normalized
+	if normalized == ChannelStatusDeprecated {
+		upstream.Temporary = false
+		upstream.TemporaryUntil = nil
+		if upstream.DeprecatedAt == nil {
+			deprecatedAt := now
+			upstream.DeprecatedAt = &deprecatedAt
+		}
+	} else {
+		upstream.DeprecatedAt = nil
+	}
+	if normalized == ChannelStatusSuspended || normalized == ChannelStatusDeprecated || normalized == ChannelStatusDeleted {
+		upstream.PromotionUntil = nil
+		upstream.PromotionCount = 0
+	}
+	prepareUpstreamLifecycle(upstream, now)
+	return nil
+}
+
+func reorderProblemChannelsStable(upstreams []UpstreamConfig) bool {
+	normal := make([]UpstreamConfig, 0, len(upstreams))
+	problem := make([]UpstreamConfig, 0, len(upstreams))
+	for _, upstream := range upstreams {
+		status := GetChannelStatus(&upstream)
+		if status == ChannelStatusSuspended {
+			problem = append(problem, upstream)
+			continue
+		}
+		normal = append(normal, upstream)
+	}
+	reordered := append(normal, problem...)
+	changed := false
+	for i := range upstreams {
+		if upstreams[i].Name != reordered[i].Name || upstreams[i].Status != reordered[i].Status || upstreams[i].Priority != reordered[i].Priority {
+			changed = true
+		}
+		reordered[i].Priority = i + 1
+		upstreams[i] = reordered[i]
+	}
+	return changed
+}
+
+func insertClonedUpstream(upstreams []UpstreamConfig, index int, now time.Time) ([]UpstreamConfig, error) {
+	if index < 0 || index >= len(upstreams) {
+		return nil, fmt.Errorf("无效的上游索引: %d", index)
+	}
+	clone := *upstreams[index].Clone()
+	clone.Name = clone.Name + " - 副本"
+	clone.PromotionUntil = nil
+	clone.PromotionCount = 0
+	if clone.Status == ChannelStatusDeprecated {
+		clone.Status = ChannelStatusDisabled
+		clone.DeprecatedAt = nil
+	}
+	prepareUpstreamLifecycle(&clone, now)
+
+	ordered := make([]int, 0, len(upstreams))
+	for i := range upstreams {
+		ordered = append(ordered, i)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return GetChannelPriority(&upstreams[ordered[i]], ordered[i]) < GetChannelPriority(&upstreams[ordered[j]], ordered[j])
+	})
+
+	targetOrder := len(ordered)
+	for i, idx := range ordered {
+		if idx == index {
+			targetOrder = i + 1
+			break
+		}
+	}
+
+	clone.Priority = targetOrder + 1
+	next := append([]UpstreamConfig(nil), upstreams...)
+	for i := range next {
+		next[i].Priority = sortPriorityForDuplicate(next[i].Priority, i, targetOrder)
+	}
+	next = append(next, clone)
+	return next, nil
+}
+
+func sortPriorityForDuplicate(priority int, fallbackIndex int, targetOrder int) int {
+	if priority == 0 {
+		priority = fallbackIndex + 1
+	}
+	if priority > targetOrder {
+		return priority + 1
+	}
+	return priority
+}
+
+func sameTimePtr(a *time.Time, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+func lifecycleMetadataChanged(before UpstreamConfig, after UpstreamConfig) bool {
+	return before.Status != after.Status ||
+		before.Temporary != after.Temporary ||
+		!sameTimePtr(before.TemporaryUntil, after.TemporaryUntil) ||
+		!sameTimePtr(before.DeprecatedAt, after.DeprecatedAt)
+}
+
+func applyLifecycleToUpstreams(upstreams []UpstreamConfig, now time.Time, cleanupDeprecated bool, label string) ([]UpstreamConfig, bool) {
+	changed := false
+	next := make([]UpstreamConfig, 0, len(upstreams))
+	for i := range upstreams {
+		upstream := upstreams[i]
+		before := upstream
+		prepareUpstreamLifecycle(&upstream, now)
+		if lifecycleMetadataChanged(before, upstream) {
+			changed = true
+		}
+		if upstream.Temporary && upstream.TemporaryUntil != nil && !now.Before(*upstream.TemporaryUntil) {
+			upstream.Status = ChannelStatusDeprecated
+			upstream.Temporary = false
+			upstream.TemporaryUntil = nil
+			deprecatedAt := now
+			upstream.DeprecatedAt = &deprecatedAt
+			changed = true
+			log.Printf("[Config-Lifecycle] %s 渠道 [%d] %s 临时期结束，已移入弃用池", label, i, upstream.Name)
+		}
+		if cleanupDeprecated && upstream.Status == ChannelStatusDeprecated && upstream.DeprecatedAt != nil && now.Sub(*upstream.DeprecatedAt) > deprecatedChannelTTL {
+			upstream.Status = ChannelStatusDeleted
+			upstream.Temporary = false
+			upstream.TemporaryUntil = nil
+			upstream.PromotionUntil = nil
+			upstream.PromotionCount = 0
+			changed = true
+			log.Printf("[Config-Lifecycle] %s 渠道 [%d] %s 已在弃用池超过 3 天，自动清理为删除占位", label, i, upstream.Name)
+		}
+		next = append(next, upstream)
+	}
+	return next, changed
 }
 
 // ============== UpstreamConfig 方法 ==============
@@ -157,6 +379,14 @@ func (u *UpstreamConfig) Clone() *UpstreamConfig {
 	if u.PromotionUntil != nil {
 		t := *u.PromotionUntil
 		cloned.PromotionUntil = &t
+	}
+	if u.TemporaryUntil != nil {
+		t := *u.TemporaryUntil
+		cloned.TemporaryUntil = &t
+	}
+	if u.DeprecatedAt != nil {
+		t := *u.DeprecatedAt
+		cloned.DeprecatedAt = &t
 	}
 
 	return &cloned

@@ -34,7 +34,7 @@ func redirectModelInBody(bodyBytes []byte, upstream *config.UpstreamConfig) []by
 		return bodyBytes // 没有 model 字段或类型不对
 	}
 
-	newModel := config.RedirectModel(model, upstream)
+	newModel := config.ResolveUpstreamModel(model, upstream)
 	if newModel == model {
 		return bodyBytes // 模型未变，无需重编码
 	}

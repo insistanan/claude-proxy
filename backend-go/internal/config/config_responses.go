@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -23,14 +22,17 @@ func (cm *ConfigManager) GetCurrentResponsesUpstream() (*UpstreamConfig, error) 
 
 	// 优先选择第一个 active 状态的渠道
 	for i := range cm.config.ResponsesUpstream {
-		status := cm.config.ResponsesUpstream[i].Status
-		if status == "" || status == "active" {
+		if GetChannelStatus(&cm.config.ResponsesUpstream[i]) == ChannelStatusActive && IsChannelSchedulable(&cm.config.ResponsesUpstream[i]) {
 			return &cm.config.ResponsesUpstream[i], nil
 		}
 	}
 
-	// 没有 active 渠道，回退到第一个渠道
-	return &cm.config.ResponsesUpstream[0], nil
+	for i := range cm.config.ResponsesUpstream {
+		if IsChannelSchedulable(&cm.config.ResponsesUpstream[i]) {
+			return &cm.config.ResponsesUpstream[i], nil
+		}
+	}
+	return nil, fmt.Errorf("没有可用的 Responses 渠道")
 }
 
 // GetCurrentResponsesUpstreamWithIndex 获取当前 Responses 上游配置及其渠道索引。
@@ -43,13 +45,17 @@ func (cm *ConfigManager) GetCurrentResponsesUpstreamWithIndex() (*UpstreamConfig
 	}
 
 	for i := range cm.config.ResponsesUpstream {
-		status := cm.config.ResponsesUpstream[i].Status
-		if status == "" || status == "active" {
+		if GetChannelStatus(&cm.config.ResponsesUpstream[i]) == ChannelStatusActive && IsChannelSchedulable(&cm.config.ResponsesUpstream[i]) {
 			return &cm.config.ResponsesUpstream[i], i, nil
 		}
 	}
 
-	return &cm.config.ResponsesUpstream[0], 0, nil
+	for i := range cm.config.ResponsesUpstream {
+		if IsChannelSchedulable(&cm.config.ResponsesUpstream[i]) {
+			return &cm.config.ResponsesUpstream[i], i, nil
+		}
+	}
+	return nil, -1, fmt.Errorf("没有可用的 Responses 渠道")
 }
 
 // AddResponsesUpstream 添加 Responses 上游
@@ -61,15 +67,13 @@ func (cm *ConfigManager) AddResponsesUpstream(upstream UpstreamConfig) error {
 	if upstream.Status == "" {
 		upstream.Status = "active"
 	}
+	prepareUpstreamLifecycle(&upstream, time.Now())
 
 	// 去重 API Keys 和 Base URLs
 	upstream.APIKeys = deduplicateStrings(upstream.APIKeys)
 	upstream.BaseURLs = deduplicateBaseURLs(upstream.BaseURLs)
 
 	cm.config.ResponsesUpstream = append(cm.config.ResponsesUpstream, upstream)
-	if upstream.VisionCapable {
-		ensureSingleVisionCapable(cm.config.ResponsesUpstream, len(cm.config.ResponsesUpstream)-1, "Responses")
-	}
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return err
@@ -171,7 +175,9 @@ func (cm *ConfigManager) UpdateResponsesUpstream(index int, updates UpstreamUpda
 		upstream.Priority = *updates.Priority
 	}
 	if updates.Status != nil {
-		upstream.Status = *updates.Status
+		if err := setUpstreamStatus(upstream, *updates.Status, time.Now()); err != nil {
+			return false, err
+		}
 	}
 	if updates.PromotionUntil != nil {
 		upstream.PromotionUntil = updates.PromotionUntil
@@ -184,10 +190,17 @@ func (cm *ConfigManager) UpdateResponsesUpstream(index int, updates UpstreamUpda
 	}
 	if updates.VisionCapable != nil {
 		upstream.VisionCapable = *updates.VisionCapable
-		if upstream.VisionCapable {
-			ensureSingleVisionCapable(cm.config.ResponsesUpstream, index, "Responses")
-		}
 	}
+	if updates.Temporary != nil {
+		upstream.Temporary = *updates.Temporary
+	}
+	if updates.TemporaryUntil != nil {
+		upstream.TemporaryUntil = updates.TemporaryUntil
+	}
+	if updates.DeprecatedAt != nil {
+		upstream.DeprecatedAt = updates.DeprecatedAt
+	}
+	prepareUpstreamLifecycle(upstream, time.Now())
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return false, err
@@ -424,17 +437,12 @@ func (cm *ConfigManager) SetResponsesChannelStatus(index int, status string) err
 	}
 
 	// 状态值转为小写，支持大小写不敏感
-	status = strings.ToLower(status)
-	if status != "active" && status != "suspended" && status != "disabled" {
-		return fmt.Errorf("无效的状态: %s (允许值: active, suspended, disabled)", status)
+	if err := setUpstreamStatus(&cm.config.ResponsesUpstream[index], status, time.Now()); err != nil {
+		return err
 	}
+	status = cm.config.ResponsesUpstream[index].Status
 
-	cm.config.ResponsesUpstream[index].Status = status
-
-	// 暂停时清除促销期
-	if status == "suspended" && (cm.config.ResponsesUpstream[index].PromotionUntil != nil || cm.config.ResponsesUpstream[index].PromotionCount > 0) {
-		cm.config.ResponsesUpstream[index].PromotionUntil = nil
-		cm.config.ResponsesUpstream[index].PromotionCount = 0
+	if status == "suspended" || status == "deprecated" {
 		log.Printf("[Config-Status] 已清除 Responses 渠道 [%d] %s 的促销期", index, cm.config.ResponsesUpstream[index].Name)
 	}
 

@@ -45,7 +45,7 @@ if (import.meta.env.DEV) {
 }
 
 // 渠道状态枚举
-export type ChannelStatus = 'active' | 'suspended' | 'disabled'
+export type ChannelStatus = 'active' | 'suspended' | 'disabled' | 'deprecated' | 'deleted'
 
 // 渠道指标
 // 分时段统计
@@ -105,6 +105,9 @@ export interface Channel {
   latencyTestTime?: number   // 延迟测试时间戳（用于 5 分钟后自动清除显示）
   lowQuality?: boolean       // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
   visionCapable?: boolean    // 是否为图片理解默认模型
+  temporary?: boolean        // 临时渠道：一天后自动移入弃用池
+  temporaryUntil?: string    // 临时渠道到期时间
+  deprecatedAt?: string      // 移入弃用池时间
   injectDummyThoughtSignature?: boolean  // Gemini 特定：为 functionCall 注入 dummy thought_signature（兼容第三方 API）
   stripThoughtSignature?: boolean        // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
 }
@@ -192,6 +195,12 @@ export interface ChannelLogEntry {
   durationMs: number
   apiType: string
   model?: string
+  inputTokens?: number
+  outputTokens?: number
+  cacheCreationTokens?: number
+  cacheReadTokens?: number
+  cacheCreation5mTokens?: number
+  cacheCreation1hTokens?: number
   channelIndex: number
   channelName?: string
   baseUrl: string
@@ -228,9 +237,14 @@ export interface ConversationEntry {
   id: string
   apiKind: ConversationKind
   lastModel?: string
+  lastResolvedModel?: string
+  firstPrompt?: string
   stream: boolean
+  isSending?: boolean
   firstSeenAt: string
   lastSeenAt: string
+  lastRequestAt?: string
+  lastCompletedAt?: string
   requestCount: number
   errorCount: number
   lastError?: string
@@ -246,7 +260,10 @@ export interface ConversationRouteOptionChannel {
   kind: ConversationKind
   channelIndex: number
   channelName: string
+  serviceType?: Channel['serviceType']
   status: string
+  defaultModel?: string
+  modelMapping?: Record<string, string>
 }
 
 export interface ConversationRouteOptionGroup {
@@ -663,6 +680,18 @@ class ApiService {
     await this.request('/messages/channels/reorder', {
       method: 'POST',
       body: JSON.stringify({ order })
+    })
+  }
+
+  async duplicateChannel(type: 'messages' | 'responses' | 'gemini' | 'chat', channelId: number): Promise<void> {
+    await this.request(`/${type}/channels/${channelId}/duplicate`, {
+      method: 'POST'
+    })
+  }
+
+  async tidyProblemChannels(type: 'messages' | 'responses' | 'gemini' | 'chat'): Promise<void> {
+    await this.request(`/${type}/channels/tidy`, {
+      method: 'POST'
     })
   }
 

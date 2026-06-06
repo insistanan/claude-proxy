@@ -38,13 +38,23 @@
           <v-textarea
             v-model="quickInput"
             label="输入内容"
-            placeholder="每行输入一个 API Key 或 Base URL&#10;&#10;示例:&#10;sk-xxx-your-api-key&#10;sk-yyy-another-key&#10;https://api.example.com/v1"
+            placeholder="每行输入一个 API Key、Base URL 或渠道名称&#10;&#10;示例:&#10;name: 备用 OpenAI 渠道&#10;sk-xxx-your-api-key&#10;https://api.example.com/v1"
             variant="outlined"
             rows="10"
             no-resize
             autofocus
             class="quick-input-textarea"
             @input="parseQuickInput"
+          />
+
+          <v-text-field
+            v-model="quickChannelName"
+            label="渠道名称 (可选)"
+            placeholder="不填则从输入内容识别或自动生成"
+            prepend-inner-icon="mdi-tag"
+            variant="outlined"
+            density="comfortable"
+            class="mt-3"
           />
 
           <!-- 检测状态提示 -->
@@ -101,8 +111,13 @@
                     <div class="text-caption text-primary font-weight-medium">
                       {{ generatedChannelName }}
                     </div>
+                    <div v-if="detectedChannelName && !quickChannelName.trim()" class="text-caption text-medium-emphasis">
+                      已从输入内容识别：{{ detectedChannelName }}
+                    </div>
                   </div>
-                  <v-chip size="x-small" color="primary" variant="tonal"> 自动生成 </v-chip>
+                  <v-chip size="x-small" color="primary" variant="tonal">
+                    {{ quickChannelName.trim() || detectedChannelName ? '自定义' : '自动生成' }}
+                  </v-chip>
                 </div>
 
                 <!-- 渠道类型提示 -->
@@ -568,6 +583,22 @@
               </div>
             </v-col>
 
+            <!-- 临时渠道标记 -->
+            <v-col cols="12">
+              <div class="d-flex align-center justify-space-between">
+                <div class="d-flex align-center ga-2">
+                  <v-icon color="warning">mdi-timer-sand</v-icon>
+                  <div>
+                    <div class="text-body-1 font-weight-medium">临时渠道</div>
+                    <div class="text-caption text-medium-emphasis">
+                      启用后 24 小时自动移入弃用池，弃用超过 3 天后由后台清理
+                    </div>
+                  </div>
+                </div>
+                <v-switch v-model="form.temporary" inset color="warning" hide-details />
+              </div>
+            </v-col>
+
             <!-- 注入 Dummy Thought Signature（仅 Gemini 渠道显示） -->
             <v-col v-if="props.channelType === 'gemini'" cols="12">
               <div class="d-flex align-center justify-space-between">
@@ -668,9 +699,11 @@ const isQuickMode = ref(true)
 
 // 快速添加模式的数据
 const quickInput = ref('')
+const quickChannelName = ref('')
 const detectedBaseUrl = ref('')
 const detectedBaseUrls = ref<string[]>([])
 const detectedApiKeys = ref<string[]>([])
+const detectedChannelName = ref('')
 const detectedServiceType = ref<'openai' | 'gemini' | 'claude' | 'responses' | 'chat' | null>(null)
 
 // 详细表单预期请求 URL 预览（防止输入时抖动）
@@ -710,6 +743,7 @@ const parseQuickInput = () => {
   detectedBaseUrl.value = result.detectedBaseUrl
   detectedBaseUrls.value = result.detectedBaseUrls
   detectedApiKeys.value = result.detectedApiKeys
+  detectedChannelName.value = result.detectedChannelName
   detectedServiceType.value = result.detectedServiceType
 }
 
@@ -798,6 +832,13 @@ const extractDomain = (url: string): string => {
 const randomSuffix = ref(generateRandomString(6))
 
 const generatedChannelName = computed(() => {
+  const manualName = quickChannelName.value.trim()
+  if (manualName) {
+    return manualName
+  }
+  if (detectedChannelName.value) {
+    return detectedChannelName.value
+  }
   if (!detectedBaseUrl.value) {
     return `channel-${randomSuffix.value}`
   }
@@ -1102,6 +1143,7 @@ const form = reactive({
   insecureSkipVerify: false,
   lowQuality: false,
   visionCapable: false,
+  temporary: false,
   injectDummyThoughtSignature: false,
   stripThoughtSignature: false,
   description: '',
@@ -1290,6 +1332,7 @@ const resetForm = () => {
   form.insecureSkipVerify = false
   form.lowQuality = false
   form.visionCapable = false
+  form.temporary = false
   form.injectDummyThoughtSignature = false
   form.stripThoughtSignature = false
   form.description = ''
@@ -1324,8 +1367,11 @@ const resetForm = () => {
 
   // 重置快速添加模式数据
   quickInput.value = ''
+  quickChannelName.value = ''
   detectedBaseUrl.value = ''
+  detectedBaseUrls.value = []
   detectedApiKeys.value = []
+  detectedChannelName.value = ''
   detectedServiceType.value = null
   randomSuffix.value = generateRandomString(6)
 }
@@ -1339,6 +1385,7 @@ const loadChannelData = (channel: Channel) => {
   form.insecureSkipVerify = !!channel.insecureSkipVerify
   form.lowQuality = !!channel.lowQuality
   form.visionCapable = !!channel.visionCapable
+  form.temporary = !!channel.temporary
   form.injectDummyThoughtSignature = !!channel.injectDummyThoughtSignature
   form.stripThoughtSignature = !!channel.stripThoughtSignature
   form.description = channel.description || ''
@@ -1621,6 +1668,7 @@ const handleSubmit = async () => {
     insecureSkipVerify: form.insecureSkipVerify,
     lowQuality: form.lowQuality,
     visionCapable: form.visionCapable,
+    temporary: form.temporary,
     injectDummyThoughtSignature: form.injectDummyThoughtSignature,
     stripThoughtSignature: form.stripThoughtSignature,
     description: form.description.trim(),

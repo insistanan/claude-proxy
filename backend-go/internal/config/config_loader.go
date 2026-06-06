@@ -39,6 +39,7 @@ func NewConfigManager(configFile string) (*ConfigManager, error) {
 
 	// 启动定期清理
 	go cm.cleanupExpiredFailures()
+	go cm.startChannelLifecycleWorker()
 
 	return cm, nil
 }

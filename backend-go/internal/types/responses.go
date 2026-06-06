@@ -6,26 +6,28 @@ import "encoding/json"
 
 // ResponsesRequest Responses API 请求
 type ResponsesRequest struct {
-	Model              string      `json:"model"`
-	Instructions       string      `json:"instructions,omitempty"` // 系统指令（映射为 system message）
-	Input              interface{} `json:"input"`                  // string 或 []ResponsesItem
-	PreviousResponseID string      `json:"previous_response_id,omitempty"`
-	Store              *bool       `json:"store,omitempty"`             // 默认 true
-	MaxTokens          int         `json:"max_tokens,omitempty"`        // 最大 tokens
-	MaxOutputTokens    int         `json:"max_output_tokens,omitempty"` // Responses 原生最大输出 tokens
-	Temperature        float64     `json:"temperature,omitempty"`       // 温度参数
-	TopP               float64     `json:"top_p,omitempty"`             // top_p 参数
-	FrequencyPenalty   float64     `json:"frequency_penalty,omitempty"` // 频率惩罚
-	PresencePenalty    float64     `json:"presence_penalty,omitempty"`  // 存在惩罚
-	Stream             bool        `json:"stream,omitempty"`            // 是否流式输出
-	Stop               interface{} `json:"stop,omitempty"`              // 停止序列 (string 或 []string)
-	User               string      `json:"user,omitempty"`              // 用户标识
-	StreamOptions      interface{} `json:"stream_options,omitempty"`    // 流式选项
-	Tools             interface{}            `json:"tools,omitempty"`       // Responses tools
-	ToolChoice        interface{}            `json:"tool_choice,omitempty"` // auto/none/required 或对象
-	ParallelToolCalls *bool                  `json:"parallel_tool_calls,omitempty"`
-	Reasoning         interface{}            `json:"reasoning,omitempty"`
-	Metadata          map[string]interface{} `json:"metadata,omitempty"`
+	Model                string                 `json:"model"`
+	Instructions         string                 `json:"instructions,omitempty"` // 系统指令（映射为 system message）
+	Input                interface{}            `json:"input"`                  // string 或 []ResponsesItem
+	PreviousResponseID   string                 `json:"previous_response_id,omitempty"`
+	Store                *bool                  `json:"store,omitempty"`                  // 默认 true
+	MaxTokens            int                    `json:"max_tokens,omitempty"`             // 最大 tokens
+	MaxOutputTokens      int                    `json:"max_output_tokens,omitempty"`      // Responses 原生最大输出 tokens
+	Temperature          float64                `json:"temperature,omitempty"`            // 温度参数
+	TopP                 float64                `json:"top_p,omitempty"`                  // top_p 参数
+	FrequencyPenalty     float64                `json:"frequency_penalty,omitempty"`      // 频率惩罚
+	PresencePenalty      float64                `json:"presence_penalty,omitempty"`       // 存在惩罚
+	Stream               bool                   `json:"stream,omitempty"`                 // 是否流式输出
+	Stop                 interface{}            `json:"stop,omitempty"`                   // 停止序列 (string 或 []string)
+	User                 string                 `json:"user,omitempty"`                   // 用户标识
+	PromptCacheKey       string                 `json:"prompt_cache_key,omitempty"`       // OpenAI Prompt Caching 路由键
+	PromptCacheRetention string                 `json:"prompt_cache_retention,omitempty"` // in_memory 或 24h
+	StreamOptions        interface{}            `json:"stream_options,omitempty"`         // 流式选项
+	Tools                interface{}            `json:"tools,omitempty"`                  // Responses tools
+	ToolChoice           interface{}            `json:"tool_choice,omitempty"`            // auto/none/required 或对象
+	ParallelToolCalls    *bool                  `json:"parallel_tool_calls,omitempty"`
+	Reasoning            interface{}            `json:"reasoning,omitempty"`
+	Metadata             map[string]interface{} `json:"metadata,omitempty"`
 
 	// TransformerMetadata 转换器元数据（仅内存使用，不序列化）
 	// 用于在单次请求的转换流程中保留原始格式信息，如 system 数组格式等
@@ -36,7 +38,7 @@ type ResponsesRequest struct {
 // ResponsesItem Responses API 消息项
 type ResponsesItem struct {
 	ID        string      `json:"id,omitempty"`
-	Type      string      `json:"type"`           // message, text, function_call, tool_call, tool_result
+	Type      string      `json:"type"` // message, text, function_call, tool_call, tool_result
 	Status    string      `json:"status,omitempty"`
 	Role      string      `json:"role,omitempty"` // user, assistant (用于 type=message)
 	Content   interface{} `json:"content,omitempty"`
@@ -62,11 +64,11 @@ type ToolUse struct {
 
 // ResponsesResponse Responses API 响应
 type ResponsesResponse struct {
-	ID                 string          `json:"id"`
-	Object             string          `json:"object,omitempty"`
-	Model              string          `json:"model"`
-	Output             []ResponsesItem `json:"output"`
-	Status             string          `json:"status"` // completed, failed
+	ID                 string                 `json:"id"`
+	Object             string                 `json:"object,omitempty"`
+	Model              string                 `json:"model"`
+	Output             []ResponsesItem        `json:"output"`
+	Status             string                 `json:"status"` // completed, failed
 	PreviousID         string                 `json:"previous_id,omitempty"`
 	PreviousResponseID string                 `json:"previous_response_id,omitempty"`
 	Usage              ResponsesUsage         `json:"usage"`

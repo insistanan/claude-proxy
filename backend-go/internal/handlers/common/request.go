@@ -8,11 +8,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/httpclient"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
+	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
@@ -281,4 +283,101 @@ func ExtractConversationID(c *gin.Context, bodyBytes []byte) string {
 	}
 
 	return ""
+}
+
+func ExtractFirstPromptFromClaude(messages []types.ClaudeMessage) string {
+	for _, msg := range messages {
+		if strings.EqualFold(msg.Role, "user") {
+			if prompt := firstTextFromContent(msg.Content); prompt != "" {
+				return truncatePrompt(prompt)
+			}
+		}
+	}
+	return ""
+}
+
+func ExtractFirstPromptFromOpenAI(messages []types.OpenAIMessage) string {
+	for _, msg := range messages {
+		if strings.EqualFold(msg.Role, "user") {
+			if prompt := firstTextFromContent(msg.Content); prompt != "" {
+				return truncatePrompt(prompt)
+			}
+		}
+	}
+	return ""
+}
+
+func ExtractFirstPromptFromResponsesInput(input interface{}) string {
+	if prompt := firstTextFromContent(input); prompt != "" {
+		return truncatePrompt(prompt)
+	}
+	return ""
+}
+
+func ExtractFirstPromptFromGemini(contents []types.GeminiContent) string {
+	for _, content := range contents {
+		if content.Role != "" && !strings.EqualFold(content.Role, "user") {
+			continue
+		}
+		for _, part := range content.Parts {
+			if strings.TrimSpace(part.Text) != "" {
+				return truncatePrompt(part.Text)
+			}
+		}
+	}
+	return ""
+}
+
+func ExtractPromptJSONField(bodyBytes []byte, field string) string {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return ""
+	}
+	if prompt := firstTextFromContent(payload[field]); prompt != "" {
+		return truncatePrompt(prompt)
+	}
+	return ""
+}
+
+func firstTextFromContent(content interface{}) string {
+	switch value := content.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []types.ClaudeContent:
+		for _, block := range utils.NormalizeContentBlocks(value) {
+			if text, ok := utils.ExtractTextFromBlock(block); ok {
+				return strings.TrimSpace(text)
+			}
+		}
+	case []types.ContentBlock:
+		for _, block := range utils.NormalizeContentBlocks(value) {
+			if text, ok := utils.ExtractTextFromBlock(block); ok {
+				return strings.TrimSpace(text)
+			}
+		}
+	case []interface{}:
+		for _, item := range value {
+			if prompt := firstTextFromContent(item); prompt != "" {
+				return prompt
+			}
+		}
+	case map[string]interface{}:
+		if text, ok := utils.ExtractTextFromBlock(value); ok {
+			return strings.TrimSpace(text)
+		}
+		for _, key := range []string{"content", "text", "input_text"} {
+			if prompt := firstTextFromContent(value[key]); prompt != "" {
+				return prompt
+			}
+		}
+	}
+	return ""
+}
+
+func truncatePrompt(prompt string) string {
+	prompt = strings.Join(strings.Fields(prompt), " ")
+	if len(prompt) <= 300 {
+		return prompt
+	}
+	return prompt[:300] + "..."
 }

@@ -15,12 +15,15 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 		loadBalance := cfg.ChatLoadBalance
 		metricsManager := sch.GetChatMetricsManager()
 
-		channels := make([]gin.H, len(upstreams))
+		channels := make([]gin.H, 0, len(upstreams))
 		for i, up := range upstreams {
+			if config.GetChannelStatus(&up) == config.ChannelStatusDeleted {
+				continue
+			}
 			status := config.GetChannelStatus(&up)
 			priority := config.GetChannelPriority(&up, i)
 
-			channels[i] = gin.H{
+			channels = append(channels, gin.H{
 				"index":              i,
 				"name":               up.Name,
 				"serviceType":        up.ServiceType,
@@ -39,11 +42,14 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 				"promotionCount":     up.PromotionCount,
 				"lowQuality":         up.LowQuality,
 				"visionCapable":      up.VisionCapable,
-			}
+			})
 		}
 
 		metricsResult := make([]gin.H, 0, len(upstreams))
 		for i, upstream := range upstreams {
+			if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted {
+				continue
+			}
 			resp := metricsManager.ToResponseMultiURL(i, upstream.GetAllBaseURLs(), upstream.APIKeys, 0, upstream.HistoricalAPIKeys)
 
 			item := gin.H{
@@ -83,9 +89,12 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 			"circuitRecoveryTime": metricsManager.GetCircuitRecoveryTime().String(),
 		}
 
-		recentActivity := make([]*metrics.ChannelRecentActivity, len(upstreams))
+		recentActivity := make([]*metrics.ChannelRecentActivity, 0, len(upstreams))
 		for i, upstream := range upstreams {
-			recentActivity[i] = metricsManager.GetRecentActivityMultiURL(i, upstream.GetAllBaseURLs(), upstream.APIKeys)
+			if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted {
+				continue
+			}
+			recentActivity = append(recentActivity, metricsManager.GetRecentActivityMultiURL(i, upstream.GetAllBaseURLs(), upstream.APIKeys))
 		}
 
 		c.JSON(200, gin.H{

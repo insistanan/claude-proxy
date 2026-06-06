@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -23,14 +22,17 @@ func (cm *ConfigManager) GetCurrentGeminiUpstream() (*UpstreamConfig, error) {
 
 	// 优先选择第一个 active 状态的渠道
 	for i := range cm.config.GeminiUpstream {
-		status := cm.config.GeminiUpstream[i].Status
-		if status == "" || status == "active" {
+		if GetChannelStatus(&cm.config.GeminiUpstream[i]) == ChannelStatusActive && IsChannelSchedulable(&cm.config.GeminiUpstream[i]) {
 			return &cm.config.GeminiUpstream[i], nil
 		}
 	}
 
-	// 没有 active 渠道，回退到第一个渠道
-	return &cm.config.GeminiUpstream[0], nil
+	for i := range cm.config.GeminiUpstream {
+		if IsChannelSchedulable(&cm.config.GeminiUpstream[i]) {
+			return &cm.config.GeminiUpstream[i], nil
+		}
+	}
+	return nil, fmt.Errorf("没有可用的 Gemini 渠道")
 }
 
 // GetCurrentGeminiUpstreamWithIndex 获取当前 Gemini 上游配置及其渠道索引。
@@ -43,13 +45,17 @@ func (cm *ConfigManager) GetCurrentGeminiUpstreamWithIndex() (*UpstreamConfig, i
 	}
 
 	for i := range cm.config.GeminiUpstream {
-		status := cm.config.GeminiUpstream[i].Status
-		if status == "" || status == "active" {
+		if GetChannelStatus(&cm.config.GeminiUpstream[i]) == ChannelStatusActive && IsChannelSchedulable(&cm.config.GeminiUpstream[i]) {
 			return &cm.config.GeminiUpstream[i], i, nil
 		}
 	}
 
-	return &cm.config.GeminiUpstream[0], 0, nil
+	for i := range cm.config.GeminiUpstream {
+		if IsChannelSchedulable(&cm.config.GeminiUpstream[i]) {
+			return &cm.config.GeminiUpstream[i], i, nil
+		}
+	}
+	return nil, -1, fmt.Errorf("没有可用的 Gemini 渠道")
 }
 
 // AddGeminiUpstream 添加 Gemini 上游
@@ -61,15 +67,13 @@ func (cm *ConfigManager) AddGeminiUpstream(upstream UpstreamConfig) error {
 	if upstream.Status == "" {
 		upstream.Status = "active"
 	}
+	prepareUpstreamLifecycle(&upstream, time.Now())
 
 	// 去重 API Keys 和 Base URLs
 	upstream.APIKeys = deduplicateStrings(upstream.APIKeys)
 	upstream.BaseURLs = deduplicateBaseURLs(upstream.BaseURLs)
 
 	cm.config.GeminiUpstream = append(cm.config.GeminiUpstream, upstream)
-	if upstream.VisionCapable {
-		ensureSingleVisionCapable(cm.config.GeminiUpstream, len(cm.config.GeminiUpstream)-1, "Gemini")
-	}
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return err
@@ -171,7 +175,9 @@ func (cm *ConfigManager) UpdateGeminiUpstream(index int, updates UpstreamUpdate)
 		upstream.Priority = *updates.Priority
 	}
 	if updates.Status != nil {
-		upstream.Status = *updates.Status
+		if err := setUpstreamStatus(upstream, *updates.Status, time.Now()); err != nil {
+			return false, err
+		}
 	}
 	if updates.PromotionUntil != nil {
 		upstream.PromotionUntil = updates.PromotionUntil
@@ -184,10 +190,17 @@ func (cm *ConfigManager) UpdateGeminiUpstream(index int, updates UpstreamUpdate)
 	}
 	if updates.VisionCapable != nil {
 		upstream.VisionCapable = *updates.VisionCapable
-		if upstream.VisionCapable {
-			ensureSingleVisionCapable(cm.config.GeminiUpstream, index, "Gemini")
-		}
 	}
+	if updates.Temporary != nil {
+		upstream.Temporary = *updates.Temporary
+	}
+	if updates.TemporaryUntil != nil {
+		upstream.TemporaryUntil = updates.TemporaryUntil
+	}
+	if updates.DeprecatedAt != nil {
+		upstream.DeprecatedAt = updates.DeprecatedAt
+	}
+	prepareUpstreamLifecycle(upstream, time.Now())
 	if updates.InjectDummyThoughtSignature != nil {
 		upstream.InjectDummyThoughtSignature = *updates.InjectDummyThoughtSignature
 	}
@@ -411,17 +424,12 @@ func (cm *ConfigManager) SetGeminiChannelStatus(index int, status string) error 
 	}
 
 	// 状态值转为小写，支持大小写不敏感
-	status = strings.ToLower(status)
-	if status != "active" && status != "suspended" && status != "disabled" {
-		return fmt.Errorf("无效的状态: %s (允许值: active, suspended, disabled)", status)
+	if err := setUpstreamStatus(&cm.config.GeminiUpstream[index], status, time.Now()); err != nil {
+		return err
 	}
+	status = cm.config.GeminiUpstream[index].Status
 
-	cm.config.GeminiUpstream[index].Status = status
-
-	// 暂停时清除促销期
-	if status == "suspended" && (cm.config.GeminiUpstream[index].PromotionUntil != nil || cm.config.GeminiUpstream[index].PromotionCount > 0) {
-		cm.config.GeminiUpstream[index].PromotionUntil = nil
-		cm.config.GeminiUpstream[index].PromotionCount = 0
+	if status == "suspended" || status == "deprecated" {
 		log.Printf("[Config-Status] 已清除 Gemini 渠道 [%d] %s 的促销期", index, cm.config.GeminiUpstream[index].Name)
 	}
 

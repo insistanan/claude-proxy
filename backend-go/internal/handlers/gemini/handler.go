@@ -83,7 +83,9 @@ func Handler(
 		isStream := strings.Contains(c.Request.URL.Path, "streamGenerateContent")
 
 		// 提取对话标识
-		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindGemini, common.ExtractConversationID(c, bodyBytes), model, isStream)
+		firstPrompt := common.ExtractFirstPromptFromGemini(geminiReq.Contents)
+		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindGemini, common.ExtractConversationID(c, bodyBytes), model, firstPrompt, isStream)
+		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindGemini)
 
 		// 记录原始请求信息
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Gemini")
@@ -179,9 +181,10 @@ func handleMultiChannel(
 					return handleSuccess(c, resp, upstreamCopy.ServiceType, envCfg, startTime, geminiReq, model, isStream)
 				},
 				common.AttemptLogContext{
-					ChannelIndex: channelIndex,
-					Model:        model,
-					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
+					ChannelIndex:   channelIndex,
+					Model:          model,
+					ConversationID: userID,
+					LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
 				},
 			)
 
@@ -294,9 +297,10 @@ func handleSingleChannel(
 			return handleSuccess(c, resp, upstreamCopy.ServiceType, envCfg, startTime, geminiReq, model, isStream)
 		},
 		common.AttemptLogContext{
-			ChannelIndex: channelIndex,
-			Model:        model,
-			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
+			ChannelIndex:   channelIndex,
+			Model:          model,
+			ConversationID: userID,
+			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
 		},
 	)
 	if handled {
@@ -368,7 +372,7 @@ func buildProviderRequest(
 	isStream bool,
 ) (*http.Request, error) {
 	// 应用模型映射
-	mappedModel := config.RedirectModel(model, upstream)
+	mappedModel := config.ResolveUpstreamModel(model, upstream)
 
 	var requestBody []byte
 	var url string

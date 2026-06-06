@@ -23,14 +23,17 @@ func (cm *ConfigManager) GetCurrentChatUpstream() (*UpstreamConfig, error) {
 
 	// 优先选择第一个 active 状态的渠道
 	for i := range cm.config.ChatUpstream {
-		status := cm.config.ChatUpstream[i].Status
-		if status == "" || status == "active" {
+		if GetChannelStatus(&cm.config.ChatUpstream[i]) == ChannelStatusActive && IsChannelSchedulable(&cm.config.ChatUpstream[i]) {
 			return &cm.config.ChatUpstream[i], nil
 		}
 	}
 
-	// 没有 active 渠道，回退到第一个渠道
-	return &cm.config.ChatUpstream[0], nil
+	for i := range cm.config.ChatUpstream {
+		if IsChannelSchedulable(&cm.config.ChatUpstream[i]) {
+			return &cm.config.ChatUpstream[i], nil
+		}
+	}
+	return nil, fmt.Errorf("没有可用的 Chat 渠道")
 }
 
 // GetCurrentChatUpstreamWithIndex 获取当前 Chat 上游配置及其渠道索引。
@@ -43,13 +46,17 @@ func (cm *ConfigManager) GetCurrentChatUpstreamWithIndex() (*UpstreamConfig, int
 	}
 
 	for i := range cm.config.ChatUpstream {
-		status := cm.config.ChatUpstream[i].Status
-		if status == "" || status == "active" {
+		if GetChannelStatus(&cm.config.ChatUpstream[i]) == ChannelStatusActive && IsChannelSchedulable(&cm.config.ChatUpstream[i]) {
 			return &cm.config.ChatUpstream[i], i, nil
 		}
 	}
 
-	return &cm.config.ChatUpstream[0], 0, nil
+	for i := range cm.config.ChatUpstream {
+		if IsChannelSchedulable(&cm.config.ChatUpstream[i]) {
+			return &cm.config.ChatUpstream[i], i, nil
+		}
+	}
+	return nil, -1, fmt.Errorf("没有可用的 Chat 渠道")
 }
 
 // AddChatUpstream 添加 Chat 上游
@@ -61,6 +68,7 @@ func (cm *ConfigManager) AddChatUpstream(upstream UpstreamConfig) error {
 	if upstream.Status == "" {
 		upstream.Status = "active"
 	}
+	prepareUpstreamLifecycle(&upstream, time.Now())
 
 	// 去重 API Keys 和 Base URLs
 	upstream.APIKeys = deduplicateStrings(upstream.APIKeys)
@@ -68,9 +76,6 @@ func (cm *ConfigManager) AddChatUpstream(upstream UpstreamConfig) error {
 	upstream.DefaultModel = strings.TrimSpace(upstream.DefaultModel)
 
 	cm.config.ChatUpstream = append(cm.config.ChatUpstream, upstream)
-	if upstream.VisionCapable {
-		ensureSingleVisionCapable(cm.config.ChatUpstream, len(cm.config.ChatUpstream)-1, "Chat")
-	}
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return err
@@ -175,7 +180,9 @@ func (cm *ConfigManager) UpdateChatUpstream(index int, updates UpstreamUpdate) (
 		upstream.Priority = *updates.Priority
 	}
 	if updates.Status != nil {
-		upstream.Status = *updates.Status
+		if err := setUpstreamStatus(upstream, *updates.Status, time.Now()); err != nil {
+			return false, err
+		}
 	}
 	if updates.PromotionUntil != nil {
 		upstream.PromotionUntil = updates.PromotionUntil
@@ -188,10 +195,17 @@ func (cm *ConfigManager) UpdateChatUpstream(index int, updates UpstreamUpdate) (
 	}
 	if updates.VisionCapable != nil {
 		upstream.VisionCapable = *updates.VisionCapable
-		if upstream.VisionCapable {
-			ensureSingleVisionCapable(cm.config.ChatUpstream, index, "Chat")
-		}
 	}
+	if updates.Temporary != nil {
+		upstream.Temporary = *updates.Temporary
+	}
+	if updates.TemporaryUntil != nil {
+		upstream.TemporaryUntil = updates.TemporaryUntil
+	}
+	if updates.DeprecatedAt != nil {
+		upstream.DeprecatedAt = updates.DeprecatedAt
+	}
+	prepareUpstreamLifecycle(upstream, time.Now())
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return false, err
@@ -428,17 +442,12 @@ func (cm *ConfigManager) SetChatChannelStatus(index int, status string) error {
 	}
 
 	// 状态值转为小写，支持大小写不敏感
-	status = strings.ToLower(status)
-	if status != "active" && status != "suspended" && status != "disabled" {
-		return fmt.Errorf("无效的状态: %s (允许值: active, suspended, disabled)", status)
+	if err := setUpstreamStatus(&cm.config.ChatUpstream[index], status, time.Now()); err != nil {
+		return err
 	}
+	status = cm.config.ChatUpstream[index].Status
 
-	cm.config.ChatUpstream[index].Status = status
-
-	// 暂停时清除促销期
-	if status == "suspended" && (cm.config.ChatUpstream[index].PromotionUntil != nil || cm.config.ChatUpstream[index].PromotionCount > 0) {
-		cm.config.ChatUpstream[index].PromotionUntil = nil
-		cm.config.ChatUpstream[index].PromotionCount = 0
+	if status == "suspended" || status == "deprecated" {
 		log.Printf("[Config-Status] 已清除 Chat 渠道 [%d] %s 的促销期", index, cm.config.ChatUpstream[index].Name)
 	}
 

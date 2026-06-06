@@ -64,7 +64,9 @@ func Handler(
 		}
 
 		// 提取对话标识
-		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindResponses, common.ExtractConversationID(c, bodyBytes), responsesReq.Model, responsesReq.Stream)
+		firstPrompt := common.ExtractFirstPromptFromResponsesInput(responsesReq.Input)
+		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindResponses, common.ExtractConversationID(c, bodyBytes), responsesReq.Model, firstPrompt, responsesReq.Stream)
+		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindResponses)
 
 		// 记录原始请求信息（仅在入口处记录一次）
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Responses")
@@ -149,9 +151,10 @@ func handleMultiChannel(
 					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
 				},
 				common.AttemptLogContext{
-					ChannelIndex: channelIndex,
-					Model:        responsesReq.Model,
-					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
+					ChannelIndex:   channelIndex,
+					Model:          responsesReq.Model,
+					ConversationID: userID,
+					LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
 				},
 			)
 
@@ -256,9 +259,10 @@ func handleSingleChannel(
 			return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
 		},
 		common.AttemptLogContext{
-			ChannelIndex: channelIndex,
-			Model:        responsesReq.Model,
-			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
+			ChannelIndex:   channelIndex,
+			Model:          responsesReq.Model,
+			ConversationID: userID,
+			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
 		},
 	)
 	if handled {

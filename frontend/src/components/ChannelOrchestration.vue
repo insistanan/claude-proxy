@@ -26,6 +26,9 @@
           <v-chip size="x-small" class="ml-2">{{ activeChannels.length }}</v-chip>
         </div>
         <div class="d-flex align-center ga-2">
+          <v-btn size="x-small" variant="tonal" prepend-icon="mdi-sort" :loading="isTidying" @click="tidyProblemChannels">
+            一键整理
+          </v-btn>
           <span class="text-caption text-medium-emphasis">拖拽调整优先级，自动保存</span>
           <v-progress-circular v-if="isSavingOrder" indeterminate size="16" width="2" color="primary" />
         </div>
@@ -38,6 +41,10 @@
         handle=".drag-handle"
         ghost-class="ghost"
         class="channel-list"
+        :scroll="true"
+        :scroll-sensitivity="90"
+        :scroll-speed="18"
+        :force-fallback="true"
         @change="onDragChange"
       >
         <template #item="{ element, index }">
@@ -125,6 +132,16 @@
                 <v-icon start size="12">mdi-rocket-launch</v-icon>
                 {{ formatPromotionRemaining(element.promotionUntil, element.promotionCount) }}
               </v-chip>
+              <v-chip
+                v-if="element.temporary"
+                size="x-small"
+                color="warning"
+                variant="tonal"
+                class="ml-2"
+              >
+                <v-icon start size="12">mdi-timer-sand</v-icon>
+                临时 {{ formatDateTime(element.temporaryUntil) }}
+              </v-chip>
               <v-tooltip
                 v-if="shouldShowVisionDefault(element)"
                 text="图片理解默认模型"
@@ -161,6 +178,16 @@
                 <v-icon size="14">mdi-open-in-new</v-icon>
               </v-btn>
               <span class="text-caption text-medium-emphasis ml-2">{{ element.serviceType }}</span>
+              <v-chip
+                v-if="formatChannelModelPreview(element)"
+                size="x-small"
+                color="secondary"
+                variant="tonal"
+                class="ml-2 model-preview-chip"
+                :title="formatChannelModelPreview(element)"
+              >
+                {{ formatChannelModelPreview(element) }}
+              </v-chip>
               <span v-if="element.description" class="text-caption text-disabled ml-3 channel-description">{{ element.description }}</span>
               <!-- 展开图标 -->
               <v-icon
@@ -305,6 +332,12 @@
                     </template>
                     <v-list-item-title>编辑</v-list-item-title>
                   </v-list-item>
+                  <v-list-item @click="duplicateChannel(element.index)">
+                    <template #prepend>
+                      <v-icon size="small">mdi-content-copy</v-icon>
+                    </template>
+                    <v-list-item-title>复制渠道</v-list-item-title>
+                  </v-list-item>
                   <v-list-item v-if="supportsVisionDefault" @click="toggleVisionDefault(element)">
                     <template #prepend>
                       <v-icon size="small" :color="element.visionCapable ? 'success' : 'primary'">
@@ -366,6 +399,12 @@
                       <v-icon size="small" color="error">mdi-stop-circle</v-icon>
                     </template>
                     <v-list-item-title>移至备用池</v-list-item-title>
+                  </v-list-item>
+                  <v-list-item @click="setChannelStatus(element.index, 'deprecated')">
+                    <template #prepend>
+                      <v-icon size="small" color="grey">mdi-archive-clock-outline</v-icon>
+                    </template>
+                    <v-list-item-title>移至弃用池</v-list-item-title>
                   </v-list-item>
                   <v-list-item :disabled="!canDeleteChannel(element)" @click="handleDeleteChannel(element)">
                     <template #prepend>
@@ -434,6 +473,19 @@
                 @keydown.space.prevent="$emit('edit', channel)"
               >{{ channel.name }}</span>
               <span class="text-caption text-disabled ml-2">{{ channel.serviceType }}</span>
+              <v-chip
+                v-if="formatChannelModelPreview(channel)"
+                size="x-small"
+                color="secondary"
+                variant="tonal"
+                class="ml-2 model-preview-chip"
+                :title="formatChannelModelPreview(channel)"
+              >
+                {{ formatChannelModelPreview(channel) }}
+              </v-chip>
+              <v-chip v-if="channel.temporary" size="x-small" color="warning" variant="tonal" class="ml-2">
+                临时 {{ formatDateTime(channel.temporaryUntil) }}
+              </v-chip>
               <v-tooltip
                 v-if="shouldShowVisionDefault(channel)"
                 text="图片理解默认模型"
@@ -487,6 +539,12 @@
                   </template>
                   <v-list-item-title>编辑</v-list-item-title>
                 </v-list-item>
+                <v-list-item @click="duplicateChannel(channel.index)">
+                  <template #prepend>
+                    <v-icon size="small">mdi-content-copy</v-icon>
+                  </template>
+                  <v-list-item-title>复制渠道</v-list-item-title>
+                </v-list-item>
                 <v-list-item v-if="supportsVisionDefault" @click="toggleVisionDefault(channel)">
                   <template #prepend>
                     <v-icon size="small" :color="channel.visionCapable ? 'success' : 'primary'">
@@ -504,6 +562,12 @@
                   </template>
                   <v-list-item-title>启用</v-list-item-title>
                 </v-list-item>
+                <v-list-item @click="setChannelStatus(channel.index, 'deprecated')">
+                  <template #prepend>
+                    <v-icon size="small" color="grey">mdi-archive-clock-outline</v-icon>
+                  </template>
+                  <v-list-item-title>移至弃用池</v-list-item-title>
+                </v-list-item>
                 <v-list-item @click="$emit('delete', channel.index)">
                   <template #prepend>
                     <v-icon size="small" color="error">mdi-delete</v-icon>
@@ -517,6 +581,71 @@
       </div>
 
       <div v-else class="text-center py-4 text-medium-emphasis text-caption">所有渠道都处于活跃状态</div>
+    </div>
+
+    <v-divider class="my-2" />
+
+    <!-- 弃用渠道池 (deprecated only) -->
+    <div class="pt-2 pb-3">
+      <div class="inactive-pool-header">
+        <div class="text-subtitle-2 text-medium-emphasis d-flex align-center">
+          <v-icon size="small" class="mr-1" color="grey">mdi-archive-clock-outline</v-icon>
+          弃用渠道池
+          <v-chip size="x-small" class="ml-2">{{ deprecatedChannels.length }}</v-chip>
+        </div>
+        <span class="text-caption text-medium-emphasis">每 12 小时清理一次，弃用超过 3 天自动删除</span>
+      </div>
+
+      <div v-if="deprecatedChannels.length > 0" class="inactive-pool deprecated-pool">
+        <div v-for="channel in deprecatedChannels" :key="channel.index" class="inactive-channel-row">
+          <div class="channel-info">
+            <div class="channel-info-main">
+              <span
+                class="font-weight-medium channel-name-link"
+                tabindex="0"
+                role="button"
+                @click="$emit('edit', channel)"
+                @keydown.enter="$emit('edit', channel)"
+                @keydown.space.prevent="$emit('edit', channel)"
+              >{{ channel.name }}</span>
+              <span class="text-caption text-disabled ml-2">{{ channel.serviceType }}</span>
+              <v-chip
+                v-if="formatChannelModelPreview(channel)"
+                size="x-small"
+                color="secondary"
+                variant="tonal"
+                class="ml-2 model-preview-chip"
+                :title="formatChannelModelPreview(channel)"
+              >
+                {{ formatChannelModelPreview(channel) }}
+              </v-chip>
+            </div>
+            <div class="channel-info-desc text-caption text-disabled">
+              弃用时间：{{ formatDateTime(channel.deprecatedAt) }}
+            </div>
+          </div>
+
+          <div class="channel-keys">
+            <v-chip size="x-small" variant="outlined" color="grey" class="keys-chip" @click="$emit('edit', channel)">
+              <v-icon start size="x-small">mdi-key</v-icon>
+              {{ channel.apiKeys?.length || 0 }}
+            </v-chip>
+          </div>
+
+          <div class="channel-actions">
+            <v-btn size="small" color="grey" variant="tonal" @click="setChannelStatus(channel.index, 'disabled')">
+              <v-icon start size="small">mdi-archive-outline</v-icon>
+              转备用
+            </v-btn>
+            <v-btn size="small" color="error" variant="text" @click="$emit('delete', channel.index)">
+              <v-icon start size="small">mdi-delete</v-icon>
+              删除
+            </v-btn>
+          </div>
+        </div>
+      </div>
+
+      <div v-else class="text-center py-4 text-medium-emphasis text-caption">暂无弃用渠道</div>
     </div>
   </v-card>
 
@@ -580,12 +709,30 @@
           <v-alert v-else-if="logsError" type="error" variant="tonal" density="compact">
             {{ logsError }}
           </v-alert>
-          <v-table v-else density="compact" class="channel-logs-table">
+          <div v-else>
+            <div v-if="channelLogs.length > 0" class="log-trend-panel mb-4">
+              <div class="d-flex align-center justify-space-between mb-2">
+                <div class="text-subtitle-2 font-weight-bold">调用用量趋势</div>
+                <div class="text-caption text-medium-emphasis">
+                  按分钟聚合，展示请求数、Token I/O 和缓存 R/W
+                </div>
+              </div>
+              <apexchart
+                type="line"
+                height="240"
+                :options="logTrendChartOptions"
+                :series="logTrendSeries"
+              />
+            </div>
+
+          <v-table density="compact" class="channel-logs-table">
             <thead>
               <tr>
                 <th>时间</th>
                 <th>状态</th>
                 <th>模型</th>
+                <th>Token I/O</th>
+                <th>缓存 R/W</th>
                 <th>上游</th>
                 <th>Key</th>
                 <th>耗时</th>
@@ -594,7 +741,7 @@
             </thead>
             <tbody>
               <tr v-if="channelLogs.length === 0">
-                <td colspan="7" class="text-center text-medium-emphasis py-6">暂无请求日志</td>
+                <td colspan="9" class="text-center text-medium-emphasis py-6">暂无请求日志</td>
               </tr>
               <tr v-for="log in channelLogs" :key="log.attemptId">
                 <td class="text-no-wrap">{{ formatLogTime(log.timestamp) }}</td>
@@ -604,6 +751,15 @@
                   </v-chip>
                 </td>
                 <td class="log-model">{{ log.model || '--' }}</td>
+                <td class="text-no-wrap">
+                  <span class="font-weight-medium">{{ formatLogTokenPair(log.inputTokens, log.outputTokens) }}</span>
+                </td>
+                <td class="text-no-wrap">
+                  <span class="font-weight-medium">{{ formatLogTokenPair(log.cacheCreationTokens, log.cacheReadTokens) }}</span>
+                  <div v-if="(log.cacheCreation5mTokens || 0) + (log.cacheCreation1hTokens || 0) > 0" class="text-caption text-medium-emphasis">
+                    5m {{ formatNumber(log.cacheCreation5mTokens) }} / 1h {{ formatNumber(log.cacheCreation1hTokens) }}
+                  </div>
+                </td>
                 <td class="log-base-url">{{ log.baseUrl }}</td>
                 <td class="text-no-wrap">{{ log.keyMask }}</td>
                 <td class="text-no-wrap">{{ log.durationMs }}ms</td>
@@ -617,6 +773,7 @@
               </tr>
             </tbody>
           </v-table>
+          </div>
         </v-card-text>
       </v-card>
     </v-dialog>
@@ -626,9 +783,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import draggable from 'vuedraggable'
+import VueApexCharts from 'vue3-apexcharts'
+import type { ApexOptions } from 'apexcharts'
 import { api, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
 import KeyTrendChart from './KeyTrendChart.vue'
+
+const apexchart = VueApexCharts
 
 const props = defineProps<{
   channels: Channel[]
@@ -679,6 +840,104 @@ const logsChannel = ref<Channel | null>(null)
 const channelLogs = ref<ChannelLogEntry[]>([])
 const isLoadingLogs = ref(false)
 const logsError = ref('')
+const isTidying = ref(false)
+
+type LogTrendBucket = {
+  x: number
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+}
+
+const logTrendBuckets = computed<LogTrendBucket[]>(() => {
+  const buckets = new Map<number, LogTrendBucket>()
+  for (const log of channelLogs.value) {
+    const timestamp = new Date(log.timestamp).getTime()
+    if (!Number.isFinite(timestamp)) continue
+    const bucketTime = Math.floor(timestamp / 60000) * 60000
+    const bucket = buckets.get(bucketTime) ?? {
+      x: bucketTime,
+      requests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0
+    }
+
+    bucket.requests += 1
+    bucket.inputTokens += log.inputTokens ?? 0
+    bucket.outputTokens += log.outputTokens ?? 0
+    bucket.cacheCreationTokens += log.cacheCreationTokens ?? 0
+    bucket.cacheReadTokens += log.cacheReadTokens ?? 0
+    buckets.set(bucketTime, bucket)
+  }
+
+  return Array.from(buckets.values()).sort((a, b) => a.x - b.x)
+})
+
+const logTrendSeries = computed(() => {
+  const points = logTrendBuckets.value
+  return [
+    { name: '输入Token', data: points.map(point => [point.x, point.inputTokens]) },
+    { name: '输出Token', data: points.map(point => [point.x, point.outputTokens]) },
+    { name: '缓存创建Token', data: points.map(point => [point.x, point.cacheCreationTokens]) },
+    { name: '缓存读取Token', data: points.map(point => [point.x, point.cacheReadTokens]) },
+    { name: '请求数', data: points.map(point => [point.x, point.requests]) }
+  ]
+})
+
+const logTrendChartOptions = computed<ApexOptions>(() => ({
+  chart: {
+    toolbar: { show: false },
+    zoom: { enabled: false },
+    animations: { enabled: false },
+    fontFamily: 'inherit'
+  },
+  colors: ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#64748b'],
+  dataLabels: { enabled: false },
+  stroke: {
+    width: [2, 2, 2, 2, 2],
+    curve: 'smooth'
+  },
+  markers: {
+    size: 3,
+    strokeWidth: 0
+  },
+  grid: {
+    borderColor: 'rgba(148, 163, 184, 0.25)',
+    strokeDashArray: 4
+  },
+  xaxis: {
+    type: 'datetime',
+    labels: {
+      datetimeUTC: false
+    }
+  },
+  yaxis: [
+    {
+      seriesName: ['输入Token', '输出Token', '缓存创建Token', '缓存读取Token'],
+      title: { text: 'Tokens' },
+      labels: { formatter: value => formatCompactNumber(value) }
+    },
+    {
+      seriesName: '请求数',
+      opposite: true,
+      title: { text: '请求数' },
+      labels: { formatter: value => formatCompactNumber(value) }
+    }
+  ],
+  tooltip: {
+    shared: true,
+    x: { format: 'HH:mm:ss' },
+    y: { formatter: value => formatNumber(value) }
+  },
+  legend: {
+    position: 'bottom',
+    fontSize: '12px'
+  }
+}))
 
 // 促销弹窗相关
 const showPromotionDialog = ref(false)
@@ -712,6 +971,14 @@ const inactiveChannels = computed(() => {
   return props.channels.filter(ch => ch.status === 'disabled')
 })
 
+const deprecatedChannels = computed(() => {
+  return props.channels.filter(ch => ch.status === 'deprecated')
+})
+
+const isChannelInFailoverSequence = (channel: Channel) => {
+  return channel.status !== 'disabled' && channel.status !== 'deprecated' && channel.status !== 'deleted'
+}
+
 // 计算属性：是否为多渠道模式
 // 多渠道模式判断逻辑：
 // 1. 只有一个启用的渠道 → 单渠道模式
@@ -728,7 +995,7 @@ const isMultiChannelMode = computed(() => {
 // 优化：只在结构变化时更新，避免频繁重建导致子组件销毁
 const initActiveChannels = () => {
   const newActive = props.channels
-    .filter(ch => ch.status !== 'disabled')
+    .filter(isChannelInFailoverSequence)
     .sort((a, b) => (a.priority ?? a.index) - (b.priority ?? b.index))
 
   // 检查是否需要更新：比较 index 列表是否变化
@@ -1267,6 +1534,32 @@ const saveOrder = async () => {
   }
 }
 
+const duplicateChannel = async (channelIndex: number) => {
+  try {
+    await api.duplicateChannel(props.channelType, channelIndex)
+    emit('refresh')
+  } catch (error) {
+    console.error('Failed to duplicate channel:', error)
+    const errorMessage = error instanceof Error ? error.message : '未知错误'
+    emit('error', `复制渠道失败: ${errorMessage}`)
+  }
+}
+
+const tidyProblemChannels = async () => {
+  if (isTidying.value) return
+  isTidying.value = true
+  try {
+    await api.tidyProblemChannels(props.channelType)
+    emit('refresh')
+  } catch (error) {
+    console.error('Failed to tidy channels:', error)
+    const errorMessage = error instanceof Error ? error.message : '未知错误'
+    emit('error', `整理渠道失败: ${errorMessage}`)
+  } finally {
+    isTidying.value = false
+  }
+}
+
 // 置顶渠道
 const moveChannelToTop = async (channelIndex: number) => {
   if (isSavingOrder.value) return
@@ -1388,6 +1681,49 @@ const formatLogTime = (value: string): string => {
   return date.toLocaleString()
 }
 
+const formatDateTime = (value?: string): string => {
+  if (!value) return '--'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
+const formatChannelModelPreview = (channel: Channel): string => {
+  const defaultModel = String(channel.defaultModel || '').trim()
+  if (defaultModel) {
+    return `兜底 ${defaultModel}`
+  }
+
+  const entries = Object.entries(channel.modelMapping || {})
+    .map(([source, target]) => [source.trim(), target.trim()] as const)
+    .filter(([source, target]) => source && target)
+  if (entries.length === 0) return ''
+
+  const preferred = pickPreferredModelMapping(entries, channel)
+  if (!preferred) return ''
+  const [source, target] = preferred
+  return source === target ? target : `${source} -> ${target}`
+}
+
+const pickPreferredModelMapping = (
+  entries: Array<readonly [string, string]>,
+  channel: Channel
+): readonly [string, string] | undefined => {
+  const lowerService = channel.serviceType.toLowerCase()
+  const preferredTerms = props.channelType === 'messages' || lowerService === 'claude'
+    ? ['opus', 'sonnet', 'claude']
+    : props.channelType === 'responses' || lowerService === 'responses' || lowerService === 'openai' || lowerService === 'chat'
+      ? ['gpt', 'codex']
+      : ['gemini']
+
+  for (const term of preferredTerms) {
+    const match = entries.find(([source]) => source.toLowerCase().includes(term))
+    if (match) return match
+  }
+
+  return [...entries].sort((a, b) => a[0].localeCompare(b[0]))[0]
+}
+
 const getLogStatusColor = (status: string): string => {
   if (status === 'completed') return 'success'
   if (status === 'cancelled') return 'grey'
@@ -1396,6 +1732,25 @@ const getLogStatusColor = (status: string): string => {
 
 const formatLogStatus = (status: string, statusCode?: number): string => {
   return statusCode ? `${status} ${statusCode}` : status
+}
+
+const formatNumber = (value?: number): string => {
+  const numeric = Number(value ?? 0)
+  if (!Number.isFinite(numeric)) return '0'
+  return new Intl.NumberFormat().format(Math.round(numeric))
+}
+
+const formatCompactNumber = (value?: number): string => {
+  const numeric = Number(value ?? 0)
+  if (!Number.isFinite(numeric)) return '0'
+  return new Intl.NumberFormat(undefined, {
+    notation: 'compact',
+    maximumFractionDigits: 1
+  }).format(numeric)
+}
+
+const formatLogTokenPair = (left?: number, right?: number): string => {
+  return `${formatNumber(left)} / ${formatNumber(right)}`
 }
 
 const normalizePromotionInput = (value: unknown): number => {
@@ -1991,6 +2346,24 @@ defineExpose({
 .channel-logs-table {
   max-height: 70vh;
   overflow: auto;
+}
+
+.log-trend-panel {
+  border: 1px solid rgba(var(--v-theme-outline), 0.18);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(var(--v-theme-surface-variant), 0.28);
+}
+
+.model-preview-chip {
+  max-width: 260px;
+  overflow: hidden;
+}
+
+.model-preview-chip :deep(.v-chip__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .channel-logs-table th,

@@ -18,12 +18,15 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := cfgManager.GetConfig()
 
-		upstreams := make([]gin.H, len(cfg.GeminiUpstream))
+		upstreams := make([]gin.H, 0, len(cfg.GeminiUpstream))
 		for i, up := range cfg.GeminiUpstream {
+			if config.GetChannelStatus(&up) == config.ChannelStatusDeleted {
+				continue
+			}
 			status := config.GetChannelStatus(&up)
 			priority := config.GetChannelPriority(&up, i)
 
-			upstreams[i] = gin.H{
+			upstreams = append(upstreams, gin.H{
 				"index":                       i,
 				"name":                        up.Name,
 				"serviceType":                 up.ServiceType,
@@ -43,7 +46,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"visionCapable":               up.VisionCapable,
 				"injectDummyThoughtSignature": up.InjectDummyThoughtSignature,
 				"stripThoughtSignature":       up.StripThoughtSignature,
-			}
+			})
 		}
 
 		c.JSON(200, gin.H{
@@ -388,19 +391,22 @@ func PingChannel(cfgManager *config.ConfigManager) gin.HandlerFunc {
 func PingAllChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := cfgManager.GetConfig()
-		results := make([]gin.H, len(cfg.GeminiUpstream))
+		results := make([]gin.H, 0, len(cfg.GeminiUpstream))
 
 		client := &http.Client{Timeout: 10 * time.Second}
 
 		for i, upstream := range cfg.GeminiUpstream {
+			if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted {
+				continue
+			}
 			baseURL := upstream.GetEffectiveBaseURL()
 			if baseURL == "" {
-				results[i] = gin.H{
+				results = append(results, gin.H{
 					"index":   i,
 					"name":    upstream.Name,
 					"success": false,
 					"error":   "No base URL configured",
-				}
+				})
 				continue
 			}
 
@@ -415,24 +421,24 @@ func PingAllChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			latency := time.Since(start).Milliseconds()
 
 			if err != nil {
-				results[i] = gin.H{
+				results = append(results, gin.H{
 					"index":   i,
 					"name":    upstream.Name,
 					"success": false,
 					"error":   err.Error(),
 					"latency": latency,
-				}
+				})
 				continue
 			}
 			resp.Body.Close()
 
-			results[i] = gin.H{
+			results = append(results, gin.H{
 				"index":      i,
 				"name":       upstream.Name,
 				"success":    resp.StatusCode >= 200 && resp.StatusCode < 400,
 				"statusCode": resp.StatusCode,
 				"latency":    latency,
-			}
+			})
 		}
 
 		c.JSON(200, gin.H{

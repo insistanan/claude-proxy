@@ -131,7 +131,7 @@ export const useChannelStore = defineStore('channel', () => {
   const failoverChannelCount = computed(() => {
     const data = currentChannelsData.value
     if (!data.channels) return 0
-    return data.channels.filter(ch => ch.status !== 'disabled').length
+    return data.channels.filter(ch => ch.status !== 'disabled' && ch.status !== 'deprecated' && ch.status !== 'deleted').length
   })
 
   // ===== 辅助方法 =====
@@ -282,7 +282,7 @@ export const useChannelStore = defineStore('channel', () => {
         const data = isGemini ? geminiChannelsData.value : (isChat ? chatChannelsData.value : (isResponses ? responsesChannelsData.value : channelsData.value))
 
         // 找到新添加的渠道（应该是列表中 index 最大的 active 状态渠道）
-        const activeChannels = data.channels?.filter(ch => ch.status !== 'disabled') || []
+        const activeChannels = data.channels?.filter(ch => ch.status !== 'disabled' && ch.status !== 'deprecated' && ch.status !== 'deleted') || []
         if (activeChannels.length > 0) {
           // 新添加的渠道会分配到最大的 index
           const newChannel = activeChannels.reduce((max, ch) => ch.index > max.index ? ch : max, activeChannels[0])
