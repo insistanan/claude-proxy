@@ -22,11 +22,6 @@ type ChannelLog struct {
 	ChannelName      string `json:"channelName,omitempty"`
 	BaseURL          string `json:"baseUrl"`
 	KeyMask          string `json:"keyMask"`
-	ClientName       string `json:"clientName"`
-	ClientVersion    string `json:"clientVersion,omitempty"`
-	SourceConfidence string `json:"sourceConfidence"`
-	SessionID        string `json:"sessionId,omitempty"`
-	SourceRequestID  string `json:"sourceRequestId,omitempty"`
 	ErrorType        string `json:"errorType,omitempty"`
 	ErrorMessage     string `json:"errorMessage,omitempty"`
 	Retried          bool   `json:"retried"`

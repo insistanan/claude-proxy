@@ -65,6 +65,7 @@ func (cm *ConfigManager) AddChatUpstream(upstream UpstreamConfig) error {
 	// 去重 API Keys 和 Base URLs
 	upstream.APIKeys = deduplicateStrings(upstream.APIKeys)
 	upstream.BaseURLs = deduplicateBaseURLs(upstream.BaseURLs)
+	upstream.DefaultModel = strings.TrimSpace(upstream.DefaultModel)
 
 	cm.config.ChatUpstream = append(cm.config.ChatUpstream, upstream)
 	if upstream.VisionCapable {
@@ -163,6 +164,9 @@ func (cm *ConfigManager) UpdateChatUpstream(index int, updates UpstreamUpdate) (
 	}
 	if updates.ModelMapping != nil {
 		upstream.ModelMapping = updates.ModelMapping
+	}
+	if updates.DefaultModel != nil {
+		upstream.DefaultModel = strings.TrimSpace(*updates.DefaultModel)
 	}
 	if updates.InsecureSkipVerify != nil {
 		upstream.InsecureSkipVerify = *updates.InsecureSkipVerify

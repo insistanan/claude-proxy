@@ -585,7 +585,6 @@
               <tr>
                 <th>时间</th>
                 <th>状态</th>
-                <th>来源</th>
                 <th>模型</th>
                 <th>上游</th>
                 <th>Key</th>
@@ -595,7 +594,7 @@
             </thead>
             <tbody>
               <tr v-if="channelLogs.length === 0">
-                <td colspan="8" class="text-center text-medium-emphasis py-6">暂无请求日志</td>
+                <td colspan="7" class="text-center text-medium-emphasis py-6">暂无请求日志</td>
               </tr>
               <tr v-for="log in channelLogs" :key="log.attemptId">
                 <td class="text-no-wrap">{{ formatLogTime(log.timestamp) }}</td>
@@ -603,10 +602,6 @@
                   <v-chip size="x-small" :color="getLogStatusColor(log.status)" variant="tonal">
                     {{ formatLogStatus(log.status, log.statusCode) }}
                   </v-chip>
-                </td>
-                <td>
-                  <div class="log-client">{{ log.clientName }}</div>
-                  <div class="text-caption text-medium-emphasis">{{ log.sourceConfidence }}</div>
                 </td>
                 <td class="log-model">{{ log.model || '--' }}</td>
                 <td class="log-base-url">{{ log.baseUrl }}</td>

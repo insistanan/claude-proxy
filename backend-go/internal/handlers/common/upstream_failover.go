@@ -47,7 +47,6 @@ type HandleSuccessFunc func(c *gin.Context, resp *http.Response, upstreamCopy *c
 type AttemptLogContext struct {
 	ChannelIndex int
 	Model        string
-	Source       RequestSource
 	LogStore     *metrics.ChannelLogStore
 }
 
@@ -95,10 +94,7 @@ func TryUpstreamWithAllKeys(
 
 	var lastFailoverError *FailoverError
 	deprioritizeCandidates := make(map[string]bool)
-	requestLogID := logCtx.Source.RequestID
-	if requestLogID == "" {
-		requestLogID = nextAttemptLogID("req")
-	}
+	requestLogID := nextAttemptLogID("req")
 
 	// 强制探测模式：基于本次优先尝试的 BaseURL 判断（避免 BaseURL/BaseURLs 不一致导致误判）
 	forceProbeMode := AreAllKeysSuspended(metricsManager, urlResults[0].URL, upstream.APIKeys)
@@ -241,8 +237,20 @@ func TryUpstreamWithAllKeys(
 					cfgManager.MarkKeyAsFailed(apiKey, apiType)
 					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
-					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "response_processing", err.Error(), false, isStream)
+					shouldRetryResponseProcessing := !c.Writer.Written()
+					recordAttemptLog(logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "response_processing", err.Error(), shouldRetryResponseProcessing, isStream)
 					log.Printf("[%s-Key] 警告: 响应处理失败: %v", apiType, err)
+					if shouldRetryResponseProcessing {
+						failedKeys[apiKey] = true
+						if markURLFailure != nil {
+							markURLFailure(currentBaseURL)
+						}
+						lastFailoverError = &FailoverError{
+							Status: resp.StatusCode,
+							Body:   []byte(err.Error()),
+						}
+						continue
+					}
 				}
 				return true, "", 0, nil, usage, err
 			}
@@ -287,37 +295,24 @@ func recordAttemptLog(
 		channelName = upstream.Name
 	}
 
-	source := logCtx.Source
-	if source.ClientName == "" {
-		source.ClientName = "unknown"
-	}
-	if source.Confidence == "" {
-		source.Confidence = "low"
-	}
-
 	logCtx.LogStore.Record(&metrics.ChannelLog{
-		RequestID:        requestID,
-		AttemptID:        nextAttemptLogID("attempt"),
-		Timestamp:        time.Now().Format(time.RFC3339Nano),
-		Status:           status,
-		StatusCode:       statusCode,
-		Success:          success,
-		DurationMs:       time.Since(start).Milliseconds(),
-		APIType:          apiType,
-		Model:            logCtx.Model,
-		ChannelIndex:     logCtx.ChannelIndex,
-		ChannelName:      channelName,
-		BaseURL:          baseURL,
-		KeyMask:          utils.MaskAPIKey(apiKey),
-		ClientName:       source.ClientName,
-		ClientVersion:    source.ClientVersion,
-		SourceConfidence: source.Confidence,
-		SessionID:        source.SessionID,
-		SourceRequestID:  source.RequestID,
-		ErrorType:        errorType,
-		ErrorMessage:     truncateLogMessage(errorMessage, 500),
-		Retried:          retried,
-		Stream:           isStream,
+		RequestID:    requestID,
+		AttemptID:    nextAttemptLogID("attempt"),
+		Timestamp:    time.Now().Format(time.RFC3339Nano),
+		Status:       status,
+		StatusCode:   statusCode,
+		Success:      success,
+		DurationMs:   time.Since(start).Milliseconds(),
+		APIType:      apiType,
+		Model:        logCtx.Model,
+		ChannelIndex: logCtx.ChannelIndex,
+		ChannelName:  channelName,
+		BaseURL:      baseURL,
+		KeyMask:      utils.MaskAPIKey(apiKey),
+		ErrorType:    errorType,
+		ErrorMessage: truncateLogMessage(errorMessage, 500),
+		Retried:      retried,
+		Stream:       isStream,
 	})
 }
 

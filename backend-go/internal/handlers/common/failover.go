@@ -47,6 +47,11 @@ func shouldRetryWithNextKeyFuzzy(statusCode int, bodyBytes []byte, apiType strin
 		return false, false
 	}
 
+	if statusCode >= 500 {
+		log.Printf("[%s-Failover-Fuzzy] 状态码 %d 为上游服务端错误，优先进行 failover", apiType, statusCode)
+		return true, false
+	}
+
 	// 检查是否为不可重试错误（内容审核等）
 	if len(bodyBytes) > 0 {
 		if isNonRetryableError(bodyBytes) {

@@ -71,20 +71,24 @@
       <!-- 自定义标题容器 - 替代 v-app-bar-title -->
       <div class="header-title">
         <div :class="$vuetify.display.mobile ? 'text-body-2' : 'text-h6'" class="font-weight-bold d-flex align-center">
-          <router-link to="/channels/messages" class="api-type-text" :class="{ active: channelStore.activeTab === 'messages' }">
+          <router-link to="/channels/messages" class="api-type-text" :class="{ active: topNavActive === 'messages' }">
             Claude
           </router-link>
           <span class="api-type-text separator">/</span>
-          <router-link to="/channels/responses" class="api-type-text" :class="{ active: channelStore.activeTab === 'responses' }">
+          <router-link to="/channels/responses" class="api-type-text" :class="{ active: topNavActive === 'responses' }">
             Codex
           </router-link>
           <span class="api-type-text separator">/</span>
-          <router-link to="/channels/gemini" class="api-type-text" :class="{ active: channelStore.activeTab === 'gemini' }">
+          <router-link to="/channels/gemini" class="api-type-text" :class="{ active: topNavActive === 'gemini' }">
             Gemini
           </router-link>
           <span class="api-type-text separator">/</span>
-          <router-link to="/channels/chat" class="api-type-text" :class="{ active: channelStore.activeTab === 'chat' }">
+          <router-link to="/channels/chat" class="api-type-text" :class="{ active: topNavActive === 'chat' }">
             Chat
+          </router-link>
+          <span class="api-type-text separator">/</span>
+          <router-link to="/conversations" class="api-type-text" :class="{ active: topNavActive === 'conversations' }">
+            对话
           </router-link>
           <span class="brand-text d-none d-sm-inline">API Proxy</span>
         </div>
@@ -152,8 +156,9 @@
     <!-- 主要内容 -->
     <v-main>
       <v-container fluid class="pa-4 pa-md-6">
+        <template v-if="isAuthenticated && !isConversationPage">
         <!-- 全局统计顶部可折叠卡片（根据当前 Tab 显示对应统计） -->
-        <v-card v-if="isAuthenticated" class="mb-4 global-stats-panel">
+        <v-card class="mb-4 global-stats-panel">
           <div
             class="global-stats-header d-flex align-center justify-space-between px-4 py-2"
             style="cursor: pointer;"
@@ -288,6 +293,10 @@
           @error="showErrorToast"
           @success="showSuccessToast"
         />
+        </template>
+        <template v-else-if="isAuthenticated">
+          <router-view />
+        </template>
       </v-container>
     </v-main>
 
@@ -345,6 +354,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useTheme } from 'vuetify'
 import { api, fetchHealth, ApiError, type Channel } from './services/api'
 import { versionService } from './services/version'
@@ -368,6 +378,8 @@ const authStore = useAuthStore()
 
 // 渠道 Store
 const channelStore = useChannelStore()
+const route = useRoute()
+const isConversationPage = computed(() => route.name === 'conversations')
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -383,6 +395,14 @@ const systemStore = useSystemStore()
 // 主题和偏好设置已迁移到 PreferencesStore
 
 // 系统状态已迁移到 SystemStore
+
+const topNavActive = computed(() => {
+  if (isConversationPage.value) {
+    return 'conversations'
+  }
+  const type = route.params.type
+  return typeof type === 'string' ? type : 'messages'
+})
 
 // Toast通知系统
 interface Toast {

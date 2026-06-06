@@ -4,7 +4,9 @@ package responses
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -61,9 +63,8 @@ func Handler(
 			}
 		}
 
-		// 提取对话标识用于 Trace 亲和性
-		userID := common.ExtractConversationID(c, bodyBytes)
-		source := common.DetectRequestSource(c, bodyBytes, userID)
+		// 提取对话标识
+		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindResponses, common.ExtractConversationID(c, bodyBytes), responsesReq.Model, responsesReq.Stream)
 
 		// 记录原始请求信息（仅在入口处记录一次）
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Responses")
@@ -72,9 +73,9 @@ func Handler(
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindResponses)
 
 		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, source, hasImage, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, startTime)
 		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, source, hasImage, startTime)
+			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, startTime)
 		}
 	})
 }
@@ -89,7 +90,6 @@ func handleMultiChannel(
 	bodyBytes []byte,
 	responsesReq types.ResponsesRequest,
 	userID string,
-	source common.RequestSource,
 	hasImage bool,
 	startTime time.Time,
 ) {
@@ -151,7 +151,6 @@ func handleMultiChannel(
 				common.AttemptLogContext{
 					ChannelIndex: channelIndex,
 					Model:        responsesReq.Model,
-					Source:       source,
 					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
 				},
 			)
@@ -166,8 +165,20 @@ func handleMultiChannel(
 				LastError:         lastErr,
 			}
 		},
-		nil,
+		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
+			if selection == nil || selection.Upstream == nil {
+				return
+			}
+			if result.SuccessKey != "" {
+				common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindResponses, selection.ChannelIndex, selection.Upstream.Name)
+				return
+			}
+			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
+				common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, result.LastError)
+			}
+		},
 		func(ctx *gin.Context, failoverErr *common.FailoverError, lastError error) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, lastError)
 			common.HandleAllChannelsFailed(ctx, cfgManager.GetFuzzyModeEnabled(), failoverErr, lastError, "Responses")
 		},
 	)
@@ -182,7 +193,7 @@ func handleSingleChannel(
 	sessionManager *session.SessionManager,
 	bodyBytes []byte,
 	responsesReq types.ResponsesRequest,
-	source common.RequestSource,
+	userID string,
 	hasImage bool,
 	startTime time.Time,
 ) {
@@ -202,6 +213,11 @@ func handleSingleChannel(
 		})
 		return
 	}
+	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindResponses, channelIndex); err != nil {
+		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, err)
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
+		return
+	}
 
 	provider := &providers.ResponsesProvider{SessionManager: sessionManager}
 
@@ -210,7 +226,7 @@ func handleSingleChannel(
 
 	urlResults := common.BuildDefaultURLResults(baseURLs)
 
-	handled, _, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
 		c,
 		envCfg,
 		cfgManager,
@@ -242,15 +258,20 @@ func handleSingleChannel(
 		common.AttemptLogContext{
 			ChannelIndex: channelIndex,
 			Model:        responsesReq.Model,
-			Source:       source,
 			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
 		},
 	)
 	if handled {
+		if successKey != "" {
+			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindResponses, channelIndex, upstream.Name)
+		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, lastError)
+		}
 		return
 	}
 
 	log.Printf("[Responses-Error] 所有 Responses API密钥都失败了")
+	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, lastError)
 	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Responses")
 }
 

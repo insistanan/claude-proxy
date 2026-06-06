@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
@@ -16,18 +17,19 @@ import (
 
 // ChannelScheduler 多渠道调度器
 type ChannelScheduler struct {
-	mu                      sync.RWMutex
-	configManager           *config.ConfigManager
-	messagesMetricsManager  *metrics.MetricsManager // Messages 渠道指标
-	responsesMetricsManager *metrics.MetricsManager // Responses 渠道指标
-	geminiMetricsManager    *metrics.MetricsManager // Gemini 渠道指标
-	chatMetricsManager      *metrics.MetricsManager // Chat 渠道指标
+	mu                       sync.RWMutex
+	configManager            *config.ConfigManager
+	messagesMetricsManager   *metrics.MetricsManager // Messages 渠道指标
+	responsesMetricsManager  *metrics.MetricsManager // Responses 渠道指标
+	geminiMetricsManager     *metrics.MetricsManager // Gemini 渠道指标
+	chatMetricsManager       *metrics.MetricsManager // Chat 渠道指标
 	messagesChannelLogStore  *metrics.ChannelLogStore
 	responsesChannelLogStore *metrics.ChannelLogStore
 	geminiChannelLogStore    *metrics.ChannelLogStore
 	chatChannelLogStore      *metrics.ChannelLogStore
-	traceAffinity           *session.TraceAffinityManager
-	urlManager              *warmup.URLManager // URL 管理器（非阻塞，动态排序）
+	traceAffinity            *session.TraceAffinityManager
+	conversationRegistry     *conversation.Registry
+	urlManager               *warmup.URLManager // URL 管理器（非阻塞，动态排序）
 }
 
 // ChannelKind 标识调度器所处理的渠道类型
@@ -53,17 +55,17 @@ func NewChannelScheduler(
 	urlMgr *warmup.URLManager,
 ) *ChannelScheduler {
 	return &ChannelScheduler{
-		configManager:           cfgManager,
-		messagesMetricsManager:  messagesMetrics,
-		responsesMetricsManager: responsesMetrics,
-		geminiMetricsManager:    geminiMetrics,
-		chatMetricsManager:      chatMetrics,
+		configManager:            cfgManager,
+		messagesMetricsManager:   messagesMetrics,
+		responsesMetricsManager:  responsesMetrics,
+		geminiMetricsManager:     geminiMetrics,
+		chatMetricsManager:       chatMetrics,
 		messagesChannelLogStore:  metrics.NewChannelLogStore(),
 		responsesChannelLogStore: metrics.NewChannelLogStore(),
 		geminiChannelLogStore:    metrics.NewChannelLogStore(),
 		chatChannelLogStore:      metrics.NewChannelLogStore(),
-		traceAffinity:           traceAffinity,
-		urlManager:              urlMgr,
+		traceAffinity:            traceAffinity,
+		urlManager:               urlMgr,
 	}
 }
 
@@ -92,6 +94,24 @@ func (s *ChannelScheduler) GetChannelLogStore(kind ChannelKind) *metrics.Channel
 	default:
 		return s.messagesChannelLogStore
 	}
+}
+
+func (s *ChannelScheduler) SetConversationRegistry(registry *conversation.Registry) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.conversationRegistry = registry
+}
+
+func (s *ChannelScheduler) GetConversationRegistry() *conversation.Registry {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.conversationRegistry
 }
 
 // SelectionResult 渠道选择结果
@@ -142,6 +162,37 @@ func (s *ChannelScheduler) SelectChannel(
 
 	// 获取对应类型的指标管理器
 	metricsManager := s.getMetricsManager(kind)
+
+	if userID != "" && s.conversationRegistry != nil {
+		if override, ok := s.conversationRegistry.GetRouteOverride(userID); ok {
+			if override.Kind != string(kind) {
+				return nil, fmt.Errorf("该对话已固定到 %s 渠道池，当前请求为 %s", override.Kind, kind)
+			}
+			for _, ch := range originalChannels {
+				if ch.Index != override.ChannelIndex {
+					continue
+				}
+				if failedChannels[ch.Index] {
+					return nil, fmt.Errorf("对话固定渠道 [%d] %s 已在本次请求中失败", ch.Index, ch.Name)
+				}
+				if ch.Status != "active" {
+					return nil, fmt.Errorf("对话固定渠道 [%d] %s 当前状态为 %s", ch.Index, ch.Name, ch.Status)
+				}
+				upstream := s.getUpstreamByIndex(ch.Index, kind)
+				if upstream == nil || len(upstream.APIKeys) == 0 {
+					return nil, fmt.Errorf("对话固定渠道 [%d] %s 没有可用 API 密钥", ch.Index, ch.Name)
+				}
+				prefix := kindSchedulerLogPrefix(kind)
+				log.Printf("[%s-Override] 对话固定渠道: [%d] %s", prefix, ch.Index, ch.Name)
+				return &SelectionResult{
+					Upstream:     upstream,
+					ChannelIndex: ch.Index,
+					Reason:       "conversation_route_override",
+				}, nil
+			}
+			return nil, fmt.Errorf("对话固定渠道 [%d] 当前不可用", override.ChannelIndex)
+		}
+	}
 
 	// 0. 检查促销期渠道（最高优先级，绕过健康检查）
 	promotedChannel := s.findPromotedChannel(activeChannels, kind)
@@ -450,6 +501,55 @@ func (s *ChannelScheduler) UpdateTraceAffinity(userID string) {
 	if userID != "" {
 		s.traceAffinity.UpdateLastUsed(userID)
 	}
+}
+
+func (s *ChannelScheduler) ValidateFixedChannel(userID string, kind ChannelKind, channelIndex int) error {
+	if userID == "" || s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	registry := s.conversationRegistry
+	s.mu.RUnlock()
+	if registry == nil {
+		return nil
+	}
+	override, ok := registry.GetRouteOverride(userID)
+	if !ok {
+		return nil
+	}
+	if override.Kind != string(kind) {
+		return fmt.Errorf("该对话已固定到 %s 渠道池，当前请求为 %s", override.Kind, kind)
+	}
+	if override.ChannelIndex != channelIndex {
+		return fmt.Errorf("该对话已固定到渠道 [%d]，当前命中的渠道为 [%d]", override.ChannelIndex, channelIndex)
+	}
+	return nil
+}
+
+func (s *ChannelScheduler) MarkConversationSuccess(userID string, kind ChannelKind, channelIndex int, channelName string) {
+	if userID == "" || s == nil {
+		return
+	}
+	s.mu.RLock()
+	registry := s.conversationRegistry
+	s.mu.RUnlock()
+	if registry == nil {
+		return
+	}
+	registry.MarkSuccess(userID, string(kind), channelIndex, channelName)
+}
+
+func (s *ChannelScheduler) MarkConversationFailure(userID string, kind ChannelKind, errorMessage string) {
+	if userID == "" || s == nil {
+		return
+	}
+	s.mu.RLock()
+	registry := s.conversationRegistry
+	s.mu.RUnlock()
+	if registry == nil {
+		return
+	}
+	registry.MarkFailure(userID, string(kind), errorMessage)
 }
 
 // GetMessagesMetricsManager 获取 Messages 渠道指标管理器

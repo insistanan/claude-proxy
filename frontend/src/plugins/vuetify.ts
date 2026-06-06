@@ -88,6 +88,7 @@ import {
   mdiUnfoldMoreHorizontal,
   mdiLoading,
   mdiClockOutline,
+  mdiMagnify,
   mdiCalendar,
   mdiPaperclip,
   mdiEyedropper,
@@ -99,6 +100,7 @@ import {
   mdiChartLine,
   mdiCodeBraces,
   mdiDatabase,
+  mdiTextBoxSearchOutline,
   mdiSignature,
   mdiImageSearchOutline,
   mdiArrowCollapseUp,
@@ -140,6 +142,7 @@ const iconMap: Record<string, string> = {
   'last': mdiPageLast,
   'unfold': mdiUnfoldMoreHorizontal,
   'file': mdiPaperclip,
+  'magnify': mdiMagnify,
   'plus': mdiPlus,
   'minus': mdiMinusBox,
   'calendar': mdiCalendar,
@@ -251,6 +254,7 @@ const iconMap: Record<string, string> = {
   'chart-line': mdiChartLine,
   'code-braces': mdiCodeBraces,
   'database': mdiDatabase,
+  'text-box-search-outline': mdiTextBoxSearchOutline,
 
   // 签名图标
   'signature': mdiSignature,

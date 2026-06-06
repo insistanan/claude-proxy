@@ -35,6 +35,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"website":            up.Website,
 				"insecureSkipVerify": up.InsecureSkipVerify,
 				"modelMapping":       up.ModelMapping,
+				"defaultModel":       up.DefaultModel,
 				"latency":            nil,
 				"status":             status,
 				"priority":           priority,

@@ -4,7 +4,9 @@ package chat
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -57,16 +59,16 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		if userID == "" {
 			userID = common.ExtractConversationID(c, bodyBytes)
 		}
-		source := common.DetectRequestSource(c, bodyBytes, userID)
+		userID = common.ObserveConversation(channelScheduler, scheduler.ChannelKindChat, userID, chatReq.Model, chatReq.Stream)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Chat")
 
 		if channelScheduler.IsMultiChannelMode(scheduler.ChannelKindChat) {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, source, hasImage, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, hasImage, startTime)
 			return
 		}
 
-		handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, source, startTime)
+		handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, startTime)
 	})
 }
 
@@ -78,7 +80,6 @@ func handleMultiChannel(
 	bodyBytes []byte,
 	chatReq types.OpenAIRequest,
 	userID string,
-	source common.RequestSource,
 	hasImage bool,
 	startTime time.Time,
 ) {
@@ -137,7 +138,6 @@ func handleMultiChannel(
 				common.AttemptLogContext{
 					ChannelIndex: channelIndex,
 					Model:        chatReq.Model,
-					Source:       source,
 					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 				},
 			)
@@ -152,8 +152,20 @@ func handleMultiChannel(
 				LastError:         lastErr,
 			}
 		},
-		nil,
+		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
+			if selection == nil || selection.Upstream == nil {
+				return
+			}
+			if result.SuccessKey != "" {
+				common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, selection.ChannelIndex, selection.Upstream.Name)
+				return
+			}
+			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
+				common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
+			}
+		},
 		func(ctx *gin.Context, failoverErr *common.FailoverError, lastError error) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
 			common.HandleAllChannelsFailed(ctx, cfgManager.GetFuzzyModeEnabled(), failoverErr, lastError, "Chat")
 		},
 	)
@@ -166,7 +178,7 @@ func handleSingleChannel(
 	channelScheduler *scheduler.ChannelScheduler,
 	bodyBytes []byte,
 	chatReq types.OpenAIRequest,
-	source common.RequestSource,
+	userID string,
 	startTime time.Time,
 ) {
 	upstream, channelIndex, err := cfgManager.GetCurrentChatUpstreamWithIndex()
@@ -185,11 +197,16 @@ func handleSingleChannel(
 		})
 		return
 	}
+	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindChat, channelIndex); err != nil {
+		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
+		return
+	}
 
 	metricsManager := channelScheduler.GetChatMetricsManager()
 	urlResults := common.BuildDefaultURLResults(upstream.GetAllBaseURLs())
 
-	handled, _, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
 		c,
 		envCfg,
 		cfgManager,
@@ -220,15 +237,20 @@ func handleSingleChannel(
 		common.AttemptLogContext{
 			ChannelIndex: channelIndex,
 			Model:        chatReq.Model,
-			Source:       source,
 			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 		},
 	)
 	if handled {
+		if successKey != "" {
+			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, channelIndex, upstream.Name)
+		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
+		}
 		return
 	}
 
 	log.Printf("[Chat-Error] 所有 Chat API密钥都失败了")
+	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
 	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Chat")
 }
 
@@ -262,7 +284,9 @@ func applyChatModelMapping(bodyBytes []byte, upstream *config.UpstreamConfig) ([
 	if !ok || strings.TrimSpace(model) == "" {
 		return nil, fmt.Errorf("model is required")
 	}
-	payload["model"] = config.RedirectModel(model, upstream)
+	if upstream != nil && strings.TrimSpace(upstream.DefaultModel) != "" {
+		payload["model"] = strings.TrimSpace(upstream.DefaultModel)
+	}
 
 	return utils.MarshalJSONNoEscape(payload)
 }
@@ -410,17 +434,16 @@ func ImagesHandler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, c
 		}
 
 		model := extractImagesModel(c.GetHeader("Content-Type"), bodyBytes)
-		userID := common.ExtractConversationID(c, bodyBytes)
-		source := common.DetectRequestSource(c, bodyBytes, userID)
+		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindChat, common.ExtractConversationID(c, bodyBytes), model, false)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Images")
 
 		if channelScheduler.IsMultiChannelMode(scheduler.ChannelKindChat) {
-			handleImagesMultiChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, source, startTime)
+			handleImagesMultiChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, startTime)
 			return
 		}
 
-		handleImagesSingleChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, source, startTime)
+		handleImagesSingleChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, startTime)
 	})
 }
 
@@ -433,7 +456,6 @@ func handleImagesMultiChannel(
 	bodyBytes []byte,
 	model string,
 	userID string,
-	source common.RequestSource,
 	startTime time.Time,
 ) {
 	metricsManager := channelScheduler.GetChatMetricsManager()
@@ -489,7 +511,6 @@ func handleImagesMultiChannel(
 				common.AttemptLogContext{
 					ChannelIndex: channelIndex,
 					Model:        model,
-					Source:       source,
 					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 				},
 			)
@@ -504,8 +525,20 @@ func handleImagesMultiChannel(
 				LastError:         lastErr,
 			}
 		},
-		nil,
+		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
+			if selection == nil || selection.Upstream == nil {
+				return
+			}
+			if result.SuccessKey != "" {
+				common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, selection.ChannelIndex, selection.Upstream.Name)
+				return
+			}
+			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
+				common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
+			}
+		},
 		func(ctx *gin.Context, failoverErr *common.FailoverError, lastError error) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
 			common.HandleAllChannelsFailed(ctx, cfgManager.GetFuzzyModeEnabled(), failoverErr, lastError, "Images")
 		},
 	)
@@ -519,7 +552,7 @@ func handleImagesSingleChannel(
 	endpoint string,
 	bodyBytes []byte,
 	model string,
-	source common.RequestSource,
+	userID string,
 	startTime time.Time,
 ) {
 	upstream, channelIndex, err := cfgManager.GetCurrentChatUpstreamWithIndex()
@@ -531,8 +564,13 @@ func handleImagesSingleChannel(
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": fmt.Sprintf("当前 Chat 渠道 \"%s\" 未配置API密钥", upstream.Name), "code": "NO_API_KEYS"})
 		return
 	}
+	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindChat, channelIndex); err != nil {
+		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
+		return
+	}
 
-	handled, _, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
 		c,
 		envCfg,
 		cfgManager,
@@ -563,15 +601,20 @@ func handleImagesSingleChannel(
 		common.AttemptLogContext{
 			ChannelIndex: channelIndex,
 			Model:        model,
-			Source:       source,
 			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 		},
 	)
 	if handled {
+		if successKey != "" {
+			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, channelIndex, upstream.Name)
+		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
+		}
 		return
 	}
 
 	log.Printf("[Images-Error] 所有 Images API密钥都失败了")
+	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
 	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Images")
 }
 

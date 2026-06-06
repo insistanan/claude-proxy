@@ -91,6 +91,7 @@ export interface Channel {
   website?: string
   insecureSkipVerify?: boolean
   modelMapping?: Record<string, string>
+  defaultModel?: string
   latency?: number
   status?: ChannelStatus | 'healthy' | 'error' | 'unknown' | ''
   index: number
@@ -195,11 +196,6 @@ export interface ChannelLogEntry {
   channelName?: string
   baseUrl: string
   keyMask: string
-  clientName: string
-  clientVersion?: string
-  sourceConfidence: string
-  sessionId?: string
-  sourceRequestId?: string
   errorType?: string
   errorMessage?: string
   retried: boolean
@@ -210,6 +206,62 @@ export interface ChannelLogsResponse {
   channelIndex: number
   channelName?: string
   logs: ChannelLogEntry[]
+}
+
+export type ConversationKind = 'messages' | 'responses' | 'gemini' | 'chat'
+
+export interface ConversationRouteOverride {
+  kind: ConversationKind
+  channelIndex: number
+  channelName?: string
+  updatedAt: string
+}
+
+export interface ConversationResolvedChannel {
+  kind: ConversationKind
+  channelIndex: number
+  channelName?: string
+  updatedAt: string
+}
+
+export interface ConversationEntry {
+  id: string
+  apiKind: ConversationKind
+  lastModel?: string
+  stream: boolean
+  firstSeenAt: string
+  lastSeenAt: string
+  requestCount: number
+  errorCount: number
+  lastError?: string
+  routeOverride?: ConversationRouteOverride
+  lastResolved?: ConversationResolvedChannel
+}
+
+export interface ConversationsResponse {
+  conversations: ConversationEntry[]
+}
+
+export interface ConversationRouteOptionChannel {
+  kind: ConversationKind
+  channelIndex: number
+  channelName: string
+  status: string
+}
+
+export interface ConversationRouteOptionGroup {
+  kind: ConversationKind
+  label: string
+  channels: ConversationRouteOptionChannel[]
+}
+
+export interface ConversationRouteOptionsResponse {
+  kinds: ConversationRouteOptionGroup[]
+}
+
+export interface ConversationRouteUpdateForm {
+  kind: ConversationKind
+  channelIndex: number
 }
 
 // ============== 全局统计类型 ==============
@@ -718,6 +770,35 @@ class ApiService {
 
   async getChannelLogs(type: 'messages' | 'responses' | 'gemini' | 'chat', channelId: number): Promise<ChannelLogsResponse> {
     return this.request(`/${type}/channels/${channelId}/logs`)
+  }
+
+  async getConversations(params?: { q?: string; kind?: ConversationKind }): Promise<ConversationsResponse> {
+    const search = new URLSearchParams()
+    if (params?.q) search.set('q', params.q)
+    if (params?.kind) search.set('kind', params.kind)
+    const suffix = search.toString() ? `?${search.toString()}` : ''
+    return this.request(`/conversations${suffix}`)
+  }
+
+  async getConversation(id: string): Promise<ConversationEntry> {
+    return this.request(`/conversations/${encodeURIComponent(id)}`)
+  }
+
+  async getConversationRouteOptions(): Promise<ConversationRouteOptionsResponse> {
+    return this.request('/conversations/route-options')
+  }
+
+  async setConversationRoute(id: string, kind: ConversationKind, channelIndex: number): Promise<ConversationEntry> {
+    return this.request(`/conversations/${encodeURIComponent(id)}/route`, {
+      method: 'PUT',
+      body: JSON.stringify({ kind, channelIndex })
+    })
+  }
+
+  async clearConversationRoute(id: string): Promise<ConversationEntry> {
+    return this.request(`/conversations/${encodeURIComponent(id)}/route`, {
+      method: 'DELETE'
+    })
   }
 
   // ============== 促销期管理 API ==============

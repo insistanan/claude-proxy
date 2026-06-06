@@ -3,7 +3,9 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -80,9 +82,8 @@ func Handler(
 		// 判断是否流式
 		isStream := strings.Contains(c.Request.URL.Path, "streamGenerateContent")
 
-		// 提取对话标识用于 Trace 亲和性
-		userID := common.ExtractConversationID(c, bodyBytes)
-		source := common.DetectRequestSource(c, bodyBytes, userID)
+		// 提取对话标识
+		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindGemini, common.ExtractConversationID(c, bodyBytes), model, isStream)
 
 		// 记录原始请求信息
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Gemini")
@@ -91,9 +92,9 @@ func Handler(
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindGemini)
 
 		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, source, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, startTime)
 		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, source, startTime)
+			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, startTime)
 		}
 	})
 }
@@ -123,7 +124,6 @@ func handleMultiChannel(
 	model string,
 	isStream bool,
 	userID string,
-	source common.RequestSource,
 	startTime time.Time,
 ) {
 	metricsManager := channelScheduler.GetGeminiMetricsManager()
@@ -181,7 +181,6 @@ func handleMultiChannel(
 				common.AttemptLogContext{
 					ChannelIndex: channelIndex,
 					Model:        model,
-					Source:       source,
 					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
 				},
 			)
@@ -196,8 +195,20 @@ func handleMultiChannel(
 				LastError:         lastErr,
 			}
 		},
-		nil,
+		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
+			if selection == nil || selection.Upstream == nil {
+				return
+			}
+			if result.SuccessKey != "" {
+				common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindGemini, selection.ChannelIndex, selection.Upstream.Name)
+				return
+			}
+			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
+				common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, result.LastError)
+			}
+		},
 		func(ctx *gin.Context, failoverErr *common.FailoverError, lastError error) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, lastError)
 			handleAllChannelsFailed(ctx, failoverErr, lastError)
 		},
 	)
@@ -213,7 +224,7 @@ func handleSingleChannel(
 	geminiReq *types.GeminiRequest,
 	model string,
 	isStream bool,
-	source common.RequestSource,
+	userID string,
 	startTime time.Time,
 ) {
 	upstream, channelIndex, err := cfgManager.GetCurrentGeminiUpstreamWithIndex()
@@ -238,12 +249,23 @@ func handleSingleChannel(
 		})
 		return
 	}
+	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindGemini, channelIndex); err != nil {
+		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, err)
+		c.JSON(http.StatusConflict, types.GeminiError{
+			Error: types.GeminiErrorDetail{
+				Code:    http.StatusConflict,
+				Message: err.Error(),
+				Status:  "FAILED_PRECONDITION",
+			},
+		})
+		return
+	}
 
 	metricsManager := channelScheduler.GetGeminiMetricsManager()
 	baseURLs := upstream.GetAllBaseURLs()
 	urlResults := common.BuildDefaultURLResults(baseURLs)
 
-	handled, _, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
 		c,
 		envCfg,
 		cfgManager,
@@ -274,15 +296,20 @@ func handleSingleChannel(
 		common.AttemptLogContext{
 			ChannelIndex: channelIndex,
 			Model:        model,
-			Source:       source,
 			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
 		},
 	)
 	if handled {
+		if successKey != "" {
+			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindGemini, channelIndex, upstream.Name)
+		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, lastError)
+		}
 		return
 	}
 
 	log.Printf("[Gemini-Error] 所有 API密钥都失败了")
+	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, lastError)
 	handleAllKeysFailed(c, lastFailoverError, lastError)
 }
 

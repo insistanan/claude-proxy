@@ -7,7 +7,14 @@ const routes = [
     redirect: '/channels/messages'  // 默认跳转到 Messages
   },
   {
+    path: '/conversations',
+    name: 'conversations',
+    component: () => import('@/views/ConversationsView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/channels/:type',  // 动态参数匹配 messages/responses/gemini/chat
+    name: 'channels',
     component: () => import('@/views/ChannelsView.vue'),  // 懒加载
     props: true,  // 将路由参数作为 props 传递
     meta: { requiresAuth: true }

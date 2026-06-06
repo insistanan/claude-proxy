@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/handlers"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/chat"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/gemini"
@@ -104,12 +105,15 @@ func main() {
 		chatMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
 	}
 	traceAffinityManager := session.NewTraceAffinityManager()
+	conversationRegistry := conversation.NewRegistry()
+	defer conversationRegistry.Stop()
 
 	// 初始化 URL 管理器（非阻塞，动态排序）
 	urlManager := warmup.NewURLManager(30*time.Second, 3) // 30秒冷却期，连续3次失败后移到末尾
 	log.Printf("[URLManager-Init] URL管理器已初始化 (冷却期: 30秒, 最大连续失败: 3)")
 
 	channelScheduler := scheduler.NewChannelScheduler(cfgManager, messagesMetricsManager, responsesMetricsManager, geminiMetricsManager, chatMetricsManager, traceAffinityManager, urlManager)
+	channelScheduler.SetConversationRegistry(conversationRegistry)
 	log.Printf("[Scheduler-Init] 多渠道调度器已初始化 (失败率阈值: %.0f%%, 滑动窗口: %d)",
 		messagesMetricsManager.GetFailureThreshold()*100, messagesMetricsManager.GetWindowSize())
 
@@ -237,6 +241,13 @@ func main() {
 		apiGroup.GET("/chat/global/stats/history", handlers.GetGlobalStatsHistory(chatMetricsManager))
 		apiGroup.GET("/chat/ping/:id", chat.PingChannel(cfgManager))
 		apiGroup.GET("/chat/ping", chat.PingAllChannels(cfgManager))
+
+		// 对话与路由覆盖
+		apiGroup.GET("/conversations/route-options", handlers.GetConversationRouteOptions(cfgManager))
+		apiGroup.GET("/conversations", handlers.ListConversations(channelScheduler))
+		apiGroup.GET("/conversations/:id", handlers.GetConversation(channelScheduler))
+		apiGroup.PUT("/conversations/:id/route", handlers.SetConversationRouteOverride(channelScheduler, cfgManager))
+		apiGroup.DELETE("/conversations/:id/route", handlers.ClearConversationRouteOverride(channelScheduler))
 
 		// Fuzzy 模式设置
 		apiGroup.GET("/settings/fuzzy-mode", handlers.GetFuzzyMode(cfgManager))

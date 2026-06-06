@@ -31,6 +31,7 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 				"website":            up.Website,
 				"insecureSkipVerify": up.InsecureSkipVerify,
 				"modelMapping":       up.ModelMapping,
+				"defaultModel":       up.DefaultModel,
 				"latency":            nil,
 				"status":             status,
 				"priority":           priority,

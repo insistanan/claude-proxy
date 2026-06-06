@@ -2,7 +2,9 @@
 package messages
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -50,9 +52,8 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 
 		hasImage := utils.DetectImageContent(bodyBytes)
 
-		// 提取 user_id 用于 Trace 亲和性
-		userID := common.ExtractUserID(bodyBytes)
-		source := common.DetectRequestSource(c, bodyBytes, userID)
+		// 提取对话标识
+		userID := common.ObserveConversation(channelScheduler, scheduler.ChannelKindMessages, common.ExtractUserID(bodyBytes), claudeReq.Model, claudeReq.Stream)
 
 		// 记录原始请求信息（仅在入口处记录一次）
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Messages")
@@ -61,9 +62,9 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindMessages)
 
 		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, source, hasImage, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, hasImage, startTime)
 		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, source, startTime)
+			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, startTime)
 		}
 	})
 }
@@ -77,7 +78,6 @@ func handleMultiChannel(
 	bodyBytes []byte,
 	claudeReq types.ClaudeRequest,
 	userID string,
-	source common.RequestSource,
 	hasImage bool,
 	startTime time.Time,
 ) {
@@ -145,7 +145,6 @@ func handleMultiChannel(
 				common.AttemptLogContext{
 					ChannelIndex: channelIndex,
 					Model:        claudeReq.Model,
-					Source:       source,
 					LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
 				},
 			)
@@ -160,8 +159,20 @@ func handleMultiChannel(
 				LastError:         lastErr,
 			}
 		},
-		nil,
+		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
+			if selection == nil || selection.Upstream == nil {
+				return
+			}
+			if result.SuccessKey != "" {
+				common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindMessages, selection.ChannelIndex, selection.Upstream.Name)
+				return
+			}
+			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
+				common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, result.LastError)
+			}
+		},
 		func(ctx *gin.Context, failoverErr *common.FailoverError, lastError error) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, lastError)
 			common.HandleAllChannelsFailed(ctx, cfgManager.GetFuzzyModeEnabled(), failoverErr, lastError, "Messages")
 		},
 	)
@@ -175,7 +186,7 @@ func handleSingleChannel(
 	channelScheduler *scheduler.ChannelScheduler,
 	bodyBytes []byte,
 	claudeReq types.ClaudeRequest,
-	source common.RequestSource,
+	userID string,
 	startTime time.Time,
 ) {
 	upstream, channelIndex, err := cfgManager.GetCurrentUpstreamWithIndex()
@@ -194,6 +205,11 @@ func handleSingleChannel(
 		})
 		return
 	}
+	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindMessages, channelIndex); err != nil {
+		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, err)
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
+		return
+	}
 
 	provider := providers.GetProvider(upstream.ServiceType)
 	if provider == nil {
@@ -206,7 +222,7 @@ func handleSingleChannel(
 
 	urlResults := common.BuildDefaultURLResults(baseURLs)
 
-	handled, _, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
 		c,
 		envCfg,
 		cfgManager,
@@ -241,15 +257,20 @@ func handleSingleChannel(
 		common.AttemptLogContext{
 			ChannelIndex: channelIndex,
 			Model:        claudeReq.Model,
-			Source:       source,
 			LogStore:     channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
 		},
 	)
 	if handled {
+		if successKey != "" {
+			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindMessages, channelIndex, upstream.Name)
+		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, lastError)
+		}
 		return
 	}
 
 	log.Printf("[Messages-Error] 所有API密钥都失败了")
+	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, lastError)
 	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Messages")
 }
 
@@ -309,8 +330,7 @@ func handleNormalResponse(
 
 	claudeResp, err := provider.ConvertToClaudeResponse(providerResp)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Failed to convert response"})
-		return nil, err
+		return nil, fmt.Errorf("转换上游响应失败: %w", err)
 	}
 
 	// Token 补全逻辑

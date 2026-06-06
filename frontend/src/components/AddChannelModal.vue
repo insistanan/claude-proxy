@@ -192,8 +192,45 @@
               />
             </v-col>
 
+            <!-- Chat 默认模型 -->
+            <v-col v-if="props.channelType === 'chat' && form.serviceType" cols="12">
+              <v-card variant="outlined" rounded="lg">
+                <v-card-title class="d-flex align-center justify-space-between pa-4 pb-2">
+                  <div class="d-flex align-center ga-2">
+                    <v-icon color="primary">mdi-format-list-bulleted</v-icon>
+                    <span class="text-body-1 font-weight-bold">默认模型 (可选)</span>
+                  </div>
+                  <v-chip size="small" color="secondary" variant="tonal"> 覆盖请求模型 </v-chip>
+                </v-card-title>
+
+                <v-card-text class="pt-2">
+                  <div class="text-body-2 text-medium-emphasis mb-4">
+                    设置后，Chat 请求会固定使用该渠道的默认模型；未设置时保留客户端请求中的模型。
+                    <br/>
+                    <span class="text-caption text-primary">点击输入框会自动获取上游支持的模型列表，每个 API Key 的检测状态会显示在密钥列表中</span>
+                  </div>
+                  <v-combobox
+                    v-model="form.defaultModel"
+                    label="默认模型"
+                    placeholder="例如：gpt-4.1"
+                    :items="targetModelOptions"
+                    item-title="title"
+                    item-value="value"
+                    :loading="fetchingModels"
+                    variant="outlined"
+                    density="comfortable"
+                    clearable
+                    @focus="handleTargetModelClick"
+                  />
+                  <div v-if="fetchModelsError" class="text-error text-caption mt-2">
+                    {{ fetchModelsError }}
+                  </div>
+                </v-card-text>
+              </v-card>
+            </v-col>
+
             <!-- 模型重定向配置 -->
-            <v-col v-if="form.serviceType" cols="12">
+            <v-col v-if="form.serviceType && props.channelType !== 'chat'" cols="12">
               <v-card variant="outlined" rounded="lg">
                 <v-card-title class="d-flex align-center justify-space-between pa-4 pb-2">
                   <div class="d-flex align-center ga-2">
@@ -799,6 +836,8 @@ const _expectedRequestUrl = computed(() => {
     // messages 渠道：根据检测到的服务类型决定端点
     if (serviceType === 'claude') {
       endpoint = '/messages'
+    } else if (serviceType === 'responses') {
+      endpoint = '/responses'
     } else if (serviceType === 'gemini') {
       endpoint = '/models/{model}:generateContent'
     } else {
@@ -841,6 +880,8 @@ const getExpectedRequestUrl = (inputBaseUrl: string): string => {
   } else {
     if (serviceType === 'claude') {
       endpoint = '/messages'
+    } else if (serviceType === 'responses') {
+      endpoint = '/responses'
     } else if (serviceType === 'gemini') {
       endpoint = '/models/{model}:generateContent'
     } else {
@@ -898,6 +939,8 @@ const formExpectedRequestUrls = computed(() => {
     // messages 渠道
     if (form.serviceType === 'claude') {
       endpoint = '/messages'
+    } else if (form.serviceType === 'responses') {
+      endpoint = '/responses'
     } else if (form.serviceType === 'gemini') {
       endpoint = '/models/{model}:generateContent'
     } else {
@@ -936,7 +979,8 @@ const handleQuickSubmit = () => {
     baseUrl: detectedBaseUrl.value,
     baseUrls: detectedBaseUrls.value,
     apiKeys: detectedApiKeys.value,
-    modelMapping: {}
+    modelMapping: {},
+    defaultModel: ''
   }
 
   // 传递 isQuickAdd 标志，让 App.vue 知道需要进行后续处理
@@ -967,6 +1011,7 @@ const serviceTypeOptions = computed(() => {
     return [
       { title: 'OpenAI', value: 'openai' },
       { title: 'Claude', value: 'claude' },
+      { title: 'Responses', value: 'responses' },
       { title: 'Gemini', value: 'gemini' }
     ]
   }
@@ -1061,7 +1106,8 @@ const form = reactive({
   stripThoughtSignature: false,
   description: '',
   apiKeys: [] as string[],
-  modelMapping: {} as Record<string, string>
+  modelMapping: {} as Record<string, string>,
+  defaultModel: '' as string | { title: string; value: string } | null
 })
 
 // 多 BaseURL 文本输入（独立变量，保留用户输入的换行）
@@ -1111,10 +1157,14 @@ const newMapping = reactive({
 })
 
 // 安全地获取字符串值（处理 v-select/v-combobox 可能返回对象的情况）
-const getStringValue = (val: string | { title: string; value: string } | null | undefined): string => {
+const getStringValue = (val: unknown): string => {
   if (!val) return ''
   if (typeof val === 'string') return val
-  return val.value || ''
+  if (typeof val === 'object' && 'value' in val) {
+    const value = (val as { value?: unknown }).value
+    return typeof value === 'string' ? value : ''
+  }
+  return ''
 }
 
 // 检查映射输入是否有效
@@ -1245,6 +1295,7 @@ const resetForm = () => {
   form.description = ''
   form.apiKeys = []
   form.modelMapping = {}
+  form.defaultModel = ''
   newApiKey.value = ''
   newMapping.source = ''
   newMapping.target = ''
@@ -1306,6 +1357,7 @@ const loadChannelData = (channel: Channel) => {
   originalKeyMap.value.clear()
 
   form.modelMapping = { ...(channel.modelMapping || {}) }
+  form.defaultModel = channel.defaultModel || ''
 
   // 立即同步 baseUrl 到预览变量，避免等待 debounce
   formBaseUrlPreview.value = channel.baseUrl
@@ -1419,13 +1471,6 @@ const copyApiKey = async (key: string, index: number) => {
 }
 
 const addModelMapping = () => {
-  // 安全地获取字符串值（处理 v-select/v-combobox 可能返回对象的情况）
-  const getStringValue = (val: string | { title: string; value: string } | null | undefined): string => {
-    if (!val) return ''
-    if (typeof val === 'string') return val
-    return val.value || ''
-  }
-
   const source = getStringValue(newMapping.source).trim()
   const target = getStringValue(newMapping.target).trim()
 
@@ -1580,7 +1625,8 @@ const handleSubmit = async () => {
     stripThoughtSignature: form.stripThoughtSignature,
     description: form.description.trim(),
     apiKeys: processedApiKeys,
-    modelMapping: form.modelMapping
+    modelMapping: props.channelType === 'chat' ? {} : form.modelMapping,
+    defaultModel: props.channelType === 'chat' ? getStringValue(form.defaultModel).trim() : ''
   }
 
   // 多 BaseURL 支持
