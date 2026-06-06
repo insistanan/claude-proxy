@@ -167,13 +167,8 @@ func responsesToolsToOpenAIChatTools(raw interface{}) ([]map[string]interface{},
 		return nil, nil
 	}
 
-	data, err := json.Marshal(raw)
+	tools, err := normalizeMapSlice(raw)
 	if err != nil {
-		return nil, fmt.Errorf("Responses tools 序列化失败: %w", err)
-	}
-
-	var tools []map[string]interface{}
-	if err := json.Unmarshal(data, &tools); err != nil {
 		return nil, fmt.Errorf("Responses tools 必须是数组: %w", err)
 	}
 
@@ -224,13 +219,8 @@ func responsesToolChoiceToOpenAIChat(raw interface{}) (interface{}, error) {
 		}
 	}
 
-	data, err := json.Marshal(raw)
+	choice, err := normalizeMap(raw)
 	if err != nil {
-		return nil, fmt.Errorf("Responses tool_choice 序列化失败: %w", err)
-	}
-
-	var choice map[string]interface{}
-	if err := json.Unmarshal(data, &choice); err != nil {
 		return nil, fmt.Errorf("Responses tool_choice 必须是字符串或对象: %w", err)
 	}
 
@@ -265,13 +255,8 @@ func responsesReasoningEffortToOpenAIChat(raw interface{}) (string, error) {
 		return "", nil
 	}
 
-	data, err := json.Marshal(raw)
+	reasoning, err := normalizeMap(raw)
 	if err != nil {
-		return "", fmt.Errorf("Responses reasoning 序列化失败: %w", err)
-	}
-
-	var reasoning map[string]interface{}
-	if err := json.Unmarshal(data, &reasoning); err != nil {
 		return "", fmt.Errorf("Responses reasoning 必须是对象: %w", err)
 	}
 
@@ -290,6 +275,48 @@ func copyToolField(dst, src map[string]interface{}, key string) {
 	if value, ok := src[key]; ok {
 		dst[key] = value
 	}
+}
+
+func normalizeMapSlice(raw interface{}) ([]map[string]interface{}, error) {
+	switch v := raw.(type) {
+	case []map[string]interface{}:
+		return v, nil
+	case []interface{}:
+		out := make([]map[string]interface{}, 0, len(v))
+		for i, item := range v {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("第 %d 项不是对象", i)
+			}
+			out = append(out, m)
+		}
+		return out, nil
+	default:
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		var out []map[string]interface{}
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+}
+
+func normalizeMap(raw interface{}) (map[string]interface{}, error) {
+	if m, ok := raw.(map[string]interface{}); ok {
+		return m, nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func openAIChatStreamOptions(req *types.ResponsesRequest) interface{} {

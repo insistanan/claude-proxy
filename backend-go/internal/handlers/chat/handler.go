@@ -21,6 +21,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
+	"github.com/BenedictKing/claude-proxy/internal/modelcatalog"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -64,6 +65,11 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindChat)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Chat")
+
+		if route, ok := modelcatalog.ResolveChatRoute(c.Request.Context(), cfgManager, chatReq.Model); ok {
+			handleRoutedChat(c, envCfg, cfgManager, channelScheduler, route, bodyBytes, chatReq, userID, startTime)
+			return
+		}
 
 		if channelScheduler.IsMultiChannelMode(scheduler.ChannelKindChat) {
 			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, hasImage, startTime)
@@ -172,6 +178,126 @@ func handleMultiChannel(
 			common.HandleAllChannelsFailed(ctx, cfgManager.GetFuzzyModeEnabled(), failoverErr, lastError, "Chat")
 		},
 	)
+}
+
+func handleRoutedChat(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	route modelcatalog.ChatRoute,
+	bodyBytes []byte,
+	chatReq types.OpenAIRequest,
+	userID string,
+	startTime time.Time,
+) {
+	upstream, err := chatRouteUpstream(cfgManager, route)
+	if err != nil {
+		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": gin.H{
+				"message": err.Error(),
+				"type":    "invalid_request_error",
+			},
+		})
+		return
+	}
+
+	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindChat, route.ChannelIndex); err != nil {
+		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
+		return
+	}
+
+	routedBody, err := replaceChatModel(bodyBytes, route.UpstreamModel)
+	if err != nil {
+		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	metricsManager := channelScheduler.GetChatMetricsManager()
+	urlResults := common.BuildDefaultURLResults([]string{route.BaseURL})
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+		c,
+		envCfg,
+		cfgManager,
+		channelScheduler,
+		scheduler.ChannelKindChat,
+		"Chat",
+		metricsManager,
+		upstream,
+		urlResults,
+		routedBody,
+		chatReq.Stream,
+		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			if failedKeys[route.APIKey] {
+				return "", fmt.Errorf("路由模型 %s 指定的 API Key 已失败", route.Alias)
+			}
+			return route.APIKey, nil
+		},
+		func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			return buildChatDirectRequest(c, upstreamCopy, apiKey, routedBody)
+		},
+		nil,
+		func(url string) {
+			channelScheduler.MarkURLFailure(scheduler.ChannelKindChat, route.ChannelIndex, url)
+		},
+		func(url string) {
+			channelScheduler.MarkURLSuccess(scheduler.ChannelKindChat, route.ChannelIndex, url)
+		},
+		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+			return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, routedBody)
+		},
+		common.AttemptLogContext{
+			ChannelIndex:   route.ChannelIndex,
+			Model:          chatReq.Model,
+			ConversationID: userID,
+			LogStore:       channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
+		},
+	)
+	if handled {
+		if successKey != "" {
+			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, route.ChannelIndex, route.ChannelName)
+		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
+		}
+		return
+	}
+
+	log.Printf("[Chat-Route] 路由模型失败: alias=%s channel=%d key=%s", route.Alias, route.ChannelIndex, route.KeyID)
+	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
+	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Chat")
+}
+
+func chatRouteUpstream(cfgManager *config.ConfigManager, route modelcatalog.ChatRoute) (*config.UpstreamConfig, error) {
+	cfg := cfgManager.GetConfig()
+	if route.ChannelIndex < 0 || route.ChannelIndex >= len(cfg.ChatUpstream) {
+		return nil, fmt.Errorf("路由模型 %s 指向的 Chat 渠道不存在", route.Alias)
+	}
+
+	upstream := cfg.ChatUpstream[route.ChannelIndex].Clone()
+	if config.GetChannelStatus(upstream) != config.ChannelStatusActive || !config.IsChannelSchedulable(upstream) {
+		return nil, fmt.Errorf("路由模型 %s 指向的 Chat 渠道不可用", route.Alias)
+	}
+
+	keyExists := false
+	for _, apiKey := range upstream.APIKeys {
+		if apiKey == route.APIKey {
+			keyExists = true
+			break
+		}
+	}
+	if !keyExists {
+		return nil, fmt.Errorf("路由模型 %s 指向的 API Key 已不存在", route.Alias)
+	}
+
+	upstream.BaseURL = route.BaseURL
+	upstream.BaseURLs = nil
+	upstream.APIKeys = []string{route.APIKey}
+	upstream.ModelMapping = nil
+	upstream.DefaultModel = ""
+	return upstream, nil
 }
 
 func handleSingleChannel(
@@ -291,8 +417,24 @@ func applyChatModelMapping(bodyBytes []byte, upstream *config.UpstreamConfig) ([
 	if mappedModel := config.ResolveUpstreamModel(model, upstream); strings.TrimSpace(mappedModel) != "" {
 		payload["model"] = mappedModel
 	}
+	ensureChatStreamUsageOptions(payload)
 
 	return utils.MarshalJSONNoEscape(payload)
+}
+
+func ensureChatStreamUsageOptions(payload map[string]interface{}) {
+	stream, _ := payload["stream"].(bool)
+	if !stream {
+		return
+	}
+	options, ok := payload["stream_options"].(map[string]interface{})
+	if !ok || options == nil {
+		payload["stream_options"] = map[string]interface{}{"include_usage": true}
+		return
+	}
+	if _, exists := options["include_usage"]; !exists {
+		options["include_usage"] = true
+	}
 }
 
 func buildChatCompletionsURL(baseURL string) string {
@@ -371,9 +513,13 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 	const maxCapacity = 1024 * 1024
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, maxCapacity)
+	var streamUsage *types.Usage
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		if usage := extractChatUsageFromSSELine(line); usage != nil {
+			streamUsage = mergeChatUsage(streamUsage, usage)
+		}
 		if _, err := c.Writer.Write([]byte(line + "\n")); err != nil {
 			return nil, err
 		}
@@ -385,7 +531,34 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	return nil, nil
+	return streamUsage, nil
+}
+
+func buildChatDirectRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string, bodyBytes []byte) (*http.Request, error) {
+	url := buildChatCompletionsURL(upstream.GetEffectiveBaseURL())
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("创建 Chat 请求失败: %w", err)
+	}
+
+	req.Header = utils.PrepareUpstreamHeaders(c, req.URL.Host)
+	utils.SetAuthenticationHeader(req.Header, apiKey)
+	return req, nil
+}
+
+func replaceChatModel(bodyBytes []byte, model string) ([]byte, error) {
+	var payload map[string]interface{}
+	decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析 Chat 请求体失败: %w", err)
+	}
+	if strings.TrimSpace(model) == "" {
+		return nil, fmt.Errorf("路由模型缺少上游模型名")
+	}
+	payload["model"] = model
+	ensureChatStreamUsageOptions(payload)
+	return utils.MarshalJSONNoEscape(payload)
 }
 
 func extractChatUsage(bodyBytes []byte) *types.Usage {
@@ -393,23 +566,77 @@ func extractChatUsage(bodyBytes []byte) *types.Usage {
 		Usage *struct {
 			PromptTokens       int `json:"prompt_tokens"`
 			CompletionTokens   int `json:"completion_tokens"`
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
 			TotalTokens        int `json:"total_tokens"`
 			PromptTokenDetails struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
+			InputTokenDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(bodyBytes, &envelope); err != nil || envelope.Usage == nil {
 		return nil
 	}
 
-	return &types.Usage{
-		InputTokens:          envelope.Usage.PromptTokens,
-		OutputTokens:         envelope.Usage.CompletionTokens,
-		CacheReadInputTokens: envelope.Usage.PromptTokenDetails.CachedTokens,
-		PromptTokens:         envelope.Usage.PromptTokens,
-		CompletionTokens:     envelope.Usage.CompletionTokens,
+	cacheReadTokens := envelope.Usage.PromptTokenDetails.CachedTokens
+	if cacheReadTokens <= 0 {
+		cacheReadTokens = envelope.Usage.InputTokenDetails.CachedTokens
 	}
+	inputTokens := envelope.Usage.PromptTokens
+	if inputTokens <= 0 {
+		inputTokens = envelope.Usage.InputTokens
+	}
+	outputTokens := envelope.Usage.CompletionTokens
+	if outputTokens <= 0 {
+		outputTokens = envelope.Usage.OutputTokens
+	}
+
+	return &types.Usage{
+		InputTokens:          inputTokens,
+		OutputTokens:         outputTokens,
+		CacheReadInputTokens: cacheReadTokens,
+		PromptTokens:         inputTokens,
+		CompletionTokens:     outputTokens,
+	}
+}
+
+func extractChatUsageFromSSELine(line string) *types.Usage {
+	if !strings.HasPrefix(line, "data: ") {
+		return nil
+	}
+	data := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+	if data == "" || data == "[DONE]" {
+		return nil
+	}
+	return extractChatUsage([]byte(data))
+}
+
+func mergeChatUsage(current, next *types.Usage) *types.Usage {
+	if next == nil {
+		return current
+	}
+	if current == nil {
+		return next
+	}
+	if next.InputTokens > 0 {
+		current.InputTokens = next.InputTokens
+	}
+	if next.OutputTokens > 0 {
+		current.OutputTokens = next.OutputTokens
+	}
+	if next.CacheReadInputTokens > 0 {
+		current.CacheReadInputTokens = next.CacheReadInputTokens
+	}
+	if next.PromptTokens > 0 {
+		current.PromptTokens = next.PromptTokens
+	}
+	if next.CompletionTokens > 0 {
+		current.CompletionTokens = next.CompletionTokens
+	}
+	return current
 }
 
 func chatReqUserID(bodyBytes []byte) string {

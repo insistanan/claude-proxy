@@ -9,8 +9,26 @@
 - `frontend/`：Vue 3 + Vite + Vuetify 管理界面；构建产物复制到 `backend-go/frontend/dist/` 并由后端 embed。
 - `dist/`：发布构建产物（Go 二进制/打包后的 UI），不要手动编辑。
 - `.config/`：运行时配置目录（`config.json` 及 `backups/`），随容器/本地持久化。
+- `docs/`：项目文档目录（技术文档、配置指南、性能分析等）。
 - `refs/`：外部参考项目存档，仅供对照，默认只读。
-- 文档入口：`README.md`、`ARCHITECTURE.md`、`DEVELOPMENT.md`、`ENVIRONMENT.md`、`RELEASE.md`。
+- 文档入口：`README.md`、`CLAUDE.md`、`AGENTS.md`、`ARCHITECTURE.md`、`CHANGELOG.md`。
+
+## 文档编写规范
+- **所有技术文档必须存放在 `docs/` 目录下**，包括但不限于：
+  - 架构设计文档、API 文档
+  - 环境配置指南、部署文档
+  - 性能分析报告、优化建议
+  - 开发指南、测试文档
+- **根目录只保留以下标准文件**：
+  - `README.md` - 项目介绍和快速开始
+  - `CHANGELOG.md` - 版本历史
+  - `CLAUDE.md` - Claude Code 工作指南
+  - `AGENTS.md` - 仓库协作规范
+  - `LICENSE` - 许可证
+- **命名规范**：
+  - 使用大写下划线（如 `PERFORMANCE_ANALYSIS.md`）
+  - 或小写连字符（如 `api-design.md`）
+  - 保持项目内一致性
 
 ## 构建/测试/开发命令
 - 全栈开发（推荐）：根目录 `make dev`（前端 `bun run dev` + 后端 `air` 热重载）。

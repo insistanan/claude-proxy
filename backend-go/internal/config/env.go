@@ -78,7 +78,7 @@ func NewEnvConfig() *EnvConfig {
 		LogFile:       getEnv("LOG_FILE", "app.log"),
 		LogMaxSize:    getEnvAsInt("LOG_MAX_SIZE", 100),   // 默认 100MB
 		LogMaxBackups: getEnvAsInt("LOG_MAX_BACKUPS", 10), // 默认保留 10 个
-		LogMaxAge:     getEnvAsInt("LOG_MAX_AGE", 30),     // 默认保留 30 天
+			LogMaxAge:     getEnvAsInt("LOG_MAX_AGE", 7),      // 默认保留 7 天
 		LogCompress:   getEnv("LOG_COMPRESS", "true") != "false",
 		LogToConsole:  getEnv("LOG_TO_CONSOLE", "true") != "false",
 	}

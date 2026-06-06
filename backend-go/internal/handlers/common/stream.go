@@ -194,11 +194,23 @@ func ProcessStreamEvent(
 		}
 	}
 
+	eventData, hasEventData := ParseSSEEventData(event)
+
 	// 提取文本用于估算 token
-	ExtractTextFromEvent(event, &ctx.OutputTextBuffer)
+	if hasEventData {
+		ExtractTextFromEventData(eventData, &ctx.OutputTextBuffer)
+	} else {
+		ExtractTextFromEvent(event, &ctx.OutputTextBuffer)
+	}
 
 	// 检测并收集 usage
-	hasUsage, needInputPatch, needOutputPatch, usageData := CheckEventUsageStatus(event, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"))
+	var hasUsage, needInputPatch, needOutputPatch bool
+	var usageData CollectedUsageData
+	if hasEventData {
+		hasUsage, needInputPatch, needOutputPatch, usageData = CheckEventUsageStatusFromData(eventData, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"))
+	} else {
+		hasUsage, needInputPatch, needOutputPatch, usageData = CheckEventUsageStatus(event, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"))
+	}
 	needPatch := needInputPatch || needOutputPatch
 	// 保存原始 usageData 用于后续 PatchMessageStartInputTokensIfNeeded
 	originalUsageData := usageData
@@ -268,7 +280,7 @@ func ProcessStreamEvent(
 	// 处理 message_start 事件：尽早补全 input_tokens（部分客户端只读取首个 usage 来累计）
 	// 注意：使用 originalUsageData 而非被清零后的 usageData，避免误判
 	if hasUsage {
-		eventToSend = PatchMessageStartInputTokensIfNeeded(eventToSend, requestBody, needInputPatch, originalUsageData, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
+		eventToSend = PatchMessageStartInputTokensIfNeeded(eventToSend, requestBody, needInputPatch, originalUsageData, true, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
 	}
 
 	// 记录 message_start 中的 input_tokens（用于后续推断隐式缓存）
@@ -279,7 +291,11 @@ func ProcessStreamEvent(
 		}
 	}
 
-	if ctx.NeedTokenPatch && HasEventWithUsage(event) {
+	eventHasUsage := hasUsage
+	if !hasEventData {
+		eventHasUsage = HasEventWithUsage(event)
+	}
+	if ctx.NeedTokenPatch && eventHasUsage {
 		if IsMessageDeltaEvent(event) || IsMessageStopEvent(event) {
 			hasCacheTokens := ctx.CollectedUsage.CacheCreationInputTokens > 0 ||
 				ctx.CollectedUsage.CacheReadInputTokens > 0 ||
@@ -320,7 +336,12 @@ func ProcessStreamEvent(
 			}
 
 			// 修补事件，包括推断的 cache_read_input_tokens
-			eventToSend = PatchTokensInEventWithCache(eventToSend, inputTokens, outputTokens, ctx.CollectedUsage.CacheReadInputTokens, hasCacheTokens, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
+			if hasEventData {
+				PatchTokensInEventDataWithCache(eventData, inputTokens, outputTokens, ctx.CollectedUsage.CacheReadInputTokens, hasCacheTokens, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
+				eventToSend = ReplaceSSEData(eventToSend, eventData)
+			} else {
+				eventToSend = PatchTokensInEventWithCache(eventToSend, inputTokens, outputTokens, ctx.CollectedUsage.CacheReadInputTokens, hasCacheTokens, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
+			}
 			ctx.NeedTokenPatch = false
 		}
 	}
@@ -520,6 +541,26 @@ func HandleStreamResponse(
 
 // ========== Token 检测和修补相关函数 ==========
 
+// ParseSSEEventData 解析单个 SSE 事件的第一段 JSON data。
+func ParseSSEEventData(event string) (map[string]interface{}, bool) {
+	for _, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		jsonStr := strings.TrimPrefix(line, "data: ")
+		if jsonStr == "" || jsonStr == "[DONE]" {
+			return nil, false
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+			return nil, false
+		}
+		return data, true
+	}
+	return nil, false
+}
+
 // CheckEventUsageStatus 检测事件是否包含 usage 字段
 func CheckEventUsageStatus(event string, enableLog bool) (bool, bool, bool, CollectedUsageData) {
 	for _, line := range strings.Split(event, "\n") {
@@ -533,32 +574,43 @@ func CheckEventUsageStatus(event string, enableLog bool) (bool, bool, bool, Coll
 			continue
 		}
 
-		// 检查顶层 usage 字段
-		if hasUsage, needInputPatch, needOutputPatch := checkUsageFieldsWithPatch(data["usage"]); hasUsage {
+		return CheckEventUsageStatusFromData(data, enableLog)
+	}
+	return false, false, false, CollectedUsageData{}
+}
+
+// CheckEventUsageStatusFromData 检测已解析事件中是否包含 usage 字段。
+func CheckEventUsageStatusFromData(data map[string]interface{}, enableLog bool) (bool, bool, bool, CollectedUsageData) {
+	if data == nil {
+		return false, false, false, CollectedUsageData{}
+	}
+
+	// 检查顶层 usage 字段
+	if hasUsage, needInputPatch, needOutputPatch := checkUsageFieldsWithPatch(data["usage"]); hasUsage {
+		var usageData CollectedUsageData
+		if usage, ok := data["usage"].(map[string]interface{}); ok {
+			if enableLog {
+				logUsageDetection("顶层usage", usage, needInputPatch || needOutputPatch)
+			}
+			usageData = extractUsageFromMap(usage)
+		}
+		return true, needInputPatch, needOutputPatch, usageData
+	}
+
+	// 检查 message.usage
+	if msg, ok := data["message"].(map[string]interface{}); ok {
+		if hasUsage, needInputPatch, needOutputPatch := checkUsageFieldsWithPatch(msg["usage"]); hasUsage {
 			var usageData CollectedUsageData
-			if usage, ok := data["usage"].(map[string]interface{}); ok {
+			if usage, ok := msg["usage"].(map[string]interface{}); ok {
 				if enableLog {
-					logUsageDetection("顶层usage", usage, needInputPatch || needOutputPatch)
+					logUsageDetection("message.usage", usage, needInputPatch || needOutputPatch)
 				}
 				usageData = extractUsageFromMap(usage)
 			}
 			return true, needInputPatch, needOutputPatch, usageData
 		}
-
-		// 检查 message.usage
-		if msg, ok := data["message"].(map[string]interface{}); ok {
-			if hasUsage, needInputPatch, needOutputPatch := checkUsageFieldsWithPatch(msg["usage"]); hasUsage {
-				var usageData CollectedUsageData
-				if usage, ok := msg["usage"].(map[string]interface{}); ok {
-					if enableLog {
-						logUsageDetection("message.usage", usage, needInputPatch || needOutputPatch)
-					}
-					usageData = extractUsageFromMap(usage)
-				}
-				return true, needInputPatch, needOutputPatch, usageData
-			}
-		}
 	}
+
 	return false, false, false, CollectedUsageData{}
 }
 
@@ -807,15 +859,77 @@ func PatchTokensInEventWithCache(event string, estimatedInputTokens, estimatedOu
 	return result.String()
 }
 
+func PatchTokensInEventDataWithCache(data map[string]interface{}, estimatedInputTokens, estimatedOutputTokens, inferredCacheRead int, hasCacheTokens bool, enableLog bool, lowQuality bool) {
+	if data == nil {
+		return
+	}
+
+	// 修补顶层 usage
+	if usage, ok := data["usage"].(map[string]interface{}); ok {
+		patchUsageFieldsWithLog(usage, estimatedInputTokens, estimatedOutputTokens, hasCacheTokens, enableLog, "顶层usage", lowQuality)
+		// 写入推断的 cache_read_input_tokens（仅当字段不存在时）
+		if inferredCacheRead > 0 {
+			if _, exists := usage["cache_read_input_tokens"]; !exists {
+				usage["cache_read_input_tokens"] = inferredCacheRead
+				if enableLog {
+					log.Printf("[Messages-Stream-Token] 顶层usage: 写入推断的 cache_read_input_tokens=%d", inferredCacheRead)
+				}
+			}
+		}
+	}
+
+	// 修补 message.usage
+	if msg, ok := data["message"].(map[string]interface{}); ok {
+		if usage, ok := msg["usage"].(map[string]interface{}); ok {
+			patchUsageFieldsWithLog(usage, estimatedInputTokens, estimatedOutputTokens, hasCacheTokens, enableLog, "message.usage", lowQuality)
+			// 写入推断的 cache_read_input_tokens（仅当字段不存在时）
+			if inferredCacheRead > 0 {
+				if _, exists := usage["cache_read_input_tokens"]; !exists {
+					usage["cache_read_input_tokens"] = inferredCacheRead
+					if enableLog {
+						log.Printf("[Messages-Stream-Token] message.usage: 写入推断的 cache_read_input_tokens=%d", inferredCacheRead)
+					}
+				}
+			}
+		}
+	}
+}
+
+func ReplaceSSEData(event string, data map[string]interface{}) string {
+	patchedJSON, err := json.Marshal(data)
+	if err != nil {
+		return event
+	}
+
+	var result strings.Builder
+	result.Grow(len(event) + len(patchedJSON))
+	replaced := false
+	for _, line := range strings.Split(event, "\n") {
+		if !replaced && strings.HasPrefix(line, "data: ") {
+			result.WriteString("data: ")
+			result.Write(patchedJSON)
+			result.WriteString("\n")
+			replaced = true
+			continue
+		}
+		result.WriteString(line)
+		result.WriteString("\n")
+	}
+	if !replaced {
+		return event
+	}
+	return result.String()
+}
+
 // PatchMessageStartInputTokensIfNeeded 在首个 message_start 事件中尽早补全 input_tokens。
 //
 // 部分客户端（例如终端工具）只读取首个 usage 来累计 prompt tokens；如果 message_start 的 input_tokens 为 0/极小值，
 // 即便后续顶层 usage 给出正确值，也可能导致累计失败。
-func PatchMessageStartInputTokensIfNeeded(event string, requestBody []byte, needInputPatch bool, usageData CollectedUsageData, enableLog bool, lowQuality bool) string {
+func PatchMessageStartInputTokensIfNeeded(event string, requestBody []byte, needInputPatch bool, usageData CollectedUsageData, hasUsage bool, enableLog bool, lowQuality bool) string {
 	if !IsMessageStartEvent(event) {
 		return event
 	}
-	if !HasEventWithUsage(event) {
+	if !hasUsage {
 		return event
 	}
 
@@ -1178,6 +1292,29 @@ func ExtractTextFromEvent(event string, buf *bytes.Buffer) {
 			if text, ok := cb["text"].(string); ok {
 				buf.WriteString(text)
 			}
+		}
+	}
+}
+
+func ExtractTextFromEventData(data map[string]interface{}, buf *bytes.Buffer) {
+	if data == nil {
+		return
+	}
+
+	// Claude SSE: delta.text
+	if delta, ok := data["delta"].(map[string]interface{}); ok {
+		if text, ok := delta["text"].(string); ok {
+			buf.WriteString(text)
+		}
+		if partialJSON, ok := delta["partial_json"].(string); ok {
+			buf.WriteString(partialJSON)
+		}
+	}
+
+	// content_block_start 中的初始文本
+	if cb, ok := data["content_block"].(map[string]interface{}); ok {
+		if text, ok := cb["text"].(string); ok {
+			buf.WriteString(text)
 		}
 	}
 }
