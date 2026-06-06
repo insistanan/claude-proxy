@@ -35,13 +35,13 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		LogDir:     "logs",
-			LogFile:    "app.log",
-			MaxSize:    100, // 100MB
-			MaxBackups: 10,
-			MaxAge:     7, // 7 days
-			Compress:   true,
-			Console:    true,
-		}
+		LogFile:    "app.log",
+		MaxSize:    100, // 100MB
+		MaxBackups: 10,
+		MaxAge:     7, // 7 days
+		Compress:   true,
+		Console:    true,
+	}
 }
 
 // Setup 初始化日志系统

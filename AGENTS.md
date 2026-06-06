@@ -36,6 +36,7 @@
 - 构建运行：
   - 根目录 `make run` / `make build`（先构建前端再编译后端）。
   - 后端本地构建：`cd backend-go && make build-local`。
+  - 发布/交付到 `dist/` 的 exe 必须注入版本信息，禁止使用裸 `go build`。Windows amd64 示例：先读取根目录 `VERSION`，再用 `-ldflags "-X main.Version=$version -X main.BuildTime=$buildTime -X main.GitCommit=$gitCommit -s -w"` 编译到 `dist/claude-proxy-windows-amd64.exe`，否则 UI 会显示默认 `v0.0.0-dev`。
 - 测试：`cd backend-go && make test`（或 `make test-cover` 生成覆盖率）。
 - 前端：`cd frontend && bun install` 后 `bun run dev|build|type-check`。
 - Docker：`docker-compose up -d` 默认拉取镜像；本地构建请按 `docker-compose.yml` 注释说明启用 `build`（可选 `Dockerfile_China`）。
