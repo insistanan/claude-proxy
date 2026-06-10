@@ -15,8 +15,8 @@ type ResponsesPassthroughConverter struct{}
 
 // ToProviderRequest 透传 Responses 请求（不做转换）
 func (c *ResponsesPassthroughConverter) ToProviderRequest(sess *session.Session, req *types.ResponsesRequest) (interface{}, error) {
-	// 直接返回原始请求
-	return map[string]interface{}{
+	// 直接返回原始请求，保留所有字段
+	result := map[string]interface{}{
 		"model":                req.Model,
 		"instructions":         req.Instructions,
 		"input":                req.Input,
@@ -37,7 +37,19 @@ func (c *ResponsesPassthroughConverter) ToProviderRequest(sess *session.Session,
 		"parallel_tool_calls":  req.ParallelToolCalls,
 		"reasoning":            req.Reasoning,
 		"metadata":             req.Metadata,
-	}, nil
+	}
+
+	// 关键：透传 prompt_cache_key 和 prompt_cache_retention
+	// 这两个字段是 OpenAI Prompt Caching 的核心路由键
+	// 如果丢失，会导致缓存完全失效（即使走透传也无法命中缓存）
+	if req.PromptCacheKey != "" {
+		result["prompt_cache_key"] = req.PromptCacheKey
+	}
+	if req.PromptCacheRetention != "" {
+		result["prompt_cache_retention"] = req.PromptCacheRetention
+	}
+
+	return result, nil
 }
 
 // FromProviderResponse 透传 Responses 响应（不做转换）
@@ -87,17 +99,17 @@ func (c *ResponsesPassthroughConverter) FromProviderResponse(resp map[string]int
 	usage := ExtractUsageMetrics(resp["usage"])
 
 	return &types.ResponsesResponse{
-		ID:         id,
-		Object:     object,
-		Model:      model,
-		Output:     output,
-		Status:     status,
-		PreviousID: previousID,
-		PreviousResponseID: previousResponseID,
-		Usage:      usage,
-		Created:    created,
-		CreatedAt:  createdAt,
-		Extra:      resp,
+		ID:                  id,
+		Object:              object,
+		Model:               model,
+		Output:              output,
+		Status:              status,
+		PreviousID:          previousID,
+		PreviousResponseID:  previousResponseID,
+		Usage:               usage,
+		Created:             created,
+		CreatedAt:           createdAt,
+		Extra:               resp,
 	}, nil
 }
 

@@ -4,6 +4,18 @@
 
 ---
 
+## [v2.8.1] - 2026-06-10
+
+### 优化
+
+- **调度器：多促销渠道并发支持** — `findPromotedChannel` 改为 `findPromotedChannels`，返回所有促销渠道并按优先级循环尝试，首个促销渠道在本次请求失败后会自动尝试下一个
+- **调度器：亲和性不健康时主动清除绑定** — 当 Trace 亲和绑定的渠道不健康或状态异常时，立即清除亲和记录，避免 30 分钟 TTL 内每次请求空转健康检查
+- **调度器：单渠道模式下消费 PromotionCount** — 4 种 API handler（Messages/Responses/Gemini/Chat）的单渠道成功路径均补上 `ConsumePromotionCount` 调用，与多渠道路径保持一致
+- **指标：渠道健康判断改为逐 Key 独立计算** — `IsChannelHealthyWithKeys` 不再聚合所有 Key 样本算总失败率，改为逐 Key 独立判断，避免坏 Key 被健康 Key 的大量样本"稀释"
+- **调度器：锁粒度缩小** — `SelectChannel` 仅在读取 `conversationRegistry` 时短暂持 `RLock`，提取引用后立即释放，减少高并发下的锁阻塞
+
+---
+
 ## [v2.8.0] - 2026-06-07
 
 ### 新增

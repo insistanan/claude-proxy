@@ -727,45 +727,59 @@ func (m *MetricsManager) IsKeyHealthy(baseURL, apiKey string) bool {
 }
 
 // IsChannelHealthy 判断渠道是否健康（基于当前活跃 Keys 聚合计算）
+// IsChannelHealthyWithKeys 判断渠道是否健康（逐 Key 独立判断）
+//
+// 改为逐 Key 独立判断而非简单聚合：
+//   - 每个 Key 独立计算失败率，有足够样本的 Key 中任一个不健康则渠道不健康
+//   - 避免一个坏 Key 被其他大量健康 Key 的指标"稀释"掉
+//   - 所有 Key 都样本不足时默认健康（给新渠道/新 Key 机会）
+//
 // activeKeys: 当前渠道配置的所有活跃 API Keys
 func (m *MetricsManager) IsChannelHealthyWithKeys(baseURL string, activeKeys []string) bool {
 	if len(activeKeys) == 0 {
-		return false // 没有 Key，不健康
+		return false
 	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// 聚合所有活跃 Key 的指标
-	var totalResults []bool
+	minRequests := max(3, m.windowSize/2)
+	hasAnyData := false
+	hasKeyWithEnoughData := false
+
 	for _, apiKey := range activeKeys {
 		metricsKey := generateMetricsKey(baseURL, apiKey)
-		if metrics, exists := m.keyMetrics[metricsKey]; exists {
-			totalResults = append(totalResults, metrics.recentResults...)
+		metrics, exists := m.keyMetrics[metricsKey]
+		if !exists || len(metrics.recentResults) == 0 {
+			continue
+		}
+		hasAnyData = true
+
+		// 单 Key 样本不足，跳过对该 Key 的健康判断
+		if len(metrics.recentResults) < minRequests {
+			continue
+		}
+		hasKeyWithEnoughData = true
+
+		// 计算该 Key 的失败率
+		failures := 0
+		for _, success := range metrics.recentResults {
+			if !success {
+				failures++
+			}
+		}
+		failureRate := float64(failures) / float64(len(metrics.recentResults))
+		if failureRate >= m.failureThreshold {
+			return false
 		}
 	}
 
-	// 没有任何记录，默认健康
-	if len(totalResults) == 0 {
+	// 没有任何数据或有数据但所有 Key 样本都不足 → 默认健康
+	if !hasAnyData || !hasKeyWithEnoughData {
 		return true
 	}
 
-	// 最小请求数保护：至少 max(3, windowSize/2) 次请求才判断健康状态
-	minRequests := max(3, m.windowSize/2)
-	if len(totalResults) < minRequests {
-		return true // 请求数不足，默认健康
-	}
-
-	// 计算聚合失败率
-	failures := 0
-	for _, success := range totalResults {
-		if !success {
-			failures++
-		}
-	}
-	failureRate := float64(failures) / float64(len(totalResults))
-
-	return failureRate < m.failureThreshold
+	return true
 }
 
 // CalculateKeyFailureRate 计算单个 Key 的失败率

@@ -149,10 +149,12 @@ func (s *ChannelScheduler) SelectChannel(
 	kind ChannelKind,
 	hasImage bool,
 ) (*SelectionResult, error) {
+	// 仅在读取 conversationRegistry 时短暂持锁，提取引用后立即释放
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	registry := s.conversationRegistry
+	s.mu.RUnlock()
 
-	// 获取活跃渠道列表
+	// 获取活跃渠道列表（configManager 自身有独立锁保护）
 	activeChannels := s.getActiveChannels(kind)
 	if len(activeChannels) == 0 {
 		switch kind {
@@ -182,8 +184,8 @@ func (s *ChannelScheduler) SelectChannel(
 	// 获取对应类型的指标管理器
 	metricsManager := s.getMetricsManager(kind)
 
-	if userID != "" && s.conversationRegistry != nil {
-		if override, ok := s.conversationRegistry.GetRouteOverride(userID); ok {
+	if userID != "" && registry != nil {
+		if override, ok := registry.GetRouteOverride(userID); ok {
 			if override.Kind != string(kind) {
 				return nil, fmt.Errorf("该对话已固定到 %s 渠道池，当前请求为 %s", override.Kind, kind)
 			}
@@ -213,33 +215,35 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 0. 检查促销期渠道（最高优先级，绕过健康检查）
-	promotedChannel := s.findPromotedChannel(activeChannels, kind)
-	if promotedChannel != nil && !failedChannels[promotedChannel.Index] {
-		// 促销渠道存在且未失败，直接使用（不检查健康状态，让用户设置的促销渠道有机会尝试）
-		upstream := s.getUpstreamByIndex(promotedChannel.Index, kind)
-		if upstream != nil && len(upstream.APIKeys) > 0 {
-			failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+	// 0. 检查促销期渠道（最高优先级，绕过健康检查，支持多个促销渠道并发尝试）
+	promotedChannels := s.findPromotedChannels(activeChannels, kind)
+	for _, promotedCh := range promotedChannels {
+		if failedChannels[promotedCh.Index] {
 			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%, 绕过健康检查)", prefix, promotedChannel.Index, upstream.Name, failureRate*100)
-			return &SelectionResult{
-				Upstream:     upstream,
-				ChannelIndex: promotedChannel.Index,
-				Reason:       "promotion_priority",
-			}, nil
-		} else if upstream != nil {
-			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 无可用密钥，跳过", prefix, promotedChannel.Index, upstream.Name)
+			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 已在本次请求中失败，跳过", prefix, promotedCh.Index, promotedCh.Name)
+			continue
 		}
-	} else if promotedChannel != nil {
+		upstream := s.getUpstreamByIndex(promotedCh.Index, kind)
+		if upstream == nil || len(upstream.APIKeys) == 0 {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 无可用密钥，跳过", prefix, promotedCh.Index, promotedCh.Name)
+			continue
+		}
+		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
 		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 已在本次请求中失败，跳过", prefix, promotedChannel.Index, promotedChannel.Name)
+		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%, 绕过健康检查)", prefix, promotedCh.Index, upstream.Name, failureRate*100)
+		return &SelectionResult{
+			Upstream:     upstream,
+			ChannelIndex: promotedCh.Index,
+			Reason:       "promotion_priority",
+		}, nil
 	}
 
 	// 1. 检查 Trace 亲和性（促销渠道失败时或无促销渠道时）
 	if userID != "" {
 		if preferredIdx, ok := s.traceAffinity.GetPreferredChannel(userID); ok {
 			foundPreferredChannel := false
+			affinityInvalidated := false
 			for _, ch := range activeChannels {
 				if ch.Index == preferredIdx && !failedChannels[preferredIdx] {
 					foundPreferredChannel = true
@@ -247,6 +251,7 @@ func (s *ChannelScheduler) SelectChannel(
 					if ch.Status != "active" {
 						prefix := kindSchedulerLogPrefix(kind)
 						log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 状态为 %s (user: %s)", prefix, preferredIdx, ch.Name, ch.Status, maskUserID(userID))
+						affinityInvalidated = true
 						continue
 					}
 					// 检查渠道是否健康
@@ -260,7 +265,15 @@ func (s *ChannelScheduler) SelectChannel(
 							Reason:       "trace_affinity",
 						}, nil
 					}
+					// 亲和渠道不健康，标记为失效
+					affinityInvalidated = true
 				}
+			}
+			// 亲和渠道不健康或状态异常时，主动清除亲和记录避免后续请求重复空转
+			if affinityInvalidated {
+				s.traceAffinity.Remove(userID)
+				prefix := kindSchedulerLogPrefix(kind)
+				log.Printf("[%s-Affinity] 亲和渠道 [%d] 不可用，已清除亲和记录 (user: %s)", prefix, preferredIdx, maskUserID(userID))
 			}
 			if hasImage && !foundPreferredChannel {
 				prefix := kindSchedulerLogPrefix(kind)
@@ -320,23 +333,20 @@ func (s *ChannelScheduler) filterVisionChannels(channels []ChannelInfo, kind Cha
 	return visionChannels
 }
 
-// findPromotedChannel 查找处于促销期的渠道
-func (s *ChannelScheduler) findPromotedChannel(activeChannels []ChannelInfo, kind ChannelKind) *ChannelInfo {
+// findPromotedChannels 查找所有处于促销期的渠道（按优先级排序）
+func (s *ChannelScheduler) findPromotedChannels(activeChannels []ChannelInfo, kind ChannelKind) []ChannelInfo {
+	var promoted []ChannelInfo
 	for i := range activeChannels {
 		ch := &activeChannels[i]
 		if ch.Status != "active" {
 			continue
 		}
 		upstream := s.getUpstreamByIndex(ch.Index, kind)
-		if upstream != nil {
-			if config.IsChannelInPromotion(upstream) {
-				prefix := kindSchedulerLogPrefix(kind)
-				log.Printf("[%s-Promotion] 找到促销渠道: [%d] %s (promotionUntil: %v)", prefix, ch.Index, upstream.Name, upstream.PromotionUntil)
-				return ch
-			}
+		if upstream != nil && config.IsChannelInPromotion(upstream) {
+			promoted = append(promoted, *ch)
 		}
 	}
-	return nil
+	return promoted
 }
 
 // selectFallbackChannel 选择降级渠道（失败率最低的）

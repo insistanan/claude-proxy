@@ -20,6 +20,24 @@ func (c *ClaudeConverter) ToProviderRequest(sess *session.Session, req *types.Re
 		return nil, err
 	}
 
+	// 启用 Claude Prompt Caching：在最后一个 user message 添加 cache_control
+	// 这确保稳定的对话前缀能被缓存，提高后续请求的缓存命中率
+	if len(messages) > 0 {
+		// 找到最后一个 user 角色的消息
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == "user" {
+				// 为该消息的内容块添加 cache_control
+				if contentBlocks, ok := messages[i].Content.([]types.ClaudeContent); ok && len(contentBlocks) > 0 {
+					// 在最后一个内容块添加 cache_control
+					lastIdx := len(contentBlocks) - 1
+					contentBlocks[lastIdx].CacheControl = &types.CacheControl{Type: "ephemeral"}
+					messages[i].Content = contentBlocks
+				}
+				break
+			}
+		}
+	}
+
 	// 构建 Claude 请求
 	claudeReq := map[string]interface{}{
 		"model":    req.Model,
@@ -36,8 +54,19 @@ func (c *ClaudeConverter) ToProviderRequest(sess *session.Session, req *types.Re
 	}
 
 	// Claude 使用独立的 system 参数（不在 messages 中）
+	// 如果有 system prompt，也为它添加 cache_control 以提高缓存命中率
 	if system != "" {
-		claudeReq["system"] = system
+		// system 参数支持两种格式：
+		// 1. 简单字符串
+		// 2. 数组形式，支持 cache_control
+		systemBlocks := []map[string]interface{}{
+			{
+				"type":          "text",
+				"text":          system,
+				"cache_control": map[string]string{"type": "ephemeral"},
+			},
+		}
+		claudeReq["system"] = systemBlocks
 	}
 
 	// 复制其他参数
@@ -51,9 +80,15 @@ func (c *ClaudeConverter) ToProviderRequest(sess *session.Session, req *types.Re
 	if req.Stop != nil {
 		claudeReq["stop_sequences"] = req.Stop // Claude 使用 stop_sequences
 	}
+
 	if tools, err := ResponsesToolsToClaudeTools(req.Tools); err != nil {
 		return nil, err
 	} else if len(tools) > 0 {
+		// 为最后一个 tool 添加 cache_control，因为工具定义通常很长且稳定
+		// 这样工具定义部分也能被缓存
+		if len(tools) > 0 {
+			tools[len(tools)-1].CacheControl = &types.CacheControl{Type: "ephemeral"}
+		}
 		claudeReq["tools"] = tools
 	}
 	thinking, err := ResponsesReasoningToClaudeThinking(req.Reasoning, effectiveMaxTokens)

@@ -324,11 +324,24 @@ func OpenAIResponseToGemini(openaiResp map[string]interface{}) (*types.GeminiRes
 	if usageRaw, ok := openaiResp["usage"].(map[string]interface{}); ok {
 		promptTokens, _ := getIntFromMap(usageRaw, "prompt_tokens")
 		completionTokens, _ := getIntFromMap(usageRaw, "completion_tokens")
-
+		
+		// 提取缓存读取（OpenAI 格式）
+		var cachedTokens int
+		if details, ok := usageRaw["prompt_token_details"].(map[string]interface{}); ok {
+			cachedTokens, _ = getIntFromMap(details, "cached_tokens")
+		}
+		if cachedTokens == 0 {
+			if details, ok := usageRaw["input_tokens_details"].(map[string]interface{}); ok {
+				cachedTokens, _ = getIntFromMap(details, "cached_tokens")
+			}
+		}
+		
+		// OpenAI 的 prompt_tokens 包含缓存，Gemini 格式也需要包含
 		geminiResp.UsageMetadata = &types.GeminiUsageMetadata{
-			PromptTokenCount:     promptTokens,
-			CandidatesTokenCount: completionTokens,
-			TotalTokenCount:      promptTokens + completionTokens,
+			PromptTokenCount:        promptTokens, // OpenAI 的 prompt_tokens 已包含缓存
+			CandidatesTokenCount:    completionTokens,
+			TotalTokenCount:         promptTokens + completionTokens,
+			CachedContentTokenCount: cachedTokens,
 		}
 	}
 

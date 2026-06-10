@@ -892,8 +892,9 @@ func ConvertOpenAIChatToResponsesNonStream(_ context.Context, _ string, original
 		var cacheTTL string
 
 		// OpenAI 格式
+		var openaiPromptTokens, openaiCachedTokens int64
 		if v := usage.Get("prompt_tokens"); v.Exists() {
-			inputTokens = v.Int()
+			openaiPromptTokens = v.Int()
 		}
 		if v := usage.Get("completion_tokens"); v.Exists() {
 			outputTokens = v.Int()
@@ -902,7 +903,15 @@ func ConvertOpenAIChatToResponsesNonStream(_ context.Context, _ string, original
 			totalTokens = v.Int()
 		}
 		if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() {
-			cachedTokens = v.Int()
+			openaiCachedTokens = v.Int()
+		}
+		// OpenAI 的 prompt_tokens 包含缓存，需要扣除计算实际计费 input
+		if openaiPromptTokens > 0 {
+			inputTokens = openaiPromptTokens - openaiCachedTokens
+			if inputTokens < 0 {
+				inputTokens = 0
+			}
+			cachedTokens = openaiCachedTokens
 		}
 		reasoningTokensFromUsage := usage.Get("completion_tokens_details.reasoning_tokens").Int()
 

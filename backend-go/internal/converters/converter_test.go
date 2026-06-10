@@ -372,9 +372,30 @@ func TestClaudeConverter_WithInstructions(t *testing.T) {
 
 	resultMap := result.(map[string]interface{})
 
-	// 检查 system 参数（Claude 使用独立的 system 字段）
-	if resultMap["system"] != "You are Claude." {
-		t.Errorf("system 参数不匹配")
+	// 检查 system 参数（Claude 使用独立的 system 字段，现在支持数组格式以实现 cache_control）
+	systemVal, ok := resultMap["system"]
+	if !ok {
+		t.Fatal("缺少 system 参数")
+	}
+
+	// system 可能是字符串或数组格式（带 cache_control）
+	var systemText string
+	switch s := systemVal.(type) {
+	case string:
+		systemText = s
+	case []interface{}:
+		if len(s) > 0 {
+			if block, ok := s[0].(map[string]interface{}); ok {
+				systemText, _ = block["text"].(string)
+			}
+		}
+	case []map[string]interface{}:
+		if len(s) > 0 {
+			systemText, _ = s[0]["text"].(string)
+		}
+	}
+	if systemText != "You are Claude." {
+		t.Errorf("system 参数不匹配: got %q, want %q", systemText, "You are Claude.")
 	}
 
 	// 检查 messages

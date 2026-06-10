@@ -261,6 +261,7 @@ func handleRoutedChat(
 	if handled {
 		if successKey != "" {
 			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, route.ChannelIndex, route.ChannelName)
+			channelScheduler.ConsumePromotionCount(route.ChannelIndex, scheduler.ChannelKindChat)
 		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
 			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
 		}

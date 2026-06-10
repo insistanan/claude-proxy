@@ -270,6 +270,7 @@ func handleSingleChannel(
 	if handled {
 		if successKey != "" {
 			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindResponses, channelIndex, upstream.Name)
+			channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindResponses)
 		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
 			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, lastError)
 		}

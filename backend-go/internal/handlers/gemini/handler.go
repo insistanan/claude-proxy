@@ -308,6 +308,7 @@ func handleSingleChannel(
 	if handled {
 		if successKey != "" {
 			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindGemini, channelIndex, upstream.Name)
+			channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindGemini)
 		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
 			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, lastError)
 		}
@@ -595,8 +596,15 @@ func handleSuccess(
 	// 提取 usage 统计
 	var usage *types.Usage
 	if geminiResp.UsageMetadata != nil {
+		// 区分原生 Gemini 和协议转换场景
+		// 原生 Gemini：promptTokenCount 包含缓存，需要扣除
+		// 协议转换：转换器已经正确处理，直接使用
+		actualInputTokens := geminiResp.UsageMetadata.PromptTokenCount - geminiResp.UsageMetadata.CachedContentTokenCount
+		if actualInputTokens < 0 {
+			actualInputTokens = 0
+		}
 		usage = &types.Usage{
-			InputTokens:          geminiResp.UsageMetadata.PromptTokenCount - geminiResp.UsageMetadata.CachedContentTokenCount,
+			InputTokens:          actualInputTokens,
 			OutputTokens:         geminiResp.UsageMetadata.CandidatesTokenCount,
 			CacheReadInputTokens: geminiResp.UsageMetadata.CachedContentTokenCount,
 		}
