@@ -33,9 +33,13 @@ type SessionManager struct {
 	maxAge      time.Duration // 24小时
 	maxMessages int           // 100条
 	maxTokens   int           // 100k
+
+	// 资源限制
+	maxSessions int // 全局最大 session 数，0 表示不限制
 }
 
 // NewSessionManager 创建会话管理器
+// maxSessions 参数已弃用，请使用 SetMaxSessions() 设置上限
 func NewSessionManager(maxAge time.Duration, maxMessages int, maxTokens int) *SessionManager {
 	sm := &SessionManager{
 		sessions:        make(map[string]*Session),
@@ -43,12 +47,22 @@ func NewSessionManager(maxAge time.Duration, maxMessages int, maxTokens int) *Se
 		maxAge:          maxAge,
 		maxMessages:     maxMessages,
 		maxTokens:       maxTokens,
+		maxSessions:     0, // 默认不限制，由调用方按需设置
 	}
 
 	// 启动定期清理
 	go sm.cleanupLoop()
 
 	return sm
+}
+
+// SetMaxSessions 设置全局最大 session 数量上限
+// 设置为 0 表示不限制（默认）
+// 达到上限时，新会话会触发淘汰最久未访问的 session
+func (sm *SessionManager) SetMaxSessions(limit int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.maxSessions = limit
 }
 
 // GetOrCreateSession 获取或创建会话
@@ -68,7 +82,9 @@ func (sm *SessionManager) GetOrCreateSession(previousResponseID string) (*Sessio
 		return nil, fmt.Errorf("无效的 previous_response_id: %s", previousResponseID)
 	}
 
-	// 创建新会话
+	// 创建新会话前，检查是否超过数量上限
+	sm.evictIfNeededLocked()
+
 	sessionID := generateID("sess")
 	session := &Session{
 		ID:           sessionID,
@@ -79,9 +95,42 @@ func (sm *SessionManager) GetOrCreateSession(previousResponseID string) (*Sessio
 	}
 
 	sm.sessions[sessionID] = session
-	log.Printf("[Session-Create] 创建新会话: %s", sessionID)
+	log.Printf("[Session-Create] 创建新会话: %s (总数: %d)", sessionID, len(sm.sessions))
 
 	return session, nil
+}
+
+// evictIfNeededLocked 当 session 数达到上限时，淘汰最久未访问的 session
+// 调用方必须持有写锁
+func (sm *SessionManager) evictIfNeededLocked() {
+	if sm.maxSessions <= 0 || len(sm.sessions) < sm.maxSessions {
+		return
+	}
+
+	// 找到最久未访问的 session（不包含 responseID 映射仍在使用的）
+	var oldestID string
+	var oldestTime time.Time
+	for id, s := range sm.sessions {
+		if s.LastAccessAt.Before(oldestTime) || oldestID == "" {
+			oldestID = id
+			oldestTime = s.LastAccessAt
+		}
+	}
+
+	if oldestID != "" {
+		session := sm.sessions[oldestID]
+		log.Printf("[Session-Evict] 会话数已达上限 (%d)，淘汰最久未访问会话: %s (最后访问: %v 前)",
+			sm.maxSessions, oldestID, time.Since(oldestTime))
+		// 清理关联的 responseMapping
+		for respID, sessID := range sm.responseMapping {
+			if sessID == oldestID {
+				delete(sm.responseMapping, respID)
+			}
+		}
+		delete(sm.sessions, oldestID)
+		// 标记 session 对象可被 GC 回收
+		_ = session
+	}
 }
 
 // RecordResponseMapping 记录 responseID 到 sessionID 的映射

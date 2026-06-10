@@ -13,7 +13,11 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
-// RequestRecord 带时间戳的请求记录（扩展版，支持 Token 和 Cache 数据）
+const (
+	// maxRequestHistoryPerKey 每个 Key 在内存中保留的最大请求记录数
+	// 超过此限制时，自动截断最早的记录，防止高频调用导致 OOM
+	maxRequestHistoryPerKey = 100000
+)
 type RequestRecord struct {
 	Timestamp                time.Time
 	Success                  bool
@@ -661,6 +665,7 @@ func (m *MetricsManager) cleanupHistoryLocked(metrics *KeyMetrics) {
 		return
 	}
 
+	// 1. 时间维度清理：移除超过 24 小时的记录
 	cutoff := time.Now().Add(-24 * time.Hour)
 
 	newStart := -1
@@ -683,15 +688,28 @@ func (m *MetricsManager) cleanupHistoryLocked(metrics *KeyMetrics) {
 				metrics.pendingHistoryIdx[id] = idx - newStart
 			}
 		}
-		return
-	}
-
-	if newStart == -1 {
+	} else if newStart == -1 {
 		// 所有记录都过期，清空切片
 		metrics.requestHistory = metrics.requestHistory[:0]
 		if metrics.pendingHistoryIdx != nil {
 			for id := range metrics.pendingHistoryIdx {
 				delete(metrics.pendingHistoryIdx, id)
+			}
+		}
+	}
+
+	// 2. 数量维度截断：防止高频调用导致内存无限增长
+	if len(metrics.requestHistory) > maxRequestHistoryPerKey {
+		overflow := len(metrics.requestHistory) - maxRequestHistoryPerKey
+		metrics.requestHistory = metrics.requestHistory[overflow:]
+		// pending 索引平移
+		if metrics.pendingHistoryIdx != nil && len(metrics.pendingHistoryIdx) > 0 {
+			for id, idx := range metrics.pendingHistoryIdx {
+				if idx < overflow {
+					delete(metrics.pendingHistoryIdx, id)
+					continue
+				}
+				metrics.pendingHistoryIdx[id] = idx - overflow
 			}
 		}
 	}

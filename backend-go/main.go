@@ -71,7 +71,8 @@ func main() {
 		100,          // 最多100条消息
 		100000,       // 最多100k tokens
 	)
-	log.Printf("[Session-Init] 会话管理器已初始化")
+	sessionManager.SetMaxSessions(5000) // 全局最多 5000 个活跃 session
+	log.Printf("[Session-Init] 会话管理器已初始化 (上限: 5000)")
 
 	// 初始化指标持久化存储（可选）
 	var metricsStore *metrics.SQLiteStore

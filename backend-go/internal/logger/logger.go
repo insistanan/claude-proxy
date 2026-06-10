@@ -40,7 +40,7 @@ func DefaultConfig() *Config {
 		MaxBackups: 10,
 		MaxAge:     7, // 7 days
 		Compress:   true,
-		Console:    true,
+		Console:    false,
 	}
 }
 

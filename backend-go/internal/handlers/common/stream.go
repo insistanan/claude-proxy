@@ -24,6 +24,7 @@ type StreamContext struct {
 	OutputTextBuffer bytes.Buffer
 	Synthesizer      *utils.StreamSynthesizer
 	LoggingEnabled   bool
+	LogBufferFull    bool // LogBuffer 达到上限后标记，避免重复检查
 	ClientGone       bool
 	HasUsage         bool
 	NeedTokenPatch   bool
@@ -241,9 +242,19 @@ func ProcessStreamEvent(
 		updateCollectedUsage(&ctx.CollectedUsage, usageData)
 	}
 
-	// 日志缓存
+	// 日志缓存（带内存上限保护）
 	if ctx.LoggingEnabled {
-		ctx.LogBuffer.WriteString(event)
+		if !ctx.LogBufferFull {
+			const maxLogBufferSize = 2 * 1024 * 1024 // 2MB 上限
+			if ctx.LogBuffer.Len()+len(event) > maxLogBufferSize {
+				ctx.LogBufferFull = true
+				if envCfg.ShouldLog("debug") {
+					log.Printf("[Messages-Stream] 日志缓冲区已达上限 (2MB)，后续流事件不再缓存")
+				}
+			} else {
+				ctx.LogBuffer.WriteString(event)
+			}
+		}
 		if ctx.Synthesizer != nil {
 			for _, line := range strings.Split(event, "\n") {
 				ctx.Synthesizer.ProcessLine(line)

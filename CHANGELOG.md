@@ -4,6 +4,18 @@
 
 ---
 
+## [v2.8.2] - 2026-06-11
+
+### 优化
+
+- **性能优化：默认关闭控制台日志输出** — `LOG_TO_CONSOLE` 默认值改为 `false`，生产环境仅写文件不写 stdout，消除 Windows 下同步控制台写入的性能瓶颈
+- **内存保护：MetricsManager 单 Key 记录上限** — `requestHistory` 增加每 Key 10 万条截断上限，防止高频调用导致内存无限增长
+- **内存保护：SessionManager 会话数上限** — 新增 `maxSessions` 全局会话数限制（默认 5000），达到上限时按 LRU 淘汰最久未访问的会话
+- **内存保护：流处理日志缓冲区上限** — StreamContext LogBuffer 增加 2MB 上限，防止超长流式响应导致单请求内存暴涨
+- **测试修复：流 token 修补逻辑测试** — 修复 `TestPatchMessageStartInputTokensIfNeeded` 的 3 个测试用例，确保虚假 input_tokens 修补逻辑的正确性
+
+---
+
 ## [v2.8.1] - 2026-06-10
 
 ### 优化

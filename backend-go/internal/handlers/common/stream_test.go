@@ -105,7 +105,7 @@ func TestPatchMessageStartInputTokensIfNeeded(t *testing.T) {
 			t.Fatalf("expected needInputPatch=true")
 		}
 
-		patched := PatchMessageStartInputTokensIfNeeded(event, requestBody, needInputPatch, usageData, false, false, false)
+		patched := PatchMessageStartInputTokensIfNeeded(event, requestBody, needInputPatch, usageData, true, false, false)
 		got := extractInputTokens(t, patched)
 		if got != float64(estimated) {
 			t.Fatalf("expected input_tokens=%d, got %v", estimated, got)
@@ -122,7 +122,7 @@ func TestPatchMessageStartInputTokensIfNeeded(t *testing.T) {
 			t.Fatalf("expected needInputPatch=false")
 		}
 
-		patched := PatchMessageStartInputTokensIfNeeded(event, requestBody, needInputPatch, usageData, false, false, false)
+		patched := PatchMessageStartInputTokensIfNeeded(event, requestBody, needInputPatch, usageData, true, false, false)
 		got := extractInputTokens(t, patched)
 		if got != float64(estimated) {
 			t.Fatalf("expected input_tokens=%d, got %v", estimated, got)
