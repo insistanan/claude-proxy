@@ -815,6 +815,26 @@ func (m *MetricsManager) CalculateKeyFailureRate(baseURL, apiKey string) float64
 }
 
 // CalculateChannelFailureRate 计算渠道聚合失败率
+// GetChannelRequestCount 获取渠道的总请求数（所有 Key 聚合）
+func (m *MetricsManager) GetChannelRequestCount(baseURL string, activeKeys []string) int64 {
+	if len(activeKeys) == 0 {
+		return 0
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var totalCount int64
+	for _, apiKey := range activeKeys {
+		metricsKey := generateMetricsKey(baseURL, apiKey)
+		if metrics, exists := m.keyMetrics[metricsKey]; exists {
+			totalCount += metrics.RequestCount
+		}
+	}
+
+	return totalCount
+}
+
 func (m *MetricsManager) CalculateChannelFailureRate(baseURL string, activeKeys []string) float64 {
 	if len(activeKeys) == 0 {
 		return 0

@@ -310,7 +310,7 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 
 		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Channel] 选择渠道: [%d] %s (优先级: %d)", prefix, ch.Index, upstream.Name, ch.Priority)
+		log.Printf("[%s-Channel] 选择渠道: [%d] %s (配置优先级: %d, 动态分数: %.1f)", prefix, ch.Index, upstream.Name, ch.Priority, ch.Score)
 		return &SelectionResult{
 			Upstream:     upstream,
 			ChannelIndex: ch.Index,
@@ -403,9 +403,39 @@ type ChannelInfo struct {
 	Name     string
 	Priority int
 	Status   string
+	Score    float64 // 动态分数（基于失败率），分数越高优先级越高
 }
 
-// getActiveChannels 获取活跃渠道列表（按优先级排序）
+// calculateChannelScore 计算渠道分数（基于失败率）
+// 分数范围: 0-100，分数越高优先级越高
+// - 无历史数据：100 分（新渠道给满分）
+// - 失败率 0%：100 分
+// - 失败率 20%：80 分
+// - 失败率 50%：50 分
+// - 失败率 80%：20 分
+// - 失败率 100%：0 分
+func (s *ChannelScheduler) calculateChannelScore(upstream *config.UpstreamConfig, kind ChannelKind) float64 {
+	if upstream == nil || len(upstream.APIKeys) == 0 {
+		return 0
+	}
+
+	metricsManager := s.getMetricsManager(kind)
+	failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+
+	// 计算基础分数：100 * (1 - failureRate)
+	baseScore := 100 * (1 - failureRate)
+
+	// 检查请求数，如果请求数小于 5，给予新渠道奖励（避免因样本不足被低估）
+	requestCount := metricsManager.GetChannelRequestCount(upstream.BaseURL, upstream.APIKeys)
+	if requestCount < 5 {
+		// 新渠道给予满分
+		return 100
+	}
+
+	return baseScore
+}
+
+// getActiveChannels 获取活跃渠道列表（按动态分数排序）
 func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 	cfg := s.configManager.GetConfig()
 
@@ -436,17 +466,27 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 				priority = i // 默认优先级为索引
 			}
 
+			// 计算渠道动态分数
+			upstreamCopy := upstream
+			score := s.calculateChannelScore(&upstreamCopy, kind)
+
 			activeChannels = append(activeChannels, ChannelInfo{
 				Index:    i,
 				Name:     upstream.Name,
 				Priority: priority,
 				Status:   status,
+				Score:    score,
 			})
 		}
 	}
 
-	// 按优先级排序（数字越小优先级越高）
+	// 按动态分数排序（分数越高优先级越高），分数相同时按配置优先级排序
 	sort.Slice(activeChannels, func(i, j int) bool {
+		// 优先按分数排序（降序）
+		if activeChannels[i].Score != activeChannels[j].Score {
+			return activeChannels[i].Score > activeChannels[j].Score
+		}
+		// 分数相同时按配置优先级排序（升序）
 		return activeChannels[i].Priority < activeChannels[j].Priority
 	})
 
