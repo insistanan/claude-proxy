@@ -133,6 +133,7 @@ func staticFamilyModels() []ModelEntry {
 		"opus",
 		"sonnet",
 		"haiku",
+		"fable",
 		"gpt",
 		"codex",
 		"gemini",

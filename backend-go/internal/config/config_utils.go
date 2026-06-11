@@ -77,18 +77,40 @@ func (e *ConfigError) Error() string {
 
 // ============== 模型重定向 ==============
 
+// StripContextSuffix 剥离 Claude Code 的上下文窗口后缀（如 [1m]）
+// 返回：(原始模型名, 是否有后缀)
+// 示例：
+//   "opus[1m]" -> ("opus", true)
+//   "claude-opus-4-8[1m]" -> ("claude-opus-4-8", true)
+//   "opus" -> ("opus", false)
+func StripContextSuffix(model string) (string, bool) {
+	model = strings.TrimSpace(model)
+	if strings.HasSuffix(model, "[1m]") {
+		return strings.TrimSuffix(model, "[1m]"), true
+	}
+	return model, false
+}
+
 // RedirectModel 模型重定向
 func RedirectModel(model string, upstream *UpstreamConfig) string {
 	if upstream.ModelMapping == nil || len(upstream.ModelMapping) == 0 {
 		return model
 	}
 
-	// 直接匹配（精确匹配优先）
+	// 1. 先尝试精确匹配原始模型名（包括后缀）
 	if mapped, ok := upstream.ModelMapping[model]; ok {
 		return mapped
 	}
 
-	// 模糊匹配：按源模型长度从长到短排序，确保最长匹配优先
+	// 2. 如果有后缀，尝试剥离后缀后再匹配
+	strippedModel, hasSuffix := StripContextSuffix(model)
+	if hasSuffix {
+		if mapped, ok := upstream.ModelMapping[strippedModel]; ok {
+			return mapped
+		}
+	}
+
+	// 3. 模糊匹配：按源模型长度从长到短排序，确保最长匹配优先
 	// 例如：同时配置 "codex" 和 "gpt-5.1-codex" 时，"gpt-5.1-codex" 应该先匹配
 	type mapping struct {
 		source string
@@ -103,9 +125,14 @@ func RedirectModel(model string, upstream *UpstreamConfig) string {
 		return len(mappings[i].source) > len(mappings[j].source)
 	})
 
-	// 按排序后的顺序进行模糊匹配
+	// 按排序后的顺序进行模糊匹配（先匹配原始模型，再匹配剥离后的）
+	modelToMatch := model
+	if hasSuffix {
+		modelToMatch = strippedModel
+	}
+	
 	for _, m := range mappings {
-		if strings.Contains(model, m.source) || strings.Contains(m.source, model) {
+		if strings.Contains(modelToMatch, m.source) || strings.Contains(m.source, modelToMatch) {
 			return m.target
 		}
 	}
@@ -115,12 +142,15 @@ func RedirectModel(model string, upstream *UpstreamConfig) string {
 
 func ResolveUpstreamModel(model string, upstream *UpstreamConfig) string {
 	model = strings.TrimSpace(model)
+	
 	if upstream == nil {
 		return model
 	}
 	if strings.TrimSpace(upstream.DefaultModel) != "" {
 		return strings.TrimSpace(upstream.DefaultModel)
 	}
+	
+	// RedirectModel 内部会处理后缀匹配逻辑
 	return RedirectModel(model, upstream)
 }
 

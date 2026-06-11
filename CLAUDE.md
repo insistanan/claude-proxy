@@ -104,6 +104,32 @@ claude-proxy/
 5. **Scheduler Pattern** - `internal/scheduler/`: 优先级调度、Trace 亲和性、自动熔断、对话路由
 6. **Metrics Pattern** - `internal/metrics/`: 滑动窗口算法 + SQLite 持久化，支持模型追踪和缓存统计
 
+## 模型支持
+
+### 静态模型列表
+
+代理默认支持以下模型别名（通过 `/v1/models` 端点返回）：
+
+- `opus` - Claude Opus 系列（高性能推理模型）
+- `sonnet` - Claude Sonnet 系列（日常编码模型）
+- `haiku` - Claude Haiku 系列（快速高效模型）
+- `fable` - Claude Fable 5（最新复杂任务模型）
+- `gpt` - OpenAI GPT 系列
+- `codex` - OpenAI Codex 系列
+- `gemini` - Google Gemini 系列
+
+### 上下文窗口后缀
+
+支持 Claude Code 的 `[1m]` 后缀标识 1M token 上下文窗口：
+
+- `opus[1m]` - 使用 1M 上下文的 Opus
+- `sonnet[1m]` - 使用 1M 上下文的 Sonnet
+- `claude-opus-4-8[1m]` - 任何模型名 + `[1m]` 后缀
+
+代理会自动剥离 `[1m]` 后缀后再发送到上游，确保与 Claude Code 和 Cursor 等客户端的兼容性。
+
+详细说明请参考 [模型后缀处理文档](docs/MODEL_SUFFIX_HANDLING.md)。
+
 ## API 端点
 
 **代理端点**:

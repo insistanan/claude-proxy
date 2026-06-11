@@ -4,6 +4,20 @@
 
 ---
 
+## [Unreleased]
+
+### 新增
+
+- **模型支持：新增 Fable 模型** — 静态模型列表添加 `fable`，支持 Claude Fable 5
+- **模型支持：上下文窗口后缀处理** — 支持 Claude Code 的 `[1m]` 后缀（如 `opus[1m]`、`claude-opus-4-8[1m]`），自动剥离后发送到上游，确保与 Claude Code 和 Cursor 客户端兼容
+
+### 文档
+
+- **新增文档** — `docs/MODEL_SUFFIX_HANDLING.md` 详细说明后缀处理机制和使用场景
+- **更新文档** — `CLAUDE.md` 添加模型支持章节，说明静态模型列表和上下文窗口后缀
+
+---
+
 ## [v2.8.2] - 2026-06-11
 
 ### 优化
