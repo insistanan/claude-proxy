@@ -50,7 +50,8 @@ func (c *ClaudeConverter) ToProviderRequest(sess *session.Session, req *types.Re
 		effectiveMaxTokens = req.MaxTokens
 	}
 	if effectiveMaxTokens <= 0 {
-		return nil, fmt.Errorf("Responses -> Claude 需要 max_output_tokens 或 max_tokens")
+		// Responses 客户端可能省略该字段；Claude 侧这里兜底一个安全默认值。
+		effectiveMaxTokens = 65536
 	}
 
 	// Claude 使用独立的 system 参数（不在 messages 中）
