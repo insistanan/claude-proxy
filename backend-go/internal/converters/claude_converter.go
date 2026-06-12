@@ -1,8 +1,6 @@
 package converters
 
 import (
-	"fmt"
-
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
@@ -112,9 +110,6 @@ func (c *ClaudeConverter) ToProviderRequest(sess *session.Session, req *types.Re
 	}
 	if req.Metadata != nil {
 		claudeReq["metadata"] = req.Metadata
-	}
-	if req.ParallelToolCalls != nil {
-		return nil, fmt.Errorf("Claude Messages 不支持 parallel_tool_calls 字段")
 	}
 
 	return claudeReq, nil

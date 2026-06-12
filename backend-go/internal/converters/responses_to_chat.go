@@ -380,10 +380,7 @@ func convertInputArrayToMessages(input gjson.Result, out string) string {
 
 // convertMessageItem 转换 message 类型的 item
 func convertMessageItem(item gjson.Result, out string) string {
-	role := item.Get("role").String()
-	if role == "" {
-		role = "user"
-	}
+	role := normalizeResponsesMessageRole(item.Get("role").String())
 
 	message := `{"role":"","content":""}`
 	message, _ = sjson.Set(message, "role", role)

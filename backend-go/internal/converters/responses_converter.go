@@ -54,10 +54,7 @@ func ResponsesToClaudeMessages(sess *session.Session, newInput interface{}, inst
 func responsesItemToClaudeMessage(item types.ResponsesItem) (*types.ClaudeMessage, error) {
 	switch item.Type {
 	case "message":
-		role := item.Role
-		if role == "" {
-			role = "user"
-		}
+		role := normalizeResponsesMessageRole(item.Role)
 
 		contentBlocks := buildClaudeMessageContent(item.Content)
 		if len(contentBlocks) == 0 {
@@ -75,10 +72,7 @@ func responsesItemToClaudeMessage(item types.ResponsesItem) (*types.ClaudeMessag
 			return nil, fmt.Errorf("text 类型的 content 不能为空")
 		}
 
-		role := "user"
-		if item.Role != "" {
-			role = item.Role
-		}
+		role := normalizeResponsesMessageRole(item.Role)
 
 		return &types.ClaudeMessage{
 			Role:    role,
@@ -91,7 +85,7 @@ func responsesItemToClaudeMessage(item types.ResponsesItem) (*types.ClaudeMessag
 	case "tool_result":
 		return responsesItemToClaudeToolMessage(item)
 
-	case "function_call", "function_call_output":
+	case "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "tool_search_call", "tool_search_output":
 		return responsesItemToClaudeToolMessage(item)
 
 	case "reasoning":
@@ -192,10 +186,7 @@ func ResponsesToOpenAIChatMessages(sess *session.Session, newInput interface{}, 
 func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface{} {
 	switch item.Type {
 	case "message":
-		role := item.Role
-		if role == "" {
-			role = "user"
-		}
+		role := normalizeResponsesMessageRole(item.Role)
 
 		content := buildOpenAIMessageContent(item.Content)
 		if content == nil {
@@ -213,10 +204,7 @@ func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface
 			return nil
 		}
 
-		role := "user"
-		if item.Role != "" {
-			role = item.Role
-		}
+		role := normalizeResponsesMessageRole(item.Role)
 
 		return map[string]interface{}{
 			"role":    role,
@@ -271,6 +259,21 @@ func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface
 	}
 
 	return nil
+}
+
+func normalizeResponsesMessageRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "", "user":
+		return "user"
+	case "assistant":
+		return "assistant"
+	case "system", "developer":
+		return "system"
+	case "tool":
+		return "tool"
+	default:
+		return "user"
+	}
 }
 
 // ============== OpenAI Chat Response → Responses ==============

@@ -15,24 +15,16 @@ func ResponsesToolsToClaudeTools(raw interface{}) ([]types.ClaudeTool, error) {
 	}
 
 	tools := make([]types.ClaudeTool, 0, len(items))
-	for _, item := range items {
+	for index, item := range items {
 		m, ok := item.(map[string]interface{})
 		if !ok {
 			return nil, fmt.Errorf("Responses tools 项必须是对象")
 		}
-		spec := normalizeResponsesToolDefinition(m)
-		if spec.ToolType != "" && spec.ToolType != "function" && spec.ToolType != "custom" {
-			return nil, fmt.Errorf("Claude 上游暂不支持 Responses tool type %q", spec.ToolType)
+		converted, err := responsesToolToClaudeTools(m, index)
+		if err != nil {
+			return nil, err
 		}
-		if spec.Name == "" {
-			return nil, fmt.Errorf("Responses function tool 缺少 name")
-		}
-
-		tools = append(tools, types.ClaudeTool{
-			Name:        spec.Name,
-			Description: spec.Description,
-			InputSchema: spec.Parameters,
-		})
+		tools = append(tools, converted...)
 	}
 	return tools, nil
 }
@@ -54,16 +46,144 @@ func ResponsesToolChoiceToClaude(raw interface{}) (interface{}, error) {
 			return nil, fmt.Errorf("不支持的 Responses tool_choice: %s", v)
 		}
 	case map[string]interface{}:
-		if typ, _ := v["type"].(string); typ == "function" || typ == "custom" {
+		typ, _ := v["type"].(string)
+		switch strings.TrimSpace(typ) {
+		case "auto", "":
+			return map[string]interface{}{"type": "auto"}, nil
+		case "required", "any":
+			return map[string]interface{}{"type": "any"}, nil
+		case "none":
+			return map[string]interface{}{"type": "none"}, nil
+		case "function", "custom", "tool", "namespace":
 			name := extractNamedToolChoice(v)
 			if name == "" {
 				return nil, fmt.Errorf("function tool_choice 缺少 name")
 			}
+			if namespace, _ := v["namespace"].(string); strings.TrimSpace(namespace) != "" {
+				name = flattenNamespaceToolName(namespace, name)
+			}
 			return map[string]interface{}{"type": "tool", "name": name}, nil
+		case "tool_search":
+			return map[string]interface{}{"type": "tool", "name": "tool_search"}, nil
+		case "web_search", "web_search_preview":
+			return map[string]interface{}{"type": "tool", "name": "web_search"}, nil
+		default:
+			return v, nil
 		}
-		return v, nil
 	default:
 		return nil, fmt.Errorf("不支持的 tool_choice 类型: %T", raw)
+	}
+}
+
+func responsesToolToClaudeTools(tool map[string]interface{}, index int) ([]types.ClaudeTool, error) {
+	spec := normalizeResponsesToolDefinition(tool)
+	switch spec.ToolType {
+	case "", "function", "custom":
+		if spec.Name == "" {
+			return nil, fmt.Errorf("Responses function tool 缺少 name")
+		}
+		return []types.ClaudeTool{buildClaudeTool(spec.Name, spec.Description, spec.Parameters)}, nil
+	case "namespace":
+		return buildClaudeNamespaceTools(tool, index)
+	case "tool_search":
+		return []types.ClaudeTool{buildClaudeToolSearchTool()}, nil
+	case "web_search", "web_search_preview":
+		return []types.ClaudeTool{buildClaudeWebSearchTool(tool)}, nil
+	default:
+		return nil, fmt.Errorf("Claude 上游暂不支持 Responses tool type %q", spec.ToolType)
+	}
+}
+
+func buildClaudeNamespaceTools(tool map[string]interface{}, index int) ([]types.ClaudeTool, error) {
+	namespace, _ := tool["name"].(string)
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		return nil, fmt.Errorf("Claude namespace tool 第 %d 项缺少 name", index)
+	}
+
+	rawChildren := tool["tools"]
+	if rawChildren == nil {
+		rawChildren = tool["children"]
+	}
+	children, err := normalizeMapSlice(rawChildren)
+	if err != nil {
+		return nil, fmt.Errorf("Claude namespace tool 第 %d 项 children 非法: %w", index, err)
+	}
+
+	out := make([]types.ClaudeTool, 0, len(children))
+	for _, child := range children {
+		childSpec := normalizeResponsesToolDefinition(child)
+		if childSpec.ToolType != "" && childSpec.ToolType != "function" && childSpec.ToolType != "custom" {
+			continue
+		}
+		if childSpec.Name == "" {
+			continue
+		}
+		out = append(out, buildClaudeTool(
+			flattenNamespaceToolName(namespace, childSpec.Name),
+			childSpec.Description,
+			childSpec.Parameters,
+		))
+	}
+	return out, nil
+}
+
+func buildClaudeTool(name, description string, inputSchema interface{}) types.ClaudeTool {
+	if inputSchema == nil {
+		inputSchema = emptyOpenAIChatToolParameters()
+	}
+	return types.ClaudeTool{
+		Name:        name,
+		Description: description,
+		InputSchema: inputSchema,
+	}
+}
+
+func buildClaudeToolSearchTool() types.ClaudeTool {
+	return types.ClaudeTool{
+		Name:        "tool_search",
+		Description: "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "Search query for tools or connectors to load.",
+				},
+				"limit": map[string]interface{}{
+					"type":        "integer",
+					"description": "Maximum number of tool groups to return.",
+				},
+			},
+			"required": []string{"query"},
+		},
+	}
+}
+
+func buildClaudeWebSearchTool(tool map[string]interface{}) types.ClaudeTool {
+	description, _ := tool["description"].(string)
+	if strings.TrimSpace(description) == "" {
+		description = "Search the web for relevant information."
+	}
+
+	parameters := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"query": map[string]interface{}{
+				"type":        "string",
+				"description": "Search query to run on the web.",
+			},
+		},
+		"required": []string{"query"},
+	}
+	if rawParameters, ok := tool["parameters"].(map[string]interface{}); ok && rawParameters != nil {
+		parameters = rawParameters
+	}
+
+	return types.ClaudeTool{
+		Name:        "web_search",
+		Description: description,
+		InputSchema: parameters,
 	}
 }
 
@@ -205,17 +325,34 @@ func claudeContentBlockToResponsesItem(block map[string]interface{}) (types.Resp
 
 func responsesItemToClaudeToolMessage(item types.ResponsesItem) (*types.ClaudeMessage, error) {
 	switch item.Type {
-	case "function_call", "custom_tool_call":
+	case "function_call", "custom_tool_call", "tool_search_call":
 		callID := item.CallID
 		if callID == "" {
 			callID = strings.TrimPrefix(item.ID, "fc_")
 			if callID == item.ID {
 				callID = strings.TrimPrefix(item.ID, "ctc_")
 			}
+			if callID == item.ID {
+				callID = strings.TrimPrefix(item.ID, "tsc_")
+			}
 		}
 		var input interface{} = map[string]interface{}{}
 		if item.Type == "custom_tool_call" {
 			input = map[string]interface{}{"input": extractTextFromContent(item.Content)}
+		} else if item.Type == "tool_search_call" {
+			name := item.Name
+			if strings.TrimSpace(name) == "" {
+				name = "tool_search"
+			}
+			if strings.TrimSpace(item.Arguments) != "" {
+				var parsed interface{}
+				if err := json.Unmarshal([]byte(item.Arguments), &parsed); err == nil {
+					input = parsed
+				} else {
+					return nil, fmt.Errorf("tool_search arguments 不是合法 JSON: %w", err)
+				}
+			}
+			return &types.ClaudeMessage{Role: "assistant", Content: []map[string]interface{}{{"type": "tool_use", "id": callID, "name": name, "input": input}}}, nil
 		} else if item.Arguments != "" {
 			var parsed interface{}
 			if err := json.Unmarshal([]byte(item.Arguments), &parsed); err == nil {
