@@ -106,6 +106,11 @@ func (p *ClaudeProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 
 	// 使用统一的头部处理逻辑
 	req.Header = utils.PrepareUpstreamHeaders(c, req.URL.Host)
+	
+	// 智能补充 Claude Code CLI 所需的请求头（如果客户端没发送则补充，如果已有则保留）
+	utils.EnsureClaudeCodeHeaders(req.Header)
+	
+	// 设置认证头（会覆盖客户端的认证头）
 	utils.SetAuthenticationHeader(req.Header, apiKey)
 	utils.EnsureCompatibleUserAgent(req.Header, "claude")
 

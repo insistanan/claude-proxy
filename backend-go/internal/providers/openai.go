@@ -101,6 +101,23 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	// 使用统一的头部处理逻辑（透明代理）
 	// 保留客户端的大部分 headers，只移除/替换必要的认证和代理相关 headers
 	req.Header = utils.PrepareUpstreamHeaders(c, req.URL.Host)
+	
+	// 删除演练台模拟的客户端请求头（避免上游严格验证报错）
+	req.Header.Del("X-Codex-Window-Id")
+	req.Header.Del("X-Codex-Installation-Id")
+	req.Header.Del("X-Request-Id")
+	req.Header.Del("X-Codex-Turn-Metadata")
+	req.Header.Del("X-Claude-Code-Session-Id")
+	req.Header.Del("X-Stainless-Lang")
+	req.Header.Del("X-Stainless-Runtime")
+	req.Header.Del("X-Stainless-Runtime-Version")
+	req.Header.Del("X-Stainless-Os")
+	req.Header.Del("X-Stainless-Arch")
+	req.Header.Del("X-Stainless-Package-Version")
+	req.Header.Del("X-Stainless-Retry-Count")
+	req.Header.Del("X-Stainless-Timeout")
+	req.Header.Del("X-App")
+	
 	utils.SetAuthenticationHeader(req.Header, apiKey)
 
 	return req, originalBodyBytes, nil

@@ -87,12 +87,10 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 	// 使用统一的头部处理逻辑，保留客户端的大部分 headers
 	req.Header = utils.PrepareUpstreamHeaders(c, req.URL.Host)
 
-	// 删除客户端的所有认证头，避免冲突
-	req.Header.Del("authorization")
-	req.Header.Del("x-api-key")
-	req.Header.Del("x-goog-api-key")
+	// 智能补充 Codex CLI 所需的请求头（如果客户端没发送则补充，如果已有则保留）
+	utils.EnsureCodexHeaders(req.Header)
 
-	// 根据 ServiceType 设置对应的认证头
+	// 根据 ServiceType 设置对应的认证头（会覆盖客户端的认证头）
 	switch upstream.ServiceType {
 	case "gemini":
 		// 只有 Gemini 使用特殊的认证头
