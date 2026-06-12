@@ -16,6 +16,7 @@ export interface PlaygroundState {
   sessionId: string | null
   threadId: string | null
   interactionId: string | null
+  responseId: string | null
 }
 
 // 生成 UUID v4
@@ -37,24 +38,37 @@ export const usePlaygroundStore = defineStore('playground', () => {
   const sessionId = ref<string | null>(null)
   const threadId = ref<string | null>(null)
   const interactionId = ref<string | null>(null)
+  const responseId = ref<string | null>(null)
+
+  const resetConversationContext = () => {
+    sessionId.value = null
+    threadId.value = null
+    interactionId.value = null
+    responseId.value = null
+  }
+
+  const ensureConversationContext = () => {
+    if (!sessionId.value) {
+      sessionId.value = generateUUID()
+    }
+    if (!threadId.value) {
+      threadId.value = `thread-${generateUUID()}`
+    }
+  }
 
   const setApiType = (type: PlaygroundState['apiType']) => {
     apiType.value = type
     channelIndex.value = null
     messages.value = []
-    // 重置会话 ID
-    sessionId.value = null
-    threadId.value = null
-    interactionId.value = null
+    resetConversationContext()
   }
 
-  const setChannel = (index: number) => {
+  const setChannel = (index: PlaygroundState['channelIndex']) => {
     channelIndex.value = index
     messages.value = []
-    // 初始化会话 ID
-    if (!sessionId.value) {
-      sessionId.value = generateUUID()
-      threadId.value = `thread-${generateUUID()}`
+    resetConversationContext()
+    if (index !== null) {
+      ensureConversationContext()
     }
   }
 
@@ -75,10 +89,10 @@ export const usePlaygroundStore = defineStore('playground', () => {
 
   const clearMessages = () => {
     messages.value = []
-    // 清空对话时重置会话 ID
-    sessionId.value = null
-    threadId.value = null
-    interactionId.value = null
+    resetConversationContext()
+    if (channelIndex.value !== null) {
+      ensureConversationContext()
+    }
   }
 
   const setStreaming = (streaming: boolean) => {
@@ -89,6 +103,10 @@ export const usePlaygroundStore = defineStore('playground', () => {
     interactionId.value = id
   }
 
+  const setResponseId = (id: string | null) => {
+    responseId.value = id
+  }
+
   return {
     apiType,
     channelIndex,
@@ -97,12 +115,14 @@ export const usePlaygroundStore = defineStore('playground', () => {
     sessionId,
     threadId,
     interactionId,
+    responseId,
     setApiType,
     setChannel,
     addMessage,
     updateLastMessage,
     clearMessages,
     setStreaming,
-    setInteractionId
+    setInteractionId,
+    setResponseId
   }
 })

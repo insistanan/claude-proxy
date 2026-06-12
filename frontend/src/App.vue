@@ -615,8 +615,12 @@ const handleQuickTest = (channelId: number) => {
           sessionId: playgroundStore.sessionId || undefined,
           threadId: playgroundStore.threadId || undefined,
           interactionId: playgroundStore.interactionId || undefined,
+          responseId: playgroundStore.responseId || undefined,
           onInteractionId: (id: string) => {
             playgroundStore.setInteractionId(id)
+          },
+          onResponseId: (id: string) => {
+            playgroundStore.setResponseId(id)
           }
         }
       )

@@ -30,6 +30,7 @@
               label="选择渠道"
               variant="outlined"
               prepend-inner-icon="mdi-server-network"
+              @update:model-value="onChannelChange"
             />
           </v-col>
         </v-row>
@@ -67,7 +68,7 @@
               label="输入消息..."
               variant="outlined"
               rows="3"
-              :disabled="!canSend"
+              :disabled="!canInput"
               :loading="playgroundStore.isStreaming"
               @keydown.ctrl.enter="sendMessage"
             />
@@ -147,9 +148,20 @@ const canSend = computed(() => {
   )
 })
 
-const onApiTypeChange = () => {
-  playgroundStore.setChannel(null as any)
-  playgroundStore.clearMessages()
+const canInput = computed(() => {
+  return !!(
+    playgroundStore.apiType &&
+    playgroundStore.channelIndex !== null &&
+    !playgroundStore.isStreaming
+  )
+})
+
+const onApiTypeChange = (value: 'messages' | 'responses' | 'gemini' | 'chat' | null) => {
+  playgroundStore.setApiType(value)
+}
+
+const onChannelChange = (value: number | null) => {
+  playgroundStore.setChannel(value)
 }
 
 const formatTime = (timestamp: number) => {
@@ -198,8 +210,12 @@ const sendMessage = async () => {
         sessionId: playgroundStore.sessionId || undefined,
         threadId: playgroundStore.threadId || undefined,
         interactionId: playgroundStore.interactionId || undefined,
+        responseId: playgroundStore.responseId || undefined,
         onInteractionId: (id: string) => {
           playgroundStore.setInteractionId(id)
+        },
+        onResponseId: (id: string) => {
+          playgroundStore.setResponseId(id)
         }
       }
     )

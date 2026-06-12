@@ -557,6 +557,14 @@ class ApiService {
     return this.request('/messages/ping')
   }
 
+  async pingResponsesChannel(id: number): Promise<PingResult> {
+    return this.request(`/responses/ping/${id}`)
+  }
+
+  async pingAllResponsesChannels(): Promise<Array<{ id: number; name: string; latency: number; status: string }>> {
+    return this.request('/responses/ping')
+  }
+
   async updateLoadBalance(strategy: string): Promise<void> {
     await this.request('/loadbalance', {
       method: 'PUT',
@@ -1146,10 +1154,17 @@ export const testChannel = async (
     threadId?: string
     interactionId?: string
     onInteractionId?: (id: string) => void
+    responseId?: string
+    onResponseId?: (id: string) => void
   }
 ): Promise<void> => {
   const authStore = useAuthStore()
   const baseUrl = import.meta.env.PROD ? '' : (import.meta.env.VITE_BACKEND_URL || '')
+  const accessKey = authStore.apiKey?.trim() || ''
+
+  if (!accessKey) {
+    throw new Error('未检测到访问密钥，请先完成登录认证')
+  }
   
   // 生成 UUID
   const generateUUID = () => {
@@ -1176,11 +1191,20 @@ export const testChannel = async (
     return 'x64'
   }
 
+  const sessionId = sessionContext?.sessionId || generateUUID()
+  const threadId = sessionContext?.threadId || `thread-${generateUUID()}`
+  const createConversationMetadata = () => ({
+    channel_index: channelIndex,
+    user_id: sessionId,
+    session_id: sessionId,
+    thread_id: threadId
+  })
+
   let endpoint = ''
   let body: any = {}
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'x-api-key': authStore.accessKey || ''
+    'x-api-key': accessKey
   }
 
   switch (apiType) {
@@ -1188,7 +1212,7 @@ export const testChannel = async (
       // 模拟 Claude Code CLI
       endpoint = '/v1/messages'
       headers['User-Agent'] = 'claude-code/2.1.83'
-      headers['X-Claude-Code-Session-Id'] = sessionContext?.sessionId || generateUUID()
+      headers['X-Claude-Code-Session-Id'] = sessionId
       headers['Anthropic-Version'] = '2023-06-01'
       headers['Anthropic-Beta'] = 'interleaved-thinking-2025-05-14'
       headers['X-App'] = 'cli'
@@ -1205,7 +1229,7 @@ export const testChannel = async (
         model: 'claude-3-5-sonnet-20241022',
         max_tokens: 1024,
         messages: [{ role: 'user', content: message }],
-        metadata: { channel_index: channelIndex },
+        metadata: createConversationMetadata(),
         stream: true
       }
       break
@@ -1214,9 +1238,8 @@ export const testChannel = async (
     case 'responses': {
       // 模拟 Codex CLI
       endpoint = '/v1/responses'
-      const threadId = sessionContext?.threadId || `thread-${generateUUID()}`
       const requestId = generateUUID()
-      const installationId = sessionContext?.sessionId || generateUUID()
+      const installationId = sessionId
       
       headers['X-Codex-Window-Id'] = `${threadId}:0`
       headers['X-Codex-Installation-Id'] = installationId
@@ -1228,10 +1251,13 @@ export const testChannel = async (
       })
       
       body = {
-        prompt: message,
+        input: message,
         model: 'claude-3-5-sonnet-20241022',
-        metadata: { channel_index: channelIndex },
+        metadata: createConversationMetadata(),
         stream: true
+      }
+      if (sessionContext?.responseId) {
+        body.previous_response_id = sessionContext.responseId
       }
       break
     }
@@ -1244,7 +1270,7 @@ export const testChannel = async (
       
       body = {
         contents: [{ role: 'user', parts: [{ text: message }] }],
-        metadata: { channel_index: channelIndex }
+        metadata: createConversationMetadata()
       }
       
       // 多轮对话支持
@@ -1260,7 +1286,8 @@ export const testChannel = async (
       body = {
         model: 'gpt-4',
         messages: [{ role: 'user', content: message }],
-        metadata: { channel_index: channelIndex },
+        metadata: createConversationMetadata(),
+        user: sessionId,
         stream: true
       }
       break
@@ -1283,48 +1310,71 @@ export const testChannel = async (
   }
 
   const decoder = new TextDecoder()
+  let buffer = ''
+
+  const processSSELine = (line: string) => {
+    if (!line.trim() || !line.startsWith('data:')) return
+
+    const data = line.slice(5).trim()
+    if (data === '[DONE]') return
+
+    try {
+      const parsed = JSON.parse(data)
+
+      if (apiType === 'gemini' && parsed.id && sessionContext?.onInteractionId) {
+        sessionContext.onInteractionId(parsed.id)
+      }
+
+      if (
+        apiType === 'responses' &&
+        parsed.type === 'response.completed' &&
+        typeof parsed.response?.id === 'string' &&
+        parsed.response.id &&
+        sessionContext?.onResponseId
+      ) {
+        sessionContext.onResponseId(parsed.response.id)
+      }
+
+      let content = ''
+      if (apiType === 'messages') {
+        content = parsed.delta?.text || ''
+      } else if (apiType === 'responses') {
+        if (parsed.type === 'response.output_text.delta' && typeof parsed.delta === 'string') {
+          content = parsed.delta
+        } else if (typeof parsed.completion === 'string') {
+          content = parsed.completion
+        }
+      } else if (apiType === 'gemini') {
+        content = parsed.candidates?.[0]?.content?.parts?.[0]?.text || ''
+      } else if (apiType === 'chat') {
+        content = parsed.choices?.[0]?.delta?.content || ''
+      }
+
+      if (content) {
+        onChunk(content)
+      }
+    } catch {
+      // 忽略非 JSON SSE 行
+    }
+  }
 
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
 
-      const chunk = decoder.decode(value, { stream: true })
-      const lines = chunk.split('\n')
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
 
       for (const line of lines) {
-        if (!line.trim() || !line.startsWith('data: ')) continue
-        
-        const data = line.slice(6).trim()
-        if (data === '[DONE]') continue
-
-        try {
-          const parsed = JSON.parse(data)
-          
-          // Gemini 提取 interaction_id
-          if (apiType === 'gemini' && parsed.id && sessionContext?.onInteractionId) {
-            sessionContext.onInteractionId(parsed.id)
-          }
-          
-          // 根据不同协议提取内容
-          let content = ''
-          if (apiType === 'messages') {
-            content = parsed.delta?.text || ''
-          } else if (apiType === 'responses') {
-            content = parsed.completion || ''
-          } else if (apiType === 'gemini') {
-            content = parsed.candidates?.[0]?.content?.parts?.[0]?.text || ''
-          } else if (apiType === 'chat') {
-            content = parsed.choices?.[0]?.delta?.content || ''
-          }
-
-          if (content) {
-            onChunk(content)
-          }
-        } catch (e) {
-          // 忽略解析错误
-        }
+        processSSELine(line)
       }
+    }
+
+    buffer += decoder.decode()
+    if (buffer) {
+      processSSELine(buffer)
     }
   } finally {
     reader.releaseLock()
