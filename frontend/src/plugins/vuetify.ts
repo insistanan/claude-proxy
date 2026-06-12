@@ -13,6 +13,7 @@ import 'vuetify/styles'
 //    2. 在 iconMap 中添加映射 (如 'new-icon': mdiNewIcon)
 //    图标查找: https://pictogrammers.com/library/mdi/
 import {
+  mdiAccount,
   mdiSwapVerticalBold,
   mdiPlayCircle,
   mdiDragVertical,
@@ -88,6 +89,7 @@ import {
   mdiUnfoldMoreHorizontal,
   mdiLoading,
   mdiClockOutline,
+  mdiChartLineVariant,
   mdiMagnify,
   mdiCalendar,
   mdiPaperclip,
@@ -103,12 +105,16 @@ import {
   mdiTextBoxSearchOutline,
   mdiSignature,
   mdiImageSearchOutline,
+  mdiChatOutline,
+  mdiChatProcessing,
+  mdiSend,
   mdiArrowCollapseUp,
   mdiArrowCollapseDown,
   mdiArchiveClockOutline,
   mdiFormatListBulleted,
   mdiSort,
   mdiTimerSand,
+  mdiTestTube,
 } from '@mdi/js'
 
 // 图标名称到 SVG path 的映射 (使用 kebab-case)
@@ -219,6 +225,7 @@ const iconMap: Record<string, string> = {
   'lightning-bolt': mdiLightningBolt,
   'form-textbox': mdiFormTextbox,
   'clock-outline': mdiClockOutline,
+  'chart-line-variant': mdiChartLineVariant,
   'paperclip': mdiPaperclip,
   'eye-dropper': mdiEyedropper,
 
@@ -230,6 +237,8 @@ const iconMap: Record<string, string> = {
   'robot': mdiRobot,
   'robot-outline': mdiRobotOutline,
   'message-processing': mdiMessageProcessing,
+  'chat-outline': mdiChatOutline,
+  'chat-processing': mdiChatProcessing,
   'diamond-stone': mdiDiamondStone,
   'api': mdiApi,
 
@@ -275,6 +284,9 @@ const iconMap: Record<string, string> = {
 
   // 临时/沙漏
   'timer-sand': mdiTimerSand,
+  'test-tube': mdiTestTube,
+  'account': mdiAccount,
+  'send': mdiSend,
 }
 
 // 自定义 SVG iconset - 处理 mdi-xxx 字符串格式
@@ -293,7 +305,23 @@ const customSvgIconSet: IconSet = {
       if (import.meta.env.DEV) {
         console.warn(`[Vuetify Icon] 未找到图标: ${iconName}，请在 vuetify.ts 的 iconMap 中添加映射`)
       }
-      return h('span', `[${iconName}]`)
+      return h('svg', {
+        class: 'v-icon__svg v-icon__svg--missing',
+        xmlns: 'http://www.w3.org/2000/svg',
+        viewBox: '0 0 24 24',
+        role: 'img',
+        'aria-hidden': 'true',
+        style: {
+          fontSize: 'inherit',
+          width: '1em',
+          height: '1em',
+        },
+      }, [
+        h('path', {
+          d: mdiHelpCircle,
+          fill: 'currentColor',
+        })
+      ])
     }
 
     return h('svg', {
