@@ -614,6 +614,10 @@ func replaceChatModel(bodyBytes []byte, model string) ([]byte, error) {
 }
 
 func sanitizeOpenAIChatPayloadForUpstream(payload map[string]interface{}) error {
+	if err := sanitizeOpenAIChatMessagesForUpstream(payload); err != nil {
+		return err
+	}
+
 	toolsRaw, hasToolsField := payload["tools"]
 	tools, err := sanitizeOpenAIChatTools(toolsRaw)
 	if err != nil {
@@ -645,6 +649,39 @@ func sanitizeOpenAIChatPayloadForUpstream(payload map[string]interface{}) error 
 		}
 	}
 	return nil
+}
+
+func sanitizeOpenAIChatMessagesForUpstream(payload map[string]interface{}) error {
+	rawMessages, exists := payload["messages"]
+	if !exists || rawMessages == nil {
+		return nil
+	}
+
+	items, ok := rawMessages.([]interface{})
+	if !ok {
+		return fmt.Errorf("Chat messages 必须是数组")
+	}
+
+	for i, item := range items {
+		message, ok := item.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("Chat messages 第 %d 项必须是对象", i)
+		}
+		role, _ := message["role"].(string)
+		message["role"] = normalizeOpenAIChatRoleForUpstream(role)
+	}
+	return nil
+}
+
+func normalizeOpenAIChatRoleForUpstream(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "developer":
+		return "system"
+	case "system", "user", "assistant", "tool":
+		return strings.ToLower(strings.TrimSpace(role))
+	default:
+		return "user"
+	}
 }
 
 func sanitizeOpenAIChatTools(raw interface{}) ([]map[string]interface{}, error) {
