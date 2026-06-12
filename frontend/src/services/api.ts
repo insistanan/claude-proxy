@@ -1127,4 +1127,207 @@ export const fetchHealth = async (): Promise<HealthResponse> => {
 }
 
 export const api = new ApiService()
+
+/**
+ * 测试渠道连通性（演练台专用）
+ * @param apiType API 协议类型
+ * @param channelIndex 渠道索引
+ * @param message 测试消息
+ * @param onChunk 流式返回回调
+ * @param sessionContext 会话上下文（用于模拟客户端）
+ */
+export const testChannel = async (
+  apiType: 'messages' | 'responses' | 'gemini' | 'chat',
+  channelIndex: number,
+  message: string,
+  onChunk: (chunk: string) => void,
+  sessionContext?: {
+    sessionId?: string
+    threadId?: string
+    interactionId?: string
+    onInteractionId?: (id: string) => void
+  }
+): Promise<void> => {
+  const authStore = useAuthStore()
+  const baseUrl = import.meta.env.PROD ? '' : (import.meta.env.VITE_BACKEND_URL || '')
+  
+  // 生成 UUID
+  const generateUUID = () => {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = Math.random() * 16 | 0
+      const v = c === 'x' ? r : (r & 0x3 | 0x8)
+      return v.toString(16)
+    })
+  }
+
+  // 检测操作系统
+  const detectOS = () => {
+    const ua = navigator.userAgent
+    if (ua.includes('Win')) return 'Windows'
+    if (ua.includes('Mac')) return 'MacOS'
+    if (ua.includes('Linux')) return 'Linux'
+    return 'Unknown'
+  }
+
+  // 检测架构
+  const detectArch = () => {
+    const ua = navigator.userAgent
+    if (ua.includes('ARM') || ua.includes('aarch64')) return 'arm64'
+    return 'x64'
+  }
+
+  let endpoint = ''
+  let body: any = {}
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-api-key': authStore.accessKey || ''
+  }
+
+  switch (apiType) {
+    case 'messages': {
+      // 模拟 Claude Code CLI
+      endpoint = '/v1/messages'
+      headers['User-Agent'] = 'claude-code/2.1.83'
+      headers['X-Claude-Code-Session-Id'] = sessionContext?.sessionId || generateUUID()
+      headers['Anthropic-Version'] = '2023-06-01'
+      headers['Anthropic-Beta'] = 'interleaved-thinking-2025-05-14'
+      headers['X-App'] = 'cli'
+      headers['X-Stainless-Lang'] = 'js'
+      headers['X-Stainless-Runtime'] = 'node'
+      headers['X-Stainless-Runtime-Version'] = 'v24.3.0'
+      headers['X-Stainless-Os'] = detectOS()
+      headers['X-Stainless-Arch'] = detectArch()
+      headers['X-Stainless-Package-Version'] = '0.75.0'
+      headers['X-Stainless-Retry-Count'] = '0'
+      headers['X-Stainless-Timeout'] = '600'
+      
+      body = {
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: message }],
+        metadata: { channel_index: channelIndex },
+        stream: true
+      }
+      break
+    }
+    
+    case 'responses': {
+      // 模拟 Codex CLI
+      endpoint = '/v1/responses'
+      const threadId = sessionContext?.threadId || `thread-${generateUUID()}`
+      const requestId = generateUUID()
+      const installationId = sessionContext?.sessionId || generateUUID()
+      
+      headers['X-Codex-Window-Id'] = `${threadId}:0`
+      headers['X-Codex-Installation-Id'] = installationId
+      headers['X-Request-Id'] = requestId
+      headers['X-Codex-Turn-Metadata'] = JSON.stringify({
+        session_id: installationId,
+        thread_id: threadId,
+        request_kind: 'turn'
+      })
+      
+      body = {
+        prompt: message,
+        model: 'claude-3-5-sonnet-20241022',
+        metadata: { channel_index: channelIndex },
+        stream: true
+      }
+      break
+    }
+    
+    case 'gemini': {
+      // 模拟 Gemini SDK
+      endpoint = '/gemini/v1beta/models/gemini-2.0-flash-exp:streamGenerateContent'
+      headers['Api-Revision'] = '2026-05-20'
+      headers['User-Agent'] = 'google-genai-sdk/1.71.0 gl-python/3.14.3'
+      
+      body = {
+        contents: [{ role: 'user', parts: [{ text: message }] }],
+        metadata: { channel_index: channelIndex }
+      }
+      
+      // 多轮对话支持
+      if (sessionContext?.interactionId) {
+        body.previous_interaction_id = sessionContext.interactionId
+      }
+      break
+    }
+    
+    case 'chat': {
+      // Chat API 不需要特殊模拟
+      endpoint = '/v1/chat/completions'
+      body = {
+        model: 'gpt-4',
+        messages: [{ role: 'user', content: message }],
+        metadata: { channel_index: channelIndex },
+        stream: true
+      }
+      break
+    }
+  }
+
+  const response = await fetch(`${baseUrl}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body)
+  })
+
+  if (!response.ok) {
+    throw new Error(`请求失败: ${response.status} ${response.statusText}`)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) {
+    throw new Error('无法读取响应流')
+  }
+
+  const decoder = new TextDecoder()
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const chunk = decoder.decode(value, { stream: true })
+      const lines = chunk.split('\n')
+
+      for (const line of lines) {
+        if (!line.trim() || !line.startsWith('data: ')) continue
+        
+        const data = line.slice(6).trim()
+        if (data === '[DONE]') continue
+
+        try {
+          const parsed = JSON.parse(data)
+          
+          // Gemini 提取 interaction_id
+          if (apiType === 'gemini' && parsed.id && sessionContext?.onInteractionId) {
+            sessionContext.onInteractionId(parsed.id)
+          }
+          
+          // 根据不同协议提取内容
+          let content = ''
+          if (apiType === 'messages') {
+            content = parsed.delta?.text || ''
+          } else if (apiType === 'responses') {
+            content = parsed.completion || ''
+          } else if (apiType === 'gemini') {
+            content = parsed.candidates?.[0]?.content?.parts?.[0]?.text || ''
+          } else if (apiType === 'chat') {
+            content = parsed.choices?.[0]?.delta?.content || ''
+          }
+
+          if (content) {
+            onChunk(content)
+          }
+        } catch (e) {
+          // 忽略解析错误
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
 export default api

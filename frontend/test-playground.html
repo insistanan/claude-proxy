@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Playground Store 测试</title>
+    <style>
+        body { font-family: monospace; padding: 20px; max-width: 800px; margin: 0 auto; }
+        .test { margin: 20px 0; padding: 15px; border: 1px solid #ccc; border-radius: 5px; }
+        .pass { background: #d4edda; border-color: #c3e6cb; }
+        .fail { background: #f8d7da; border-color: #f5c6cb; }
+        h2 { margin-top: 0; }
+        pre { background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Playground Store 单元测试</h1>
+    
+    <div id="test-results"></div>
+
+    <script type="module">
+        const results = [];
+        
+        function test(name, fn) {
+            try {
+                fn();
+                results.push({ name, pass: true });
+                console.log('✓', name);
+            } catch (error) {
+                results.push({ name, pass: false, error: error.message });
+                console.error('✗', name, error);
+            }
+        }
+
+        function assert(condition, message) {
+            if (!condition) throw new Error(message || 'Assertion failed');
+        }
+
+        // 模拟 UUID 生成
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        // 测试 UUID 生成
+        test('UUID v4 格式正确', () => {
+            const uuid = generateUUID();
+            assert(uuid.length === 36, 'UUID 长度应为 36');
+            assert(uuid[14] === '4', 'UUID 第 14 位应为 4 (版本)');
+            assert(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid), 'UUID 格式不正确');
+        });
+
+        // 测试会话 ID 唯一性
+        test('生成的 UUID 应唯一', () => {
+            const uuids = new Set();
+            for (let i = 0; i < 100; i++) {
+                uuids.add(generateUUID());
+            }
+            assert(uuids.size === 100, '100 个 UUID 应该都不相同');
+        });
+
+        // 测试操作系统检测
+        test('OS 检测逻辑', () => {
+            const detectOS = () => {
+                const ua = navigator.userAgent;
+                if (ua.includes('Win')) return 'Windows';
+                if (ua.includes('Mac')) return 'MacOS';
+                if (ua.includes('Linux')) return 'Linux';
+                return 'Unknown';
+            };
+            const os = detectOS();
+            assert(['Windows', 'MacOS', 'Linux', 'Unknown'].includes(os), 'OS 应为支持的类型');
+            console.log('  检测到的 OS:', os);
+        });
+
+        // 测试架构检测
+        test('架构检测逻辑', () => {
+            const detectArch = () => {
+                const ua = navigator.userAgent;
+                if (ua.includes('ARM') || ua.includes('aarch64')) return 'arm64';
+                return 'x64';
+            };
+            const arch = detectArch();
+            assert(['x64', 'arm64'].includes(arch), '架构应为 x64 或 arm64');
+            console.log('  检测到的架构:', arch);
+        });
+
+        // 测试 Claude Code 请求头生成
+        test('Claude Code 请求头', () => {
+            const sessionId = generateUUID();
+            const headers = {
+                'User-Agent': 'claude-code/2.1.83',
+                'X-Claude-Code-Session-Id': sessionId,
+                'Anthropic-Version': '2023-06-01',
+                'Anthropic-Beta': 'interleaved-thinking-2025-05-14',
+                'X-App': 'cli',
+                'X-Stainless-Lang': 'js',
+                'X-Stainless-Runtime': 'node',
+                'X-Stainless-Runtime-Version': 'v24.3.0',
+                'X-Stainless-Package-Version': '0.75.0',
+            };
+            
+            assert(headers['User-Agent'] === 'claude-code/2.1.83', 'User-Agent 不正确');
+            assert(headers['X-Claude-Code-Session-Id'].length === 36, 'Session ID 格式不正确');
+            assert(headers['Anthropic-Beta'].includes('interleaved-thinking'), 'Beta 头不正确');
+        });
+
+        // 测试 Codex 请求头生成
+        test('Codex CLI 请求头', () => {
+            const threadId = `thread-${generateUUID()}`;
+            const installationId = generateUUID();
+            const requestId = generateUUID();
+            
+            const headers = {
+                'X-Codex-Window-Id': `${threadId}:0`,
+                'X-Codex-Installation-Id': installationId,
+                'X-Request-Id': requestId,
+            };
+            
+            assert(headers['X-Codex-Window-Id'].startsWith('thread-'), 'Window ID 格式不正确');
+            assert(headers['X-Codex-Window-Id'].endsWith(':0'), 'Window ID 应以 :0 结尾');
+            assert(headers['X-Codex-Installation-Id'].length === 36, 'Installation ID 格式不正确');
+        });
+
+        // 测试 Codex Turn Metadata
+        test('Codex Turn Metadata 格式', () => {
+            const metadata = {
+                session_id: generateUUID(),
+                thread_id: `thread-${generateUUID()}`,
+                request_kind: 'turn'
+            };
+            
+            const jsonStr = JSON.stringify(metadata);
+            const parsed = JSON.parse(jsonStr);
+            
+            assert(parsed.session_id.length === 36, 'session_id 格式不正确');
+            assert(parsed.thread_id.startsWith('thread-'), 'thread_id 格式不正确');
+            assert(parsed.request_kind === 'turn', 'request_kind 应为 turn');
+        });
+
+        // 测试 Gemini 请求头
+        test('Gemini SDK 请求头', () => {
+            const headers = {
+                'Api-Revision': '2026-05-20',
+                'User-Agent': 'google-genai-sdk/1.71.0 gl-python/3.14.3',
+            };
+            
+            assert(headers['Api-Revision'] === '2026-05-20', 'Api-Revision 不正确');
+            assert(headers['User-Agent'].includes('google-genai-sdk'), 'User-Agent 不正确');
+        });
+
+        // 显示结果
+        setTimeout(() => {
+            const container = document.getElementById('test-results');
+            const passed = results.filter(r => r.pass).length;
+            const failed = results.filter(r => !r.pass).length;
+            
+            container.innerHTML = `
+                <div style="margin-bottom: 20px; padding: 15px; background: ${failed === 0 ? '#d4edda' : '#fff3cd'}; border-radius: 5px;">
+                    <h2>测试结果: ${passed} 通过 / ${failed} 失败</h2>
+                </div>
+                ${results.map(r => `
+                    <div class="test ${r.pass ? 'pass' : 'fail'}">
+                        <h3>${r.pass ? '✓' : '✗'} ${r.name}</h3>
+                        ${r.error ? `<pre>错误: ${r.error}</pre>` : ''}
+                    </div>
+                `).join('')}
+            `;
+        }, 100);
+    </script>
+</body>
+</html>

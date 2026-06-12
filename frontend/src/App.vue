@@ -94,6 +94,10 @@
           <router-link to="/logs" class="api-type-text" :class="{ active: topNavActive === 'logs' }">
             日志
           </router-link>
+          <span class="api-type-text separator">/</span>
+          <router-link to="/playground" class="api-type-text" :class="{ active: topNavActive === 'playground' }">
+            演练台
+          </router-link>
           <span class="brand-text d-none d-sm-inline">API Proxy</span>
         </div>
       </div>
@@ -293,6 +297,7 @@
           @edit="editChannel"
           @delete="deleteChannel"
           @ping="pingChannel"
+          @quick-test="handleQuickTest"
           @refresh="refreshChannels"
           @error="showErrorToast"
           @success="showSuccessToast"
@@ -358,15 +363,16 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from 'vuetify'
-import { api, fetchHealth, ApiError, type Channel } from './services/api'
+import { api, fetchHealth, ApiError, testChannel, type Channel } from './services/api'
 import { versionService } from './services/version'
 import { useAuthStore } from './stores/auth'
 import { useChannelStore } from './stores/channel'
 import { usePreferencesStore } from './stores/preferences'
 import { useDialogStore } from './stores/dialog'
 import { useSystemStore } from './stores/system'
+import { usePlaygroundStore } from './stores/playground'
 import AddChannelModal from './components/AddChannelModal.vue'
 import GlobalStatsChart from './components/GlobalStatsChart.vue'
 import { useAppTheme } from './composables/useTheme'
@@ -383,6 +389,7 @@ const authStore = useAuthStore()
 // 渠道 Store
 const channelStore = useChannelStore()
 const route = useRoute()
+const router = useRouter()
 const isConversationPage = computed(() => route.name === 'conversations')
 const isLogsPage = computed(() => route.name === 'request-logs')
 const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value)
@@ -408,6 +415,9 @@ const topNavActive = computed(() => {
   }
   if (isLogsPage.value) {
     return 'logs'
+  }
+  if (route.path === '/playground') {
+    return 'playground'
   }
   const type = route.params.type
   return typeof type === 'string' ? type : 'messages'
@@ -564,6 +574,59 @@ const pingChannel = async (channelId: number) => {
   } catch (error) {
     showToast(`延迟测试失败: ${error instanceof Error ? error.message : '未知错误'}`, 'error')
   }
+}
+
+const handleQuickTest = (channelId: number) => {
+  const playgroundStore = usePlaygroundStore()
+  const currentApiType = channelStore.activeTab
+  
+  // 设置演练台参数
+  playgroundStore.setApiType(currentApiType)
+  playgroundStore.setChannel(channelId)
+  
+  // 自动发送"你好"
+  playgroundStore.addMessage({
+    role: 'user',
+    content: '你好'
+  })
+  
+  // 跳转到演练台
+  router.push('/playground')
+  
+  // 延迟执行发送，确保组件已加载
+  setTimeout(async () => {
+    try {
+      playgroundStore.setStreaming(true)
+      playgroundStore.addMessage({
+        role: 'assistant',
+        content: ''
+      })
+
+      await testChannel(
+        currentApiType,
+        channelId,
+        '你好',
+        (chunk: string) => {
+          playgroundStore.updateLastMessage(
+            playgroundStore.messages[playgroundStore.messages.length - 1].content + chunk
+          )
+        },
+        {
+          sessionId: playgroundStore.sessionId || undefined,
+          threadId: playgroundStore.threadId || undefined,
+          interactionId: playgroundStore.interactionId || undefined,
+          onInteractionId: (id: string) => {
+            playgroundStore.setInteractionId(id)
+          }
+        }
+      )
+    } catch (error: any) {
+      showToast(error.message || '测试失败', 'error')
+      playgroundStore.messages.pop()
+    } finally {
+      playgroundStore.setStreaming(false)
+    }
+  }, 500)
 }
 
 const pingAllChannels = async () => {

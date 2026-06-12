@@ -520,6 +520,17 @@ export const useChannelStore = defineStore('channel', () => {
     isPingingAll.value = false
   }
 
+  // 获取特定类型的渠道列表
+  function getChannelsByType(type: ApiTab): Channel[] {
+    switch (type) {
+      case 'messages': return channelsData.value.channels || []
+      case 'responses': return responsesChannelsData.value.channels || []
+      case 'gemini': return geminiChannelsData.value.channels || []
+      case 'chat': return chatChannelsData.value.channels || []
+      default: return []
+    }
+  }
+
   // ===== 返回公开接口 =====
   return {
     // 状态
@@ -547,6 +558,7 @@ export const useChannelStore = defineStore('channel', () => {
     pingAllChannels,
     updateLoadBalance,
     startAutoRefresh,
+    getChannelsByType,
     stopAutoRefresh,
     clearChannels,
   }

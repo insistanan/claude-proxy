@@ -36,6 +36,31 @@ func TestPrepareUpstreamHeaders(t *testing.T) {
 			},
 		},
 		{
+			name: "移除所有可能泄露客户端IP的头部",
+			headers: map[string]string{
+				"Content-Type":      "application/json",
+				"X-Forwarded-For":   "1.2.3.4, 5.6.7.8",
+				"X-Real-IP":         "1.2.3.4",
+				"X-Forwarded":       "for=1.2.3.4",
+				"Forwarded":         "for=1.2.3.4;proto=https",
+				"CF-Connecting-IP":  "1.2.3.4",
+				"True-Client-IP":    "1.2.3.4",
+				"X-Client-IP":       "1.2.3.4",
+			},
+			targetHost: "upstream.api.com",
+			wantHost:   "upstream.api.com",
+			shouldExist: map[string]bool{
+				"Content-Type":      true,
+				"X-Forwarded-For":   false,
+				"X-Real-IP":         false,
+				"X-Forwarded":       false,
+				"Forwarded":         false,
+				"CF-Connecting-IP":  false,
+				"True-Client-IP":    false,
+				"X-Client-IP":       false,
+			},
+		},
+		{
 			name: "保留其他头部",
 			headers: map[string]string{
 				"Content-Type":  "application/json",

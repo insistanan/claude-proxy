@@ -21,6 +21,15 @@ func PrepareUpstreamHeaders(c *gin.Context, targetHost string) http.Header {
 	headers.Del("X-Forwarded-Host")
 	headers.Del("X-Forwarded-Proto")
 
+	// 移除所有可能泄露客户端真实 IP 的头部，确保上游只能看到代理服务器的 IP
+	headers.Del("X-Forwarded-For")
+	headers.Del("X-Real-IP")
+	headers.Del("X-Forwarded")
+	headers.Del("Forwarded")
+	headers.Del("CF-Connecting-IP")
+	headers.Del("True-Client-IP")
+	headers.Del("X-Client-IP")
+
 	// 移除 Accept-Encoding，让 Go 的 http.Client 自动处理 gzip 压缩/解压缩
 	// 这样可以避免在原始请求包含 Accept-Encoding 时 Go 不自动解压缩的问题
 	headers.Del("Accept-Encoding")

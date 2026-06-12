@@ -348,6 +348,12 @@
                       {{ element.visionCapable ? '取消图片理解默认模型' : '设为图片理解默认模型' }}
                     </v-list-item-title>
                   </v-list-item>
+                  <v-list-item @click="$emit('quickTest', element.index)">
+                    <template #prepend>
+                      <v-icon size="small" color="success">mdi-test-tube</v-icon>
+                    </template>
+                    <v-list-item-title>快捷测试</v-list-item-title>
+                  </v-list-item>
                   <v-list-item @click="$emit('ping', element.index)">
                     <template #prepend>
                       <v-icon size="small">mdi-speedometer</v-icon>
@@ -834,6 +840,7 @@ const emit = defineEmits<{
   (_e: 'edit', _channel: Channel): void
   (_e: 'delete', _channelId: number): void
   (_e: 'ping', _channelId: number): void
+  (_e: 'quickTest', _channelId: number): void
   (_e: 'refresh'): void
   (_e: 'error', _message: string): void
   (_e: 'success', _message: string): void

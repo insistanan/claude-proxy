@@ -263,6 +263,18 @@
       <div class="action-buttons d-flex flex-wrap ga-2 justify-end w-100">
         <v-btn
           size="small"
+          color="success"
+          variant="outlined"
+          rounded="lg"
+          class="action-btn"
+          prepend-icon="mdi-test-tube"
+          @click="$emit('quickTest', channel.index)"
+        >
+          快捷测试
+        </v-btn>
+        
+        <v-btn
+          size="small"
           color="primary"
           variant="outlined"
           rounded="lg"
@@ -323,6 +335,7 @@ defineEmits<{
   moveKeyToBottom: [channelId: number, apiKey: string]
   ping: [channelId: number]
   togglePin: [channelId: number]
+  quickTest: [channelId: number]
 }>()
 
 // 获取服务类型对应的芯片颜色
