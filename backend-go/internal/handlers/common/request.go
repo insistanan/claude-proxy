@@ -14,6 +14,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/httpclient"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
+	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
@@ -291,6 +292,96 @@ func ExtractConversationID(c *gin.Context, bodyBytes []byte) string {
 	}
 
 	return ""
+}
+
+// ExtractRequestedChannelIndex 从请求体 metadata.channel_index 中提取显式指定的渠道索引。
+// 仅当字段显式存在时才返回 ok=true；若字段类型非法则返回错误，避免静默回退到默认调度。
+func ExtractRequestedChannelIndex(bodyBytes []byte) (int, bool, error) {
+	if len(bodyBytes) == 0 {
+		return 0, false, nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+	decoder.UseNumber()
+
+	var payload map[string]interface{}
+	if err := decoder.Decode(&payload); err != nil {
+		return 0, false, nil
+	}
+
+	rawMetadata, exists := payload["metadata"]
+	if !exists || rawMetadata == nil {
+		return 0, false, nil
+	}
+
+	metadata, ok := rawMetadata.(map[string]interface{})
+	if !ok {
+		return 0, false, fmt.Errorf("metadata 必须是对象")
+	}
+
+	rawChannelIndex, exists := metadata["channel_index"]
+	if !exists || rawChannelIndex == nil {
+		return 0, false, nil
+	}
+
+	number, ok := rawChannelIndex.(json.Number)
+	if !ok {
+		return 0, true, fmt.Errorf("metadata.channel_index 必须是整数")
+	}
+
+	channelIndex, err := number.Int64()
+	if err != nil {
+		return 0, true, fmt.Errorf("metadata.channel_index 必须是整数")
+	}
+	if channelIndex < 0 {
+		return 0, true, fmt.Errorf("metadata.channel_index 不能小于 0")
+	}
+
+	return int(channelIndex), true, nil
+}
+
+// ResolveRequestedUpstream 解析显式指定的渠道。
+// 这里允许演练/调试显式命中非默认渠道，但会拒绝 deleted 渠道和未配置 BaseURL 的渠道。
+func ResolveRequestedUpstream(
+	cfgManager *config.ConfigManager,
+	kind scheduler.ChannelKind,
+	channelIndex int,
+) (*config.UpstreamConfig, int, error) {
+	cfg := cfgManager.GetConfig()
+
+	var upstreams []config.UpstreamConfig
+	switch kind {
+	case scheduler.ChannelKindMessages:
+		upstreams = cfg.Upstream
+	case scheduler.ChannelKindResponses:
+		upstreams = cfg.ResponsesUpstream
+	case scheduler.ChannelKindGemini:
+		upstreams = cfg.GeminiUpstream
+	case scheduler.ChannelKindChat:
+		upstreams = cfg.ChatUpstream
+	default:
+		return nil, -1, fmt.Errorf("不支持的渠道类型: %s", kind)
+	}
+
+	if len(upstreams) == 0 {
+		return nil, -1, fmt.Errorf("当前未配置任何 %s 渠道", kind)
+	}
+	if channelIndex < 0 || channelIndex >= len(upstreams) {
+		return nil, -1, fmt.Errorf("metadata.channel_index [%d] 超出 %s 渠道范围", channelIndex, kind)
+	}
+
+	upstream := upstreams[channelIndex].Clone()
+	if upstream == nil {
+		return nil, -1, fmt.Errorf("无法解析 %s 渠道 [%d]", kind, channelIndex)
+	}
+	if config.GetChannelStatus(upstream) == config.ChannelStatusDeleted {
+		return nil, -1, fmt.Errorf("%s 渠道 [%d] 已删除", kind, channelIndex)
+	}
+	if strings.TrimSpace(upstream.GetEffectiveBaseURL()) == "" {
+		return nil, -1, fmt.Errorf("%s 渠道 [%d] 未配置 BaseURL", kind, channelIndex)
+	}
+
+	return upstream, channelIndex, nil
 }
 
 func ExtractFirstPromptFromClaude(messages []types.ClaudeMessage) string {

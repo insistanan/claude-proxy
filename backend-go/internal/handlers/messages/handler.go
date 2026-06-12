@@ -60,6 +60,27 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		// 记录原始请求信息（仅在入口处记录一次）
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Messages")
 
+		requestedChannelIndex, hasRequestedChannel, err := common.ExtractRequestedChannelIndex(bodyBytes)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+				"code":  "INVALID_CHANNEL_INDEX",
+			})
+			return
+		}
+		if hasRequestedChannel {
+			upstream, channelIndex, err := common.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindMessages, requestedChannelIndex)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": err.Error(),
+					"code":  "INVALID_CHANNEL_INDEX",
+				})
+				return
+			}
+			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, upstream, channelIndex, startTime)
+			return
+		}
+
 		// 检查是否为多渠道模式
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindMessages)
 
@@ -201,6 +222,22 @@ func handleSingleChannel(
 		})
 		return
 	}
+
+	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, upstream, channelIndex, startTime)
+}
+
+func handleSingleChannelWithUpstream(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	bodyBytes []byte,
+	claudeReq types.ClaudeRequest,
+	userID string,
+	upstream *config.UpstreamConfig,
+	channelIndex int,
+	startTime time.Time,
+) {
 
 	if len(upstream.APIKeys) == 0 {
 		c.JSON(503, gin.H{

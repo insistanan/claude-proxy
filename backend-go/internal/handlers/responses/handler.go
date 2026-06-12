@@ -71,6 +71,27 @@ func Handler(
 		// 记录原始请求信息（仅在入口处记录一次）
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Responses")
 
+		requestedChannelIndex, hasRequestedChannel, err := common.ExtractRequestedChannelIndex(bodyBytes)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+				"code":  "INVALID_CHANNEL_INDEX",
+			})
+			return
+		}
+		if hasRequestedChannel {
+			upstream, channelIndex, err := common.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindResponses, requestedChannelIndex)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": err.Error(),
+					"code":  "INVALID_CHANNEL_INDEX",
+				})
+				return
+			}
+			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, upstream, channelIndex, startTime)
+			return
+		}
+
 		// 检查是否为多渠道模式
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindResponses)
 
@@ -209,6 +230,24 @@ func handleSingleChannel(
 		})
 		return
 	}
+
+	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, upstream, channelIndex, startTime)
+}
+
+func handleSingleChannelWithUpstream(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	sessionManager *session.SessionManager,
+	bodyBytes []byte,
+	responsesReq types.ResponsesRequest,
+	userID string,
+	hasImage bool,
+	upstream *config.UpstreamConfig,
+	channelIndex int,
+	startTime time.Time,
+) {
 
 	if len(upstream.APIKeys) == 0 {
 		c.JSON(503, gin.H{

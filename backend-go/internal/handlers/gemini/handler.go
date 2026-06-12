@@ -90,6 +90,33 @@ func Handler(
 		// 记录原始请求信息
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Gemini")
 
+		requestedChannelIndex, hasRequestedChannel, err := common.ExtractRequestedChannelIndex(bodyBytes)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, types.GeminiError{
+				Error: types.GeminiErrorDetail{
+					Code:    http.StatusBadRequest,
+					Message: err.Error(),
+					Status:  "INVALID_ARGUMENT",
+				},
+			})
+			return
+		}
+		if hasRequestedChannel {
+			upstream, channelIndex, err := common.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindGemini, requestedChannelIndex)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, types.GeminiError{
+					Error: types.GeminiErrorDetail{
+						Code:    http.StatusBadRequest,
+						Message: err.Error(),
+						Status:  "INVALID_ARGUMENT",
+					},
+				})
+				return
+			}
+			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, upstream, channelIndex, startTime)
+			return
+		}
+
 		// 检查是否为多渠道模式
 		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindGemini)
 
@@ -242,6 +269,24 @@ func handleSingleChannel(
 		})
 		return
 	}
+
+	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, geminiReq, model, isStream, userID, upstream, channelIndex, startTime)
+}
+
+func handleSingleChannelWithUpstream(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	bodyBytes []byte,
+	geminiReq *types.GeminiRequest,
+	model string,
+	isStream bool,
+	userID string,
+	upstream *config.UpstreamConfig,
+	channelIndex int,
+	startTime time.Time,
+) {
 
 	if len(upstream.APIKeys) == 0 {
 		c.JSON(503, types.GeminiError{

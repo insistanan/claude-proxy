@@ -66,6 +66,27 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Chat")
 
+		requestedChannelIndex, hasRequestedChannel, err := common.ExtractRequestedChannelIndex(bodyBytes)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+				"code":  "INVALID_CHANNEL_INDEX",
+			})
+			return
+		}
+		if hasRequestedChannel {
+			upstream, channelIndex, err := common.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindChat, requestedChannelIndex)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": err.Error(),
+					"code":  "INVALID_CHANNEL_INDEX",
+				})
+				return
+			}
+			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, upstream, channelIndex, startTime)
+			return
+		}
+
 		if route, ok := modelcatalog.ResolveChatRoute(c.Request.Context(), cfgManager, chatReq.Model); ok {
 			handleRoutedChat(c, envCfg, cfgManager, channelScheduler, route, bodyBytes, chatReq, userID, startTime)
 			return
@@ -321,6 +342,22 @@ func handleSingleChannel(
 		})
 		return
 	}
+
+	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, upstream, channelIndex, startTime)
+}
+
+func handleSingleChannelWithUpstream(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	bodyBytes []byte,
+	chatReq types.OpenAIRequest,
+	userID string,
+	upstream *config.UpstreamConfig,
+	channelIndex int,
+	startTime time.Time,
+) {
 
 	if len(upstream.APIKeys) == 0 {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
