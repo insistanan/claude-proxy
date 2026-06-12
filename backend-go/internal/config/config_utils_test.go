@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -85,8 +86,8 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 			name:  "opus[1m] with exact mapping preserves suffix",
 			model: "opus[1m]",
 			upstream: &UpstreamConfig{
-				ModelMapping: map[string]string{
-					"opus[1m]": "deepseek-v4-pro",
+				ModelMapping: map[string][]string{
+					"opus[1m]": {"deepseek-v4-pro"},
 				},
 			},
 			want: "deepseek-v4-pro",
@@ -95,8 +96,8 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 			name:  "opus[1m] fallback to opus mapping",
 			model: "opus[1m]",
 			upstream: &UpstreamConfig{
-				ModelMapping: map[string]string{
-					"opus": "deepseek-v4-pro",
+				ModelMapping: map[string][]string{
+					"opus": {"deepseek-v4-pro"},
 				},
 			},
 			want: "deepseek-v4-pro",
@@ -105,7 +106,7 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 			name:  "claude-opus-4-8[1m] without mapping strips suffix",
 			model: "claude-opus-4-8[1m]",
 			upstream: &UpstreamConfig{
-				ModelMapping: map[string]string{},
+				ModelMapping: map[string][]string{},
 			},
 			want: "claude-opus-4-8[1m]", // 保留原样，没有映射就不处理
 		},
@@ -127,8 +128,8 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 			name:  "opus[1m] fuzzy match after strip",
 			model: "opus[1m]",
 			upstream: &UpstreamConfig{
-				ModelMapping: map[string]string{
-					"claude-opus": "deepseek-v4-pro",
+				ModelMapping: map[string][]string{
+					"claude-opus": {"deepseek-v4-pro"},
 				},
 			},
 			want: "deepseek-v4-pro",
@@ -142,5 +143,54 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 				t.Errorf("ResolveUpstreamModel() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestUpstreamConfigUnmarshalLegacyModelMapping(t *testing.T) {
+	input := []byte(`{
+		"baseUrl": "https://api.example.com",
+		"apiKeys": ["sk-test"],
+		"serviceType": "openai",
+		"modelMapping": {
+			"opus": "kimi-2.6",
+			"sonnet": ["gpt-4o", "gpt-4o-mini"]
+		}
+	}`)
+
+	var upstream UpstreamConfig
+	if err := json.Unmarshal(input, &upstream); err != nil {
+		t.Fatalf("json.Unmarshal() err = %v", err)
+	}
+
+	assertStringSlice(t, upstream.ModelMapping["opus"], []string{"kimi-2.6"})
+	assertStringSlice(t, upstream.ModelMapping["sonnet"], []string{"gpt-4o", "gpt-4o-mini"})
+}
+
+func TestUpstreamUpdateUnmarshalLegacyModelMapping(t *testing.T) {
+	input := []byte(`{
+		"modelMapping": {
+			"opus": "kimi-2.6",
+			"sonnet": ["gpt-4o"]
+		}
+	}`)
+
+	var update UpstreamUpdate
+	if err := json.Unmarshal(input, &update); err != nil {
+		t.Fatalf("json.Unmarshal() err = %v", err)
+	}
+
+	assertStringSlice(t, update.ModelMapping["opus"], []string{"kimi-2.6"})
+	assertStringSlice(t, update.ModelMapping["sonnet"], []string{"gpt-4o"})
+}
+
+func assertStringSlice(t *testing.T, got []string, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d, want %d; got=%v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d] = %q, want %q; got=%v", i, got[i], want[i], got)
+		}
 	}
 }

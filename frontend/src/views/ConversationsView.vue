@@ -510,9 +510,7 @@ const formatRouteChannelModelPreview = (channel: ConversationRouteOptionChannel)
   const defaultModel = String(channel.defaultModel || '').trim()
   if (defaultModel) return `兜底 ${defaultModel}`
 
-  const entries = Object.entries(channel.modelMapping || {})
-    .map(([source, target]) => [source.trim(), target.trim()] as const)
-    .filter(([source, target]) => source && target)
+  const entries = normalizeModelMappingEntries(channel.modelMapping)
   if (entries.length === 0) {
     if (channel.kind === 'messages') return 'claude'
     if (channel.kind === 'responses' || channel.kind === 'chat') return 'GPT'
@@ -524,6 +522,19 @@ const formatRouteChannelModelPreview = (channel: ConversationRouteOptionChannel)
   if (!preferred) return ''
   const [source, target] = preferred
   return source === target ? target : `${source} -> ${target}`
+}
+
+const normalizeModelMappingEntries = (
+  mapping?: Record<string, string[]>
+): Array<readonly [string, string]> => {
+  return Object.entries(mapping || {})
+    .flatMap(([source, targets]) => {
+      const cleanSource = source.trim()
+      const targetList = Array.isArray(targets) ? targets : [targets]
+      return targetList
+        .map(target => [cleanSource, String(target || '').trim()] as const)
+        .filter(([cleanSource, target]) => cleanSource && target)
+    })
 }
 
 const pickPreferredMapping = (

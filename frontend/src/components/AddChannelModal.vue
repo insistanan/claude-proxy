@@ -324,7 +324,7 @@
                       v-model="newMapping.target"
                       label="目标模型名"
                       :placeholder="targetModelPlaceholder"
-                      :items="targetModelOptions"
+                      :items="availableTargetModelOptions"
                       :loading="fetchingModels"
                       variant="outlined"
                       density="comfortable"
@@ -346,6 +346,9 @@
                   <!-- 错误提示 -->
                   <div v-if="fetchModelsError" class="text-error text-caption mt-2">
                     {{ fetchModelsError }}
+                  </div>
+                  <div v-else-if="selectedMappingSource && existingTargetsForSelectedSource.length" class="text-caption text-medium-emphasis mt-2">
+                    当前源模型已配置 {{ existingTargetsForSelectedSource.length }} 个目标，可继续追加其他目标；相同目标不会重复添加。
                   </div>
                 </v-card-text>
               </v-card>
@@ -1111,11 +1114,9 @@ const allSourceModelOptions = computed(() => {
   }
 })
 
-// 可选的源模型选项 - 过滤掉已配置的模型
-const sourceModelOptions = computed(() => {
-  const configuredModels = Object.keys(form.modelMapping)
-  return allSourceModelOptions.value.filter(opt => !configuredModels.includes(opt.value))
-})
+// 可选的源模型选项
+// 允许重复选择同一个源模型，以便为其继续追加多个目标模型
+const sourceModelOptions = computed(() => allSourceModelOptions.value)
 
 // 模型重定向的示例文本 - 根据渠道类型动态显示
 const modelMappingHint = computed(() => {
@@ -1211,6 +1212,15 @@ const newMapping = reactive({
   target: ''
 })
 
+const selectedMappingSource = computed(() => getStringValue(newMapping.source).trim())
+const selectedMappingTarget = computed(() => getStringValue(newMapping.target).trim())
+
+const existingTargetsForSelectedSource = computed(() => {
+  const source = selectedMappingSource.value
+  if (!source) return []
+  return form.modelMapping[source] || []
+})
+
 // 安全地获取字符串值（处理 v-select/v-combobox 可能返回对象的情况）
 const getStringValue = (val: unknown): string => {
   if (!val) return ''
@@ -1224,13 +1234,18 @@ const getStringValue = (val: unknown): string => {
 
 // 检查映射输入是否有效
 const isMappingInputValid = computed(() => {
-  const source = getStringValue(newMapping.source).trim()
-  const target = getStringValue(newMapping.target).trim()
-  return source && target
+  const source = selectedMappingSource.value
+  const target = selectedMappingTarget.value
+  if (!source || !target) return false
+  return !existingTargetsForSelectedSource.value.includes(target)
 })
 
 // 目标模型列表（从上游获取）
 const targetModelOptions = ref<Array<{ title: string; value: string }>>([])
+const availableTargetModelOptions = computed(() => {
+  const existingTargets = new Set(existingTargetsForSelectedSource.value)
+  return targetModelOptions.value.filter(opt => !existingTargets.has(opt.value))
+})
 const fetchingModels = ref(false)
 const fetchModelsError = ref('')
 const hasTriedFetchModels = ref(false) // 标记是否已尝试获取过模型列表
@@ -1531,8 +1546,8 @@ const copyApiKey = async (key: string, index: number) => {
 }
 
 const addModelMapping = () => {
-  const source = getStringValue(newMapping.source).trim()
-  const target = getStringValue(newMapping.target).trim()
+  const source = selectedMappingSource.value
+  const target = selectedMappingTarget.value
 
   if (source && target) {
     // 如果该源模型还没有映射，创建新数组

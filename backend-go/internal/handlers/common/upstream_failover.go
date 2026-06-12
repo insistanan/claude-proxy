@@ -75,7 +75,111 @@ func MarkRequestLogFirstToken(c *gin.Context) {
 	c.Set(requestLogFirstTokenAtKey, time.Now())
 }
 
-// TryUpstreamWithAllKeys 尝试一个 upstream 的所有 BaseURL + Key（纯 failover）
+// TryUpstreamWithModelMappingFailover 在模型映射级别进行 failover
+// 如果配置了模型重定向（一对多），会依次尝试所有映射的模型
+// 返回值与 TryUpstreamWithAllKeys 相同
+func TryUpstreamWithModelMappingFailover(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	kind scheduler.ChannelKind,
+	apiType string,
+	metricsManager *metrics.MetricsManager,
+	upstream *config.UpstreamConfig,
+	requestedModel string, // 客户端请求的原始模型
+	urlResults []urlhealth.URLLatencyResult,
+	requestBody []byte,
+	isStream bool,
+	nextAPIKey NextAPIKeyFunc,
+	buildRequest BuildRequestFunc,
+	deprioritizeKey DeprioritizeKeyFunc,
+	markURLFailure func(url string),
+	markURLSuccess func(url string),
+	handleSuccess HandleSuccessFunc,
+	logCtx AttemptLogContext,
+) (handled bool, successKey string, successBaseURLIdx int, failoverErr *FailoverError, usage *types.Usage, lastError error) {
+	
+	// 获取该模型的映射列表
+	targetModels := config.ResolveUpstreamModelList(requestedModel, upstream)
+	
+	if len(targetModels) == 0 {
+		// 没有映射，直接使用原始模型
+		targetModels = []string{requestedModel}
+	}
+	
+	// 如果只有一个目标模型，直接调用原有逻辑
+	if len(targetModels) == 1 {
+		return TryUpstreamWithAllKeys(
+			c, envCfg, cfgManager, channelScheduler, kind, apiType,
+			metricsManager, upstream, urlResults, requestBody, isStream,
+			nextAPIKey, buildRequest, deprioritizeKey,
+			markURLFailure, markURLSuccess, handleSuccess, logCtx,
+		)
+	}
+	
+	// 多个目标模型：依次尝试
+	log.Printf("[%s-ModelMapping] 模型 %s 映射到 %d 个备选: %v", apiType, requestedModel, len(targetModels), targetModels)
+	
+	var lastFailoverError *FailoverError
+	var lastErr error
+	
+	for modelIdx, targetModel := range targetModels {
+		// 检查客户端是否已取消
+		select {
+		case <-c.Request.Context().Done():
+			log.Printf("[%s-Cancel] 客户端已取消，停止模型 failover", apiType)
+			return true, "", 0, nil, nil, context.Canceled
+		default:
+		}
+		
+		log.Printf("[%s-ModelMapping] 尝试备选模型 %d/%d: %s -> %s", 
+			apiType, modelIdx+1, len(targetModels), requestedModel, targetModel)
+		
+		// 创建上游副本，临时覆盖模型映射为当前尝试的单一模型
+		upstreamCopy := upstream.Clone()
+		upstreamCopy.ModelMapping = map[string][]string{
+			requestedModel: {targetModel},
+		}
+		
+		// 更新日志上下文中的模型信息
+		modelLogCtx := logCtx
+		modelLogCtx.Model = targetModel
+		
+		handled, successKey, successBaseURLIdx, failoverErr, usage, err := TryUpstreamWithAllKeys(
+			c, envCfg, cfgManager, channelScheduler, kind, apiType,
+			metricsManager, upstreamCopy, urlResults, requestBody, isStream,
+			nextAPIKey, buildRequest, deprioritizeKey,
+			markURLFailure, markURLSuccess, handleSuccess, modelLogCtx,
+		)
+		
+		if handled {
+			if successKey != "" {
+				// 成功
+				log.Printf("[%s-ModelMapping] 模型 %s (备选 %d/%d) 请求成功", 
+					apiType, targetModel, modelIdx+1, len(targetModels))
+				return handled, successKey, successBaseURLIdx, failoverErr, usage, err
+			}
+			// handled=true 但 successKey 为空：非 failover 错误（如客户端取消、参数错误等）
+			return handled, successKey, successBaseURLIdx, failoverErr, usage, err
+		}
+		
+		// 未处理（failover 错误），保存错误信息并尝试下一个模型
+		if failoverErr != nil {
+			lastFailoverError = failoverErr
+		}
+		if err != nil {
+			lastErr = err
+		}
+		
+		log.Printf("[%s-ModelMapping] 模型 %s (备选 %d/%d) 失败，尝试下一个备选模型", 
+			apiType, targetModel, modelIdx+1, len(targetModels))
+	}
+	
+	// 所有模型都失败
+	log.Printf("[%s-ModelMapping] 所有 %d 个备选模型都失败", apiType, len(targetModels))
+	return false, "", 0, lastFailoverError, nil, lastErr
+}
 // 返回:
 //   - handled: 是否已向客户端写回响应（成功或非 failover 错误）
 //   - successKey: 成功的 key（仅 handled=true 且成功时有值）

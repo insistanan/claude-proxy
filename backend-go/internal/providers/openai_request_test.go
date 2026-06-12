@@ -41,7 +41,7 @@ func TestOpenAIProviderConvertToProviderRequest_UsesSingleTokenField(t *testing.
 		upstream := &config.UpstreamConfig{
 			BaseURL:      "https://api.example.com",
 			ServiceType:  "openai",
-			ModelMapping: map[string]string{"claude-sonnet-4-5-20250929": "kimi-2.6"},
+			ModelMapping: map[string][]string{"claude-sonnet-4-5-20250929": {"kimi-2.6"}},
 		}
 
 		p := &OpenAIProvider{}

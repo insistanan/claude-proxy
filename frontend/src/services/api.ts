@@ -282,7 +282,7 @@ export interface ConversationRouteOptionChannel {
   serviceType?: Channel['serviceType']
   status: string
   defaultModel?: string
-  modelMapping?: Record<string, string>
+  modelMapping?: Record<string, string[]>
 }
 
 export interface ConversationRouteOptionGroup {

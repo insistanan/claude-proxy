@@ -129,7 +129,7 @@ func handleMultiChannel(
 			baseURLs := upstream.GetAllBaseURLs()
 			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindMessages, channelIndex, baseURLs)
 
-			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithAllKeys(
+			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithModelMappingFailover(
 				c,
 				envCfg,
 				cfgManager,
@@ -138,6 +138,7 @@ func handleMultiChannel(
 				"Messages",
 				metricsManager,
 				upstream,
+				claudeReq.Model, // 传入客户端请求的原始模型
 				sortedURLResults,
 				bodyBytes,
 				claudeReq.Stream,

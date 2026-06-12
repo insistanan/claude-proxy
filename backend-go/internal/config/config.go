@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -41,6 +43,48 @@ type UpstreamConfig struct {
 	StripThoughtSignature       bool `json:"stripThoughtSignature,omitempty"`       // 移除 thought_signature 字段（兼容旧版 Gemini API）
 }
 
+// UnmarshalJSON 兼容旧配置中 modelMapping 的一对一字符串格式：
+//
+//	"modelMapping": { "opus": "gpt-4o" }
+//
+// 当前内部统一使用一对多格式：
+//
+//	"modelMapping": { "opus": ["gpt-4o"] }
+func (u *UpstreamConfig) UnmarshalJSON(data []byte) error {
+	type upstreamConfigAlias UpstreamConfig
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	var modelMapping map[string][]string
+	if rawModelMapping, ok := raw["modelMapping"]; ok {
+		delete(raw, "modelMapping")
+		parsed, err := decodeModelMapping(rawModelMapping)
+		if err != nil {
+			return fmt.Errorf("modelMapping: %w", err)
+		}
+		modelMapping = parsed
+	}
+
+	withoutModelMapping, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+
+	var alias upstreamConfigAlias
+	if err := json.Unmarshal(withoutModelMapping, &alias); err != nil {
+		return err
+	}
+
+	*u = UpstreamConfig(alias)
+	if modelMapping != nil {
+		u.ModelMapping = modelMapping
+	}
+	return nil
+}
+
 // UpstreamUpdate 用于部分更新 UpstreamConfig
 type UpstreamUpdate struct {
 	Name               *string             `json:"name"`
@@ -66,6 +110,80 @@ type UpstreamUpdate struct {
 	// Gemini 特定配置
 	InjectDummyThoughtSignature *bool `json:"injectDummyThoughtSignature"`
 	StripThoughtSignature       *bool `json:"stripThoughtSignature"`
+}
+
+func (u *UpstreamUpdate) UnmarshalJSON(data []byte) error {
+	type upstreamUpdateAlias UpstreamUpdate
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	var modelMapping map[string][]string
+	if rawModelMapping, ok := raw["modelMapping"]; ok {
+		delete(raw, "modelMapping")
+		parsed, err := decodeModelMapping(rawModelMapping)
+		if err != nil {
+			return fmt.Errorf("modelMapping: %w", err)
+		}
+		modelMapping = parsed
+	}
+
+	withoutModelMapping, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+
+	var alias upstreamUpdateAlias
+	if err := json.Unmarshal(withoutModelMapping, &alias); err != nil {
+		return err
+	}
+
+	*u = UpstreamUpdate(alias)
+	if modelMapping != nil {
+		u.ModelMapping = modelMapping
+	}
+	return nil
+}
+
+func decodeModelMapping(raw json.RawMessage) (map[string][]string, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+
+	var items map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, err
+	}
+
+	modelMapping := make(map[string][]string, len(items))
+	for source, targetRaw := range items {
+		targetRaw = bytes.TrimSpace(targetRaw)
+		if len(targetRaw) == 0 || bytes.Equal(targetRaw, []byte("null")) {
+			continue
+		}
+
+		switch targetRaw[0] {
+		case '"':
+			var target string
+			if err := json.Unmarshal(targetRaw, &target); err != nil {
+				return nil, err
+			}
+			modelMapping[source] = []string{target}
+		case '[':
+			var targets []string
+			if err := json.Unmarshal(targetRaw, &targets); err != nil {
+				return nil, err
+			}
+			modelMapping[source] = targets
+		default:
+			return nil, fmt.Errorf("映射值必须是字符串或字符串数组")
+		}
+	}
+
+	return modelMapping, nil
 }
 
 // Config 配置结构

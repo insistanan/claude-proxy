@@ -27,12 +27,26 @@ func (cm *ConfigManager) AddChatUpstream(upstream UpstreamConfig) error {
 
 	prepareNewUpstream(&upstream)
 	upstream.DefaultModel = strings.TrimSpace(upstream.DefaultModel)
-	cm.config.ChatUpstream = append(cm.config.ChatUpstream, upstream)
+	
+	// 新渠道优先级设为 1（最高）
+	upstream.Priority = 1
+	
+	// 所有现有渠道的优先级 +1
+	for i := range cm.config.ChatUpstream {
+		if cm.config.ChatUpstream[i].Priority == 0 {
+			cm.config.ChatUpstream[i].Priority = i + 2
+		} else {
+			cm.config.ChatUpstream[i].Priority++
+		}
+	}
+	
+	// 插入到开头
+	cm.config.ChatUpstream = append([]UpstreamConfig{upstream}, cm.config.ChatUpstream...)
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return err
 	}
-	log.Printf("[Config-Upstream] 已添加 Chat 上游: %s", upstream.Name)
+	log.Printf("[Config-Upstream] 已添加 Chat 上游（优先级1）: %s", upstream.Name)
 	return nil
 }
 

@@ -25,12 +25,26 @@ func (cm *ConfigManager) AddResponsesUpstream(upstream UpstreamConfig) error {
 	defer cm.mu.Unlock()
 
 	prepareNewUpstream(&upstream)
-	cm.config.ResponsesUpstream = append(cm.config.ResponsesUpstream, upstream)
+	
+	// 新渠道优先级设为 1（最高）
+	upstream.Priority = 1
+	
+	// 所有现有渠道的优先级 +1
+	for i := range cm.config.ResponsesUpstream {
+		if cm.config.ResponsesUpstream[i].Priority == 0 {
+			cm.config.ResponsesUpstream[i].Priority = i + 2
+		} else {
+			cm.config.ResponsesUpstream[i].Priority++
+		}
+	}
+	
+	// 插入到开头
+	cm.config.ResponsesUpstream = append([]UpstreamConfig{upstream}, cm.config.ResponsesUpstream...)
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
 		return err
 	}
-	log.Printf("[Config-Upstream] 已添加 Responses 上游: %s", upstream.Name)
+	log.Printf("[Config-Upstream] 已添加 Responses 上游（优先级1）: %s", upstream.Name)
 	return nil
 }
 
