@@ -163,6 +163,7 @@ func handleMultiChannel(
 		scheduler.ChannelKindGemini,
 		"Gemini",
 		userID,
+		model,
 		false,
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
@@ -175,7 +176,7 @@ func handleMultiChannel(
 			baseURLs := upstream.GetAllBaseURLs()
 			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindGemini, channelIndex, baseURLs)
 
-			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithAllKeys(
+			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithModelMappingFailover(
 				c,
 				envCfg,
 				cfgManager,
@@ -184,6 +185,7 @@ func handleMultiChannel(
 				"Gemini",
 				metricsManager,
 				upstream,
+				model,
 				sortedURLResults,
 				bodyBytes,
 				isStream,
@@ -314,7 +316,7 @@ func handleSingleChannelWithUpstream(
 	baseURLs := upstream.GetAllBaseURLs()
 	urlResults := common.BuildDefaultURLResults(baseURLs)
 
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
 		c,
 		envCfg,
 		cfgManager,
@@ -323,6 +325,7 @@ func handleSingleChannelWithUpstream(
 		"Gemini",
 		metricsManager,
 		upstream,
+		model,
 		urlResults,
 		bodyBytes,
 		isStream,

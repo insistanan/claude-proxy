@@ -39,6 +39,7 @@ func HandleMultiChannelFailover(
 	kind scheduler.ChannelKind,
 	apiType string,
 	userID string,
+	requestedModel string,
 	hasImage bool,
 	trySelectedChannel TrySelectedChannelFunc,
 	onHandled OnMultiChannelHandledFunc,
@@ -71,7 +72,7 @@ func HandleMultiChannelFailover(
 			// 继续正常流程
 		}
 
-		selection, err := channelScheduler.SelectChannel(c.Request.Context(), userID, failedChannels, kind, hasImage)
+		selection, err := channelScheduler.SelectChannel(c.Request.Context(), userID, failedChannels, kind, requestedModel, hasImage)
 		if err != nil {
 			lastError = err
 			break
@@ -117,7 +118,7 @@ func HandleMultiChannelFailover(
 						}
 					}
 				}
-				
+
 				if shouldSetAffinity {
 					channelScheduler.SetTraceAffinity(userID, channelIndex)
 				}

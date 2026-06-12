@@ -30,10 +30,9 @@ type ChannelScheduler struct {
 	requestLogStore          *metrics.RequestLogStore
 	traceAffinity            *session.TraceAffinityManager
 	conversationRegistry     *conversation.Registry
-	urlManager               *urlhealth.URLManager // URL 管理器（非阻塞，动态排序）
-	// TODO: 性能画像管理器和自适应调度器（ProfileManager 未实现）
-	// profileManager           *metrics.ProfileManager // 性能画像管理器
-	// adaptiveScheduler        *AdaptiveScheduler      // 自适应调度器
+	urlManager               *urlhealth.URLManager   // URL 管理器（非阻塞，动态排序）
+	profileManager           *metrics.ProfileManager // 性能画像管理器
+	adaptiveScheduler        *AdaptiveScheduler      // 自适应调度器
 }
 
 // ChannelKind 标识调度器所处理的渠道类型
@@ -136,6 +135,46 @@ func (s *ChannelScheduler) GetConversationRegistry() *conversation.Registry {
 	return s.conversationRegistry
 }
 
+// SetProfileManager 设置性能画像管理器
+func (s *ChannelScheduler) SetProfileManager(pm *metrics.ProfileManager) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profileManager = pm
+}
+
+// GetProfileManager 获取性能画像管理器
+func (s *ChannelScheduler) GetProfileManager() *metrics.ProfileManager {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.profileManager
+}
+
+// SetAdaptiveScheduler 设置自适应调度器
+func (s *ChannelScheduler) SetAdaptiveScheduler(as *AdaptiveScheduler) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adaptiveScheduler = as
+}
+
+// GetAdaptiveScheduler 获取自适应调度器
+func (s *ChannelScheduler) GetAdaptiveScheduler() *AdaptiveScheduler {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.adaptiveScheduler
+}
+
 // SelectionResult 渠道选择结果
 type SelectionResult struct {
 	Upstream     *config.UpstreamConfig
@@ -150,8 +189,17 @@ func (s *ChannelScheduler) SelectChannel(
 	userID string,
 	failedChannels map[int]bool,
 	kind ChannelKind,
+	requestedModel string,
 	hasImage bool,
 ) (*SelectionResult, error) {
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
+
 	// 仅在读取 conversationRegistry 时短暂持锁，提取引用后立即释放
 	s.mu.RLock()
 	registry := s.conversationRegistry
@@ -285,27 +333,29 @@ func (s *ChannelScheduler) SelectChannel(
 		}, nil
 	}
 
-	// TODO: 使用自适应调度器（ProfileManager 未实现）
-	// s.mu.RLock()
-	// adaptiveScheduler := s.adaptiveScheduler
-	// s.mu.RUnlock()
-	// 
-	// if adaptiveScheduler != nil {
-	// 	result := adaptiveScheduler.SelectBestChannel(
-	// 		activeChannels,
-	// 		failedChannels,
-	// 		kind,
-	// 		s.getUpstreamByIndex,
-	// 	)
-	// 	if result != nil {
-	// 		return result, nil
-	// 	}
-	// 	// 自适应调度失败，降级到原有逻辑
-	// 	prefix := kindSchedulerLogPrefix(kind)
-	// 	log.Printf("[%s-Adaptive] 自适应调度未找到可用渠道，降级到优先级调度", prefix)
-	// }
+	// 3. 使用自适应调度器（如果可用），按模型级别性能画像选择最佳渠道
+	s.mu.RLock()
+	adaptiveScheduler := s.adaptiveScheduler
+	s.mu.RUnlock()
 
-	// 3. 按优先级遍历活跃渠道（降级方案）
+	if adaptiveScheduler != nil {
+		result := adaptiveScheduler.SelectBestChannel(
+			activeChannels,
+			failedChannels,
+			kind,
+			requestedModel,
+			metricsManager.IsChannelHealthyMultiURL,
+			s.getUpstreamByIndex,
+		)
+		if result != nil {
+			return result, nil
+		}
+		// 自适应调度未找到可用渠道（可能所有渠道都不支持该模型），降级到原有逻辑
+		prefix := kindSchedulerLogPrefix(kind)
+		log.Printf("[%s-Adaptive] 自适应调度未找到可用渠道，降级到优先级调度", prefix)
+	}
+
+	// 4. 按优先级遍历活跃渠道（降级方案）
 	for _, ch := range activeChannels {
 		// 跳过本次请求已经失败的渠道
 		if failedChannels[ch.Index] {
@@ -321,6 +371,11 @@ func (s *ChannelScheduler) SelectChannel(
 
 		upstream := s.getUpstreamByIndex(ch.Index, kind)
 		if upstream == nil || len(upstream.APIKeys) == 0 {
+			continue
+		}
+		if requestedModel != "" && len(config.ResolveUpstreamModelList(requestedModel, upstream)) == 0 {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Channel] 跳过不支持模型的渠道: [%d] %s (模型: %s)", prefix, ch.Index, ch.Name, requestedModel)
 			continue
 		}
 

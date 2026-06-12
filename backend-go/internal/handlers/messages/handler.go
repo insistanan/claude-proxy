@@ -111,6 +111,7 @@ func handleMultiChannel(
 		scheduler.ChannelKindMessages,
 		"Messages",
 		userID,
+		claudeReq.Model,
 		hasImage,
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
@@ -264,7 +265,7 @@ func handleSingleChannelWithUpstream(
 
 	urlResults := common.BuildDefaultURLResults(baseURLs)
 
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
 		c,
 		envCfg,
 		cfgManager,
@@ -273,6 +274,7 @@ func handleSingleChannelWithUpstream(
 		"Messages",
 		metricsManager,
 		upstream,
+		claudeReq.Model,
 		urlResults,
 		bodyBytes,
 		claudeReq.Stream,

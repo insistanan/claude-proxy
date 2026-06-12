@@ -124,6 +124,7 @@ func handleMultiChannel(
 		scheduler.ChannelKindChat,
 		"Chat",
 		userID,
+		chatReq.Model,
 		hasImage,
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
@@ -244,7 +245,7 @@ func handleRoutedChat(
 
 	metricsManager := channelScheduler.GetChatMetricsManager()
 	urlResults := common.BuildDefaultURLResults([]string{route.BaseURL})
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
 		c,
 		envCfg,
 		cfgManager,
@@ -379,7 +380,7 @@ func handleSingleChannelWithUpstream(
 	metricsManager := channelScheduler.GetChatMetricsManager()
 	urlResults := common.BuildDefaultURLResults(upstream.GetAllBaseURLs())
 
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
 		c,
 		envCfg,
 		cfgManager,
@@ -388,6 +389,7 @@ func handleSingleChannelWithUpstream(
 		"Chat",
 		metricsManager,
 		upstream,
+		chatReq.Model,
 		urlResults,
 		bodyBytes,
 		chatReq.Stream,
@@ -1052,6 +1054,7 @@ func handleImagesMultiChannel(
 		scheduler.ChannelKindChat,
 		"Images",
 		userID,
+		model,
 		false,
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
@@ -1061,7 +1064,7 @@ func handleImagesMultiChannel(
 			}
 
 			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindChat, channelIndex, upstream.GetAllBaseURLs())
-			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithAllKeys(
+			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithModelMappingFailover(
 				c,
 				envCfg,
 				cfgManager,
@@ -1070,6 +1073,7 @@ func handleImagesMultiChannel(
 				"Images",
 				metricsManager,
 				upstream,
+				model,
 				sortedURLResults,
 				bodyBytes,
 				false,
@@ -1157,7 +1161,7 @@ func handleImagesSingleChannel(
 		return
 	}
 
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
 		c,
 		envCfg,
 		cfgManager,
@@ -1166,6 +1170,7 @@ func handleImagesSingleChannel(
 		"Images",
 		channelScheduler.GetChatMetricsManager(),
 		upstream,
+		model,
 		common.BuildDefaultURLResults(upstream.GetAllBaseURLs()),
 		bodyBytes,
 		false,

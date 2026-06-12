@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -16,8 +17,8 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
 
@@ -53,8 +54,14 @@ type AttemptLogContext struct {
 }
 
 var attemptLogCounter uint64
+var profileRequestCounter uint64
 
 const requestLogFirstTokenAtKey = "__request_log_first_token_at"
+
+// nextProfileRequestID 生成唯一请求 ID 用于性能画像追踪
+func nextProfileRequestID() uint64 {
+	return atomic.AddUint64(&profileRequestCounter, 1)
+}
 
 func ResetRequestLogFirstToken(c *gin.Context) {
 	if c == nil {
@@ -99,15 +106,16 @@ func TryUpstreamWithModelMappingFailover(
 	handleSuccess HandleSuccessFunc,
 	logCtx AttemptLogContext,
 ) (handled bool, successKey string, successBaseURLIdx int, failoverErr *FailoverError, usage *types.Usage, lastError error) {
-	
+
 	// 获取该模型的映射列表
 	targetModels := config.ResolveUpstreamModelList(requestedModel, upstream)
-	
+
 	if len(targetModels) == 0 {
 		// 没有映射，直接使用原始模型
 		targetModels = []string{requestedModel}
 	}
-	
+	targetModels = rankTargetModelsForChannel(channelScheduler, upstream, targetModels, urlResults, logCtx.ChannelIndex)
+
 	// 如果只有一个目标模型，直接调用原有逻辑
 	if len(targetModels) == 1 {
 		return TryUpstreamWithAllKeys(
@@ -117,13 +125,13 @@ func TryUpstreamWithModelMappingFailover(
 			markURLFailure, markURLSuccess, handleSuccess, logCtx,
 		)
 	}
-	
+
 	// 多个目标模型：依次尝试
 	log.Printf("[%s-ModelMapping] 模型 %s 映射到 %d 个备选: %v", apiType, requestedModel, len(targetModels), targetModels)
-	
+
 	var lastFailoverError *FailoverError
 	var lastErr error
-	
+
 	for modelIdx, targetModel := range targetModels {
 		// 检查客户端是否已取消
 		select {
@@ -132,38 +140,37 @@ func TryUpstreamWithModelMappingFailover(
 			return true, "", 0, nil, nil, context.Canceled
 		default:
 		}
-		
-		log.Printf("[%s-ModelMapping] 尝试备选模型 %d/%d: %s -> %s", 
+
+		log.Printf("[%s-ModelMapping] 尝试备选模型 %d/%d: %s -> %s",
 			apiType, modelIdx+1, len(targetModels), requestedModel, targetModel)
-		
+
 		// 创建上游副本，临时覆盖模型映射为当前尝试的单一模型
 		upstreamCopy := upstream.Clone()
 		upstreamCopy.ModelMapping = map[string][]string{
 			requestedModel: {targetModel},
 		}
-		
-		// 更新日志上下文中的模型信息
+
+		// 保留客户端原始模型，由临时映射决定本次实际上游模型。
 		modelLogCtx := logCtx
-		modelLogCtx.Model = targetModel
-		
+
 		handled, successKey, successBaseURLIdx, failoverErr, usage, err := TryUpstreamWithAllKeys(
 			c, envCfg, cfgManager, channelScheduler, kind, apiType,
 			metricsManager, upstreamCopy, urlResults, requestBody, isStream,
 			nextAPIKey, buildRequest, deprioritizeKey,
 			markURLFailure, markURLSuccess, handleSuccess, modelLogCtx,
 		)
-		
+
 		if handled {
 			if successKey != "" {
 				// 成功
-				log.Printf("[%s-ModelMapping] 模型 %s (备选 %d/%d) 请求成功", 
+				log.Printf("[%s-ModelMapping] 模型 %s (备选 %d/%d) 请求成功",
 					apiType, targetModel, modelIdx+1, len(targetModels))
 				return handled, successKey, successBaseURLIdx, failoverErr, usage, err
 			}
 			// handled=true 但 successKey 为空：非 failover 错误（如客户端取消、参数错误等）
 			return handled, successKey, successBaseURLIdx, failoverErr, usage, err
 		}
-		
+
 		// 未处理（failover 错误），保存错误信息并尝试下一个模型
 		if failoverErr != nil {
 			lastFailoverError = failoverErr
@@ -171,15 +178,76 @@ func TryUpstreamWithModelMappingFailover(
 		if err != nil {
 			lastErr = err
 		}
-		
-		log.Printf("[%s-ModelMapping] 模型 %s (备选 %d/%d) 失败，尝试下一个备选模型", 
+
+		log.Printf("[%s-ModelMapping] 模型 %s (备选 %d/%d) 失败，尝试下一个备选模型",
 			apiType, targetModel, modelIdx+1, len(targetModels))
 	}
-	
+
 	// 所有模型都失败
 	log.Printf("[%s-ModelMapping] 所有 %d 个备选模型都失败", apiType, len(targetModels))
 	return false, "", 0, lastFailoverError, nil, lastErr
 }
+
+func rankTargetModelsForChannel(
+	channelScheduler *scheduler.ChannelScheduler,
+	upstream *config.UpstreamConfig,
+	targetModels []string,
+	urlResults []urlhealth.URLLatencyResult,
+	channelIndex int,
+) []string {
+	if len(targetModels) <= 1 || channelScheduler == nil || upstream == nil {
+		return targetModels
+	}
+	pm := channelScheduler.GetProfileManager()
+	if pm == nil {
+		return targetModels
+	}
+
+	baseURLs := make([]string, 0, len(urlResults))
+	for _, result := range urlResults {
+		if strings.TrimSpace(result.URL) != "" {
+			baseURLs = append(baseURLs, result.URL)
+		}
+	}
+	if len(baseURLs) == 0 {
+		baseURLs = upstream.GetAllBaseURLs()
+	}
+
+	type rankedModel struct {
+		model          string
+		originalIndex  int
+		healthScore    float64
+		activeRequests int64
+	}
+
+	ranked := make([]rankedModel, 0, len(targetModels))
+	for i, model := range targetModels {
+		snapshot := pm.GetAggregateProfileSnapshot(baseURLs, upstream.APIKeys, model, channelIndex)
+		ranked = append(ranked, rankedModel{
+			model:          model,
+			originalIndex:  i,
+			healthScore:    snapshot.HealthScore,
+			activeRequests: snapshot.ActiveRequests,
+		})
+	}
+
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].healthScore == ranked[j].healthScore {
+			if ranked[i].activeRequests == ranked[j].activeRequests {
+				return ranked[i].originalIndex < ranked[j].originalIndex
+			}
+			return ranked[i].activeRequests < ranked[j].activeRequests
+		}
+		return ranked[i].healthScore > ranked[j].healthScore
+	})
+
+	ordered := make([]string, 0, len(ranked))
+	for _, item := range ranked {
+		ordered = append(ordered, item.model)
+	}
+	return ordered
+}
+
 // 返回:
 //   - handled: 是否已向客户端写回响应（成功或非 failover 错误）
 //   - successKey: 成功的 key（仅 handled=true 且成功时有值）
@@ -275,6 +343,13 @@ func TryUpstreamWithAllKeys(
 			// 记录请求开始
 			channelScheduler.RecordRequestStart(currentBaseURL, apiKey, kind)
 
+			// 性能画像：开始追踪请求
+			profileReqID := nextProfileRequestID()
+			resolvedModel := config.ResolveUpstreamModel(logCtx.Model, upstream)
+			if pm := channelScheduler.GetProfileManager(); pm != nil {
+				pm.StartRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
+			}
+
 			// TCP 建连开始即计数：将活跃度统计提前到发起上游请求之前
 			requestID := metricsManager.RecordRequestConnected(currentBaseURL, apiKey, logCtx.Model)
 
@@ -286,6 +361,9 @@ func TryUpstreamWithAllKeys(
 					// 客户端取消：不计入失败，不触发 failover
 					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					if pm := channelScheduler.GetProfileManager(); pm != nil {
+						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
+					}
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", 0, false, attemptStart, "client_cancelled", err.Error(), false, isStream, nil)
 					log.Printf("[%s-Cancel] 请求已取消（SendRequest 阶段）", apiType)
 					return true, "", 0, nil, nil, err
@@ -295,12 +373,20 @@ func TryUpstreamWithAllKeys(
 				cfgManager.MarkKeyAsFailed(apiKey, apiType)
 				metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+				if pm := channelScheduler.GetProfileManager(); pm != nil {
+					pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
+				}
 				if markURLFailure != nil {
 					markURLFailure(currentBaseURL)
 				}
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "network", err.Error(), true, isStream, nil)
 				log.Printf("[%s-Key] 警告: API密钥失败: %v", apiType, err)
 				continue
+			}
+
+			// 收到响应头，性能画像记录首字节时间
+			if pm := channelScheduler.GetProfileManager(); pm != nil {
+				pm.RecordFirstByte(profileReqID)
 			}
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -315,6 +401,9 @@ func TryUpstreamWithAllKeys(
 					cfgManager.MarkKeyAsFailed(apiKey, apiType)
 					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					if pm := channelScheduler.GetProfileManager(); pm != nil {
+						pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
+					}
 					if markURLFailure != nil {
 						markURLFailure(currentBaseURL)
 					}
@@ -335,6 +424,9 @@ func TryUpstreamWithAllKeys(
 				// 非 failover 错误，记录失败指标后返回（请求已处理）
 				metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+				if pm := channelScheduler.GetProfileManager(); pm != nil {
+					pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
+				}
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, false), string(respBodyBytes), false, isStream, nil)
 				c.Data(resp.StatusCode, "application/json", respBodyBytes)
 				return true, "", 0, nil, nil, nil
@@ -359,6 +451,9 @@ func TryUpstreamWithAllKeys(
 					// 客户端取消/断开：计入总请求数但不计入失败
 					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					if pm := channelScheduler.GetProfileManager(); pm != nil {
+						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
+					}
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", resp.StatusCode, false, attemptStart, "client_cancelled", err.Error(), false, isStream, usage)
 					log.Printf("[%s-Cancel] 请求已取消，停止渠道 failover", apiType)
 				} else {
@@ -366,6 +461,9 @@ func TryUpstreamWithAllKeys(
 					cfgManager.MarkKeyAsFailed(apiKey, apiType)
 					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					if pm := channelScheduler.GetProfileManager(); pm != nil {
+						pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
+					}
 					shouldRetryResponseProcessing := !c.Writer.Written()
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "response_processing", err.Error(), shouldRetryResponseProcessing, isStream, usage)
 					log.Printf("[%s-Key] 警告: 响应处理失败: %v", apiType, err)
@@ -386,6 +484,13 @@ func TryUpstreamWithAllKeys(
 
 			metricsManager.RecordRequestFinalizeSuccess(currentBaseURL, apiKey, requestID, usage)
 			channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+			if pm := channelScheduler.GetProfileManager(); pm != nil {
+				var outputTokens int64
+				if usage != nil {
+					outputTokens = int64(usage.OutputTokens)
+				}
+				pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, true, outputTokens)
+			}
 			recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "completed", resp.StatusCode, true, attemptStart, "", "", false, isStream, usage)
 			return true, apiKey, originalIdx, nil, usage, nil
 		}

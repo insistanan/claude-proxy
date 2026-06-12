@@ -80,9 +80,10 @@ func (e *ConfigError) Error() string {
 // StripContextSuffix 剥离 Claude Code 的上下文窗口后缀（如 [1m]）
 // 返回：(原始模型名, 是否有后缀)
 // 示例：
-//   "opus[1m]" -> ("opus", true)
-//   "claude-opus-4-8[1m]" -> ("claude-opus-4-8", true)
-//   "opus" -> ("opus", false)
+//
+//	"opus[1m]" -> ("opus", true)
+//	"claude-opus-4-8[1m]" -> ("claude-opus-4-8", true)
+//	"opus" -> ("opus", false)
 func StripContextSuffix(model string) (string, bool) {
 	model = strings.TrimSpace(model)
 	if strings.HasSuffix(model, "[1m]") {
@@ -94,6 +95,10 @@ func StripContextSuffix(model string) (string, bool) {
 // RedirectModelList 模型重定向（返回模型列表，支持多个备选）
 // 返回：[]string 重定向后的模型列表（如果没有映射则返回包含原模型的列表）
 func RedirectModelList(model string, upstream *UpstreamConfig) []string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil
+	}
 	if upstream.ModelMapping == nil || len(upstream.ModelMapping) == 0 {
 		return []string{model}
 	}
@@ -131,7 +136,7 @@ func RedirectModelList(model string, upstream *UpstreamConfig) []string {
 	if hasSuffix {
 		modelToMatch = strippedModel
 	}
-	
+
 	for _, m := range mappings {
 		if strings.Contains(modelToMatch, m.source) || strings.Contains(m.source, modelToMatch) {
 			if len(m.target) > 0 {
@@ -154,14 +159,14 @@ func RedirectModel(model string, upstream *UpstreamConfig) string {
 
 func ResolveUpstreamModel(model string, upstream *UpstreamConfig) string {
 	model = strings.TrimSpace(model)
-	
+
 	if upstream == nil {
 		return model
 	}
 	if strings.TrimSpace(upstream.DefaultModel) != "" {
 		return strings.TrimSpace(upstream.DefaultModel)
 	}
-	
+
 	// RedirectModel 内部会处理后缀匹配逻辑
 	return RedirectModel(model, upstream)
 }
@@ -169,14 +174,14 @@ func ResolveUpstreamModel(model string, upstream *UpstreamConfig) string {
 // ResolveUpstreamModelList 解析上游模型列表（支持多个备选）
 func ResolveUpstreamModelList(model string, upstream *UpstreamConfig) []string {
 	model = strings.TrimSpace(model)
-	
+
 	if upstream == nil {
 		return []string{model}
 	}
 	if strings.TrimSpace(upstream.DefaultModel) != "" {
 		return []string{strings.TrimSpace(upstream.DefaultModel)}
 	}
-	
+
 	// RedirectModelList 内部会处理后缀匹配逻辑
 	return RedirectModelList(model, upstream)
 }

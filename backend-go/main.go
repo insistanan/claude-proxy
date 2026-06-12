@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -121,28 +122,28 @@ func main() {
 	log.Printf("[Scheduler-Init] 多渠道调度器已初始化 (失败率阈值: %.0f%%, 滑动窗口: %d)",
 		messagesMetricsManager.GetFailureThreshold()*100, messagesMetricsManager.GetWindowSize())
 
-	// TODO: 初始化自适应负载均衡（ProfileManager 未实现）
-	// profileManager := metrics.NewProfileManager()
-	// adaptiveScheduler := scheduler.NewAdaptiveScheduler(profileManager)
-	// channelScheduler.SetProfileManager(profileManager)
-	// channelScheduler.SetAdaptiveScheduler(adaptiveScheduler)
-	// log.Println("[Main] 自适应负载均衡已启用")
+	// 初始化自适应负载均衡
+	profileManager := metrics.NewProfileManager()
+	adaptiveScheduler := scheduler.NewAdaptiveScheduler(profileManager)
+	channelScheduler.SetProfileManager(profileManager)
+	channelScheduler.SetAdaptiveScheduler(adaptiveScheduler)
+	log.Println("[Main] 自适应负载均衡已启用")
 
-	// // 从现有指标同步数据到性能画像
-	// config := cfgManager.GetConfig()
-	// for i, upstream := range config.Upstream {
-	// 	messagesMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
-	// }
-	// for i, upstream := range config.ResponsesUpstream {
-	// 	responsesMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
-	// }
-	// for i, upstream := range config.GeminiUpstream {
-	// 	geminiMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
-	// }
-	// for i, upstream := range config.ChatUpstream {
-	// 	chatMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
-	// }
-	// log.Println("[Main] 已从现有指标同步性能画像数据")
+	// 从现有指标同步数据到性能画像
+	syncConfig := cfgManager.GetConfig()
+	for i, upstream := range syncConfig.Upstream {
+		syncUpstreamProfiles(messagesMetricsManager, profileManager, &upstream, i)
+	}
+	for i, upstream := range syncConfig.ResponsesUpstream {
+		syncUpstreamProfiles(responsesMetricsManager, profileManager, &upstream, i)
+	}
+	for i, upstream := range syncConfig.GeminiUpstream {
+		syncUpstreamProfiles(geminiMetricsManager, profileManager, &upstream, i)
+	}
+	for i, upstream := range syncConfig.ChatUpstream {
+		syncUpstreamProfiles(chatMetricsManager, profileManager, &upstream, i)
+	}
+	log.Println("[Main] 已从现有指标同步性能画像数据")
 
 	// 设置 Gin 模式
 	if envCfg.IsProduction() {
@@ -203,14 +204,14 @@ func main() {
 		apiGroup.GET("/messages/ping/:id", messages.PingChannel(cfgManager))
 		apiGroup.GET("/messages/ping", messages.PingAllChannels(cfgManager))
 
-		// TODO: 渠道性能报告（自适应负载均衡 - ProfileManager 未实现）
-		// apiGroup.GET("/performance/report", func(c *gin.Context) {
-		// 	reports := adaptiveScheduler.GetChannelPerformanceReport()
-		// 	c.JSON(200, gin.H{
-		// 		"success": true,
-		// 		"data":    reports,
-		// 	})
-		// })
+		// 渠道性能报告（自适应负载均衡）
+		apiGroup.GET("/performance/report", func(c *gin.Context) {
+			reports := adaptiveScheduler.GetChannelPerformanceReport()
+			c.JSON(200, gin.H{
+				"success": true,
+				"data":    reports,
+			})
+		})
 
 		// Responses 渠道管理
 		apiGroup.GET("/responses/channels", responses.GetUpstreams(cfgManager))
@@ -428,5 +429,35 @@ func main() {
 		// 正常关闭完成
 	case <-time.After(15 * time.Second):
 		log.Println("[Server-Shutdown] 警告: 等待关闭超时")
+	}
+}
+
+func syncUpstreamProfiles(mm *metrics.MetricsManager, pm *metrics.ProfileManager, upstream *config.UpstreamConfig, channelIdx int) {
+	if mm == nil || pm == nil || upstream == nil || len(upstream.APIKeys) == 0 {
+		return
+	}
+
+	models := make(map[string]struct{})
+	if model := strings.TrimSpace(upstream.DefaultModel); model != "" {
+		models[model] = struct{}{}
+	}
+	for sourceModel, targetModels := range upstream.ModelMapping {
+		if source := strings.TrimSpace(sourceModel); source != "" {
+			models[source] = struct{}{}
+		}
+		for _, targetModel := range targetModels {
+			if target := strings.TrimSpace(targetModel); target != "" {
+				models[target] = struct{}{}
+			}
+		}
+	}
+	if len(models) == 0 {
+		return
+	}
+
+	for _, baseURL := range upstream.GetAllBaseURLs() {
+		for model := range models {
+			mm.SyncToProfile(pm, baseURL, upstream.APIKeys, model, channelIdx)
+		}
 	}
 }

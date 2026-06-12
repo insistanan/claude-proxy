@@ -175,6 +175,9 @@ dist
 
 .vscode/
 
+# VSCode Local History 扩展生成的本地历史目录
+.history/
+
 node_modules
 
 # Output

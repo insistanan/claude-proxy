@@ -140,7 +140,7 @@ func handleMultiChannelCompact(
 	var lastErr *compactError
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		selection, err := channelScheduler.SelectChannel(c.Request.Context(), userID, failedChannels, scheduler.ChannelKindResponses, false)
+		selection, err := channelScheduler.SelectChannel(c.Request.Context(), userID, failedChannels, scheduler.ChannelKindResponses, "", false)
 		if err != nil {
 			break
 		}

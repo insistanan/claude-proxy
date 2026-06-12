@@ -126,6 +126,7 @@ func handleMultiChannel(
 		scheduler.ChannelKindResponses,
 		"Responses",
 		userID,
+		responsesReq.Model,
 		hasImage,
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
@@ -138,7 +139,7 @@ func handleMultiChannel(
 			baseURLs := upstream.GetAllBaseURLs()
 			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindResponses, channelIndex, baseURLs)
 
-			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithAllKeys(
+			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithModelMappingFailover(
 				c,
 				envCfg,
 				cfgManager,
@@ -147,6 +148,7 @@ func handleMultiChannel(
 				"Responses",
 				metricsManager,
 				upstream,
+				responsesReq.Model,
 				sortedURLResults,
 				bodyBytes,
 				responsesReq.Stream,
@@ -269,7 +271,7 @@ func handleSingleChannelWithUpstream(
 
 	urlResults := common.BuildDefaultURLResults(baseURLs)
 
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithAllKeys(
+	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
 		c,
 		envCfg,
 		cfgManager,
@@ -278,6 +280,7 @@ func handleSingleChannelWithUpstream(
 		"Responses",
 		metricsManager,
 		upstream,
+		responsesReq.Model,
 		urlResults,
 		bodyBytes,
 		responsesReq.Stream,
