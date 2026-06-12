@@ -91,21 +91,22 @@ func StripContextSuffix(model string) (string, bool) {
 	return model, false
 }
 
-// RedirectModel 模型重定向
-func RedirectModel(model string, upstream *UpstreamConfig) string {
+// RedirectModelList 模型重定向（返回模型列表，支持多个备选）
+// 返回：[]string 重定向后的模型列表（如果没有映射则返回包含原模型的列表）
+func RedirectModelList(model string, upstream *UpstreamConfig) []string {
 	if upstream.ModelMapping == nil || len(upstream.ModelMapping) == 0 {
-		return model
+		return []string{model}
 	}
 
 	// 1. 先尝试精确匹配原始模型名（包括后缀）
-	if mapped, ok := upstream.ModelMapping[model]; ok {
+	if mapped, ok := upstream.ModelMapping[model]; ok && len(mapped) > 0 {
 		return mapped
 	}
 
 	// 2. 如果有后缀，尝试剥离后缀后再匹配
 	strippedModel, hasSuffix := StripContextSuffix(model)
 	if hasSuffix {
-		if mapped, ok := upstream.ModelMapping[strippedModel]; ok {
+		if mapped, ok := upstream.ModelMapping[strippedModel]; ok && len(mapped) > 0 {
 			return mapped
 		}
 	}
@@ -114,7 +115,7 @@ func RedirectModel(model string, upstream *UpstreamConfig) string {
 	// 例如：同时配置 "codex" 和 "gpt-5.1-codex" 时，"gpt-5.1-codex" 应该先匹配
 	type mapping struct {
 		source string
-		target string
+		target []string
 	}
 	mappings := make([]mapping, 0, len(upstream.ModelMapping))
 	for source, target := range upstream.ModelMapping {
@@ -133,10 +134,21 @@ func RedirectModel(model string, upstream *UpstreamConfig) string {
 	
 	for _, m := range mappings {
 		if strings.Contains(modelToMatch, m.source) || strings.Contains(m.source, modelToMatch) {
-			return m.target
+			if len(m.target) > 0 {
+				return m.target
+			}
 		}
 	}
 
+	return []string{model}
+}
+
+// RedirectModel 模型重定向（兼容旧代码，返回第一个匹配的模型）
+func RedirectModel(model string, upstream *UpstreamConfig) string {
+	models := RedirectModelList(model, upstream)
+	if len(models) > 0 {
+		return models[0]
+	}
 	return model
 }
 
@@ -152,6 +164,21 @@ func ResolveUpstreamModel(model string, upstream *UpstreamConfig) string {
 	
 	// RedirectModel 内部会处理后缀匹配逻辑
 	return RedirectModel(model, upstream)
+}
+
+// ResolveUpstreamModelList 解析上游模型列表（支持多个备选）
+func ResolveUpstreamModelList(model string, upstream *UpstreamConfig) []string {
+	model = strings.TrimSpace(model)
+	
+	if upstream == nil {
+		return []string{model}
+	}
+	if strings.TrimSpace(upstream.DefaultModel) != "" {
+		return []string{strings.TrimSpace(upstream.DefaultModel)}
+	}
+	
+	// RedirectModelList 内部会处理后缀匹配逻辑
+	return RedirectModelList(model, upstream)
 }
 
 // ============== 渠道状态与优先级辅助函数 ==============
@@ -401,9 +428,10 @@ func (u *UpstreamConfig) Clone() *UpstreamConfig {
 		copy(cloned.HistoricalAPIKeys, u.HistoricalAPIKeys)
 	}
 	if u.ModelMapping != nil {
-		cloned.ModelMapping = make(map[string]string, len(u.ModelMapping))
+		cloned.ModelMapping = make(map[string][]string, len(u.ModelMapping))
 		for k, v := range u.ModelMapping {
-			cloned.ModelMapping[k] = v
+			cloned.ModelMapping[k] = make([]string, len(v))
+			copy(cloned.ModelMapping[k], v)
 		}
 	}
 	if u.PromotionUntil != nil {

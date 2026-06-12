@@ -1097,8 +1097,8 @@ func shouldUseMaxCompletionTokens(targetModel string, claudeReq *types.ClaudeReq
 		return true
 	}
 
-	for sourceModel, mappedModel := range upstream.ModelMapping {
-		if sourceModel == claudeReq.Model && looksLikeKimiOrMoonshot(mappedModel) {
+	for sourceModel, mappedModels := range upstream.ModelMapping {
+		if sourceModel == claudeReq.Model && len(mappedModels) > 0 && looksLikeKimiOrMoonshot(mappedModels[0]) {
 			return true
 		}
 	}

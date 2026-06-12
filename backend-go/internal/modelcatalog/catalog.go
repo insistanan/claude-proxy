@@ -290,10 +290,14 @@ func configuredChatModels(upstream *config.UpstreamConfig) []configuredModel {
 		seen[model] = true
 	}
 
-	for clientModel, upstreamModel := range upstream.ModelMapping {
+	for clientModel, upstreamModels := range upstream.ModelMapping {
 		clientModel = strings.TrimSpace(clientModel)
-		upstreamModel = strings.TrimSpace(upstreamModel)
-		if clientModel == "" || upstreamModel == "" || seen[clientModel] {
+		if clientModel == "" || seen[clientModel] || len(upstreamModels) == 0 {
+			continue
+		}
+		// 使用第一个目标模型作为默认展示
+		upstreamModel := strings.TrimSpace(upstreamModels[0])
+		if upstreamModel == "" {
 			continue
 		}
 		models = append(models, configuredModel{ClientModel: clientModel, UpstreamModel: upstreamModel})

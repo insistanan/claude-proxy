@@ -266,7 +266,7 @@
                   <div v-if="Object.keys(form.modelMapping).length" class="mb-4">
                     <v-list density="compact" class="bg-transparent">
                       <v-list-item
-                        v-for="[source, target] in Object.entries(form.modelMapping)"
+                        v-for="[source, targets] in Object.entries(form.modelMapping)"
                         :key="source"
                         class="mb-2"
                         rounded="lg"
@@ -278,16 +278,29 @@
                         </template>
 
                         <v-list-item-title>
-                          <div class="d-flex align-center ga-2">
-                            <code class="text-caption">{{ source }}</code>
-                            <v-icon size="small" color="primary">mdi-arrow-right</v-icon>
-                            <code class="text-caption">{{ target }}</code>
+                          <div class="d-flex flex-column ga-1">
+                            <div class="d-flex align-center ga-2">
+                              <code class="text-caption font-weight-bold">{{ source }}</code>
+                              <v-icon size="small" color="primary">mdi-arrow-right</v-icon>
+                              <v-chip size="x-small" color="info" variant="tonal">{{ targets.length }} 个备选</v-chip>
+                            </div>
+                            <div class="d-flex flex-wrap ga-1 mt-1">
+                              <v-chip
+                                v-for="(target, idx) in targets"
+                                :key="idx"
+                                size="x-small"
+                                closable
+                                @click:close="removeModelMapping(source, target)"
+                              >
+                                <code class="text-caption">{{ target }}</code>
+                              </v-chip>
+                            </div>
                           </div>
                         </v-list-item-title>
 
                         <template #append>
-                          <v-btn size="small" color="error" icon variant="text" @click="removeModelMapping(source)">
-                            <v-icon size="small" color="error">mdi-close</v-icon>
+                          <v-btn size="small" color="error" icon variant="text" @click="removeModelMapping(source)" title="删除所有映射">
+                            <v-icon size="small" color="error">mdi-delete</v-icon>
                           </v-btn>
                         </template>
                       </v-list-item>
@@ -1148,7 +1161,7 @@ const form = reactive({
   stripThoughtSignature: false,
   description: '',
   apiKeys: [] as string[],
-  modelMapping: {} as Record<string, string>,
+  modelMapping: {} as Record<string, string[]>,  // 支持一对多映射
   defaultModel: '' as string | { title: string; value: string } | null
 })
 
@@ -1521,15 +1534,38 @@ const addModelMapping = () => {
   const source = getStringValue(newMapping.source).trim()
   const target = getStringValue(newMapping.target).trim()
 
-  if (source && target && !form.modelMapping[source]) {
-    form.modelMapping[source] = target
-    newMapping.source = ''
+  if (source && target) {
+    // 如果该源模型还没有映射，创建新数组
+    if (!form.modelMapping[source]) {
+      form.modelMapping[source] = []
+    }
+    // 如果目标模型不在列表中，添加它
+    if (!form.modelMapping[source].includes(target)) {
+      form.modelMapping[source].push(target)
+    }
+    // 清空输入，但保留源模型选择，方便连续添加多个目标
     newMapping.target = ''
   }
 }
 
-const removeModelMapping = (source: string) => {
-  delete form.modelMapping[source]
+const removeModelMapping = (source: string, target?: string) => {
+  if (target) {
+    // 删除特定的目标模型
+    const targets = form.modelMapping[source]
+    if (targets) {
+      const index = targets.indexOf(target)
+      if (index > -1) {
+        targets.splice(index, 1)
+      }
+      // 如果目标列表为空，删除整个映射
+      if (targets.length === 0) {
+        delete form.modelMapping[source]
+      }
+    }
+  } else {
+    // 删除整个源模型的所有映射
+    delete form.modelMapping[source]
+  }
 }
 
 // 处理目标模型输入框点击事件(仅在首次或有新 key 时触发请求)

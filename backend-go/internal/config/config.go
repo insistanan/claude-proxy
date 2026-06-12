@@ -15,17 +15,17 @@ import (
 
 // UpstreamConfig 上游配置
 type UpstreamConfig struct {
-	BaseURL            string            `json:"baseUrl"`
-	BaseURLs           []string          `json:"baseUrls,omitempty"` // 多 BaseURL 支持（failover 模式）
-	APIKeys            []string          `json:"apiKeys"`
-	HistoricalAPIKeys  []string          `json:"historicalApiKeys,omitempty"` // 历史 API Key（用于统计聚合，换 Key 后保留旧 Key 的统计数据）
-	ServiceType        string            `json:"serviceType"`                 // gemini, openai, claude
-	Name               string            `json:"name,omitempty"`
-	Description        string            `json:"description,omitempty"`
-	Website            string            `json:"website,omitempty"`
-	InsecureSkipVerify bool              `json:"insecureSkipVerify,omitempty"`
-	ModelMapping       map[string]string `json:"modelMapping,omitempty"`
-	DefaultModel       string            `json:"defaultModel,omitempty"`
+	BaseURL            string              `json:"baseUrl"`
+	BaseURLs           []string            `json:"baseUrls,omitempty"` // 多 BaseURL 支持（failover 模式）
+	APIKeys            []string            `json:"apiKeys"`
+	HistoricalAPIKeys  []string            `json:"historicalApiKeys,omitempty"` // 历史 API Key（用于统计聚合，换 Key 后保留旧 Key 的统计数据）
+	ServiceType        string              `json:"serviceType"`                 // gemini, openai, claude
+	Name               string              `json:"name,omitempty"`
+	Description        string              `json:"description,omitempty"`
+	Website            string              `json:"website,omitempty"`
+	InsecureSkipVerify bool                `json:"insecureSkipVerify,omitempty"`
+	ModelMapping       map[string][]string `json:"modelMapping,omitempty"` // 模型重定向：源模型 -> 目标模型列表（支持多个备选）
+	DefaultModel       string              `json:"defaultModel,omitempty"`
 	// 多渠道调度相关字段
 	Priority       int        `json:"priority"`                 // 渠道优先级（数字越小优先级越高，默认按索引）
 	Status         string     `json:"status"`                   // 渠道状态：active（正常）, suspended（暂停）, disabled（备用池）
@@ -43,16 +43,16 @@ type UpstreamConfig struct {
 
 // UpstreamUpdate 用于部分更新 UpstreamConfig
 type UpstreamUpdate struct {
-	Name               *string           `json:"name"`
-	ServiceType        *string           `json:"serviceType"`
-	BaseURL            *string           `json:"baseUrl"`
-	BaseURLs           []string          `json:"baseUrls"`
-	APIKeys            []string          `json:"apiKeys"`
-	Description        *string           `json:"description"`
-	Website            *string           `json:"website"`
-	InsecureSkipVerify *bool             `json:"insecureSkipVerify"`
-	ModelMapping       map[string]string `json:"modelMapping"`
-	DefaultModel       *string           `json:"defaultModel"`
+	Name               *string             `json:"name"`
+	ServiceType        *string             `json:"serviceType"`
+	BaseURL            *string             `json:"baseUrl"`
+	BaseURLs           []string            `json:"baseUrls"`
+	APIKeys            []string            `json:"apiKeys"`
+	Description        *string             `json:"description"`
+	Website            *string             `json:"website"`
+	InsecureSkipVerify *bool               `json:"insecureSkipVerify"`
+	ModelMapping       map[string][]string `json:"modelMapping"` // 支持一对多映射
+	DefaultModel       *string             `json:"defaultModel"`
 	// 多渠道调度相关字段
 	Priority       *int       `json:"priority"`
 	Status         *string    `json:"status"`

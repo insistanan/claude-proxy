@@ -90,7 +90,7 @@ export interface Channel {
   description?: string
   website?: string
   insecureSkipVerify?: boolean
-  modelMapping?: Record<string, string>
+  modelMapping?: Record<string, string[]>  // 模型重定向：源模型 -> 目标模型列表（支持多个备选）
   defaultModel?: string
   latency?: number
   status?: ChannelStatus | 'healthy' | 'error' | 'unknown' | ''

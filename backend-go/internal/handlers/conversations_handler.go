@@ -16,13 +16,13 @@ type routeOverrideRequest struct {
 }
 
 type routeOptionChannel struct {
-	Kind         string            `json:"kind"`
-	ChannelIndex int               `json:"channelIndex"`
-	ChannelName  string            `json:"channelName"`
-	ServiceType  string            `json:"serviceType"`
-	Status       string            `json:"status"`
-	DefaultModel string            `json:"defaultModel,omitempty"`
-	ModelMapping map[string]string `json:"modelMapping,omitempty"`
+	Kind         string              `json:"kind"`
+	ChannelIndex int                 `json:"channelIndex"`
+	ChannelName  string              `json:"channelName"`
+	ServiceType  string              `json:"serviceType"`
+	Status       string              `json:"status"`
+	DefaultModel string              `json:"defaultModel,omitempty"`
+	ModelMapping map[string][]string `json:"modelMapping,omitempty"`
 }
 
 type routeOptionGroup struct {
