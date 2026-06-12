@@ -202,6 +202,8 @@ func main() {
 		apiGroup.GET("/responses/channels/:id/keys/metrics/history", handlers.GetChannelKeyMetricsHistory(responsesMetricsManager, cfgManager, true))
 		apiGroup.GET("/responses/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindResponses))
 		apiGroup.GET("/responses/global/stats/history", handlers.GetGlobalStatsHistory(responsesMetricsManager))
+		apiGroup.GET("/responses/ping/:id", responses.PingChannel(cfgManager))
+		apiGroup.GET("/responses/ping", responses.PingAllChannels(cfgManager))
 
 		// Gemini 渠道管理
 		apiGroup.GET("/gemini/channels", gemini.GetUpstreams(cfgManager))

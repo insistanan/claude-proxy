@@ -2,8 +2,13 @@
 package responses
 
 import (
+	"crypto/tls"
+	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
@@ -306,5 +311,255 @@ func SetChannelStatus(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			"message": "Responses 渠道状态已更新",
 			"status":  req.Status,
 		})
+	}
+}
+
+// PingChannel 测试 Responses 渠道连通性
+func PingChannel(cfgManager *config.ConfigManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		idStr := c.Param("id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "Invalid channel ID"})
+			return
+		}
+
+		cfg := cfgManager.GetConfig()
+		if id < 0 || id >= len(cfg.ResponsesUpstream) {
+			c.JSON(404, gin.H{"error": "Channel not found"})
+			return
+		}
+
+		channel := cfg.ResponsesUpstream[id]
+		result := pingChannelWithAPIKey(&channel)
+		c.JSON(200, result)
+	}
+}
+
+// pingChannelWithAPIKey 使用真实 API 请求测试渠道（验证 URL + API Key）
+func pingChannelWithAPIKey(ch *config.UpstreamConfig) gin.H {
+	urls := ch.GetAllBaseURLs()
+	if len(urls) == 0 {
+		return gin.H{"success": false, "latency": 0, "status": "error", "error": "no_base_url"}
+	}
+
+	// 如果没有 API Key，回退到简单的连通性测试
+	if len(ch.APIKeys) == 0 {
+		return pingChannelURLs(ch)
+	}
+
+	// 使用第一个 API Key 测试（多 URL 并发，选最快的）
+	apiKey := ch.APIKeys[0]
+
+	type pingResult struct {
+		url     string
+		latency int64
+		success bool
+		err     string
+	}
+
+	results := make(chan pingResult, len(urls))
+	for _, baseURL := range urls {
+		go func(testURL string) {
+			startTime := time.Now()
+			testURL = strings.TrimSuffix(testURL, "/")
+
+			// 根据 ServiceType 构建测试端点
+			var endpoint string
+			switch ch.ServiceType {
+			case "responses":
+				// Responses API 通常是 Codex 的封装，也支持 /v1/models
+				endpoint = testURL + "/v1/models"
+			case "claude":
+				endpoint = testURL + "/v1/models"
+			case "openai":
+				endpoint = testURL + "/v1/models"
+			default:
+				endpoint = testURL + "/v1/models"
+			}
+
+			client := &http.Client{
+				Timeout: 10 * time.Second,
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: ch.InsecureSkipVerify},
+				},
+			}
+
+			req, err := http.NewRequest("GET", endpoint, nil)
+			if err != nil {
+				results <- pingResult{url: testURL, latency: 0, success: false, err: "req_creation_failed"}
+				return
+			}
+
+			// 设置认证头
+			if strings.HasPrefix(apiKey, "sk-ant-") {
+				req.Header.Set("x-api-key", apiKey)
+			} else {
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+
+			// 根据 ServiceType 补充对应客户端的请求头
+			switch ch.ServiceType {
+			case "responses":
+				// Codex CLI 请求头（如果是 Responses API）
+				req.Header.Set("X-Codex-Installation-Id", "proxy-ping-installation")
+				req.Header.Set("X-Codex-Window-Id", "proxy-ping-window")
+				req.Header.Set("X-Request-Id", fmt.Sprintf("ping-%d", time.Now().UnixNano()))
+				req.Header.Set("User-Agent", "codex-cli")
+			case "claude":
+				// Claude Code CLI 请求头
+				req.Header.Set("X-Claude-Code-Session-Id", fmt.Sprintf("ping-session-%d", time.Now().UnixNano()))
+				req.Header.Set("X-App", "cli")
+				req.Header.Set("X-Stainless-Lang", "js")
+				req.Header.Set("X-Stainless-Package-Version", "0.74.0")
+				req.Header.Set("X-Stainless-Runtime", "node")
+				req.Header.Set("X-Stainless-Runtime-Version", "v22.12.0")
+				req.Header.Set("X-Stainless-Os", "Linux")
+				req.Header.Set("X-Stainless-Arch", "x64")
+				req.Header.Set("X-Stainless-Retry-Count", "0")
+				req.Header.Set("X-Stainless-Timeout", "600")
+				req.Header.Set("User-Agent", "claude-cli/2.1.92 (external, cli)")
+				req.Header.Set("anthropic-version", "2023-06-01")
+			default:
+				// 其他类型使用通用的 User-Agent
+				req.Header.Set("User-Agent", "claude-cli/2.0.34 (external, cli)")
+			}
+
+			resp, err := client.Do(req)
+			latency := time.Since(startTime).Milliseconds()
+			if err != nil {
+				results <- pingResult{url: testURL, latency: latency, success: false, err: err.Error()}
+				return
+			}
+			defer resp.Body.Close()
+
+			// 检查状态码（2xx 或 3xx 视为成功）
+			success := resp.StatusCode >= 200 && resp.StatusCode < 400
+			if !success {
+				results <- pingResult{url: testURL, latency: latency, success: false, err: fmt.Sprintf("status_%d", resp.StatusCode)}
+				return
+			}
+			results <- pingResult{url: testURL, latency: latency, success: true}
+		}(baseURL)
+	}
+
+	// 收集结果，找最快的成功响应
+	var bestResult *pingResult
+	for i := 0; i < len(urls); i++ {
+		r := <-results
+		if r.success {
+			if bestResult == nil || !bestResult.success || r.latency < bestResult.latency {
+				bestResult = &r
+			}
+		} else if bestResult == nil || !bestResult.success {
+			bestResult = &r
+		}
+	}
+
+	if bestResult == nil {
+		return gin.H{"success": false, "latency": 0, "status": "error", "error": "all_urls_failed"}
+	}
+
+	if bestResult.success {
+		return gin.H{"success": true, "latency": bestResult.latency, "status": "healthy"}
+	}
+	return gin.H{"success": false, "latency": bestResult.latency, "status": "error", "error": bestResult.err}
+}
+
+// pingChannelURLs 简单的 URL 连通性测试（不验证 API Key）
+func pingChannelURLs(ch *config.UpstreamConfig) gin.H {
+	urls := ch.GetAllBaseURLs()
+	if len(urls) == 0 {
+		return gin.H{"success": false, "latency": 0, "status": "error", "error": "no_base_url"}
+	}
+
+	type pingResult struct {
+		url     string
+		latency int64
+		success bool
+		err     string
+	}
+
+	results := make(chan pingResult, len(urls))
+	for _, url := range urls {
+		go func(testURL string) {
+			startTime := time.Now()
+			testURL = strings.TrimSuffix(testURL, "/")
+
+			client := &http.Client{
+				Timeout: 5 * time.Second,
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: ch.InsecureSkipVerify},
+				},
+			}
+
+			req, err := http.NewRequest("HEAD", testURL, nil)
+			if err != nil {
+				results <- pingResult{url: testURL, latency: 0, success: false, err: "req_creation_failed"}
+				return
+			}
+
+			resp, err := client.Do(req)
+			latency := time.Since(startTime).Milliseconds()
+			if err != nil {
+				results <- pingResult{url: testURL, latency: latency, success: false, err: err.Error()}
+				return
+			}
+			resp.Body.Close()
+			results <- pingResult{url: testURL, latency: latency, success: true}
+		}(url)
+	}
+
+	var bestResult *pingResult
+	for i := 0; i < len(urls); i++ {
+		r := <-results
+		if r.success {
+			if bestResult == nil || !bestResult.success || r.latency < bestResult.latency {
+				bestResult = &r
+			}
+		} else if bestResult == nil || !bestResult.success {
+			bestResult = &r
+		}
+	}
+
+	if bestResult == nil {
+		return gin.H{"success": false, "latency": 0, "status": "error", "error": "all_urls_failed"}
+	}
+
+	if bestResult.success {
+		return gin.H{"success": true, "latency": bestResult.latency, "status": "healthy"}
+	}
+	return gin.H{"success": false, "latency": bestResult.latency, "status": "error", "error": bestResult.err}
+}
+
+// PingAllChannels 测试所有 Responses 渠道连通性
+func PingAllChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cfg := cfgManager.GetConfig()
+		results := make(chan gin.H)
+		var wg sync.WaitGroup
+
+		for i, channel := range cfg.ResponsesUpstream {
+			wg.Add(1)
+			go func(id int, ch config.UpstreamConfig) {
+				defer wg.Done()
+				result := pingChannelWithAPIKey(&ch)
+				result["id"] = id
+				result["name"] = ch.Name
+				results <- result
+			}(i, channel)
+		}
+
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+
+		var finalResults []gin.H
+		for res := range results {
+			finalResults = append(finalResults, res)
+		}
+
+		c.JSON(200, finalResults)
 	}
 }
