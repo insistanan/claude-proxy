@@ -31,6 +31,8 @@ type ChannelScheduler struct {
 	traceAffinity            *session.TraceAffinityManager
 	conversationRegistry     *conversation.Registry
 	urlManager               *warmup.URLManager // URL 管理器（非阻塞，动态排序）
+	profileManager           *metrics.ProfileManager // 性能画像管理器
+	adaptiveScheduler        *AdaptiveScheduler      // 自适应调度器
 }
 
 // ChannelKind 标识调度器所处理的渠道类型
@@ -282,7 +284,27 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 2. 按优先级遍历活跃渠道
+	// 2. 使用自适应调度器（如果可用）
+	s.mu.RLock()
+	adaptiveScheduler := s.adaptiveScheduler
+	s.mu.RUnlock()
+	
+	if adaptiveScheduler != nil {
+		result := adaptiveScheduler.SelectBestChannel(
+			activeChannels,
+			failedChannels,
+			kind,
+			s.getUpstreamByIndex,
+		)
+		if result != nil {
+			return result, nil
+		}
+		// 自适应调度失败，降级到原有逻辑
+		prefix := kindSchedulerLogPrefix(kind)
+		log.Printf("[%s-Adaptive] 自适应调度未找到可用渠道，降级到优先级调度", prefix)
+	}
+
+	// 3. 按优先级遍历活跃渠道（降级方案）
 	for _, ch := range activeChannels {
 		// 跳过本次请求已经失败的渠道
 		if failedChannels[ch.Index] {
@@ -808,4 +830,34 @@ func urlManagerChannelKeyOrdinal(kind ChannelKind) int {
 	default:
 		return 0
 	}
+}
+
+// SetProfileManager 设置性能画像管理器
+func (s *ChannelScheduler) SetProfileManager(pm *metrics.ProfileManager) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profileManager = pm
+}
+
+// GetProfileManager 获取性能画像管理器
+func (s *ChannelScheduler) GetProfileManager() *metrics.ProfileManager {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.profileManager
+}
+
+// SetAdaptiveScheduler 设置自适应调度器
+func (s *ChannelScheduler) SetAdaptiveScheduler(as *AdaptiveScheduler) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adaptiveScheduler = as
 }

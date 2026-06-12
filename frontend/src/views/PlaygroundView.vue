@@ -10,9 +10,9 @@
       <v-divider />
 
       <v-card-text class="pa-4">
-        <!-- 协议和渠道选择 -->
+        <!-- 协议、渠道和模型选择 -->
         <v-row class="mb-4">
-          <v-col cols="12" md="6">
+          <v-col cols="12" md="4">
             <v-select
               v-model="playgroundStore.apiType"
               :items="apiTypeOptions"
@@ -22,7 +22,7 @@
               @update:model-value="onApiTypeChange"
             />
           </v-col>
-          <v-col cols="12" md="6">
+          <v-col cols="12" md="4">
             <v-select
               v-model="playgroundStore.channelIndex"
               :items="channelOptions"
@@ -32,6 +32,23 @@
               prepend-inner-icon="mdi-server-network"
               @update:model-value="onChannelChange"
             />
+          </v-col>
+          <v-col cols="12" md="4">
+            <v-select
+              v-model="selectedModel"
+              :items="modelOptions"
+              :loading="isLoadingModels"
+              :disabled="!playgroundStore.channelIndex"
+              label="选择模型"
+              variant="outlined"
+              prepend-inner-icon="mdi-robot"
+            >
+              <template #no-data>
+                <div class="text-center pa-4 text-medium-emphasis">
+                  {{ modelsError || '请先选择渠道' }}
+                </div>
+              </template>
+            </v-select>
           </v-col>
         </v-row>
 
@@ -112,7 +129,7 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { usePlaygroundStore } from '@/stores/playground'
 import { useChannelStore } from '@/stores/channel'
-import { testChannel } from '@/services/api'
+import { testChannelWithModel, fetchUpstreamModels } from '@/services/api'
 
 const playgroundStore = usePlaygroundStore()
 const channelStore = useChannelStore()
@@ -121,6 +138,12 @@ const userInput = ref('')
 const showError = ref(false)
 const errorMessage = ref('')
 const messageContainer = ref<HTMLElement>()
+
+// 模型选择相关
+const isLoadingModels = ref(false)
+const modelsError = ref<string | null>(null)
+const modelOptions = ref<Array<{ title: string; value: string }>>([])
+const selectedModel = ref<string | null>(null)
 
 const apiTypeOptions = [
   { title: 'Claude Messages', value: 'messages' },
@@ -143,6 +166,7 @@ const canSend = computed(() => {
   return !!(
     playgroundStore.apiType &&
     playgroundStore.channelIndex !== null &&
+    selectedModel.value &&
     userInput.value.trim() &&
     !playgroundStore.isStreaming
   )
@@ -158,10 +182,56 @@ const canInput = computed(() => {
 
 const onApiTypeChange = (value: 'messages' | 'responses' | 'gemini' | 'chat' | null) => {
   playgroundStore.setApiType(value)
+  selectedModel.value = null
+  modelOptions.value = []
 }
 
 const onChannelChange = (value: number | null) => {
   playgroundStore.setChannel(value)
+  if (value !== null) {
+    loadModels()
+  } else {
+    selectedModel.value = null
+    modelOptions.value = []
+  }
+}
+
+const loadModels = async () => {
+  const channel = channelStore.getChannelsByType(playgroundStore.apiType!)
+    .find(ch => ch.index === playgroundStore.channelIndex)
+  
+  if (!channel || !channel.apiKeys.length) {
+    modelsError.value = '渠道未配置 API Key'
+    return
+  }
+
+  isLoadingModels.value = true
+  modelsError.value = null
+  modelOptions.value = []
+  selectedModel.value = null
+
+  try {
+    const result = await fetchUpstreamModels(
+      channel.baseUrl,
+      channel.apiKeys[0]
+    )
+    
+    if (result.data && result.data.length > 0) {
+      modelOptions.value = result.data.map(model => ({
+        title: model.id,
+        value: model.id
+      }))
+      // 自动选择第一个模型
+      selectedModel.value = result.data[0].id
+    } else {
+      modelsError.value = '未找到可用模型'
+    }
+  } catch (error: any) {
+    console.error('加载模型失败:', error)
+    modelsError.value = error.message || '加载模型失败'
+  } finally {
+    isLoadingModels.value = false
+  }
 }
 
 const formatTime = (timestamp: number) => {
@@ -196,27 +266,16 @@ const sendMessage = async () => {
       content: ''
     })
 
-    await testChannel(
+    await testChannelWithModel(
       playgroundStore.apiType!,
       playgroundStore.channelIndex!,
+      selectedModel.value!,
       message,
       (chunk: string) => {
         playgroundStore.updateLastMessage(
           playgroundStore.messages[playgroundStore.messages.length - 1].content + chunk
         )
         scrollToBottom()
-      },
-      {
-        sessionId: playgroundStore.sessionId || undefined,
-        threadId: playgroundStore.threadId || undefined,
-        interactionId: playgroundStore.interactionId || undefined,
-        responseId: playgroundStore.responseId || undefined,
-        onInteractionId: (id: string) => {
-          playgroundStore.setInteractionId(id)
-        },
-        onResponseId: (id: string) => {
-          playgroundStore.setResponseId(id)
-        }
       }
     )
   } catch (error: any) {

@@ -121,6 +121,29 @@ func main() {
 	log.Printf("[Scheduler-Init] 多渠道调度器已初始化 (失败率阈值: %.0f%%, 滑动窗口: %d)",
 		messagesMetricsManager.GetFailureThreshold()*100, messagesMetricsManager.GetWindowSize())
 
+	// 初始化自适应负载均衡
+	profileManager := metrics.NewProfileManager()
+	adaptiveScheduler := scheduler.NewAdaptiveScheduler(profileManager)
+	channelScheduler.SetProfileManager(profileManager)
+	channelScheduler.SetAdaptiveScheduler(adaptiveScheduler)
+	log.Println("[Main] 自适应负载均衡已启用")
+
+	// 从现有指标同步数据到性能画像
+	config := cfgManager.GetConfig()
+	for i, upstream := range config.Upstream {
+		messagesMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
+	}
+	for i, upstream := range config.ResponsesUpstream {
+		responsesMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
+	}
+	for i, upstream := range config.GeminiUpstream {
+		geminiMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
+	}
+	for i, upstream := range config.ChatUpstream {
+		chatMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
+	}
+	log.Println("[Main] 已从现有指标同步性能画像数据")
+
 	// 设置 Gin 模式
 	if envCfg.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
@@ -179,6 +202,15 @@ func main() {
 		apiGroup.GET("/messages/channels/dashboard", handlers.GetChannelDashboard(cfgManager, channelScheduler))
 		apiGroup.GET("/messages/ping/:id", messages.PingChannel(cfgManager))
 		apiGroup.GET("/messages/ping", messages.PingAllChannels(cfgManager))
+
+		// 渠道性能报告（自适应负载均衡）
+		apiGroup.GET("/performance/report", func(c *gin.Context) {
+			reports := adaptiveScheduler.GetChannelPerformanceReport()
+			c.JSON(200, gin.H{
+				"success": true,
+				"data":    reports,
+			})
+		})
 
 		// Responses 渠道管理
 		apiGroup.GET("/responses/channels", responses.GetUpstreams(cfgManager))

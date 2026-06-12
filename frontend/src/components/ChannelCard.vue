@@ -268,7 +268,7 @@
           rounded="lg"
           class="action-btn"
           prepend-icon="mdi-test-tube"
-          @click="$emit('quickTest', channel.index)"
+          @click="handleQuickTest"
         >
           快捷测试
         </v-btn>
@@ -311,20 +311,32 @@
       </div>
     </v-card-text>
   </v-card>
+
+  <!-- 快捷测试弹窗 -->
+  <QuickTestModal
+    v-model="showQuickTestModal"
+    :channel="channel"
+    :api-type="apiType"
+  />
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { Channel } from '../services/api'
+import QuickTestModal from './QuickTestModal.vue'
 
 interface Props {
   channel: Channel
+  apiType: 'messages' | 'responses' | 'gemini' | 'chat'
 }
 
 const props = defineProps<Props>()
 
 // 复制功能相关状态
 const copiedKeyIndex = ref<number | null>(null)
+
+// 快捷测试弹窗状态
+const showQuickTestModal = ref(false)
 
 defineEmits<{
   edit: [channel: Channel]
@@ -337,6 +349,10 @@ defineEmits<{
   togglePin: [channelId: number]
   quickTest: [channelId: number]
 }>()
+
+const handleQuickTest = () => {
+  showQuickTestModal.value = true
+}
 
 // 获取服务类型对应的芯片颜色
 const getServiceChipColor = () => {

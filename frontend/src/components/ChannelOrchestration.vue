@@ -348,7 +348,7 @@
                       {{ element.visionCapable ? '取消图片理解默认模型' : '设为图片理解默认模型' }}
                     </v-list-item-title>
                   </v-list-item>
-                  <v-list-item @click="$emit('quickTest', element.index)">
+                  <v-list-item @click="handleQuickTest(element)">
                     <template #prepend>
                       <v-icon size="small" color="success">mdi-test-tube</v-icon>
                     </template>
@@ -804,6 +804,13 @@
       </v-card>
     </v-dialog>
 
+    <!-- 快捷测试弹窗 -->
+    <QuickTestModal
+      v-model="showQuickTestModal"
+      :channel="quickTestChannel"
+      :api-type="channelType"
+    />
+
 </template>
 
 <script setup lang="ts">
@@ -814,6 +821,7 @@ import type { ApexOptions } from 'apexcharts'
 import { api, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
 import KeyTrendChart from './KeyTrendChart.vue'
+import QuickTestModal from './QuickTestModal.vue'
 
 const apexchart = VueApexCharts
 
@@ -847,6 +855,10 @@ const emit = defineEmits<{
 }>()
 
 const supportsVisionDefault = computed(() => props.channelType !== 'gemini')
+
+// 快捷测试弹窗状态
+const showQuickTestModal = ref(false)
+const quickTestChannel = ref<Channel | null>(null)
 
 // 状态
 const metrics = ref<ChannelMetrics[]>([])
@@ -988,6 +1000,11 @@ const expandedChannelIndex = ref<number | null>(null)
 // 切换渠道图表展开/收起
 const toggleChannelChart = (channelIndex: number) => {
   expandedChannelIndex.value = expandedChannelIndex.value === channelIndex ? null : channelIndex
+}
+
+const handleQuickTest = (channel: Channel) => {
+  quickTestChannel.value = channel
+  showQuickTestModal.value = true
 }
 
 // 活跃渠道（可拖拽排序）- 包含 active 和 suspended 状态
