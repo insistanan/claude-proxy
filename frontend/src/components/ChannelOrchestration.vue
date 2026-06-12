@@ -218,11 +218,11 @@
                         <v-chip
                           v-if="shouldShowCacheHitRate(get15mStats(element.index))"
                           size="x-small"
-                          :color="getCacheHitRateColor(get15mStats(element.index)?.cacheHitRate)"
+                          :color="getCacheHitRateColor(getCacheHitRate(get15mStats(element.index)))"
                           variant="tonal"
                           class="ml-1"
                         >
-                          缓存 {{ get15mStats(element.index)?.cacheHitRate?.toFixed(0) }}%
+                          缓存 {{ getCacheHitRate(get15mStats(element.index))?.toFixed(0) }}%
                         </v-chip>
                       </template>
                       <span v-else class="text-caption text-medium-emphasis">--</span>
@@ -346,6 +346,16 @@
                     </template>
                     <v-list-item-title>
                       {{ element.visionCapable ? '取消图片理解默认模型' : '设为图片理解默认模型' }}
+                    </v-list-item-title>
+                  </v-list-item>
+                  <v-list-item @click="copyChannelConfig(element)">
+                    <template #prepend>
+                      <v-icon size="small" :color="copiedChannelIndex === element.index ? 'success' : 'primary'">
+                        {{ copiedChannelIndex === element.index ? 'mdi-check' : 'mdi-content-copy' }}
+                      </v-icon>
+                    </template>
+                    <v-list-item-title>
+                      {{ copiedChannelIndex === element.index ? '已复制配置' : '复制配置' }}
                     </v-list-item-title>
                   </v-list-item>
                   <v-list-item @click="handleQuickTest(element)">
@@ -1007,6 +1017,31 @@ const handleQuickTest = (channel: Channel) => {
   showQuickTestModal.value = true
 }
 
+// 复制渠道配置到剪贴板
+const copiedChannelIndex = ref<number | null>(null)
+const copyChannelConfig = async (channel: Channel) => {
+  try {
+    // 获取第一个密钥
+    const firstKey = channel.apiKeys.length > 0 ? channel.apiKeys[0] : ''
+    
+    // 构建配置文本
+    const configText = `名称: ${channel.name}
+URL: ${channel.baseUrl}
+密钥: ${firstKey}`
+    
+    // 复制到剪贴板
+    await navigator.clipboard.writeText(configText)
+    
+    // 显示已复制状态
+    copiedChannelIndex.value = channel.index
+    setTimeout(() => {
+      copiedChannelIndex.value = null
+    }, 2000)
+  } catch (error) {
+    console.error('复制配置失败:', error)
+  }
+}
+
 // 活跃渠道（可拖拽排序）- 包含 active 和 suspended 状态
 const activeChannels = ref<Channel[]>([])
 
@@ -1125,11 +1160,19 @@ const getCacheHitRateColor = (rate?: number): string => {
   return 'orange'
 }
 
-const shouldShowCacheHitRate = (stats?: TimeWindowStats): boolean => {
-  if (!stats || !stats.requestCount) return false
+const getCacheHitRate = (stats?: TimeWindowStats): number | undefined => {
+  if (!stats) return undefined
   const inputTokens = stats.inputTokens ?? 0
   const cacheReadTokens = stats.cacheReadTokens ?? 0
-  return (inputTokens + cacheReadTokens) > 0
+  const denom = inputTokens + cacheReadTokens
+
+  if (denom <= 0) return undefined
+  return stats.cacheHitRate ?? (cacheReadTokens / denom * 100)
+}
+
+const shouldShowCacheHitRate = (stats?: TimeWindowStats): boolean => {
+  if (!stats || !stats.requestCount) return false
+  return getCacheHitRate(stats) !== undefined
 }
 
 // 获取延迟颜色
@@ -1193,7 +1236,8 @@ const formatCacheStats = (stats?: TimeWindowStats): string => {
 
   if (denom <= 0) return '--'
 
-  const hitRate = stats.cacheHitRate ?? (cacheReadTokens / denom * 100)
+  const hitRate = getCacheHitRate(stats)
+  if (hitRate === undefined) return '--'
   return `命中 ${hitRate.toFixed(0)}% · 读 ${formatTokens(cacheReadTokens)} · 写 ${formatTokens(cacheCreationTokens)}`
 }
 

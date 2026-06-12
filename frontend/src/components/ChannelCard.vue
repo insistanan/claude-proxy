@@ -263,6 +263,18 @@
       <div class="action-buttons d-flex flex-wrap ga-2 justify-end w-100">
         <v-btn
           size="small"
+          color="primary"
+          variant="outlined"
+          rounded="lg"
+          class="action-btn"
+          :prepend-icon="copiedConfig ? 'mdi-check' : 'mdi-content-copy'"
+          @click="copyChannelConfig"
+        >
+          {{ copiedConfig ? '已复制' : '复制配置' }}
+        </v-btn>
+
+        <v-btn
+          size="small"
           color="success"
           variant="outlined"
           rounded="lg"
@@ -337,6 +349,7 @@ const copiedKeyIndex = ref<number | null>(null)
 
 // 快捷测试弹窗状态
 const showQuickTestModal = ref(false)
+const copiedConfig = ref(false)
 
 defineEmits<{
   edit: [channel: Channel]
@@ -352,6 +365,30 @@ defineEmits<{
 
 const handleQuickTest = () => {
   showQuickTestModal.value = true
+}
+
+// 复制渠道配置到剪贴板
+const copyChannelConfig = async () => {
+  try {
+    // 获取第一个密钥
+    const firstKey = props.channel.apiKeys.length > 0 ? props.channel.apiKeys[0] : ''
+    
+    // 构建配置文本
+    const configText = `名称: ${props.channel.name}
+URL: ${props.channel.baseUrl}
+密钥: ${firstKey}`
+    
+    // 复制到剪贴板
+    await navigator.clipboard.writeText(configText)
+    
+    // 显示已复制状态
+    copiedConfig.value = true
+    setTimeout(() => {
+      copiedConfig.value = false
+    }, 2000)
+  } catch (error) {
+    console.error('复制配置失败:', error)
+  }
 }
 
 // 获取服务类型对应的芯片颜色

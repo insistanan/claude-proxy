@@ -371,7 +371,7 @@ export interface ModelsResponse {
  * 构建上游的 /v1/models 端点 URL
  * 参考：backend-go/internal/handlers/messages/models.go:240-257
  */
-function buildModelsURL(baseURL: string): string {
+function buildModelsURL(baseURL: string, method: 'openai-v1' | 'openai-root' | 'anthropic' | 'gemini' | 'ollama' = 'openai-v1'): string {
   // 处理 # 后缀（跳过版本前缀）
   const skipVersionPrefix = baseURL.endsWith('#')
   if (skipVersionPrefix) {
@@ -383,57 +383,154 @@ function buildModelsURL(baseURL: string): string {
   const versionPattern = /\/v\d+[a-z]*$/
   const hasVersionSuffix = versionPattern.test(baseURL)
 
-  // 构建端点
-  let endpoint = '/models'
-  if (!hasVersionSuffix && !skipVersionPrefix) {
-    endpoint = '/v1' + endpoint
+  // 根据不同方法构建端点
+  switch (method) {
+    case 'openai-v1':
+      let endpoint = '/models'
+      if (!hasVersionSuffix && !skipVersionPrefix) {
+        endpoint = '/v1' + endpoint
+      }
+      return baseURL + endpoint
+    
+    case 'openai-root':
+      return baseURL + '/models'
+    
+    case 'anthropic':
+      // Anthropic 也使用 /v1/models
+      let anthEndpoint = '/models'
+      if (!hasVersionSuffix && !skipVersionPrefix) {
+        anthEndpoint = '/v1' + anthEndpoint
+      }
+      return baseURL + anthEndpoint
+    
+    case 'gemini':
+      // 移除尾部的 /v1 或 /v1beta
+      if (baseURL.endsWith('/v1') || baseURL.endsWith('/v1beta')) {
+        baseURL = baseURL.replace(/\/v1(beta)?$/, '')
+      }
+      return baseURL + '/v1beta/models'
+    
+    case 'ollama':
+      return baseURL + '/api/tags'
+    
+    default:
+      return baseURL + '/v1/models'
   }
-
-  return baseURL + endpoint
 }
 
 /**
  * 直接从上游获取模型列表（前端直连）
+ * 支持多种发现方法，与后端保持一致
  */
 export async function fetchUpstreamModels(
   baseUrl: string,
-  apiKey: string
+  apiKey: string,
+  serviceType?: string
 ): Promise<ModelsResponse> {
-  const url = buildModelsURL(baseUrl)
-
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`
-    },
-    signal: AbortSignal.timeout(10000) // 10秒超时
-  })
-
-  if (!response.ok) {
-    let errorMessage = `${response.status} ${response.statusText}`
-    let errorDetails: unknown = null
-
-    try {
-      const errorText = await response.text()
-      if (errorText) {
-        const errorJson = JSON.parse(errorText)
-        // 解析上游错误格式: { "error": { "code": "", "message": "...", "type": "..." } }
-        if (errorJson.error && errorJson.error.message) {
-          errorMessage = errorJson.error.message
-          errorDetails = errorJson.error
-        } else if (errorJson.message) {
-          errorMessage = errorJson.message
-          errorDetails = errorJson
-        }
-      }
-    } catch {
-      // 解析失败,使用默认错误消息
-    }
-
-    throw new ApiError(errorMessage, response.status, errorDetails)
+  // 根据 serviceType 确定尝试顺序
+  let methods: Array<'openai-v1' | 'openai-root' | 'anthropic' | 'gemini' | 'ollama'>
+  
+  switch (serviceType?.toLowerCase()) {
+    case 'claude':
+    case 'anthropic':
+      methods = ['anthropic', 'openai-v1', 'openai-root', 'gemini', 'ollama']
+      break
+    case 'gemini':
+      methods = ['gemini', 'openai-v1', 'openai-root', 'anthropic', 'ollama']
+      break
+    default:
+      // 对于 openai、responses、chat 等类型
+      methods = ['openai-v1', 'openai-root', 'anthropic', 'gemini', 'ollama']
+      break
   }
 
-  return await response.json()
+  let lastError: Error | null = null
+
+  // 依次尝试每种方法
+  for (const method of methods) {
+    try {
+      const url = buildModelsURL(baseUrl, method)
+      const headers: Record<string, string> = {}
+      
+      // Gemini 使用 URL 参数传递 key，其他使用 Authorization header
+      let fetchUrl = url
+      if (method === 'gemini') {
+        fetchUrl = `${url}?key=${encodeURIComponent(apiKey)}`
+      } else {
+        headers['Authorization'] = `Bearer ${apiKey}`
+      }
+
+      const response = await fetch(fetchUrl, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(10000) // 10秒超时
+      })
+
+      if (!response.ok) {
+        let errorMessage = `${response.status} ${response.statusText}`
+        try {
+          const errorText = await response.text()
+          if (errorText) {
+            const errorJson = JSON.parse(errorText)
+            if (errorJson.error && errorJson.error.message) {
+              errorMessage = errorJson.error.message
+            } else if (errorJson.message) {
+              errorMessage = errorJson.message
+            }
+          }
+        } catch {
+          // 解析失败,使用默认错误消息
+        }
+        lastError = new Error(`${method}: ${errorMessage}`)
+        continue
+      }
+
+      const data = await response.json()
+      
+      // 处理不同 API 的响应格式
+      if (method === 'ollama') {
+        // Ollama 返回 { models: [...] }
+        if (data.models && Array.isArray(data.models)) {
+          return {
+            object: 'list',
+            data: data.models.map((m: any) => ({
+              id: m.name || m.model || '',
+              object: 'model',
+              created: m.modified_at || Date.now(),
+              owned_by: 'ollama'
+            }))
+          }
+        }
+      } else if (method === 'gemini') {
+        // Gemini 返回 { models: [...] }
+        if (data.models && Array.isArray(data.models)) {
+          return {
+            object: 'list',
+            data: data.models.map((m: any) => ({
+              id: m.name ? m.name.replace('models/', '') : '',
+              object: 'model',
+              created: Date.now(),
+              owned_by: 'google'
+            }))
+          }
+        }
+      } else {
+        // OpenAI 格式: { data: [...] }
+        if (data.data && Array.isArray(data.data) && data.data.length > 0) {
+          return data
+        }
+      }
+      
+      // 如果没有返回模型，尝试下一个方法
+      lastError = new Error(`${method}: 未找到可用模型`)
+    } catch (error: any) {
+      lastError = error
+      continue
+    }
+  }
+
+  // 所有方法都失败
+  throw lastError || new Error('无法获取模型列表')
 }
 
 class ApiService {
