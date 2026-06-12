@@ -45,6 +45,9 @@ func ConvertResponsesToGeminiRequest(model string, sess *session.Session, req *t
 	} else if toolConfig != nil {
 		geminiReq.ToolConfig = toolConfig
 	}
+	if len(geminiReq.Tools) == 0 {
+		geminiReq.ToolConfig = nil
+	}
 
 	genCfg := &types.GeminiGenerationConfig{}
 	if req.MaxOutputTokens > 0 {
@@ -84,6 +87,7 @@ func ConvertGeminiResponseToResponses(originalRequestJSON []byte, upstreamRespon
 	if err := json.Unmarshal(upstreamResponseJSON, &geminiResp); err != nil {
 		return nil, fmt.Errorf("解析 Gemini 响应失败: %w", err)
 	}
+	customTools := extractCustomToolContextFromRawRequest(originalRequestJSON)
 
 	resp := &types.ResponsesResponse{
 		ID:     generateResponseID(),
@@ -126,14 +130,27 @@ func ConvertGeminiResponseToResponses(originalRequestJSON []byte, upstreamRespon
 			if part.FunctionCall != nil {
 				args, _ := json.Marshal(part.FunctionCall.Args)
 				callID := fmt.Sprintf("call_%d_%d", candidateIndex, idx)
-				resp.Output = append(resp.Output, types.ResponsesItem{
+				item := types.ResponsesItem{
 					ID:        fmt.Sprintf("fc_%s", callID),
 					Type:      "function_call",
 					Status:    "completed",
 					CallID:    callID,
 					Name:      part.FunctionCall.Name,
 					Arguments: string(args),
-				})
+				}
+				if customTools != nil {
+					if spec, ok := customTools[part.FunctionCall.Name]; ok {
+						item = types.ResponsesItem{
+							ID:      fmt.Sprintf("ctc_%s", callID),
+							Type:    "custom_tool_call",
+							Status:  "completed",
+							CallID:  callID,
+							Name:    spec.OriginalName,
+							Content: extractCustomToolInput(string(args)),
+						}
+					}
+				}
+				resp.Output = append(resp.Output, item)
 			}
 		}
 		if candidate.FinishReason == "MAX_TOKENS" {
@@ -167,31 +184,18 @@ func ResponsesToolsToGeminiTools(raw interface{}) ([]types.GeminiTool, error) {
 		if !ok {
 			return nil, fmt.Errorf("Responses tools 项必须是对象")
 		}
-		toolType, _ := m["type"].(string)
-		if toolType != "" && toolType != "function" {
-			return nil, fmt.Errorf("Gemini 上游暂不支持 Responses tool type %q", toolType)
+		spec := normalizeResponsesToolDefinition(m)
+		if spec.ToolType != "" && spec.ToolType != "function" && spec.ToolType != "custom" {
+			return nil, fmt.Errorf("Gemini 上游暂不支持 Responses tool type %q", spec.ToolType)
 		}
-		name, _ := m["name"].(string)
-		desc, _ := m["description"].(string)
-		params := m["parameters"]
-		if fn, ok := m["function"].(map[string]interface{}); ok {
-			if v, ok := fn["name"].(string); ok && v != "" {
-				name = v
-			}
-			if v, ok := fn["description"].(string); ok && v != "" {
-				desc = v
-			}
-			if v, ok := fn["parameters"]; ok {
-				params = v
-			}
-		}
-		if name == "" {
+		if spec.Name == "" {
 			return nil, fmt.Errorf("Responses function tool 缺少 name")
 		}
-		if params == nil {
-			params = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
-		}
-		decls = append(decls, types.GeminiFunctionDeclaration{Name: name, Description: desc, Parameters: types.SanitizeGeminiToolSchema(params)})
+		decls = append(decls, types.GeminiFunctionDeclaration{
+			Name:        spec.Name,
+			Description: spec.Description,
+			Parameters:  types.SanitizeGeminiToolSchema(spec.Parameters),
+		})
 	}
 	return []types.GeminiTool{{FunctionDeclarations: decls}}, nil
 }
@@ -217,7 +221,7 @@ func ResponsesToolChoiceToGemini(raw interface{}) (*types.GeminiToolConfig, erro
 	case map[string]interface{}:
 		typ, _ := v["type"].(string)
 		switch typ {
-		case "", "function":
+		case "", "function", "custom":
 		case "auto":
 			cfg.Mode = "AUTO"
 			return &types.GeminiToolConfig{FunctionCallingConfig: cfg}, nil
@@ -230,12 +234,7 @@ func ResponsesToolChoiceToGemini(raw interface{}) (*types.GeminiToolConfig, erro
 		default:
 			return nil, fmt.Errorf("Gemini 上游暂不支持 tool_choice type %q", typ)
 		}
-		name, _ := v["name"].(string)
-		if name == "" {
-			if fn, ok := v["function"].(map[string]interface{}); ok {
-				name, _ = fn["name"].(string)
-			}
-		}
+		name := extractNamedToolChoice(v)
 		if name == "" {
 			return nil, fmt.Errorf("function tool_choice 缺少 name")
 		}
@@ -332,9 +331,13 @@ func responsesItemToGeminiContent(item types.ResponsesItem, callNames map[string
 			return types.GeminiContent{}, false, err
 		}
 		content.Parts = parts
-	case "function_call":
+	case "function_call", "custom_tool_call":
 		var args map[string]interface{}
-		if item.Arguments != "" {
+		if item.Type == "custom_tool_call" {
+			if err := json.Unmarshal([]byte(customToolArgumentsJSON(item)), &args); err != nil {
+				return types.GeminiContent{}, false, fmt.Errorf("custom_tool_call input 不是合法 JSON: %w", err)
+			}
+		} else if item.Arguments != "" {
 			if err := json.Unmarshal([]byte(item.Arguments), &args); err != nil {
 				return types.GeminiContent{}, false, fmt.Errorf("function_call arguments 不是合法 JSON: %w", err)
 			}
@@ -344,7 +347,10 @@ func responsesItemToGeminiContent(item types.ResponsesItem, callNames map[string
 		}
 		content.Role = "model"
 		content.Parts = []types.GeminiPart{{FunctionCall: &types.GeminiFunctionCall{Name: item.Name, Args: args}}}
-	case "function_call_output":
+	default:
+		if !isResponsesToolOutputType(item.Type) {
+			return types.GeminiContent{}, false, nil
+		}
 		name := callNames[item.CallID]
 		if name == "" {
 			name = item.Name
@@ -356,8 +362,6 @@ func responsesItemToGeminiContent(item types.ResponsesItem, callNames map[string
 		content.Role = "user"
 		content.Parts = []types.GeminiPart{{FunctionResponse: &types.GeminiFunctionResponse{Name: name, Response: response}}}
 	case "reasoning":
-		return types.GeminiContent{}, false, nil
-	default:
 		return types.GeminiContent{}, false, nil
 	}
 	if len(content.Parts) == 0 {
@@ -471,7 +475,7 @@ func parseGeminiDataURI(uri string) (string, string, bool) {
 func buildFunctionCallNameMap(items []types.ResponsesItem) map[string]string {
 	names := map[string]string{}
 	for _, item := range items {
-		if item.Type != "function_call" || item.Name == "" {
+		if (item.Type != "function_call" && item.Type != "custom_tool_call") || item.Name == "" {
 			continue
 		}
 		if item.CallID != "" {

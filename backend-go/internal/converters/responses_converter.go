@@ -185,7 +185,7 @@ func ResponsesToOpenAIChatMessages(sess *session.Session, newInput interface{}, 
 		}
 	}
 
-	return messages, nil
+	return collapseSystemMessagesToHead(messages), nil
 }
 
 // responsesItemToOpenAIMessage 单个 ResponsesItem 转换为 OpenAI Message
@@ -223,14 +223,25 @@ func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface
 			"content": content,
 		}
 
-	case "function_call":
+	case "function_call", "custom_tool_call", "tool_search_call":
 		callID := item.CallID
 		if callID == "" {
 			callID = item.ID
 		}
 		arguments := item.Arguments
-		if arguments == "" {
+		name := item.Name
+		if item.Type == "custom_tool_call" {
+			arguments = customToolArgumentsJSON(item)
+		} else if item.Type == "tool_search_call" {
+			name = openAIChatToolSearchName
+			if strings.TrimSpace(arguments) == "" {
+				arguments = "{}"
+			}
+		} else if arguments == "" {
 			arguments = "{}"
+		}
+		if item.Namespace != "" {
+			name = flattenNamespaceToolName(item.Namespace, name)
 		}
 		return map[string]interface{}{
 			"role": "assistant",
@@ -239,17 +250,18 @@ func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface
 					"id":   callID,
 					"type": "function",
 					"function": map[string]interface{}{
-						"name":      item.Name,
+						"name":      name,
 						"arguments": arguments,
 					},
 				},
 			},
 		}
+	}
 
-	case "function_call_output":
-		content := buildOpenAIMessageContent(item.Content)
-		if content == nil {
-			content = ""
+	if isResponsesToolOutputType(item.Type) {
+		content := stringifyResponsesToolOutput(item.Content)
+		if content == "" && item.Type == "tool_search_output" && item.Tools != nil {
+			content = stringifyResponsesToolOutput(item.Tools)
 		}
 		return map[string]interface{}{
 			"role":         "tool",
@@ -265,6 +277,24 @@ func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface
 
 // OpenAIChatResponseToResponses 将 OpenAI Chat 响应转换为 Responses 格式
 func OpenAIChatResponseToResponses(openaiResp map[string]interface{}, sessionID string) (*types.ResponsesResponse, error) {
+	return openAIChatResponseToResponsesWithToolContext(openaiResp, sessionID, nil)
+}
+
+func openAIChatResponseToResponsesWithCustomTools(openaiResp map[string]interface{}, sessionID string, customTools map[string]customToolSpec) (*types.ResponsesResponse, error) {
+	for name, spec := range customTools {
+		if spec.Kind != "" {
+			continue
+		}
+		spec.Kind = responseToolKindCustom
+		if strings.TrimSpace(spec.OriginalName) == "" {
+			spec.OriginalName = name
+		}
+		customTools[name] = spec
+	}
+	return openAIChatResponseToResponsesWithToolContext(openaiResp, sessionID, customTools)
+}
+
+func openAIChatResponseToResponsesWithToolContext(openaiResp map[string]interface{}, sessionID string, toolContext map[string]responseToolSpec) (*types.ResponsesResponse, error) {
 	// 提取字段
 	model, _ := openaiResp["model"].(string)
 	choices, _ := openaiResp["choices"].([]interface{})
@@ -279,7 +309,7 @@ func OpenAIChatResponseToResponses(openaiResp map[string]interface{}, sessionID 
 				status = OpenAIFinishReasonToResponses(finishReason)
 			}
 			message, _ := choice["message"].(map[string]interface{})
-			output = append(output, openAIChatMessageToResponsesItems(message)...)
+			output = append(output, openAIChatMessageToResponsesItems(message, toolContext)...)
 		}
 	}
 
@@ -300,7 +330,7 @@ func OpenAIChatResponseToResponses(openaiResp map[string]interface{}, sessionID 
 	}, nil
 }
 
-func openAIChatMessageToResponsesItems(message map[string]interface{}) []types.ResponsesItem {
+func openAIChatMessageToResponsesItems(message map[string]interface{}, toolContext map[string]responseToolSpec) []types.ResponsesItem {
 	items := []types.ResponsesItem{}
 
 	if reasoning, _ := message["reasoning_content"].(string); reasoning != "" {
@@ -350,6 +380,54 @@ func openAIChatMessageToResponsesItems(message map[string]interface{}) []types.R
 				arguments = "{}"
 			}
 
+			if spec, ok := toolContext[name]; ok {
+				switch spec.Kind {
+				case responseToolKindCustom:
+					items = append(items, types.ResponsesItem{
+						ID:      fmt.Sprintf("ctc_%s", callID),
+						Type:    "custom_tool_call",
+						Status:  "completed",
+						CallID:  callID,
+						Name:    spec.OriginalName,
+						Content: extractCustomToolInput(arguments),
+					})
+					continue
+				case responseToolKindToolSearch:
+					items = append(items, types.ResponsesItem{
+						ID:        fmt.Sprintf("tsc_%s", callID),
+						Type:      "tool_search_call",
+						Status:    "completed",
+						CallID:    callID,
+						Execution: spec.ExecutionOrDefault(),
+						Arguments: arguments,
+					})
+					continue
+				case responseToolKindFunction:
+					items = append(items, types.ResponsesItem{
+						ID:        fmt.Sprintf("fc_%s", callID),
+						Type:      "function_call",
+						Status:    "completed",
+						CallID:    callID,
+						Name:      spec.OriginalNameOr(name),
+						Namespace: spec.Namespace,
+						Arguments: arguments,
+					})
+					continue
+				}
+			}
+
+			if name == openAIChatToolSearchName {
+				items = append(items, types.ResponsesItem{
+					ID:        fmt.Sprintf("tsc_%s", callID),
+					Type:      "tool_search_call",
+					Status:    "completed",
+					CallID:    callID,
+					Execution: "client",
+					Arguments: arguments,
+				})
+				continue
+			}
+
 			items = append(items, types.ResponsesItem{
 				ID:        fmt.Sprintf("fc_%s", callID),
 				Type:      "function_call",
@@ -365,6 +443,170 @@ func openAIChatMessageToResponsesItems(message map[string]interface{}) []types.R
 }
 
 // ============== 工具函数 ==============
+
+type responseToolKind string
+
+const (
+	responseToolKindFunction   responseToolKind = "function"
+	responseToolKindCustom     responseToolKind = "custom"
+	responseToolKindToolSearch responseToolKind = "tool_search"
+)
+
+type responseToolSpec struct {
+	Kind         responseToolKind
+	OriginalName string
+	Namespace    string
+	Execution    string
+}
+
+type customToolSpec = responseToolSpec
+
+func (s responseToolSpec) OriginalNameOr(fallback string) string {
+	if strings.TrimSpace(s.OriginalName) != "" {
+		return strings.TrimSpace(s.OriginalName)
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func (s responseToolSpec) ExecutionOrDefault() string {
+	if strings.TrimSpace(s.Execution) != "" {
+		return strings.TrimSpace(s.Execution)
+	}
+	return "client"
+}
+
+func buildResponseToolContextFromRawRequest(raw []byte) map[string]responseToolSpec {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var request map[string]interface{}
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return nil
+	}
+	return buildResponseToolContext(request["tools"], request["input"])
+}
+
+func buildCustomToolContextFromResponsesTools(raw interface{}) map[string]customToolSpec {
+	return buildResponseToolContext(raw, nil)
+}
+
+func buildResponseToolContext(toolsRaw interface{}, inputRaw interface{}) map[string]responseToolSpec {
+	context := map[string]responseToolSpec{}
+	collectResponseToolContextFromTools(context, toolsRaw)
+	collectResponseToolContextFromToolSearchOutputs(context, inputRaw)
+	if len(context) == 0 {
+		return nil
+	}
+	return context
+}
+
+func collectResponseToolContextFromTools(context map[string]responseToolSpec, raw interface{}) {
+	tools, err := normalizeMapSlice(raw)
+	if err != nil || len(tools) == 0 {
+		return
+	}
+
+	for _, tool := range tools {
+		spec := normalizeResponsesToolDefinition(tool)
+		switch spec.ToolType {
+		case "", "function":
+			if spec.Name == "" {
+				continue
+			}
+			context[spec.Name] = responseToolSpec{
+				Kind:         responseToolKindFunction,
+				OriginalName: spec.Name,
+			}
+		case "custom":
+			name, _ := tool["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				name = spec.Name
+			}
+			if name == "" {
+				continue
+			}
+			context[name] = responseToolSpec{
+				Kind:         responseToolKindCustom,
+				OriginalName: name,
+			}
+		case "tool_search":
+			execution, _ := tool["execution"].(string)
+			context[openAIChatToolSearchName] = responseToolSpec{
+				Kind:         responseToolKindToolSearch,
+				OriginalName: openAIChatToolSearchName,
+				Execution:    execution,
+			}
+		case "namespace":
+			namespace, _ := tool["name"].(string)
+			namespace = strings.TrimSpace(namespace)
+			if namespace == "" {
+				continue
+			}
+			rawChildren := tool["tools"]
+			if rawChildren == nil {
+				rawChildren = tool["children"]
+			}
+			children, err := normalizeMapSlice(rawChildren)
+			if err != nil {
+				continue
+			}
+			for _, child := range children {
+				childSpec := normalizeResponsesToolDefinition(child)
+				if childSpec.ToolType != "" && childSpec.ToolType != "function" {
+					continue
+				}
+				if childSpec.Name == "" {
+					continue
+				}
+				context[flattenNamespaceToolName(namespace, childSpec.Name)] = responseToolSpec{
+					Kind:         responseToolKindFunction,
+					OriginalName: childSpec.Name,
+					Namespace:    namespace,
+				}
+			}
+		}
+	}
+}
+
+func collectResponseToolContextFromToolSearchOutputs(context map[string]responseToolSpec, raw interface{}) {
+	switch value := raw.(type) {
+	case []interface{}:
+		for _, item := range value {
+			collectResponseToolContextFromToolSearchOutputs(context, item)
+		}
+	case map[string]interface{}:
+		itemType, _ := value["type"].(string)
+		if itemType == "tool_search_output" {
+			collectResponseToolContextFromTools(context, value["tools"])
+		}
+		for _, nested := range value {
+			collectResponseToolContextFromToolSearchOutputs(context, nested)
+		}
+	case []types.ResponsesItem:
+		for _, item := range value {
+			collectResponseToolContextFromToolSearchOutputs(context, item)
+		}
+	case types.ResponsesItem:
+		if value.Type == "tool_search_output" {
+			collectResponseToolContextFromTools(context, value.Tools)
+		}
+	}
+}
+
+func parseToolSearchArguments(arguments string) interface{} {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return map[string]interface{}{}
+	}
+
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(arguments), &parsed); err == nil {
+		return parsed
+	}
+	return map[string]interface{}{"query": arguments}
+}
 
 // extractTextFromContent 从 content 中提取文本内容
 // 支持三种格式：
@@ -407,6 +649,166 @@ func extractTextFromContent(content interface{}) string {
 	return ""
 }
 
+type normalizedResponsesToolDefinition struct {
+	ToolType    string
+	Name        string
+	Description string
+	Parameters  interface{}
+	Strict      interface{}
+	Function    map[string]interface{}
+}
+
+func copyToolField(dst, src map[string]interface{}, key string) {
+	if value, ok := src[key]; ok {
+		dst[key] = value
+	}
+}
+
+func normalizeResponsesToolDefinition(tool map[string]interface{}) normalizedResponsesToolDefinition {
+	spec := normalizedResponsesToolDefinition{
+		Function: map[string]interface{}{},
+	}
+	spec.ToolType, _ = tool["type"].(string)
+	spec.ToolType = strings.TrimSpace(spec.ToolType)
+
+	if nested, ok := tool["function"].(map[string]interface{}); ok {
+		for k, v := range nested {
+			spec.Function[k] = v
+		}
+	} else {
+		copyToolField(spec.Function, tool, "name")
+		copyToolField(spec.Function, tool, "description")
+		copyToolField(spec.Function, tool, "parameters")
+		copyToolField(spec.Function, tool, "strict")
+	}
+
+	if spec.ToolType == "custom" {
+		spec.Function = map[string]interface{}{
+			"name":        extractNamedToolChoice(tool),
+			"description": customResponsesToolDescription(tool),
+			"parameters":  customResponsesToolParameters(tool),
+		}
+	}
+
+	if _, ok := spec.Function["parameters"]; !ok || spec.Function["parameters"] == nil {
+		spec.Function["parameters"] = emptyOpenAIChatToolParameters()
+	}
+
+	spec.Name, _ = spec.Function["name"].(string)
+	spec.Name = strings.TrimSpace(spec.Name)
+	spec.Description, _ = spec.Function["description"].(string)
+	spec.Parameters = spec.Function["parameters"]
+	spec.Strict = spec.Function["strict"]
+	return spec
+}
+
+func extractNamedToolChoice(raw map[string]interface{}) string {
+	name, _ := raw["name"].(string)
+	if name != "" {
+		return strings.TrimSpace(name)
+	}
+	if fn, ok := raw["function"].(map[string]interface{}); ok {
+		if name, _ := fn["name"].(string); name != "" {
+			return strings.TrimSpace(name)
+		}
+	}
+	if tool, ok := raw["tool"].(map[string]interface{}); ok {
+		if name, _ := tool["name"].(string); name != "" {
+			return strings.TrimSpace(name)
+		}
+	}
+	return ""
+}
+
+func isResponsesToolOutputType(itemType string) bool {
+	return itemType == "function_call_output" || itemType == "custom_tool_call_output" || itemType == "tool_search_output"
+}
+
+func stringifyResponsesToolOutput(content interface{}) string {
+	if content == nil {
+		return ""
+	}
+	if text, ok := content.(string); ok {
+		return text
+	}
+	if blocks := utils.NormalizeContentBlocks(content); len(blocks) > 0 {
+		texts := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			if text, ok := utils.ExtractTextFromBlock(block); ok {
+				texts = append(texts, text)
+			}
+		}
+		if len(texts) > 0 {
+			return strings.Join(texts, "\n")
+		}
+	}
+	contentJSON, err := utils.MarshalJSONNoEscape(content)
+	if err != nil {
+		return fmt.Sprint(content)
+	}
+	return string(contentJSON)
+}
+
+func extractCustomToolInput(arguments string) string {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return ""
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(arguments), &payload); err != nil {
+		return arguments
+	}
+	input, _ := payload["input"].(string)
+	if input == "" {
+		return arguments
+	}
+	return input
+}
+
+func customToolArgumentsJSON(item types.ResponsesItem) string {
+	input := extractTextFromContent(item.Content)
+	if input == "" {
+		input = strings.TrimSpace(item.Arguments)
+	}
+	payload, err := json.Marshal(map[string]string{"input": input})
+	if err != nil {
+		return "{}"
+	}
+	return string(payload)
+}
+
+func collapseSystemMessagesToHead(messages []map[string]interface{}) []map[string]interface{} {
+	if len(messages) <= 1 {
+		return messages
+	}
+
+	systemTexts := make([]string, 0)
+	nonSystem := make([]map[string]interface{}, 0, len(messages))
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role == "system" && strings.TrimSpace(content) != "" {
+			systemTexts = append(systemTexts, content)
+			continue
+		}
+		nonSystem = append(nonSystem, msg)
+	}
+
+	if len(systemTexts) == 0 {
+		return nonSystem
+	}
+
+	merged := map[string]interface{}{
+		"role":    "system",
+		"content": strings.Join(systemTexts, "\n\n"),
+	}
+	return append([]map[string]interface{}{merged}, nonSystem...)
+}
+
 // parseResponsesInput 解析 input 字段（可能是 string 或 []ResponsesItem）
 func parseResponsesInput(input interface{}) ([]types.ResponsesItem, error) {
 	switch v := input.(type) {
@@ -436,9 +838,24 @@ func parseResponsesInput(input interface{}) ([]types.ResponsesItem, error) {
 			status, _ := itemMap["status"].(string)
 			callID, _ := itemMap["call_id"].(string)
 			name, _ := itemMap["name"].(string)
+			tools := itemMap["tools"]
+			namespace, _ := itemMap["namespace"].(string)
+			execution, _ := itemMap["execution"].(string)
 			arguments, _ := itemMap["arguments"].(string)
+			if arguments == "" {
+				if rawArguments, ok := itemMap["arguments"]; ok && rawArguments != nil {
+					if encoded, err := utils.MarshalJSONNoEscape(rawArguments); err == nil {
+						arguments = string(encoded)
+					}
+				}
+			}
 			if itemType == "" && role != "" {
 				itemType = "message"
+			}
+			if itemType == "custom_tool_call" {
+				if input, ok := itemMap["input"]; ok && content == nil {
+					content = input
+				}
 			}
 			if output, ok := itemMap["output"]; ok && content == nil {
 				content = output
@@ -454,6 +871,9 @@ func parseResponsesInput(input interface{}) ([]types.ResponsesItem, error) {
 				CallID:    callID,
 				Name:      name,
 				Arguments: arguments,
+				Tools:     tools,
+				Namespace: namespace,
+				Execution: execution,
 			})
 		}
 		return items, nil
@@ -698,6 +1118,11 @@ func parseResponsesUsage(usageRaw interface{}) types.ResponsesUsage {
 		usage.InputTokensDetails = &types.InputTokensDetails{}
 		if v, ok := getIntFromMap(detailsMap, "cached_tokens"); ok {
 			usage.InputTokensDetails.CachedTokens = v
+			usage.CacheReadInputTokens = v
+			if usage.InputTokens > v {
+				usage.InputTokens -= v
+				usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+			}
 		}
 	}
 

@@ -92,4 +92,57 @@ func TestOpenAIProviderConvertToProviderRequest_UsesSingleTokenField(t *testing.
 			t.Fatalf("stream_options.include_usage = %#v, want true", streamOptions["include_usage"])
 		}
 	})
+
+	t.Run("tool_choice none kept only when tools exist", func(t *testing.T) {
+		c := newGinContext(http.MethodPost, "/v1/messages", []byte(`{
+			"model":"gpt-4o",
+			"tool_choice":"none",
+			"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{}}}],
+			"messages":[{"role":"user","content":"hi"}]
+		}`), nil)
+		upstream := &config.UpstreamConfig{
+			BaseURL:     "https://api.example.com",
+			ServiceType: "openai",
+		}
+
+		p := &OpenAIProvider{}
+		req, _, err := p.ConvertToProviderRequest(c, upstream, "sk-test")
+		if err != nil {
+			t.Fatalf("ConvertToProviderRequest() err = %v", err)
+		}
+
+		var got map[string]interface{}
+		if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if got["tool_choice"] != "none" {
+			t.Fatalf("tool_choice = %#v, want none", got["tool_choice"])
+		}
+	})
+
+	t.Run("tool_choice dropped when tools missing", func(t *testing.T) {
+		c := newGinContext(http.MethodPost, "/v1/messages", []byte(`{
+			"model":"gpt-4o",
+			"tool_choice":"none",
+			"messages":[{"role":"user","content":"hi"}]
+		}`), nil)
+		upstream := &config.UpstreamConfig{
+			BaseURL:     "https://api.example.com",
+			ServiceType: "openai",
+		}
+
+		p := &OpenAIProvider{}
+		req, _, err := p.ConvertToProviderRequest(c, upstream, "sk-test")
+		if err != nil {
+			t.Fatalf("ConvertToProviderRequest() err = %v", err)
+		}
+
+		var got map[string]interface{}
+		if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if _, ok := got["tool_choice"]; ok {
+			t.Fatalf("tool_choice should be dropped when tools missing, got %#v", got["tool_choice"])
+		}
+	})
 }

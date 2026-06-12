@@ -344,18 +344,21 @@ func (r *Registry) cleanup() {
 }
 
 func buildIdentityKey(obs Observation) string {
-	// 当 ConversationID 为空时，不使用 fallback key 作为身份标识
-	// 原因：fallback key 基于 model + firstPrompt 的哈希，两个不同的对话
-	// 如果 firstPrompt 相同会被错误合并，导致 Cursor 等多标签客户端卡死
-	// 参考：https://github.com/openai/codex 使用 stable conversation-scoped prompt_cache_key
 	convID := strings.TrimSpace(obs.ConversationID)
 	if convID != "" {
 		kind := firstNonEmpty(strings.TrimSpace(obs.APIKind), "unknown")
 		return strings.ToLower(strings.Join([]string{kind, convID}, "|"))
 	}
 
-	// 没有显式 conv_id 的请求，各自生成唯一 ID
-	// 这确保 Cursor 等客户端的每个独立标签页获得独立的对话标识
+	// 没有显式 conv_id 时，使用 fallback key 作为稳定标识
+	// 这确保同一客户端的多轮对话能够被正确关联到同一会话
+	fallback := strings.TrimSpace(obs.FallbackKey)
+	if fallback != "" {
+		kind := firstNonEmpty(strings.TrimSpace(obs.APIKind), "unknown")
+		return strings.ToLower(strings.Join([]string{kind, "fallback", fallback}, "|"))
+	}
+
+	// 如果连 fallback key 都没有（极少数情况），生成唯一 ID
 	token := generateID("anon")
 	kind := firstNonEmpty(strings.TrimSpace(obs.APIKind), "unknown")
 	return strings.ToLower(strings.Join([]string{kind, token}, "|"))

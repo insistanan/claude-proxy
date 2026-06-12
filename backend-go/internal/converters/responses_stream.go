@@ -391,6 +391,22 @@ func (s *responsesStreamState) captureUsage(usage gjson.Result) {
 	if v := usage.Get("cache_read_input_tokens"); v.Exists() {
 		s.Usage.CacheReadInputTokens = int(v.Int())
 	}
+	if v := usage.Get("input_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
+		cachedTokens := int(v.Int())
+		if s.Usage.CacheReadInputTokens == 0 {
+			s.Usage.CacheReadInputTokens = cachedTokens
+		}
+		if s.Usage.InputTokens > cachedTokens && usage.Get("cache_read_input_tokens").Exists() == false {
+			s.Usage.InputTokens -= cachedTokens
+		}
+	}
+	if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 && s.Usage.CacheReadInputTokens == 0 {
+		cachedTokens := int(v.Int())
+		s.Usage.CacheReadInputTokens = cachedTokens
+		if s.Usage.InputTokens > cachedTokens {
+			s.Usage.InputTokens -= cachedTokens
+		}
+	}
 	if s.Usage.CacheCreation5mInputTokens > 0 && s.Usage.CacheCreation1hInputTokens > 0 {
 		s.Usage.CacheTTL = "mixed"
 	} else if s.Usage.CacheCreation1hInputTokens > 0 {

@@ -47,6 +47,70 @@ type ResponsesItem struct {
 	CallID    string      `json:"call_id,omitempty"`
 	Name      string      `json:"name,omitempty"`
 	Arguments string      `json:"arguments,omitempty"`
+	Tools     interface{} `json:"tools,omitempty"`
+	Namespace string      `json:"namespace,omitempty"`
+	Execution string      `json:"execution,omitempty"`
+}
+
+func (i ResponsesItem) MarshalJSON() ([]byte, error) {
+	out := map[string]interface{}{
+		"type": i.Type,
+	}
+	if i.ID != "" {
+		out["id"] = i.ID
+	}
+	if i.Status != "" {
+		out["status"] = i.Status
+	}
+	if i.Role != "" {
+		out["role"] = i.Role
+	}
+	if i.Content != nil && i.Type != "custom_tool_call" {
+		out["content"] = i.Content
+	}
+	if i.Summary != nil {
+		out["summary"] = i.Summary
+	}
+	if i.ToolUse != nil {
+		out["tool_use"] = i.ToolUse
+	}
+	if i.CallID != "" {
+		out["call_id"] = i.CallID
+	}
+	if i.Name != "" && i.Type != "tool_search_call" {
+		out["name"] = i.Name
+	}
+	if i.Tools != nil {
+		out["tools"] = i.Tools
+	}
+	if i.Namespace != "" {
+		out["namespace"] = i.Namespace
+	}
+	if i.Execution != "" {
+		out["execution"] = i.Execution
+	}
+
+	switch i.Type {
+	case "custom_tool_call":
+		if i.Content != nil {
+			out["input"] = i.Content
+		}
+	case "tool_search_call":
+		if i.Arguments != "" {
+			var parsed interface{}
+			if err := json.Unmarshal([]byte(i.Arguments), &parsed); err == nil {
+				out["arguments"] = parsed
+			} else {
+				out["arguments"] = i.Arguments
+			}
+		}
+	default:
+		if i.Arguments != "" {
+			out["arguments"] = i.Arguments
+		}
+	}
+
+	return json.Marshal(out)
 }
 
 // ContentBlock 内容块（用于嵌套 content 数组）

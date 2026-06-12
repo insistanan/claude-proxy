@@ -79,6 +79,14 @@ func (c *ResponsesPassthroughConverter) FromProviderResponse(resp map[string]int
 				callID, _ := itemMap["call_id"].(string)
 				name, _ := itemMap["name"].(string)
 				arguments, _ := itemMap["arguments"].(string)
+				if itemType == "custom_tool_call" {
+					if input, ok := itemMap["input"]; ok && content == nil {
+						content = input
+					}
+				}
+				if output, ok := itemMap["output"]; ok && content == nil {
+					content = output
+				}
 
 				output = append(output, types.ResponsesItem{
 					ID:        itemID,

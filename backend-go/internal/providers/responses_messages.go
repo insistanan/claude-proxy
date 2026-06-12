@@ -568,15 +568,20 @@ func responsesResponseToClaude(resp *types.ResponsesResponse) *types.ClaudeRespo
 					textParts = append(textParts, text)
 				}
 			}
-		case "function_call":
+		case "function_call", "custom_tool_call":
 			flushClaudeText(claudeResp, &textParts)
 			var input interface{} = map[string]interface{}{}
-			if item.Arguments != "" {
+			if item.Type == "custom_tool_call" {
+				input = map[string]interface{}{"input": responsesToolOutput(item.Content)}
+			} else if item.Arguments != "" {
 				_ = json.Unmarshal([]byte(item.Arguments), &input)
 			}
 			callID := item.CallID
 			if callID == "" {
 				callID = strings.TrimPrefix(item.ID, "fc_")
+				if callID == item.ID {
+					callID = strings.TrimPrefix(item.ID, "ctc_")
+				}
 			}
 			claudeResp.Content = append(claudeResp.Content, types.ClaudeContent{
 				Type:  "tool_use",
@@ -679,7 +684,8 @@ func (s *responsesToClaudeStreamState) processLine(line string) []string {
 		s.captureToolCall(root)
 	case strings.Contains(eventType, "response.output_item.done"):
 		s.captureToolCall(root)
-		if root.Get("item.type").String() == "function_call" {
+		itemType := root.Get("item.type").String()
+		if itemType == "function_call" || itemType == "custom_tool_call" {
 			out = append(out, s.emitToolUse(root)...)
 		}
 	case strings.Contains(eventType, "function_call_arguments.done"):
@@ -819,6 +825,12 @@ func (s *responsesToClaudeStreamState) emitToolUse(root gjson.Result) []string {
 	if arguments == "" {
 		arguments = root.Get("item.arguments").String()
 	}
+	if arguments == "" {
+		if input := root.Get("item.input").String(); input != "" {
+			inputJSON, _ := json.Marshal(map[string]string{"input": input})
+			arguments = string(inputJSON)
+		}
+	}
 	if arguments == "" && stored != nil {
 		arguments = stored.Arguments
 	}
@@ -844,7 +856,7 @@ func (s *responsesToClaudeStreamState) captureToolCall(root gjson.Result) {
 		return
 	}
 	itemType := root.Get("item.type").String()
-	if itemType != "" && itemType != "function_call" {
+	if itemType != "" && itemType != "function_call" && itemType != "custom_tool_call" {
 		return
 	}
 	call := s.toolCalls[key]
@@ -866,6 +878,9 @@ func (s *responsesToClaudeStreamState) captureToolCall(root gjson.Result) {
 		call.Arguments = arguments
 	} else if arguments := root.Get("arguments").String(); arguments != "" {
 		call.Arguments = arguments
+	} else if input := root.Get("item.input").String(); input != "" {
+		inputJSON, _ := json.Marshal(map[string]string{"input": input})
+		call.Arguments = string(inputJSON)
 	}
 }
 

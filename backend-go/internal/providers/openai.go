@@ -59,6 +59,9 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 
 	// 转换 tool_choice
 	openaiReq.ToolChoice = p.convertToolChoice(claudeReq.ToolChoice)
+	if len(openaiReq.Tools) == 0 {
+		openaiReq.ToolChoice = nil
+	}
 
 	// 转换 thinking → reasoning_effort
 	if effort := p.convertThinkingToReasoningEffort(claudeReq.Thinking); effort != "" {
@@ -1121,6 +1124,8 @@ func (p *OpenAIProvider) convertToolChoice(toolChoice interface{}) interface{} {
 			return "required"
 		case "auto":
 			return "auto"
+		case "none":
+			return "none"
 		default:
 			return "auto"
 		}
@@ -1134,6 +1139,8 @@ func (p *OpenAIProvider) convertToolChoice(toolChoice interface{}) interface{} {
 			return "auto"
 		case "any":
 			return "required"
+		case "none":
+			return "none"
 		case "tool":
 			name, _ := obj["name"].(string)
 			if name != "" {

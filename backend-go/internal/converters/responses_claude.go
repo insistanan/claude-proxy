@@ -20,36 +20,18 @@ func ResponsesToolsToClaudeTools(raw interface{}) ([]types.ClaudeTool, error) {
 		if !ok {
 			return nil, fmt.Errorf("Responses tools 项必须是对象")
 		}
-		toolType, _ := m["type"].(string)
-		if toolType != "" && toolType != "function" {
-			return nil, fmt.Errorf("Claude 上游暂不支持 Responses tool type %q", toolType)
+		spec := normalizeResponsesToolDefinition(m)
+		if spec.ToolType != "" && spec.ToolType != "function" && spec.ToolType != "custom" {
+			return nil, fmt.Errorf("Claude 上游暂不支持 Responses tool type %q", spec.ToolType)
 		}
-
-		name, _ := m["name"].(string)
-		description, _ := m["description"].(string)
-		parameters := m["parameters"]
-		if fn, ok := m["function"].(map[string]interface{}); ok {
-			if v, ok := fn["name"].(string); ok && v != "" {
-				name = v
-			}
-			if v, ok := fn["description"].(string); ok && v != "" {
-				description = v
-			}
-			if v, ok := fn["parameters"]; ok {
-				parameters = v
-			}
-		}
-		if name == "" {
+		if spec.Name == "" {
 			return nil, fmt.Errorf("Responses function tool 缺少 name")
-		}
-		if parameters == nil {
-			parameters = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 		}
 
 		tools = append(tools, types.ClaudeTool{
-			Name:        name,
-			Description: description,
-			InputSchema: parameters,
+			Name:        spec.Name,
+			Description: spec.Description,
+			InputSchema: spec.Parameters,
 		})
 	}
 	return tools, nil
@@ -72,13 +54,8 @@ func ResponsesToolChoiceToClaude(raw interface{}) (interface{}, error) {
 			return nil, fmt.Errorf("不支持的 Responses tool_choice: %s", v)
 		}
 	case map[string]interface{}:
-		if typ, _ := v["type"].(string); typ == "function" {
-			name, _ := v["name"].(string)
-			if name == "" {
-				if fn, ok := v["function"].(map[string]interface{}); ok {
-					name, _ = fn["name"].(string)
-				}
-			}
+		if typ, _ := v["type"].(string); typ == "function" || typ == "custom" {
+			name := extractNamedToolChoice(v)
 			if name == "" {
 				return nil, fmt.Errorf("function tool_choice 缺少 name")
 			}
@@ -228,13 +205,18 @@ func claudeContentBlockToResponsesItem(block map[string]interface{}) (types.Resp
 
 func responsesItemToClaudeToolMessage(item types.ResponsesItem) (*types.ClaudeMessage, error) {
 	switch item.Type {
-	case "function_call":
+	case "function_call", "custom_tool_call":
 		callID := item.CallID
 		if callID == "" {
 			callID = strings.TrimPrefix(item.ID, "fc_")
+			if callID == item.ID {
+				callID = strings.TrimPrefix(item.ID, "ctc_")
+			}
 		}
 		var input interface{} = map[string]interface{}{}
-		if item.Arguments != "" {
+		if item.Type == "custom_tool_call" {
+			input = map[string]interface{}{"input": extractTextFromContent(item.Content)}
+		} else if item.Arguments != "" {
 			var parsed interface{}
 			if err := json.Unmarshal([]byte(item.Arguments), &parsed); err == nil {
 				input = parsed
@@ -243,8 +225,6 @@ func responsesItemToClaudeToolMessage(item types.ResponsesItem) (*types.ClaudeMe
 			}
 		}
 		return &types.ClaudeMessage{Role: "assistant", Content: []map[string]interface{}{{"type": "tool_use", "id": callID, "name": item.Name, "input": input}}}, nil
-	case "function_call_output":
-		return &types.ClaudeMessage{Role: "user", Content: []map[string]interface{}{{"type": "tool_result", "tool_use_id": item.CallID, "content": item.Content}}}, nil
 	case "tool_call":
 		if item.ToolUse == nil {
 			return nil, nil
@@ -253,6 +233,9 @@ func responsesItemToClaudeToolMessage(item types.ResponsesItem) (*types.ClaudeMe
 	case "tool_result":
 		return &types.ClaudeMessage{Role: "user", Content: []map[string]interface{}{{"type": "tool_result", "tool_use_id": item.CallID, "content": item.Content}}}, nil
 	default:
+		if isResponsesToolOutputType(item.Type) {
+			return &types.ClaudeMessage{Role: "user", Content: []map[string]interface{}{{"type": "tool_result", "tool_use_id": item.CallID, "content": item.Content}}}, nil
+		}
 		return nil, nil
 	}
 }

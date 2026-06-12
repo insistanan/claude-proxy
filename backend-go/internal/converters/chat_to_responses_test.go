@@ -76,6 +76,45 @@ func TestConvertResponsesToOpenAIChatRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "custom tool 降级为 function",
+			input: `{
+				"model": "gpt-4",
+				"input": "Run the tool",
+				"tools": [
+					{
+						"type": "custom",
+						"name": "code_exec",
+						"description": "Execute raw code",
+						"format": {"type": "text"}
+					}
+				],
+				"tool_choice": {
+					"type": "custom",
+					"name": "code_exec"
+				}
+			}`,
+			model:  "gpt-4o",
+			stream: false,
+			validate: func(t *testing.T, result []byte) {
+				root := gjson.ParseBytes(result)
+				if root.Get("tools.0.type").String() != "function" {
+					t.Errorf("tool type should be function, got %s", root.Get("tools.0.type").String())
+				}
+				if root.Get("tools.0.function.name").String() != "code_exec" {
+					t.Errorf("tool name should be code_exec, got %s", root.Get("tools.0.function.name").String())
+				}
+				if root.Get("tools.0.function.parameters.properties.input.type").String() != "string" {
+					t.Errorf("custom tool input should downgrade to string schema, got %s", root.Get("tools.0.function.parameters.properties.input.type").String())
+				}
+				if root.Get("tool_choice.type").String() != "function" {
+					t.Errorf("tool_choice type should be function, got %s", root.Get("tool_choice.type").String())
+				}
+				if root.Get("tool_choice.function.name").String() != "code_exec" {
+					t.Errorf("tool_choice function name should be code_exec, got %s", root.Get("tool_choice.function.name").String())
+				}
+			},
+		},
+		{
 			name: "function_call 和 function_call_output",
 			input: `{
 				"model": "gpt-4",
@@ -132,6 +171,39 @@ func TestConvertResponsesToOpenAIChatRequest(t *testing.T) {
 	}
 }
 
+func TestValidateResponsesToOpenAIChatRequest_CustomToolCompatible(t *testing.T) {
+	input := `{
+		"model":"gpt-4o",
+		"input":"hi",
+		"tools":[{"type":"custom","name":"code_exec","description":"Execute raw code"}],
+		"tool_choice":{"type":"custom","name":"code_exec"}
+	}`
+
+	if err := ValidateResponsesToOpenAIChatRequest([]byte(input)); err != nil {
+		t.Fatalf("custom tool 应该兼容降级到 OpenAI Chat，实际报错: %v", err)
+	}
+}
+
+func TestValidateResponsesToOpenAIChatRequest_NamespaceToolCompatible(t *testing.T) {
+	input := `{
+		"model":"gpt-4o",
+		"tools":[
+			{
+				"type":"namespace",
+				"name":"functions",
+				"tools":[
+					{"type":"function","name":"grep","description":"Search","parameters":{"type":"object"}}
+				]
+			}
+		],
+		"tool_choice":{"type":"function","namespace":"functions","name":"grep"}
+	}`
+
+	if err := ValidateResponsesToOpenAIChatRequest([]byte(input)); err != nil {
+		t.Fatalf("namespace tool 应该兼容降级到 OpenAI Chat，实际报错: %v", err)
+	}
+}
+
 func TestValidateResponsesToOpenAIChatRequest_InvalidFields(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -139,7 +211,7 @@ func TestValidateResponsesToOpenAIChatRequest_InvalidFields(t *testing.T) {
 	}{
 		{
 			name:  "非 function tool",
-			input: `{"model":"gpt-4o","input":"hi","tools":[{"type":"web_search_preview","name":"search"}]}`,
+			input: `{"model":"gpt-4o","input":"hi","tools":[{"type":"browser_use","name":"search"}]}`,
 		},
 		{
 			name:  "tool 缺少 name",
@@ -277,6 +349,41 @@ func TestConvertOpenAIChatToResponses_ToolCall(t *testing.T) {
 	}
 	if !hasFuncDone {
 		t.Error("should have function_call_arguments.done event")
+	}
+}
+
+func TestConvertOpenAIChatToResponses_CustomToolCall(t *testing.T) {
+	ctx := context.Background()
+
+	sseLines := []string{
+		`data: {"id":"chatcmpl-custom","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_exec","type":"function","function":{"name":"code_exec","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-custom","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"input\":\"print('hi')\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-custom","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	}
+
+	originalReq := []byte(`{"model":"gpt-4o","input":"Run code","tools":[{"type":"custom","name":"code_exec","description":"Execute code"}]}`)
+
+	var state any
+	var allEvents []string
+	for _, line := range sseLines {
+		events := ConvertOpenAIChatToResponses(ctx, "gpt-4o", originalReq, nil, []byte(line), &state)
+		allEvents = append(allEvents, events...)
+	}
+
+	hasCustomDone := false
+	for _, ev := range allEvents {
+		if !strings.Contains(ev, "response.output_item.done") || !strings.Contains(ev, "\"custom_tool_call\"") {
+			continue
+		}
+		hasCustomDone = true
+		if !strings.Contains(ev, "\"input\":\"print('hi')\"") {
+			t.Fatalf("custom tool 完成事件应携带 input，事件内容: %s", ev)
+		}
+	}
+
+	if !hasCustomDone {
+		t.Fatal("should have custom_tool_call output_item.done event")
 	}
 }
 
@@ -452,5 +559,133 @@ func TestConvertOpenAIChatToResponsesNonStream_ToolCalls(t *testing.T) {
 	}
 	if funcItem["call_id"] != "call_xyz" {
 		t.Errorf("call_id should be call_xyz, got %v", funcItem["call_id"])
+	}
+}
+
+func TestConvertOpenAIChatToResponsesNonStream_CustomToolCalls(t *testing.T) {
+	ctx := context.Background()
+
+	chatResponse := `{
+		"id": "chatcmpl-custom-tool",
+		"object": "chat.completion",
+		"created": 1234567890,
+		"model": "gpt-4o",
+		"choices": [{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"tool_calls": [
+					{
+						"id": "call_exec",
+						"type": "function",
+						"function": {
+							"name": "code_exec",
+							"arguments": "{\"input\":\"print('hi')\"}"
+						}
+					}
+				]
+			},
+			"finish_reason": "tool_calls"
+		}],
+		"usage": {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15}
+	}`
+
+	originalReq := []byte(`{"model":"gpt-4o","input":"Run code","tools":[{"type":"custom","name":"code_exec","description":"Execute code"}]}`)
+
+	result := ConvertOpenAIChatToResponsesNonStream(ctx, "gpt-4o", originalReq, nil, []byte(chatResponse), nil)
+
+	root := gjson.Parse(result)
+	if root.Get("output.0.type").String() != "custom_tool_call" {
+		t.Fatalf("应恢复为 custom_tool_call，实际为 %s", root.Get("output.0.type").String())
+	}
+	if root.Get("output.0.input").String() != "print('hi')" {
+		t.Fatalf("custom tool input 不匹配，实际为 %s", root.Get("output.0.input").String())
+	}
+}
+
+func TestConvertResponsesToOpenAIChatRequest_PrunesToolControlWithoutTools(t *testing.T) {
+	input := `{
+		"model":"gpt-4o",
+		"input":"hi",
+		"tool_choice":{"type":"function","name":"lookup"},
+		"parallel_tool_calls":true
+	}`
+
+	result := ConvertResponsesToOpenAIChatRequest("gpt-4o", []byte(input), false)
+	root := gjson.ParseBytes(result)
+	if root.Get("tool_choice").Exists() {
+		t.Fatal("没有 tools 时应移除 tool_choice")
+	}
+	if root.Get("parallel_tool_calls").Exists() {
+		t.Fatal("没有 tools 时应移除 parallel_tool_calls")
+	}
+}
+
+func TestConvertResponsesToOpenAIChatRequest_FlattensNamespaceTool(t *testing.T) {
+	input := `{
+		"model":"gpt-4o",
+		"tools":[
+			{
+				"type":"namespace",
+				"name":"functions",
+				"tools":[
+					{"type":"function","name":"grep","description":"Search","parameters":{"type":"object"}}
+				]
+			}
+		],
+		"tool_choice":{"type":"function","namespace":"functions","name":"grep"}
+	}`
+
+	result := ConvertResponsesToOpenAIChatRequest("gpt-4o", []byte(input), false)
+	root := gjson.ParseBytes(result)
+
+	if root.Get("tools.0.function.name").String() != "functions__grep" {
+		t.Fatalf("namespace tool 应拍平为 functions__grep，实际为 %s", root.Get("tools.0.function.name").String())
+	}
+	if root.Get("tool_choice.function.name").String() != "functions__grep" {
+		t.Fatalf("namespace tool_choice 应拍平，实际为 %s", root.Get("tool_choice.function.name").String())
+	}
+}
+
+func TestConvertResponsesToOpenAIChatRequest_MapsWebSearchTool(t *testing.T) {
+	input := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"web_search","description":"Search the web"}],
+		"tool_choice":{"type":"web_search"}
+	}`
+
+	result := ConvertResponsesToOpenAIChatRequest("gpt-4o", []byte(input), false)
+	root := gjson.ParseBytes(result)
+
+	if root.Get("tools.0.type").String() != "function" {
+		t.Fatalf("web_search 应降级为 function，实际为 %s", root.Get("tools.0.type").String())
+	}
+	if root.Get("tools.0.function.name").String() != "web_search" {
+		t.Fatalf("web_search function.name 不匹配，实际为 %s", root.Get("tools.0.function.name").String())
+	}
+	if root.Get("tool_choice.function.name").String() != "web_search" {
+		t.Fatalf("web_search tool_choice 不匹配，实际为 %s", root.Get("tool_choice.function.name").String())
+	}
+}
+
+func TestConvertResponsesToOpenAIChatRequest_StringifiesToolOutputContent(t *testing.T) {
+	input := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"custom_tool_call_output","call_id":"call_exec","content":{"ok":true,"files":["a.go"]}}
+		]
+	}`
+
+	result := ConvertResponsesToOpenAIChatRequest("gpt-4o", []byte(input), false)
+	root := gjson.ParseBytes(result)
+
+	if root.Get("messages.0.role").String() != "tool" {
+		t.Fatalf("应转换为 tool message，实际为 %s", root.Get("messages.0.role").String())
+	}
+	if root.Get("messages.0.content").Type != gjson.String {
+		t.Fatalf("tool message content 应为字符串，实际为 %s", root.Get("messages.0.content").Type.String())
+	}
+	if root.Get("messages.0.content").String() != `{"ok":true,"files":["a.go"]}` {
+		t.Fatalf("tool message content 不匹配，实际为 %s", root.Get("messages.0.content").String())
 	}
 }

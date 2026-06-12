@@ -116,12 +116,40 @@ func convertResponsesRequestToOpenAIChat(model string, bodyBytes []byte, stream 
 		return nil, fmt.Errorf("OpenAI Chat 转换结果缺少 messages")
 	}
 
+	if toolDefinitions, err := collectResponsesToolDefinitions(req.Tools, req.Input, sessionResponseItems(sess)); err != nil {
+		return nil, fmt.Errorf("构建 OpenAI Chat tools 失败: %w", err)
+	} else if chatTools, err := responsesToolDefinitionsToOpenAIChatTools(toolDefinitions); err != nil {
+		return nil, fmt.Errorf("转换 OpenAI Chat tools 失败: %w", err)
+	} else if len(chatTools) > 0 {
+		chatReq["tools"] = chatTools
+		if toolChoice, err := responsesToolChoiceToOpenAIChat(req.ToolChoice); err != nil {
+			return nil, fmt.Errorf("转换 OpenAI Chat tool_choice 失败: %w", err)
+		} else if toolChoice != nil {
+			chatReq["tool_choice"] = toolChoice
+		}
+		if req.ParallelToolCalls != nil {
+			chatReq["parallel_tool_calls"] = *req.ParallelToolCalls
+		}
+	}
+
 	historyMessages := buildOpenAIHistoryMessages(sess)
 	if len(historyMessages) == 0 {
-		return base, nil
+		if _, hasTools := chatReq["tools"]; !hasTools {
+			delete(chatReq, "tool_choice")
+			delete(chatReq, "parallel_tool_calls")
+		}
+		out, err := utils.MarshalJSONNoEscape(chatReq)
+		if err != nil {
+			return nil, fmt.Errorf("序列化 OpenAI Chat 请求失败: %w", err)
+		}
+		return out, nil
 	}
 
 	chatReq["messages"] = mergeOpenAIHistoryMessages(historyMessages, currentMessages)
+	if _, hasTools := chatReq["tools"]; !hasTools {
+		delete(chatReq, "tool_choice")
+		delete(chatReq, "parallel_tool_calls")
+	}
 	out, err := utils.MarshalJSONNoEscape(chatReq)
 	if err != nil {
 		return nil, fmt.Errorf("序列化 OpenAI Chat 请求失败: %w", err)

@@ -214,8 +214,9 @@ func (p *GeminiProvider) convertToGeminiRequest(claudeReq *types.ClaudeRequest, 
 	}
 
 	// 工具
+	var functionDeclarations []map[string]interface{}
 	if len(claudeReq.Tools) > 0 {
-		functionDeclarations := p.convertTools(claudeReq.Tools)
+		functionDeclarations = p.convertTools(claudeReq.Tools)
 		if len(functionDeclarations) > 0 {
 			req["tools"] = []map[string]interface{}{
 				{
@@ -229,7 +230,7 @@ func (p *GeminiProvider) convertToGeminiRequest(claudeReq *types.ClaudeRequest, 
 	if err != nil {
 		return nil, err
 	}
-	if toolConfig != nil {
+	if toolConfig != nil && len(functionDeclarations) > 0 {
 		req["toolConfig"] = toolConfig
 	}
 

@@ -898,6 +898,7 @@ func extractResponsesUsageFromMap(usage map[string]interface{}) responsesStreamU
 			data.HasClaudeCache = true
 		}
 	}
+	_, hasExplicitCacheRead := usage["cache_read_input_tokens"]
 	if v, ok := usage["cache_read_input_tokens"].(float64); ok {
 		data.CacheReadInputTokens = int(v)
 		if v > 0 {
@@ -918,14 +919,28 @@ func extractResponsesUsageFromMap(usage map[string]interface{}) responsesStreamU
 	}
 
 	// 检查 input_tokens_details.cached_tokens (OpenAI 格式，不设置 HasClaudeCache)
+	openAICachedTokens := 0
 	if details, ok := usage["input_tokens_details"].(map[string]interface{}); ok {
 		if cached, ok := details["cached_tokens"].(float64); ok && cached > 0 {
-			// 仅当 CacheReadInputTokens 未被设置时才使用 OpenAI 的 cached_tokens
-			if data.CacheReadInputTokens == 0 {
-				data.CacheReadInputTokens = int(cached)
-			}
-			// 注意：不设置 HasClaudeCache，因为这是 OpenAI 格式
+			openAICachedTokens = int(cached)
 		}
+	}
+	if openAICachedTokens == 0 {
+		if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
+			if cached, ok := details["cached_tokens"].(float64); ok && cached > 0 {
+				openAICachedTokens = int(cached)
+			}
+		}
+	}
+	if openAICachedTokens > 0 {
+		// 仅当 CacheReadInputTokens 未被设置时才使用 OpenAI 的 cached_tokens
+		if data.CacheReadInputTokens == 0 {
+			data.CacheReadInputTokens = openAICachedTokens
+		}
+		if !hasExplicitCacheRead && data.InputTokens > openAICachedTokens {
+			data.InputTokens -= openAICachedTokens
+		}
+		// 注意：不设置 HasClaudeCache，因为这是 OpenAI 格式
 	}
 
 	// 设置 CacheTTL
@@ -1308,9 +1323,24 @@ func parseInputToItems(input interface{}) ([]types.ResponsesItem, error) {
 			status, _ := itemMap["status"].(string)
 			callID, _ := itemMap["call_id"].(string)
 			name, _ := itemMap["name"].(string)
+			tools := itemMap["tools"]
+			namespace, _ := itemMap["namespace"].(string)
+			execution, _ := itemMap["execution"].(string)
 			arguments, _ := itemMap["arguments"].(string)
+			if arguments == "" {
+				if rawArguments, ok := itemMap["arguments"]; ok && rawArguments != nil {
+					if encoded, err := utils.MarshalJSONNoEscape(rawArguments); err == nil {
+						arguments = string(encoded)
+					}
+				}
+			}
 			if itemType == "" && role != "" {
 				itemType = "message"
+			}
+			if itemType == "custom_tool_call" {
+				if inputValue, ok := itemMap["input"]; ok && content == nil {
+					content = inputValue
+				}
 			}
 			if output, ok := itemMap["output"]; ok && content == nil {
 				content = output
@@ -1325,6 +1355,9 @@ func parseInputToItems(input interface{}) ([]types.ResponsesItem, error) {
 				CallID:    callID,
 				Name:      name,
 				Arguments: arguments,
+				Tools:     tools,
+				Namespace: namespace,
+				Execution: execution,
 			})
 		}
 		return items, nil

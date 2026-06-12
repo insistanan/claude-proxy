@@ -1,6 +1,7 @@
 package converters
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/BenedictKing/claude-proxy/internal/session"
@@ -68,6 +69,44 @@ func TestExtractTextFromContent_EmptyArray(t *testing.T) {
 
 	if result != "" {
 		t.Errorf("期望空字符串，实际得到 '%s'", result)
+	}
+}
+
+func TestExtractUsageMetrics_OpenAICachedTokensAdjustsInput(t *testing.T) {
+	usage := ExtractUsageMetrics(map[string]interface{}{
+		"input_tokens":  1000,
+		"output_tokens": 20,
+		"input_tokens_details": map[string]interface{}{
+			"cached_tokens": 900,
+		},
+	})
+
+	if usage.InputTokens != 100 {
+		t.Fatalf("expected adjusted input_tokens=100, got %d", usage.InputTokens)
+	}
+	if usage.CacheReadInputTokens != 900 {
+		t.Fatalf("expected cache_read_input_tokens=900, got %d", usage.CacheReadInputTokens)
+	}
+	if usage.TotalTokens != 120 {
+		t.Fatalf("expected total_tokens=120, got %d", usage.TotalTokens)
+	}
+}
+
+func TestExtractUsageMetrics_ClaudeCacheReadDoesNotDoubleSubtract(t *testing.T) {
+	usage := ExtractUsageMetrics(map[string]interface{}{
+		"input_tokens":            100,
+		"output_tokens":           20,
+		"cache_read_input_tokens": 900,
+		"input_tokens_details": map[string]interface{}{
+			"cached_tokens": 900,
+		},
+	})
+
+	if usage.InputTokens != 100 {
+		t.Fatalf("expected input_tokens to stay 100, got %d", usage.InputTokens)
+	}
+	if usage.CacheReadInputTokens != 900 {
+		t.Fatalf("expected cache_read_input_tokens=900, got %d", usage.CacheReadInputTokens)
 	}
 }
 
@@ -259,6 +298,90 @@ func TestOpenAIChatResponseToResponses_WithReasoningAndToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatResponseToResponses_WithCustomToolContext(t *testing.T) {
+	resp := map[string]interface{}{
+		"model": "gpt-4o",
+		"choices": []interface{}{
+			map[string]interface{}{
+				"finish_reason": "tool_calls",
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": "",
+					"tool_calls": []interface{}{
+						map[string]interface{}{
+							"id":   "call_exec",
+							"type": "function",
+							"function": map[string]interface{}{
+								"name":      "code_exec",
+								"arguments": "{\"input\":\"print('hi')\"}",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := openAIChatResponseToResponsesWithCustomTools(resp, "sess_test", map[string]customToolSpec{
+		"code_exec": {OriginalName: "code_exec"},
+	})
+	if err != nil {
+		t.Fatalf("转换失败: %v", err)
+	}
+
+	if len(result.Output) != 1 {
+		t.Fatalf("期望 1 个 output item，实际为 %d", len(result.Output))
+	}
+	if result.Output[0].Type != "custom_tool_call" {
+		t.Fatalf("期望恢复为 custom_tool_call，实际为 %s", result.Output[0].Type)
+	}
+	if result.Output[0].Content != "print('hi')" {
+		t.Fatalf("custom_tool_call input 不匹配，实际为 %#v", result.Output[0].Content)
+	}
+}
+
+func TestResponsesToOpenAIChatMessages_CollapseSystemAndCustomToolReplay(t *testing.T) {
+	sess := &session.Session{
+		ID: "sess_test",
+		Messages: []types.ResponsesItem{
+			{Type: "message", Role: "system", Content: "历史系统提示"},
+			{Type: "custom_tool_call", CallID: "call_exec", Name: "code_exec", Content: "print('history')"},
+			{Type: "custom_tool_call_output", CallID: "call_exec", Content: "done"},
+		},
+	}
+
+	messages, err := ResponsesToOpenAIChatMessages(sess, []interface{}{
+		map[string]interface{}{"type": "message", "role": "system", "content": "本次系统提示"},
+	}, "顶层指令")
+	if err != nil {
+		t.Fatalf("转换失败: %v", err)
+	}
+
+	if len(messages) != 3 {
+		t.Fatalf("期望 3 条消息，实际为 %d", len(messages))
+	}
+	if messages[0]["role"] != "system" {
+		t.Fatalf("第一条应为 system，实际为 %v", messages[0]["role"])
+	}
+	systemContent, _ := messages[0]["content"].(string)
+	if systemContent != "顶层指令\n\n历史系统提示\n\n本次系统提示" {
+		t.Fatalf("system 折叠结果不匹配，实际为 %q", systemContent)
+	}
+
+	toolCalls, ok := messages[1]["tool_calls"].([]map[string]interface{})
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("第二条消息应包含 1 个 tool_call")
+	}
+	args, _ := toolCalls[0]["function"].(map[string]interface{})["arguments"].(string)
+	if args != "{\"input\":\"print('history')\"}" {
+		t.Fatalf("custom_tool_call 回放参数不匹配，实际为 %s", args)
+	}
+
+	if messages[2]["role"] != "tool" {
+		t.Fatalf("第三条消息应为 tool，实际为 %v", messages[2]["role"])
+	}
+}
+
 func TestOpenAICompletionsConverter_MaxOutputTokensAndUnsupportedTools(t *testing.T) {
 	converter := &OpenAICompletionsConverter{}
 	req := &types.ResponsesRequest{
@@ -325,6 +448,75 @@ func TestResponsesToGemini_InvalidFunctionCallArguments(t *testing.T) {
 	}
 }
 
+func TestResponsesToGemini_CustomToolCompatible(t *testing.T) {
+	req := &types.ResponsesRequest{
+		Model: "gemini-2.5-flash",
+		Input: "Run code",
+		Tools: []interface{}{
+			map[string]interface{}{
+				"type":        "custom",
+				"name":        "code_exec",
+				"description": "Execute code",
+			},
+		},
+		ToolChoice: map[string]interface{}{
+			"type": "custom",
+			"name": "code_exec",
+		},
+	}
+
+	body, err := ConvertResponsesToGeminiRequest("gemini-2.5-flash", nil, req)
+	if err != nil {
+		t.Fatalf("custom tool 对 Gemini 应兼容降级，实际报错: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("解析 Gemini 请求失败: %v", err)
+	}
+
+	tools, ok := result["tools"].([]interface{})
+	if !ok || len(tools) == 0 {
+		t.Fatal("Gemini 请求应包含 tools")
+	}
+	decls, ok := tools[0].(map[string]interface{})["functionDeclarations"].([]interface{})
+	if !ok || len(decls) == 0 {
+		t.Fatal("Gemini 请求应包含 functionDeclarations")
+	}
+	if decls[0].(map[string]interface{})["name"] != "code_exec" {
+		t.Fatalf("tool 名称不匹配，实际为 %#v", decls[0].(map[string]interface{})["name"])
+	}
+	toolConfig, ok := result["toolConfig"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Gemini 请求应包含 toolConfig")
+	}
+	cfg, ok := toolConfig["functionCallingConfig"].(map[string]interface{})
+	if !ok || cfg["mode"] != "ANY" {
+		t.Fatalf("tool choice 应降级为 ANY，实际为 %#v", toolConfig)
+	}
+}
+
+func TestResponsesToGemini_PrunesToolConfigWithoutTools(t *testing.T) {
+	req := &types.ResponsesRequest{
+		Model:      "gemini-2.5-flash",
+		Input:      "Hi",
+		ToolChoice: "auto",
+	}
+
+	body, err := ConvertResponsesToGeminiRequest("gemini-2.5-flash", nil, req)
+	if err != nil {
+		t.Fatalf("转换失败: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("解析 Gemini 请求失败: %v", err)
+	}
+	if _, ok := result["toolConfig"]; ok {
+		t.Fatal("没有 tools 时不应保留 toolConfig")
+	}
+}
+
 func TestClaudeResponseToResponses_StopReasonMaxTokens(t *testing.T) {
 	resp := map[string]interface{}{
 		"model":       "claude-3-5-sonnet",
@@ -346,6 +538,69 @@ func TestClaudeResponseToResponses_StopReasonMaxTokens(t *testing.T) {
 	}
 	if result.Status != "incomplete" {
 		t.Errorf("max_tokens 应映射为 incomplete")
+	}
+}
+
+func TestClaudeConverter_CustomToolCompatible(t *testing.T) {
+	converter := &ClaudeConverter{}
+	req := &types.ResponsesRequest{
+		Model:           "claude-3-5-sonnet",
+		MaxOutputTokens: 2048,
+		Input:           "Run code",
+		Tools: []interface{}{
+			map[string]interface{}{
+				"type":        "custom",
+				"name":        "code_exec",
+				"description": "Execute code",
+			},
+		},
+		ToolChoice: map[string]interface{}{
+			"type": "custom",
+			"name": "code_exec",
+		},
+	}
+
+	result, err := converter.ToProviderRequest(nil, req)
+	if err != nil {
+		t.Fatalf("custom tool 对 Claude 应兼容降级，实际报错: %v", err)
+	}
+
+	resultMap, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatal("结果不是 map[string]interface{}")
+	}
+	tools, ok := resultMap["tools"].([]types.ClaudeTool)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("Claude 请求 tools 不匹配: %#v", resultMap["tools"])
+	}
+	if tools[0].Name != "code_exec" {
+		t.Fatalf("Claude tool 名称不匹配，实际为 %s", tools[0].Name)
+	}
+	toolChoice, ok := resultMap["tool_choice"].(map[string]interface{})
+	if !ok || toolChoice["type"] != "tool" || toolChoice["name"] != "code_exec" {
+		t.Fatalf("Claude tool_choice 不匹配: %#v", resultMap["tool_choice"])
+	}
+}
+
+func TestResponsesToOpenAIChatMessages_CustomToolOutputReplay(t *testing.T) {
+	messages, err := ResponsesToOpenAIChatMessages(nil, []interface{}{
+		map[string]interface{}{
+			"type":    "custom_tool_call_output",
+			"call_id": "call_exec",
+			"output":  "done",
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("转换失败: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("期望 1 条消息，实际为 %d", len(messages))
+	}
+	if messages[0]["role"] != "tool" {
+		t.Fatalf("应转换为 tool 消息，实际为 %v", messages[0]["role"])
+	}
+	if messages[0]["content"] != "done" {
+		t.Fatalf("tool 输出内容不匹配，实际为 %#v", messages[0]["content"])
 	}
 }
 

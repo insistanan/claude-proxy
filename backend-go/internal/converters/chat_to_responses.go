@@ -42,7 +42,8 @@ type chatToResponsesState struct {
 	CacheCreation1hTokens int64  // cache_creation_1h_input_tokens
 	CacheTTL              string // "5m" | "1h" | "mixed"
 	// 首次消息标记
-	FirstChunk bool
+	FirstChunk  bool
+	CustomTools map[string]customToolSpec
 }
 
 var chatDataTag = []byte("data:")
@@ -89,6 +90,7 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 	// 处理首次 chunk - 初始化并生成 response.created 和 response.in_progress
 	if st.FirstChunk {
 		st.FirstChunk = false
+		st.CustomTools = extractCustomToolContextFromRawRequest(originalRequestRawJSON)
 		// 从 chunk 中提取 id
 		if id := root.Get("id"); id.Exists() {
 			st.ResponseID = id.String()
@@ -508,6 +510,7 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 		}
 		callID := st.FuncCallIDs[idx]
 		name := st.FuncNames[idx]
+		itemID, itemType, itemName, namespace, execution, argumentValue := classifyChatToolCall(name, callID, args, st.CustomTools)
 
 		// 计算 output_index
 		outputIndex := idx
@@ -521,20 +524,38 @@ func (st *chatToResponsesState) closeFuncBlocks(nextSeq func() int) []string {
 		// response.function_call_arguments.done
 		fcDone := `{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","name":"","output_index":0,"arguments":""}`
 		fcDone, _ = sjson.Set(fcDone, "sequence_number", nextSeq())
-		fcDone, _ = sjson.Set(fcDone, "item_id", fmt.Sprintf("fc_%s", callID))
-		fcDone, _ = sjson.Set(fcDone, "name", name)
+		fcDone, _ = sjson.Set(fcDone, "item_id", itemID)
+		if itemName != "" {
+			fcDone, _ = sjson.Set(fcDone, "name", itemName)
+		} else {
+			fcDone, _ = sjson.Set(fcDone, "name", openAIChatToolSearchName)
+		}
 		fcDone, _ = sjson.Set(fcDone, "output_index", outputIndex)
 		fcDone, _ = sjson.Set(fcDone, "arguments", args)
 		out = append(out, emitResponsesEvent("response.function_call_arguments.done", fcDone))
 
-		// response.output_item.done for function_call
+		// response.output_item.done for function/custom tool call
 		itemDone := `{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`
 		itemDone, _ = sjson.Set(itemDone, "sequence_number", nextSeq())
 		itemDone, _ = sjson.Set(itemDone, "output_index", outputIndex)
-		itemDone, _ = sjson.Set(itemDone, "item.id", fmt.Sprintf("fc_%s", callID))
-		itemDone, _ = sjson.Set(itemDone, "item.arguments", args)
+		itemDone, _ = sjson.Set(itemDone, "item.id", itemID)
+		itemDone, _ = sjson.Set(itemDone, "item.type", itemType)
 		itemDone, _ = sjson.Set(itemDone, "item.call_id", callID)
-		itemDone, _ = sjson.Set(itemDone, "item.name", name)
+		if itemType == "custom_tool_call" {
+			itemDone, _ = sjson.Set(itemDone, "item.name", itemName)
+			itemDone, _ = sjson.Delete(itemDone, "item.arguments")
+			itemDone, _ = sjson.Set(itemDone, "item.input", argumentValue)
+		} else if itemType == "tool_search_call" {
+			itemDone, _ = sjson.Delete(itemDone, "item.name")
+			itemDone, _ = sjson.Set(itemDone, "item.execution", execution)
+			itemDone, _ = sjson.Set(itemDone, "item.arguments", argumentValue)
+		} else {
+			itemDone, _ = sjson.Set(itemDone, "item.name", itemName)
+			itemDone, _ = sjson.Set(itemDone, "item.arguments", argumentValue)
+			if namespace != "" {
+				itemDone, _ = sjson.Set(itemDone, "item.namespace", namespace)
+			}
+		}
 		out = append(out, emitResponsesEvent("response.output_item.done", itemDone))
 	}
 
@@ -659,14 +680,7 @@ func (st *chatToResponsesState) generateCompletedEvents(originalRequestRawJSON [
 			}
 			callID := st.FuncCallIDs[idx]
 			name := st.FuncNames[idx]
-			item := map[string]interface{}{
-				"id":        fmt.Sprintf("fc_%s", callID),
-				"type":      "function_call",
-				"status":    "completed",
-				"arguments": args,
-				"call_id":   callID,
-				"name":      name,
-			}
+			item := buildChatToolCallOutputItem(callID, name, args, st.CustomTools)
 			outputs = append(outputs, item)
 		}
 	}
@@ -721,9 +735,67 @@ func (st *chatToResponsesState) generateCompletedEvents(originalRequestRawJSON [
 	return out
 }
 
+func extractCustomToolContextFromRawRequest(raw []byte) map[string]customToolSpec {
+	return buildResponseToolContextFromRawRequest(raw)
+}
+
+func classifyChatToolCall(name string, callID string, arguments string, toolContext map[string]customToolSpec) (string, string, string, string, string, interface{}) {
+	itemID := fmt.Sprintf("fc_%s", callID)
+	itemType := "function_call"
+	itemName := name
+	namespace := ""
+	execution := ""
+	argumentValue := interface{}(arguments)
+
+	if spec, ok := toolContext[name]; ok {
+		switch spec.Kind {
+		case responseToolKindCustom:
+			return fmt.Sprintf("ctc_%s", callID), "custom_tool_call", spec.OriginalNameOr(name), "", "", extractCustomToolInput(arguments)
+		case responseToolKindToolSearch:
+			return fmt.Sprintf("tsc_%s", callID), "tool_search_call", "", "", spec.ExecutionOrDefault(), parseToolSearchArguments(arguments)
+		case responseToolKindFunction:
+			return itemID, itemType, spec.OriginalNameOr(name), spec.Namespace, "", argumentValue
+		}
+	}
+
+	if name == openAIChatToolSearchName {
+		return fmt.Sprintf("tsc_%s", callID), "tool_search_call", "", "", "client", parseToolSearchArguments(arguments)
+	}
+
+	return itemID, itemType, itemName, namespace, execution, argumentValue
+}
+
+func buildChatToolCallOutputItem(callID string, name string, arguments string, toolContext map[string]customToolSpec) map[string]interface{} {
+	itemID, itemType, itemName, namespace, execution, argumentValue := classifyChatToolCall(name, callID, arguments, toolContext)
+	item := map[string]interface{}{
+		"id":      itemID,
+		"type":    itemType,
+		"status":  "completed",
+		"call_id": callID,
+	}
+
+	switch itemType {
+	case "custom_tool_call":
+		item["name"] = itemName
+		item["input"] = argumentValue
+	case "tool_search_call":
+		item["execution"] = execution
+		item["arguments"] = argumentValue
+	default:
+		item["name"] = itemName
+		item["arguments"] = argumentValue
+		if namespace != "" {
+			item["namespace"] = namespace
+		}
+	}
+
+	return item
+}
+
 // ConvertOpenAIChatToResponsesNonStream 将 OpenAI Chat Completions 响应转换为 Responses 格式（非流式）
 func ConvertOpenAIChatToResponsesNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) string {
 	root := gjson.ParseBytes(rawJSON)
+	toolContext := extractCustomToolContextFromRawRequest(originalRequestRawJSON)
 
 	// 基础响应模板
 	out := `{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"incomplete_details":null,"output":[],"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{},"total_tokens":0}}`
@@ -818,16 +890,7 @@ func ConvertOpenAIChatToResponsesNonStream(_ context.Context, _ string, original
 				if funcArgs == "" {
 					funcArgs = "{}"
 				}
-
-				item := map[string]interface{}{
-					"id":        fmt.Sprintf("fc_%s", callID),
-					"type":      "function_call",
-					"status":    "completed",
-					"arguments": funcArgs,
-					"call_id":   callID,
-					"name":      funcName,
-				}
-				outputs = append(outputs, item)
+				outputs = append(outputs, buildChatToolCallOutputItem(callID, funcName, funcArgs, toolContext))
 			}
 		}
 	}
