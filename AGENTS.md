@@ -12,7 +12,7 @@
 - `.config/`：运行时配置目录（`config.json` 及 `backups/`），随容器/本地持久化。
 - `docs/`：项目文档目录（技术文档、配置指南、性能分析等）。
 - `refs/`：外部参考项目存档，仅供对照，默认只读。
-- 文档入口：`README.md`、`CLAUDE.md`、`AGENTS.md`、`ARCHITECTURE.md`、`CHANGELOG.md`。
+- 文档入口：`README.md`、`CLAUDE.md`、`AGENTS.md`、`CHANGELOG.md`；其他技术文档见 `docs/`。
 
 ## 文档编写规范
 - **所有技术文档必须存放在 `docs/` 目录下**，包括但不限于：

@@ -219,7 +219,7 @@ claude-proxy/
 
 - [backend-go/CLAUDE.md](backend-go/CLAUDE.md) - Go 后端详细文档
 - [frontend/CLAUDE.md](frontend/CLAUDE.md) - Vue 前端详细文档
-- [ARCHITECTURE.md](ARCHITECTURE.md) - 详细架构设计文档
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - 详细架构设计文档
 - [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) - 环境变量配置指南
 - [docs/PERFORMANCE_ANALYSIS.md](docs/PERFORMANCE_ANALYSIS.md) - 性能分析报告
 - [CHANGELOG.md](CHANGELOG.md) - 版本历史和更新日志
