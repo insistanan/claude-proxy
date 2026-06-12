@@ -17,7 +17,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
-	"github.com/BenedictKing/claude-proxy/internal/warmup"
+	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -91,7 +91,7 @@ func TryUpstreamWithAllKeys(
 	apiType string,
 	metricsManager *metrics.MetricsManager,
 	upstream *config.UpstreamConfig,
-	urlResults []warmup.URLLatencyResult,
+	urlResults []urlhealth.URLLatencyResult,
 	requestBody []byte,
 	isStream bool,
 	nextAPIKey NextAPIKeyFunc,
@@ -513,10 +513,10 @@ func truncateLogMessage(message string, limit int) string {
 }
 
 // BuildDefaultURLResults 将 URLs 转为按原始顺序的结果列表（无动态排序）
-func BuildDefaultURLResults(urls []string) []warmup.URLLatencyResult {
-	results := make([]warmup.URLLatencyResult, len(urls))
+func BuildDefaultURLResults(urls []string) []urlhealth.URLLatencyResult {
+	results := make([]urlhealth.URLLatencyResult, len(urls))
 	for i, url := range urls {
-		results[i] = warmup.URLLatencyResult{
+		results[i] = urlhealth.URLLatencyResult{
 			URL:         url,
 			OriginalIdx: i,
 			Success:     true,

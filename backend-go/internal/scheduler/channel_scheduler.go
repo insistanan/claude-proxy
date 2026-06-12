@@ -12,7 +12,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
-	"github.com/BenedictKing/claude-proxy/internal/warmup"
+	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 )
 
 // ChannelScheduler 多渠道调度器
@@ -30,9 +30,10 @@ type ChannelScheduler struct {
 	requestLogStore          *metrics.RequestLogStore
 	traceAffinity            *session.TraceAffinityManager
 	conversationRegistry     *conversation.Registry
-	urlManager               *warmup.URLManager // URL 管理器（非阻塞，动态排序）
-	profileManager           *metrics.ProfileManager // 性能画像管理器
-	adaptiveScheduler        *AdaptiveScheduler      // 自适应调度器
+	urlManager               *urlhealth.URLManager // URL 管理器（非阻塞，动态排序）
+	// TODO: 性能画像管理器和自适应调度器（ProfileManager 未实现）
+	// profileManager           *metrics.ProfileManager // 性能画像管理器
+	// adaptiveScheduler        *AdaptiveScheduler      // 自适应调度器
 }
 
 // ChannelKind 标识调度器所处理的渠道类型
@@ -55,7 +56,7 @@ func NewChannelScheduler(
 	geminiMetrics *metrics.MetricsManager,
 	chatMetrics *metrics.MetricsManager,
 	traceAffinity *session.TraceAffinityManager,
-	urlMgr *warmup.URLManager,
+	urlMgr *urlhealth.URLManager,
 ) *ChannelScheduler {
 	return &ChannelScheduler{
 		configManager:            cfgManager,
@@ -217,31 +218,7 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 0. 检查促销期渠道（最高优先级，绕过健康检查，支持多个促销渠道并发尝试）
-	promotedChannels := s.findPromotedChannels(activeChannels, kind)
-	for _, promotedCh := range promotedChannels {
-		if failedChannels[promotedCh.Index] {
-			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 已在本次请求中失败，跳过", prefix, promotedCh.Index, promotedCh.Name)
-			continue
-		}
-		upstream := s.getUpstreamByIndex(promotedCh.Index, kind)
-		if upstream == nil || len(upstream.APIKeys) == 0 {
-			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 无可用密钥，跳过", prefix, promotedCh.Index, promotedCh.Name)
-			continue
-		}
-		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
-		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%, 绕过健康检查)", prefix, promotedCh.Index, upstream.Name, failureRate*100)
-		return &SelectionResult{
-			Upstream:     upstream,
-			ChannelIndex: promotedCh.Index,
-			Reason:       "promotion_priority",
-		}, nil
-	}
-
-	// 1. 检查 Trace 亲和性（促销渠道失败时或无促销渠道时）
+	// 1. 检查 Trace 亲和性（会话粘性优先，保证同一会话连续性）
 	if userID != "" {
 		if preferredIdx, ok := s.traceAffinity.GetPreferredChannel(userID); ok {
 			foundPreferredChannel := false
@@ -284,25 +261,49 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 2. 使用自适应调度器（如果可用）
-	s.mu.RLock()
-	adaptiveScheduler := s.adaptiveScheduler
-	s.mu.RUnlock()
-	
-	if adaptiveScheduler != nil {
-		result := adaptiveScheduler.SelectBestChannel(
-			activeChannels,
-			failedChannels,
-			kind,
-			s.getUpstreamByIndex,
-		)
-		if result != nil {
-			return result, nil
+	// 2. 检查促销期渠道（仅对新会话或亲和渠道失败后生效）
+	promotedChannels := s.findPromotedChannels(activeChannels, kind)
+	for _, promotedCh := range promotedChannels {
+		if failedChannels[promotedCh.Index] {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 已在本次请求中失败，跳过", prefix, promotedCh.Index, promotedCh.Name)
+			continue
 		}
-		// 自适应调度失败，降级到原有逻辑
+		upstream := s.getUpstreamByIndex(promotedCh.Index, kind)
+		if upstream == nil || len(upstream.APIKeys) == 0 {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 无可用密钥，跳过", prefix, promotedCh.Index, promotedCh.Name)
+			continue
+		}
+		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
 		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Adaptive] 自适应调度未找到可用渠道，降级到优先级调度", prefix)
+		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%, 无会话亲和或亲和失败)", prefix, promotedCh.Index, upstream.Name, failureRate*100)
+		return &SelectionResult{
+			Upstream:     upstream,
+			ChannelIndex: promotedCh.Index,
+			Reason:       "promotion_priority",
+		}, nil
 	}
+
+	// TODO: 使用自适应调度器（ProfileManager 未实现）
+	// s.mu.RLock()
+	// adaptiveScheduler := s.adaptiveScheduler
+	// s.mu.RUnlock()
+	// 
+	// if adaptiveScheduler != nil {
+	// 	result := adaptiveScheduler.SelectBestChannel(
+	// 		activeChannels,
+	// 		failedChannels,
+	// 		kind,
+	// 		s.getUpstreamByIndex,
+	// 	)
+	// 	if result != nil {
+	// 		return result, nil
+	// 	}
+	// 	// 自适应调度失败，降级到原有逻辑
+	// 	prefix := kindSchedulerLogPrefix(kind)
+	// 	log.Printf("[%s-Adaptive] 自适应调度未找到可用渠道，降级到优先级调度", prefix)
+	// }
 
 	// 3. 按优先级遍历活跃渠道（降级方案）
 	for _, ch := range activeChannels {
@@ -756,12 +757,12 @@ func (s *ChannelScheduler) GetSortedURLsForChannel(
 	kind ChannelKind,
 	channelIndex int,
 	urls []string,
-) []warmup.URLLatencyResult {
+) []urlhealth.URLLatencyResult {
 	if s.urlManager == nil || len(urls) <= 1 {
 		// 无 URL 管理器或单 URL，返回默认结果
-		results := make([]warmup.URLLatencyResult, len(urls))
+		results := make([]urlhealth.URLLatencyResult, len(urls))
 		for i, url := range urls {
-			results[i] = warmup.URLLatencyResult{
+			results[i] = urlhealth.URLLatencyResult{
 				URL:         url,
 				OriginalIdx: i,
 				Success:     true,
@@ -832,32 +833,33 @@ func urlManagerChannelKeyOrdinal(kind ChannelKind) int {
 	}
 }
 
-// SetProfileManager 设置性能画像管理器
-func (s *ChannelScheduler) SetProfileManager(pm *metrics.ProfileManager) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.profileManager = pm
-}
+// TODO: SetProfileManager, GetProfileManager, SetAdaptiveScheduler（ProfileManager 未实现）
+// // SetProfileManager 设置性能画像管理器
+// func (s *ChannelScheduler) SetProfileManager(pm *metrics.ProfileManager) {
+// 	if s == nil {
+// 		return
+// 	}
+// 	s.mu.Lock()
+// 	defer s.mu.Unlock()
+// 	s.profileManager = pm
+// }
 
-// GetProfileManager 获取性能画像管理器
-func (s *ChannelScheduler) GetProfileManager() *metrics.ProfileManager {
-	if s == nil {
-		return nil
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.profileManager
-}
+// // GetProfileManager 获取性能画像管理器
+// func (s *ChannelScheduler) GetProfileManager() *metrics.ProfileManager {
+// 	if s == nil {
+// 		return nil
+// 	}
+// 	s.mu.RLock()
+// 	defer s.mu.RUnlock()
+// 	return s.profileManager
+// }
 
-// SetAdaptiveScheduler 设置自适应调度器
-func (s *ChannelScheduler) SetAdaptiveScheduler(as *AdaptiveScheduler) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.adaptiveScheduler = as
-}
+// // SetAdaptiveScheduler 设置自适应调度器
+// func (s *ChannelScheduler) SetAdaptiveScheduler(as *AdaptiveScheduler) {
+// 	if s == nil {
+// 		return
+// 	}
+// 	s.mu.Lock()
+// 	defer s.mu.Unlock()
+// 	s.adaptiveScheduler = as
+// }

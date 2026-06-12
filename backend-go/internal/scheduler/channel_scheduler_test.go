@@ -11,7 +11,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/session"
-	"github.com/BenedictKing/claude-proxy/internal/warmup"
+	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 )
 
 // createTestConfigManager 创建测试用配置管理器
@@ -62,7 +62,7 @@ func createTestScheduler(t *testing.T, cfg config.Config) (*ChannelScheduler, fu
 	geminiMetrics := metrics.NewMetricsManager()
 	chatMetrics := metrics.NewMetricsManager()
 	traceAffinity := session.NewTraceAffinityManager()
-	urlManager := warmup.NewURLManager(30*time.Second, 3)
+	urlManager := urlhealth.NewURLManager(30*time.Second, 3)
 
 	scheduler := NewChannelScheduler(cfgManager, messagesMetrics, responsesMetrics, geminiMetrics, chatMetrics, traceAffinity, urlManager)
 

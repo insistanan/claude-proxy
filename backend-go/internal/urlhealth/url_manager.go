@@ -1,5 +1,5 @@
-// Package warmup 提供多端点渠道的 URL 管理和动态排序功能
-package warmup
+// Package urlhealth 提供多端点渠道的 URL 健康管理和动态排序功能
+package urlhealth
 
 import (
 	"log"
@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// URLLatencyResult 单个 URL 的结果（兼容旧接口）
+// URLLatencyResult 单个 URL 的结果
 type URLLatencyResult struct {
 	URL         string
 	OriginalIdx int  // 原始索引（用于指标记录）
@@ -72,13 +72,9 @@ func (m *URLManager) GetSortedURLs(channelIndex int, urls []string) []URLLatency
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 确保渠道状态存在并同步 URL 列表
 	state := m.ensureChannelState(channelIndex, urls)
-
-	// 每次获取时重新排序，确保冷却期过后的 URL 能被正确提升
 	m.sortURLs(state)
 
-	// 构建排序后的结果
 	now := time.Now()
 	results := make([]URLLatencyResult, len(state.URLs))
 
@@ -112,7 +108,6 @@ func (m *URLManager) MarkSuccess(channelIndex int, url string) {
 		}
 	}
 
-	// 成功后重新排序：成功的 URL 提升到前面
 	m.sortURLs(state)
 	state.UpdatedAt = time.Now()
 }
@@ -139,17 +134,14 @@ func (m *URLManager) MarkFailure(channelIndex int, url string) {
 		}
 	}
 
-	// 失败后重新排序：失败的 URL 移到后面
 	m.sortURLs(state)
 	state.UpdatedAt = time.Now()
 }
 
-// ensureChannelState 确保渠道状态存在，并同步 URL 列表
 func (m *URLManager) ensureChannelState(channelIndex int, urls []string) *ChannelURLState {
 	state, ok := m.channelStates[channelIndex]
 
 	if !ok {
-		// 初始化新渠道状态
 		state = &ChannelURLState{
 			ChannelIndex: channelIndex,
 			URLs:         make([]*URLState, len(urls)),
@@ -165,7 +157,6 @@ func (m *URLManager) ensureChannelState(channelIndex int, urls []string) *Channe
 		return state
 	}
 
-	// 检查 URL 列表是否变化（配置热重载场景）
 	if !m.urlsMatch(state.URLs, urls) {
 		log.Printf("[URLManager] 检测到渠道 [%d] URL 配置变化，重置状态", channelIndex)
 		state = &ChannelURLState{
@@ -185,7 +176,6 @@ func (m *URLManager) ensureChannelState(channelIndex int, urls []string) *Channe
 	return state
 }
 
-// urlsMatch 检查 URL 列表是否匹配
 func (m *URLManager) urlsMatch(states []*URLState, urls []string) bool {
 	if len(states) != len(urls) {
 		return false
@@ -213,34 +203,29 @@ func (m *URLManager) sortURLs(state *ChannelURLState) {
 	sort.SliceStable(state.URLs, func(i, j int) bool {
 		ui, uj := state.URLs[i], state.URLs[j]
 
-		// 无失败记录的优先
 		iNoFail := ui.FailCount == 0
 		jNoFail := uj.FailCount == 0
 		if iNoFail != jNoFail {
 			return iNoFail
 		}
 		if iNoFail && jNoFail {
-			// 都无失败，按原始索引
 			return ui.OriginalIdx < uj.OriginalIdx
 		}
 
-		// 都有失败记录，检查冷却期
 		iCooldownPassed := now.Sub(ui.LastFailTime) >= m.failureCooldown
 		jCooldownPassed := now.Sub(uj.LastFailTime) >= m.failureCooldown
 
 		if iCooldownPassed != jCooldownPassed {
-			return iCooldownPassed // 冷却期过了的优先
+			return iCooldownPassed
 		}
 
 		if iCooldownPassed && jCooldownPassed {
-			// 都过了冷却期，失败次数少的优先
 			if ui.FailCount != uj.FailCount {
 				return ui.FailCount < uj.FailCount
 			}
 			return ui.OriginalIdx < uj.OriginalIdx
 		}
 
-		// 都在冷却期内，剩余冷却时间短的优先
 		iRemaining := m.failureCooldown - now.Sub(ui.LastFailTime)
 		jRemaining := m.failureCooldown - now.Sub(uj.LastFailTime)
 		return iRemaining < jRemaining

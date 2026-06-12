@@ -23,7 +23,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/session"
-	"github.com/BenedictKing/claude-proxy/internal/warmup"
+	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -112,7 +112,7 @@ func main() {
 	defer conversationRegistry.Stop()
 
 	// 初始化 URL 管理器（非阻塞，动态排序）
-	urlManager := warmup.NewURLManager(30*time.Second, 3) // 30秒冷却期，连续3次失败后移到末尾
+	urlManager := urlhealth.NewURLManager(30*time.Second, 3) // 30秒冷却期，连续3次失败后移到末尾
 	log.Printf("[URLManager-Init] URL管理器已初始化 (冷却期: 30秒, 最大连续失败: 3)")
 
 	channelScheduler := scheduler.NewChannelScheduler(cfgManager, messagesMetricsManager, responsesMetricsManager, geminiMetricsManager, chatMetricsManager, traceAffinityManager, urlManager)
@@ -121,28 +121,28 @@ func main() {
 	log.Printf("[Scheduler-Init] 多渠道调度器已初始化 (失败率阈值: %.0f%%, 滑动窗口: %d)",
 		messagesMetricsManager.GetFailureThreshold()*100, messagesMetricsManager.GetWindowSize())
 
-	// 初始化自适应负载均衡
-	profileManager := metrics.NewProfileManager()
-	adaptiveScheduler := scheduler.NewAdaptiveScheduler(profileManager)
-	channelScheduler.SetProfileManager(profileManager)
-	channelScheduler.SetAdaptiveScheduler(adaptiveScheduler)
-	log.Println("[Main] 自适应负载均衡已启用")
+	// TODO: 初始化自适应负载均衡（ProfileManager 未实现）
+	// profileManager := metrics.NewProfileManager()
+	// adaptiveScheduler := scheduler.NewAdaptiveScheduler(profileManager)
+	// channelScheduler.SetProfileManager(profileManager)
+	// channelScheduler.SetAdaptiveScheduler(adaptiveScheduler)
+	// log.Println("[Main] 自适应负载均衡已启用")
 
-	// 从现有指标同步数据到性能画像
-	config := cfgManager.GetConfig()
-	for i, upstream := range config.Upstream {
-		messagesMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
-	}
-	for i, upstream := range config.ResponsesUpstream {
-		responsesMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
-	}
-	for i, upstream := range config.GeminiUpstream {
-		geminiMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
-	}
-	for i, upstream := range config.ChatUpstream {
-		chatMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
-	}
-	log.Println("[Main] 已从现有指标同步性能画像数据")
+	// // 从现有指标同步数据到性能画像
+	// config := cfgManager.GetConfig()
+	// for i, upstream := range config.Upstream {
+	// 	messagesMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
+	// }
+	// for i, upstream := range config.ResponsesUpstream {
+	// 	responsesMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
+	// }
+	// for i, upstream := range config.GeminiUpstream {
+	// 	geminiMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
+	// }
+	// for i, upstream := range config.ChatUpstream {
+	// 	chatMetricsManager.SyncToProfile(profileManager, upstream.BaseURL, upstream.APIKeys, i)
+	// }
+	// log.Println("[Main] 已从现有指标同步性能画像数据")
 
 	// 设置 Gin 模式
 	if envCfg.IsProduction() {
@@ -203,14 +203,14 @@ func main() {
 		apiGroup.GET("/messages/ping/:id", messages.PingChannel(cfgManager))
 		apiGroup.GET("/messages/ping", messages.PingAllChannels(cfgManager))
 
-		// 渠道性能报告（自适应负载均衡）
-		apiGroup.GET("/performance/report", func(c *gin.Context) {
-			reports := adaptiveScheduler.GetChannelPerformanceReport()
-			c.JSON(200, gin.H{
-				"success": true,
-				"data":    reports,
-			})
-		})
+		// TODO: 渠道性能报告（自适应负载均衡 - ProfileManager 未实现）
+		// apiGroup.GET("/performance/report", func(c *gin.Context) {
+		// 	reports := adaptiveScheduler.GetChannelPerformanceReport()
+		// 	c.JSON(200, gin.H{
+		// 		"success": true,
+		// 		"data":    reports,
+		// 	})
+		// })
 
 		// Responses 渠道管理
 		apiGroup.GET("/responses/channels", responses.GetUpstreams(cfgManager))

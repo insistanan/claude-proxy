@@ -13,7 +13,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/session"
-	"github.com/BenedictKing/claude-proxy/internal/warmup"
+	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -61,7 +61,7 @@ func TestGetDashboard_IncludesStripThoughtSignature(t *testing.T) {
 	})
 
 	traceAffinity := session.NewTraceAffinityManager()
-	urlManager := warmup.NewURLManager(30*time.Second, 3)
+	urlManager := urlhealth.NewURLManager(30*time.Second, 3)
 	sch := scheduler.NewChannelScheduler(cfgManager, messagesMetrics, responsesMetrics, geminiMetrics, chatMetrics, traceAffinity, urlManager)
 
 	r := gin.New()

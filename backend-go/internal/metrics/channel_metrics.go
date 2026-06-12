@@ -18,6 +18,7 @@ const (
 	// 超过此限制时，自动截断最早的记录，防止高频调用导致 OOM
 	maxRequestHistoryPerKey = 100000
 )
+
 type RequestRecord struct {
 	Timestamp                time.Time
 	Success                  bool
@@ -78,7 +79,7 @@ type TimeWindowStats struct {
 	CacheReadTokens     int64 `json:"cacheReadTokens,omitempty"`
 	// CacheHitRate 缓存命中率（Token口径），范围 0-100
 	// 定义：cacheReadTokens / (cacheReadTokens + inputTokens) * 100
-	CacheHitRate float64 `json:"cacheHitRate,omitempty"`
+	CacheHitRate float64 `json:"cacheHitRate"`
 }
 
 // MetricsManager 指标管理器
@@ -2128,50 +2129,50 @@ func (m *MetricsManager) GetAllKeysHistoricalStats(duration, interval time.Durat
 	return result
 }
 
-// SyncToProfile 将现有指标同步到性能画像（用于初始化）
-func (m *MetricsManager) SyncToProfile(pm *ProfileManager, baseURL string, apiKeys []string, channelIdx int) {
-	if pm == nil {
-		return
-	}
-	
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+// TODO: SyncToProfile 将现有指标同步到性能画像（ProfileManager 未实现）
+// func (m *MetricsManager) SyncToProfile(pm *ProfileManager, baseURL string, apiKeys []string, channelIdx int) {
+// 	if pm == nil {
+// 		return
+// 	}
+//
+// 	m.mu.RLock()
+// 	defer m.mu.RUnlock()
 
-	profile := pm.GetOrCreateProfile(baseURL, apiKeys, channelIdx)
+// 	profile := pm.GetOrCreateProfile(baseURL, apiKeys, channelIdx)
 
-	// 计算成功率
-	var totalReq, totalSuccess int64
-	var recentResults []bool
+// 	// 计算成功率
+// 	var totalReq, totalSuccess int64
+// 	var recentResults []bool
 
-	for _, key := range apiKeys {
-		metricsKey := generateMetricsKey(baseURL, key)
-		if metrics, exists := m.keyMetrics[metricsKey]; exists {
-			totalReq += metrics.RequestCount
-			totalSuccess += metrics.SuccessCount
-			recentResults = append(recentResults, metrics.recentResults...)
-		}
-	}
+// 	for _, key := range apiKeys {
+// 		metricsKey := generateMetricsKey(baseURL, key)
+// 		if metrics, exists := m.keyMetrics[metricsKey]; exists {
+// 			totalReq += metrics.RequestCount
+// 			totalSuccess += metrics.SuccessCount
+// 			recentResults = append(recentResults, metrics.recentResults...)
+// 		}
+// 	}
 
-	profile.mu.Lock()
-	defer profile.mu.Unlock()
+// 	profile.mu.Lock()
+// 	defer profile.mu.Unlock()
 
-	if totalReq > 0 {
-		profile.SuccessRate = float64(totalSuccess) / float64(totalReq) * 100
-	}
+// 	if totalReq > 0 {
+// 		profile.SuccessRate = float64(totalSuccess) / float64(totalReq) * 100
+// 	}
 
-	// 计算最近成功率
-	if len(recentResults) > 0 {
-		recentSuccess := 0
-		for _, success := range recentResults {
-			if success {
-				recentSuccess++
-			}
-		}
-		profile.RecentSuccessRate = float64(recentSuccess) / float64(len(recentResults)) * 100
-	} else {
-		profile.RecentSuccessRate = profile.SuccessRate
-	}
-}
+// 	// 计算最近成功率
+// 	if len(recentResults) > 0 {
+// 		recentSuccess := 0
+// 		for _, success := range recentResults {
+// 			if success {
+// 				recentSuccess++
+// 			}
+// 		}
+// 		profile.RecentSuccessRate = float64(recentSuccess) / float64(len(recentResults)) * 100
+// 	} else {
+// 		profile.RecentSuccessRate = profile.SuccessRate
+// 	}
+// }
 
 // GetKeyHistoricalStats 获取单个 Key 的历史统计数据（包含 Token 和 Cache 数据）
 func (m *MetricsManager) GetKeyHistoricalStats(baseURL, apiKey string, duration, interval time.Duration) []KeyHistoryDataPoint {

@@ -92,7 +92,35 @@ func HandleMultiChannelFailover(
 			}
 			// 只有真正成功的请求才设置 Trace 亲和（客户端取消时 SuccessKey 为空）
 			if result.SuccessKey != "" {
-				channelScheduler.SetTraceAffinity(userID, channelIndex)
+				// 仅在以下情况设置亲和性：
+				// 1. 该用户没有亲和记录（新会话）
+				// 2. 当前选择的原因是 trace_affinity（续期现有亲和）
+				// 3. 当前选择的原因不是 trace_affinity，但用户原来的亲和渠道在本次已失败（failover后建立新亲和）
+				shouldSetAffinity := false
+				affinityMgr := channelScheduler.GetTraceAffinityManager()
+				if affinityMgr == nil {
+					shouldSetAffinity = true
+				} else {
+					if _, hasAffinity := affinityMgr.GetPreferredChannel(userID); !hasAffinity {
+						// 情况1：新会话，建立亲和
+						shouldSetAffinity = true
+					} else if selection.Reason == "trace_affinity" {
+						// 情况2：使用了亲和渠道成功，续期
+						shouldSetAffinity = true
+					} else {
+						// 情况3：检查原亲和渠道是否在本次失败
+						if oldChannelIdx, ok := affinityMgr.GetPreferredChannel(userID); ok {
+							if failedChannels[oldChannelIdx] {
+								// 原亲和渠道失败，允许建立新亲和
+								shouldSetAffinity = true
+							}
+						}
+					}
+				}
+				
+				if shouldSetAffinity {
+					channelScheduler.SetTraceAffinity(userID, channelIndex)
+				}
 				channelScheduler.ConsumePromotionCount(channelIndex, kind)
 			}
 			return
