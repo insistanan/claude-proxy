@@ -54,6 +54,26 @@ bun install && bun run dev    # 开发服务器
 bun run build                 # 生产构建
 ```
 
+### Windows exe 打包流程
+
+目标产物：`dist/claude-proxy-windows-amd64.exe`
+
+1. 先构建前端：`cd frontend && bun run build`；如果本机 `bun` 不在 PATH，但已有 npm 环境，可用 `npm run build`。
+2. 将 `frontend/dist/*` 复制到 `backend-go/frontend/dist/`，确保 Go embed 打包到最新 UI。
+3. 回到 `backend-go/`，读取根目录 `VERSION`，生成 `BuildTime`，读取 `git rev-parse --short HEAD`，并设置 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64`。
+4. 使用版本注入编译，禁止裸 `go build`：
+   ```powershell
+   $version=(Get-Content ..\VERSION -Raw).Trim()
+   $buildTime=(Get-Date -Format "yyyy-MM-dd_HH:mm:ss_zzz")
+   $gitCommit=(git rev-parse --short HEAD 2>$null)
+   if (-not $gitCommit) { $gitCommit="unknown" }
+   $env:CGO_ENABLED="0"
+   $env:GOOS="windows"
+   $env:GOARCH="amd64"
+   go build -ldflags "-X main.Version=$version -X main.BuildTime=$buildTime -X main.GitCommit=$gitCommit -s -w" -o ..\dist\claude-proxy-windows-amd64.exe .
+   ```
+5. 构建后用 `Get-Item dist\claude-proxy-windows-amd64.exe` 确认产物存在；运行时 UI 版本不应显示 `v0.0.0-dev`。
+
 ## 架构概览
 
 ```
@@ -174,7 +194,16 @@ claude-proxy/
 
 ## 重要提示
 
+- **执行边界**: 除非用户明确要求，不要主动创建或修改文档、不要运行测试、不要执行编译/打包；如确需这些操作来验证问题，先向用户说明原因并等待确认。
 - **Git 操作**: 未经用户明确要求，不要执行 git commit/push/branch 操作
+- **前端开发约束**:
+  - **图标使用规则**: 本项目使用 **按需导入 SVG 图标** 方案。任何时候在 Vue 组件中使用新图标（如 `<v-icon>mdi-new-icon</v-icon>`），**都必须且只能**先编辑 `frontend/src/plugins/vuetify.ts`：
+    1. 从 `@mdi/js` 导入对应的驼峰命名图标：`import { mdiNewIcon } from '@mdi/js'`
+    2. 在 `iconMap` 中添加 kebab-case 图标别名到 SVG path 的映射：`'new-icon': mdiNewIcon`
+    3. 页面中只使用已注册的 `mdi-new-icon`
+    - **严禁**直接在 Vue 文件中使用未注册在 `iconMap` 里的 mdi 图标，否则在开发/生产环境中会显示文字异常别名（如 `[new-icon]` 浮窗文字）。
+    - `customSvgIconSet` 可以降级到 `mdiHelpCircle`，但这只是兜底保护，不能代替显式注册。
+    - 交付前用 `rg -n "mdi-[a-z0-9-]+" frontend/src` 扫描新增图标，并对照 `frontend/src/plugins/vuetify.ts` 的 `iconMap` 确认全部已注册。
 - **配置热重载**: `backend-go/.config/config.json` 修改后自动生效，无需重启
 - **环境变量变更**: 修改 `.env` 后需要重启服务
 - **认证**: 所有端点（除 `/health`）需要 `x-api-key` 头或 `PROXY_ACCESS_KEY`
