@@ -183,7 +183,7 @@ type SelectionResult struct {
 }
 
 // SelectChannel 选择最佳渠道
-// 优先级: 促销期渠道 > Trace亲和（促销渠道失败时回退） > 渠道优先级顺序
+// 优先级: 促销期渠道（忽略Trace亲和） > Trace亲和（仅在无促销时生效） > 自适应调度 > 渠道优先级顺序
 func (s *ChannelScheduler) SelectChannel(
 	ctx context.Context,
 	userID string,
@@ -266,7 +266,31 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 1. 检查 Trace 亲和性（会话粘性优先，保证同一会话连续性）
+	// 1. 检查促销期渠道（促销期优先，忽略 Trace 亲和性）
+	promotedChannels := s.findPromotedChannels(activeChannels, kind)
+	for _, promotedCh := range promotedChannels {
+		if failedChannels[promotedCh.Index] {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 已在本次请求中失败，跳过", prefix, promotedCh.Index, promotedCh.Name)
+			continue
+		}
+		upstream := s.getUpstreamByIndex(promotedCh.Index, kind)
+		if upstream == nil || len(upstream.APIKeys) == 0 {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 无可用密钥，跳过", prefix, promotedCh.Index, promotedCh.Name)
+			continue
+		}
+		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+		prefix := kindSchedulerLogPrefix(kind)
+		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%)", prefix, promotedCh.Index, upstream.Name, failureRate*100)
+		return &SelectionResult{
+			Upstream:     upstream,
+			ChannelIndex: promotedCh.Index,
+			Reason:       "promotion_priority",
+		}, nil
+	}
+
+	// 2. 检查 Trace 亲和性（仅在无促销渠道时生效，保证同一会话连续性）
 	if userID != "" {
 		if preferredIdx, ok := s.traceAffinity.GetPreferredChannel(userID); ok {
 			foundPreferredChannel := false
@@ -307,30 +331,6 @@ func (s *ChannelScheduler) SelectChannel(
 				log.Printf("[%s-Vision] 跳过亲和渠道 [%d]：不在 Vision 候选池中 (user: %s)", prefix, preferredIdx, maskUserID(userID))
 			}
 		}
-	}
-
-	// 2. 检查促销期渠道（仅对新会话或亲和渠道失败后生效）
-	promotedChannels := s.findPromotedChannels(activeChannels, kind)
-	for _, promotedCh := range promotedChannels {
-		if failedChannels[promotedCh.Index] {
-			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 已在本次请求中失败，跳过", prefix, promotedCh.Index, promotedCh.Name)
-			continue
-		}
-		upstream := s.getUpstreamByIndex(promotedCh.Index, kind)
-		if upstream == nil || len(upstream.APIKeys) == 0 {
-			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 无可用密钥，跳过", prefix, promotedCh.Index, promotedCh.Name)
-			continue
-		}
-		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
-		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%, 无会话亲和或亲和失败)", prefix, promotedCh.Index, upstream.Name, failureRate*100)
-		return &SelectionResult{
-			Upstream:     upstream,
-			ChannelIndex: promotedCh.Index,
-			Reason:       "promotion_priority",
-		}, nil
 	}
 
 	// 3. 使用自适应调度器（如果可用），按模型级别性能画像选择最佳渠道
