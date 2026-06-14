@@ -254,6 +254,7 @@ func handleRoutedChat(
 		"Chat",
 		metricsManager,
 		upstream,
+		chatReq.Model, // 添加 requestedModel 参数
 		urlResults,
 		routedBody,
 		chatReq.Stream,
