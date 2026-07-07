@@ -73,8 +73,8 @@ func NewEnvConfig() *EnvConfig {
 		MetricsPersistenceEnabled: getEnv("METRICS_PERSISTENCE_ENABLED", "true") != "false",
 		MetricsRetentionDays:      clampInt(getEnvAsInt("METRICS_RETENTION_DAYS", 7), 3, 30),
 		// HTTP 客户端配置
-		ResponseHeaderTimeout: clampInt(getEnvAsInt("RESPONSE_HEADER_TIMEOUT", 60), 30, 120), // 30-120 秒
-		ForceHTTP1:            getEnv("FORCE_HTTP1", "true") == "true",                       // 默认强制 HTTP/1.1
+		ResponseHeaderTimeout: clampInt(getEnvAsInt("RESPONSE_HEADER_TIMEOUT", 120), 30, 300), // 30-300 秒，默认 120
+		ForceHTTP1:            getEnv("FORCE_HTTP1", "false") == "true",                       // 默认 HTTP/2，可通过环境变量强制 HTTP/1.1
 		// 日志文件配置
 		LogDir:        getEnv("LOG_DIR", "logs"),
 		LogFile:       getEnv("LOG_FILE", "app.log"),
