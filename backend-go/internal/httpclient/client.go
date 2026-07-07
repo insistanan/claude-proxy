@@ -77,11 +77,11 @@ func (cm *ClientManager) GetStandardClient(timeout time.Duration, insecure bool)
 }
 
 // GetStreamClient 获取流式客户端（无超时，用于 SSE 流式响应）
+// 流式请求不设 ResponseHeaderTimeout，避免上游首字节延迟导致误超时
 func (cm *ClientManager) GetStreamClient(insecure bool) *http.Client {
 	envConfig := config.NewEnvConfig()
-	responseHeaderTimeout := time.Duration(envConfig.ResponseHeaderTimeout) * time.Second
 
-	key := fmt.Sprintf("stream-%t-%d-%t", insecure, envConfig.ResponseHeaderTimeout, envConfig.ForceHTTP1)
+	key := fmt.Sprintf("stream-%t-%t", insecure, envConfig.ForceHTTP1)
 
 	cm.mu.RLock()
 	if client, ok := cm.clients[key]; ok {
@@ -103,7 +103,6 @@ func (cm *ClientManager) GetStreamClient(insecure bool) *http.Client {
 		IdleConnTimeout:       120 * time.Second,
 		DisableCompression:    true,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: responseHeaderTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     !envConfig.ForceHTTP1,
 	}
