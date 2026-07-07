@@ -29,7 +29,8 @@ type EnvConfig struct {
 	MetricsPersistenceEnabled bool // 是否启用 SQLite 持久化
 	MetricsRetentionDays      int  // 数据保留天数（3-30）
 	// HTTP 客户端配置
-	ResponseHeaderTimeout int // 等待响应头超时时间（秒）
+	ResponseHeaderTimeout int  // 等待响应头超时时间（秒）
+	ForceHTTP1            bool // 强制使用 HTTP/1.1，避免 HTTP/2 stream 超时问题
 	// 日志文件相关配置
 	LogDir        string
 	LogFile       string
@@ -73,6 +74,7 @@ func NewEnvConfig() *EnvConfig {
 		MetricsRetentionDays:      clampInt(getEnvAsInt("METRICS_RETENTION_DAYS", 7), 3, 30),
 		// HTTP 客户端配置
 		ResponseHeaderTimeout: clampInt(getEnvAsInt("RESPONSE_HEADER_TIMEOUT", 60), 30, 120), // 30-120 秒
+		ForceHTTP1:            getEnv("FORCE_HTTP1", "true") == "true",                       // 默认强制 HTTP/1.1
 		// 日志文件配置
 		LogDir:        getEnv("LOG_DIR", "logs"),
 		LogFile:       getEnv("LOG_FILE", "app.log"),
