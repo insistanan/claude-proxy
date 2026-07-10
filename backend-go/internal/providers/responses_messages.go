@@ -496,7 +496,7 @@ func resolveClaudeReasoningEffort(claudeReq *types.ClaudeRequest) string {
 			switch strings.ToLower(effort) {
 			case "low", "medium", "high", "xhigh":
 				return strings.ToLower(effort)
-			case "max":
+			case "max", "ultra":
 				return "xhigh"
 			default:
 				return ""

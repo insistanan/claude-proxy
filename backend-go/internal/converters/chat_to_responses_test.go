@@ -223,7 +223,7 @@ func TestValidateResponsesToOpenAIChatRequest_InvalidFields(t *testing.T) {
 		},
 		{
 			name:  "非法 reasoning effort",
-			input: `{"model":"gpt-4o","input":"hi","reasoning":{"effort":"ultra"}}`,
+			input: `{"model":"gpt-4o","input":"hi","reasoning":{"effort":"future"}}`,
 		},
 		{
 			name:  "非法 function_call arguments",

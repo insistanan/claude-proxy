@@ -31,10 +31,8 @@ func ValidateResponsesToOpenAIChatRequest(inputRawJSON []byte) error {
 			return fmt.Errorf("Responses -> OpenAI Chat 的 reasoning 必须是对象")
 		}
 		if effort := reasoning.Get("effort"); effort.Exists() {
-			switch effort.String() {
-			case "", "none", "auto", "minimal", "low", "medium", "high", "xhigh":
-			default:
-				return fmt.Errorf("OpenAI Chat 不支持 reasoning.effort=%q", effort.String())
+			if _, err := normalizeReasoningEffortForConstrainedUpstream(effort.String()); err != nil {
+				return fmt.Errorf("OpenAI Chat %w", err)
 			}
 		}
 	}
@@ -218,7 +216,8 @@ func ConvertResponsesToOpenAIChatRequest(modelName string, inputRawJSON []byte, 
 
 	// 转换 reasoning.effort → reasoning_effort
 	if reasoningEffort := root.Get("reasoning.effort"); reasoningEffort.Exists() {
-		effort := reasoningEffort.String()
+		// 调用方已通过 ValidateResponsesToOpenAIChatRequest 校验该值。
+		effort, _ := normalizeReasoningEffortForConstrainedUpstream(reasoningEffort.String())
 		switch effort {
 		case "none":
 			out, _ = sjson.Set(out, "reasoning_effort", "none")

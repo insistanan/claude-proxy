@@ -1,0 +1,6 @@
+node_modules/
+dist/
+build/
+.git/
+frontend/dist/
+backend-go/frontend/dist/

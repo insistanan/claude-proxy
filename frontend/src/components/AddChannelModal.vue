@@ -1094,6 +1094,9 @@ const allSourceModelOptions = computed(() => {
       { title: 'gpt-5.4', value: 'gpt-5.4' },
       { title: 'gpt-5.4-mini', value: 'gpt-5.4-mini' },
       { title: 'gpt-5.5', value: 'gpt-5.5' },
+      { title: 'gpt-5.6-luna', value: 'gpt-5.6-luna' },
+      { title: 'gpt-5.6-sol', value: 'gpt-5.6-sol' },
+      { title: 'gpt-5.6-terra', value: 'gpt-5.6-terra' },
     ]
   }
   if (props.channelType === 'chat') {

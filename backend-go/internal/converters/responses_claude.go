@@ -225,6 +225,10 @@ func ResponsesReasoningToClaudeThinking(raw interface{}, maxOutputTokens int) (i
 		return nil, fmt.Errorf("reasoning 必须是对象")
 	}
 	effort, _ := m["effort"].(string)
+	effort, err := normalizeReasoningEffortForConstrainedUpstream(effort)
+	if err != nil {
+		return nil, fmt.Errorf("Claude extended thinking %w", err)
+	}
 	if effort == "" || effort == "none" {
 		return nil, nil
 	}
@@ -233,7 +237,7 @@ func ResponsesReasoningToClaudeThinking(raw interface{}, maxOutputTokens int) (i
 	}
 	budget := reasoningBudgetTokens(effort, maxOutputTokens)
 	if budget <= 0 {
-		return map[string]interface{}{"type": "enabled"}, nil
+		return nil, fmt.Errorf("Claude extended thinking 无法转换 reasoning.effort=%q", effort)
 	}
 	return map[string]interface{}{"type": "enabled", "budget_tokens": budget}, nil
 }
