@@ -29,10 +29,14 @@ type ChannelScheduler struct {
 	chatChannelLogStore      *metrics.ChannelLogStore
 	requestLogStore          *metrics.RequestLogStore
 	traceAffinity            *session.TraceAffinityManager
+	baseURLAffinity          *session.BaseURLAffinityManager
 	conversationRegistry     *conversation.Registry
 	urlManager               *urlhealth.URLManager   // URL 管理器（非阻塞，动态排序）
 	profileManager           *metrics.ProfileManager // 性能画像管理器
 	adaptiveScheduler        *AdaptiveScheduler      // 自适应调度器
+	// inFlightByKind 记录选渠后、真正发出上游请求前的在途预留。
+	// 让并发对话在 StartRequest 之前就能看到彼此占用，从而分摊到不同供应商。
+	inFlightByKind map[ChannelKind]map[int]int64
 }
 
 // ChannelKind 标识调度器所处理的渠道类型
@@ -68,7 +72,9 @@ func NewChannelScheduler(
 		geminiChannelLogStore:    metrics.NewChannelLogStore(),
 		chatChannelLogStore:      metrics.NewChannelLogStore(),
 		traceAffinity:            traceAffinity,
+		baseURLAffinity:          session.NewBaseURLAffinityManager(),
 		urlManager:               urlMgr,
+		inFlightByKind:           make(map[ChannelKind]map[int]int64),
 	}
 }
 
@@ -180,10 +186,82 @@ type SelectionResult struct {
 	Upstream     *config.UpstreamConfig
 	ChannelIndex int
 	Reason       string // 选择原因（用于日志）
+	// Kind 记录选择时的协议类型，便于调用方正确释放/转移在途预留。
+	Kind ChannelKind
+	// Reserved 表示本次选择是否已占用 in-flight 预留。
+	// 调用方在失败重试前应 ReleaseChannelReservation；真正发出上游请求期间应保持预留，请求结束后再释放。
+	Reserved bool
+}
+
+// reserveAndReturn 原子预留选中渠道的在途计数，避免并发选渠时都看到相同负载。
+func (s *ChannelScheduler) reserveAndReturn(result *SelectionResult, kind ChannelKind) *SelectionResult {
+	if result == nil {
+		return nil
+	}
+	result.Kind = kind
+	if s == nil {
+		return result
+	}
+	s.ReserveChannel(kind, result.ChannelIndex)
+	result.Reserved = true
+	return result
+}
+
+// ReserveChannel 增加渠道在途预留（选渠后、请求结束前）
+func (s *ChannelScheduler) ReserveChannel(kind ChannelKind, channelIndex int) {
+	if s == nil || channelIndex < 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inFlightByKind == nil {
+		s.inFlightByKind = make(map[ChannelKind]map[int]int64)
+	}
+	byChannel := s.inFlightByKind[kind]
+	if byChannel == nil {
+		byChannel = make(map[int]int64)
+		s.inFlightByKind[kind] = byChannel
+	}
+	byChannel[channelIndex]++
+}
+
+// ReleaseChannelReservation 释放选渠预留
+func (s *ChannelScheduler) ReleaseChannelReservation(kind ChannelKind, channelIndex int) {
+	if s == nil || channelIndex < 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byChannel := s.inFlightByKind[kind]
+	if byChannel == nil {
+		return
+	}
+	if byChannel[channelIndex] <= 1 {
+		delete(byChannel, channelIndex)
+		if len(byChannel) == 0 {
+			delete(s.inFlightByKind, kind)
+		}
+		return
+	}
+	byChannel[channelIndex]--
+}
+
+// GetChannelInFlight 返回选渠预留的在途计数（不含性能画像中的真实 ActiveRequests）
+func (s *ChannelScheduler) GetChannelInFlight(kind ChannelKind, channelIndex int) int64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if byChannel := s.inFlightByKind[kind]; byChannel != nil {
+		return byChannel[channelIndex]
+	}
+	return 0
 }
 
 // SelectChannel 选择最佳渠道
 // 优先级: 促销期渠道（忽略Trace亲和） > Trace亲和（仅在无促销时生效） > 自适应调度 > 渠道优先级顺序
+// 同一协议下并发新对话会尽量分摊到不同供应商，同时仍遵循优先级、健康与促销规则。
 func (s *ChannelScheduler) SelectChannel(
 	ctx context.Context,
 	userID string,
@@ -256,18 +334,19 @@ func (s *ChannelScheduler) SelectChannel(
 				}
 				prefix := kindSchedulerLogPrefix(kind)
 				log.Printf("[%s-Override] 对话固定渠道: [%d] %s", prefix, ch.Index, ch.Name)
-				return &SelectionResult{
+				return s.reserveAndReturn(&SelectionResult{
 					Upstream:     upstream,
 					ChannelIndex: ch.Index,
 					Reason:       "conversation_route_override",
-				}, nil
+				}, kind), nil
 			}
 			return nil, fmt.Errorf("对话固定渠道 [%d] 当前不可用", override.ChannelIndex)
 		}
 	}
 
-	// 1. 检查促销期渠道（促销期优先，忽略 Trace 亲和性）
+	// 1. 检查促销期渠道（促销期优先，忽略 Trace 亲和性；同优先级内按在途负载分摊）
 	promotedChannels := s.findPromotedChannels(activeChannels, kind)
+	var promotedCandidates []ChannelInfo
 	for _, promotedCh := range promotedChannels {
 		if failedChannels[promotedCh.Index] {
 			prefix := kindSchedulerLogPrefix(kind)
@@ -280,14 +359,20 @@ func (s *ChannelScheduler) SelectChannel(
 			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 无可用密钥，跳过", prefix, promotedCh.Index, promotedCh.Name)
 			continue
 		}
+		promotedCandidates = append(promotedCandidates, promotedCh)
+	}
+	if len(promotedCandidates) > 0 {
+		selected := s.pickLeastLoadedChannel(promotedCandidates, kind)
+		upstream := s.getUpstreamByIndex(selected.Index, kind)
 		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
 		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%)", prefix, promotedCh.Index, upstream.Name, failureRate*100)
-		return &SelectionResult{
+		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%, inFlight: %d, candidates: %d)",
+			prefix, selected.Index, upstream.Name, failureRate*100, s.GetChannelInFlight(kind, selected.Index), len(promotedCandidates))
+		return s.reserveAndReturn(&SelectionResult{
 			Upstream:     upstream,
-			ChannelIndex: promotedCh.Index,
+			ChannelIndex: selected.Index,
 			Reason:       "promotion_priority",
-		}, nil
+		}, kind), nil
 	}
 
 	// 2. 检查 Trace 亲和性（仅在无促销渠道时生效，保证同一会话连续性）
@@ -307,33 +392,43 @@ func (s *ChannelScheduler) SelectChannel(
 					}
 					// 检查渠道是否健康
 					upstream := s.getUpstreamByIndex(preferredIdx, kind)
-					if upstream != nil && metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys) {
+					if upstream == nil || len(upstream.APIKeys) == 0 {
 						prefix := kindSchedulerLogPrefix(kind)
-						log.Printf("[%s-Affinity] Trace亲和选择渠道: [%d] %s (user: %s)", prefix, preferredIdx, upstream.Name, maskUserID(userID))
-						return &SelectionResult{
-							Upstream:     upstream,
-							ChannelIndex: preferredIdx,
-							Reason:       "trace_affinity",
-						}, nil
+						log.Printf("[%s-Affinity] 跳过亲和渠道 [%d]: 无可用密钥 (user: %s)", prefix, preferredIdx, maskUserID(userID))
+						affinityInvalidated = true
+						continue
 					}
-					// 亲和渠道不健康，标记为失效
-					affinityInvalidated = true
+					if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys) {
+						failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+						prefix := kindSchedulerLogPrefix(kind)
+						log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 不健康 (失败率: %.1f%%, user: %s)", prefix, preferredIdx, ch.Name, failureRate*100, maskUserID(userID))
+						affinityInvalidated = true
+						continue
+					}
+					// 渠道健康，使用 Trace 亲和性
+					prefix := kindSchedulerLogPrefix(kind)
+					log.Printf("[%s-Affinity] 使用 Trace 亲和渠道: [%d] %s (user: %s)", prefix, preferredIdx, ch.Name, maskUserID(userID))
+					return s.reserveAndReturn(&SelectionResult{
+						Upstream:     upstream,
+						ChannelIndex: preferredIdx,
+						Reason:       "trace_affinity",
+					}, kind), nil
 				}
 			}
-			// 亲和渠道不健康或状态异常时，主动清除亲和记录避免后续请求重复空转
-			if affinityInvalidated {
+			// 亲和渠道不存在或已失效，清除亲和性记录
+			if !foundPreferredChannel || affinityInvalidated {
 				s.traceAffinity.Remove(userID)
 				prefix := kindSchedulerLogPrefix(kind)
-				log.Printf("[%s-Affinity] 亲和渠道 [%d] 不可用，已清除亲和记录 (user: %s)", prefix, preferredIdx, maskUserID(userID))
-			}
-			if hasImage && !foundPreferredChannel {
-				prefix := kindSchedulerLogPrefix(kind)
-				log.Printf("[%s-Vision] 跳过亲和渠道 [%d]：不在 Vision 候选池中 (user: %s)", prefix, preferredIdx, maskUserID(userID))
+				if affinityInvalidated {
+					log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: user=%s, channel=%d (渠道不健康或状态异常)", prefix, maskUserID(userID), preferredIdx)
+				} else {
+					log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: user=%s, channel=%d (渠道不存在)", prefix, maskUserID(userID), preferredIdx)
+				}
 			}
 		}
 	}
 
-	// 3. 使用自适应调度器（如果可用），按模型级别性能画像选择最佳渠道
+	// 3. 尝试使用自适应调度器（基于性能画像 + 在途预留）
 	s.mu.RLock()
 	adaptiveScheduler := s.adaptiveScheduler
 	s.mu.RUnlock()
@@ -346,9 +441,12 @@ func (s *ChannelScheduler) SelectChannel(
 			requestedModel,
 			metricsManager.IsChannelHealthyMultiURL,
 			s.getUpstreamByIndex,
+			func(channelIndex int) int64 {
+				return s.GetChannelInFlight(kind, channelIndex)
+			},
 		)
 		if result != nil {
-			return result, nil
+			return s.reserveAndReturn(result, kind), nil
 		}
 		// 自适应调度未找到可用渠道（可能所有渠道都不支持该模型），降级到原有逻辑
 		prefix := kindSchedulerLogPrefix(kind)
@@ -356,6 +454,14 @@ func (s *ChannelScheduler) SelectChannel(
 	}
 
 	// 4. 按优先级遍历活跃渠道（降级方案）
+	// 同优先级内收集候选，再按 in-flight 选负载最低者，避免并发新对话全打到第一家供应商。
+	type priorityCandidate struct {
+		channel  ChannelInfo
+		upstream *config.UpstreamConfig
+	}
+	var samePriorityCandidates []priorityCandidate
+	currentPriority := -1
+
 	for _, ch := range activeChannels {
 		// 跳过本次请求已经失败的渠道
 		if failedChannels[ch.Index] {
@@ -387,18 +493,63 @@ func (s *ChannelScheduler) SelectChannel(
 			continue
 		}
 
-		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Channel] 选择渠道: [%d] %s (配置优先级: %d, 动态分数: %.1f)", prefix, ch.Index, upstream.Name, ch.Priority, ch.Score)
-		return &SelectionResult{
-			Upstream:     upstream,
-			ChannelIndex: ch.Index,
-			Reason:       "priority_order",
-		}, nil
+		if len(samePriorityCandidates) == 0 {
+			currentPriority = ch.Priority
+		} else if ch.Priority != currentPriority {
+			// activeChannels 已按优先级排序，遇到下一优先级时停止收集
+			break
+		}
+		samePriorityCandidates = append(samePriorityCandidates, priorityCandidate{
+			channel:  ch,
+			upstream: upstream,
+		})
 	}
 
-	// 3. 所有健康渠道都失败，选择失败率最低的作为降级
-	return s.selectFallbackChannel(activeChannels, failedChannels, kind)
+	if len(samePriorityCandidates) > 0 {
+		best := samePriorityCandidates[0]
+		bestLoad := s.GetChannelInFlight(kind, best.channel.Index)
+		for _, candidate := range samePriorityCandidates[1:] {
+			candidateLoad := s.GetChannelInFlight(kind, candidate.channel.Index)
+			if candidateLoad < bestLoad || (candidateLoad == bestLoad && candidate.channel.Index < best.channel.Index) {
+				best = candidate
+				bestLoad = candidateLoad
+			}
+		}
+		prefix := kindSchedulerLogPrefix(kind)
+		log.Printf("[%s-Channel] 选择渠道: [%d] %s (配置优先级: %d, 动态分数: %.1f, inFlight: %d, samePriorityCandidates: %d)",
+			prefix, best.channel.Index, best.upstream.Name, best.channel.Priority, best.channel.Score, bestLoad, len(samePriorityCandidates))
+		return s.reserveAndReturn(&SelectionResult{
+			Upstream:     best.upstream,
+			ChannelIndex: best.channel.Index,
+			Reason:       "priority_order",
+		}, kind), nil
+	}
+
+	// 5. 所有健康渠道都失败，选择失败率最低的作为降级
+	fallback, err := s.selectFallbackChannel(activeChannels, failedChannels, kind)
+	if err != nil {
+		return nil, err
+	}
+	return s.reserveAndReturn(fallback, kind), nil
 }
+
+// pickLeastLoadedChannel 在候选渠道中选择 in-flight 最低者（用于促销等多候选场景）
+func (s *ChannelScheduler) pickLeastLoadedChannel(candidates []ChannelInfo, kind ChannelKind) *ChannelInfo {
+	if len(candidates) == 0 {
+		return nil
+	}
+	bestIdx := 0
+	bestLoad := s.GetChannelInFlight(kind, candidates[0].Index)
+	for i := 1; i < len(candidates); i++ {
+		load := s.GetChannelInFlight(kind, candidates[i].Index)
+		if load < bestLoad || (load == bestLoad && candidates[i].Index < candidates[bestIdx].Index) {
+			bestIdx = i
+			bestLoad = load
+		}
+	}
+	return &candidates[bestIdx]
+}
+
 
 func (s *ChannelScheduler) filterVisionChannels(channels []ChannelInfo, kind ChannelKind) []ChannelInfo {
 	visionChannels := make([]ChannelInfo, 0, len(channels))
@@ -427,7 +578,7 @@ func (s *ChannelScheduler) findPromotedChannels(activeChannels []ChannelInfo, ki
 	return promoted
 }
 
-// selectFallbackChannel 选择降级渠道（失败率最低的）
+// selectFallbackChannel 选择降级渠道（失败率最低的；同失败率时优先 in-flight 更低的）
 func (s *ChannelScheduler) selectFallbackChannel(
 	activeChannels []ChannelInfo,
 	failedChannels map[int]bool,
@@ -437,6 +588,7 @@ func (s *ChannelScheduler) selectFallbackChannel(
 	var bestChannel *ChannelInfo
 	var bestUpstream *config.UpstreamConfig
 	bestFailureRate := float64(2) // 初始化为不可能的值
+	bestLoad := int64(1 << 62)
 
 	for i := range activeChannels {
 		ch := &activeChannels[i]
@@ -454,8 +606,13 @@ func (s *ChannelScheduler) selectFallbackChannel(
 		}
 
 		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
-		if failureRate < bestFailureRate {
+		load := s.GetChannelInFlight(kind, ch.Index)
+		if failureRate < bestFailureRate ||
+			(failureRate == bestFailureRate && load < bestLoad) ||
+			(failureRate == bestFailureRate && load == bestLoad && bestChannel != nil && ch.Index < bestChannel.Index) ||
+			(failureRate == bestFailureRate && load == bestLoad && bestChannel == nil) {
 			bestFailureRate = failureRate
+			bestLoad = load
 			bestChannel = ch
 			bestUpstream = upstream
 		}
@@ -463,8 +620,8 @@ func (s *ChannelScheduler) selectFallbackChannel(
 
 	if bestChannel != nil && bestUpstream != nil {
 		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Fallback] 警告: 降级选择渠道: [%d] %s (失败率: %.1f%%)",
-			prefix, bestChannel.Index, bestUpstream.Name, bestFailureRate*100)
+		log.Printf("[%s-Fallback] 警告: 降级选择渠道: [%d] %s (失败率: %.1f%%, inFlight: %d)",
+			prefix, bestChannel.Index, bestUpstream.Name, bestFailureRate*100, bestLoad)
 		return &SelectionResult{
 			Upstream:     bestUpstream,
 			ChannelIndex: bestChannel.Index,
@@ -630,6 +787,46 @@ func (s *ChannelScheduler) SetTraceAffinity(userID string, channelIndex int) {
 
 // ConsumePromotionCount 消费促销请求次数
 // 在请求成功后调用，递减促销计数，到 0 时自动清除促销状态
+
+// GetPreferredBaseURL 获取会话粘滞的 BaseURL（用于 prompt cache 亲和）。
+func (s *ChannelScheduler) GetPreferredBaseURL(sessionKey string) (string, bool) {
+	if s == nil || s.baseURLAffinity == nil {
+		return "", false
+	}
+	return s.baseURLAffinity.GetPreferredBaseURL(sessionKey)
+}
+
+// SetPreferredBaseURL 记录会话最近成功的 BaseURL。
+func (s *ChannelScheduler) SetPreferredBaseURL(sessionKey string, baseURL string) {
+	if s == nil || s.baseURLAffinity == nil {
+		return
+	}
+	s.baseURLAffinity.SetPreferredBaseURL(sessionKey, baseURL)
+}
+
+// PreferBaseURLInResults 将会话偏好的 BaseURL 排到候选列表最前（保持其余相对顺序）。
+func PreferBaseURLInResults(results []urlhealth.URLLatencyResult, preferred string) []urlhealth.URLLatencyResult {
+	if preferred == "" || len(results) <= 1 {
+		return results
+	}
+	preferredIdx := -1
+	for i, result := range results {
+		if result.URL == preferred {
+			preferredIdx = i
+			break
+		}
+	}
+	if preferredIdx <= 0 {
+		return results
+	}
+	reordered := make([]urlhealth.URLLatencyResult, 0, len(results))
+	reordered = append(reordered, results[preferredIdx])
+	reordered = append(reordered, results[:preferredIdx]...)
+	reordered = append(reordered, results[preferredIdx+1:]...)
+	return reordered
+}
+
+
 func (s *ChannelScheduler) ConsumePromotionCount(channelIndex int, kind ChannelKind) {
 	channelType := "messages"
 	switch kind {

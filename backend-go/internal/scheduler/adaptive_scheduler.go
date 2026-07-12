@@ -29,13 +29,16 @@ type channelCandidate struct {
 	profile       metrics.PerformanceSnapshotView
 	resolvedModel string // 实际使用的模型名（经过 modelMapping 后）
 	healthScore   float64
-	activeReqs    int64
+	activeReqs    int64   // 含预留的有效在途负载
 	loadScore     float64 // 负载评分（越低越好）
 	finalScore    float64 // 综合评分（越高越好）
 }
 
+// 同优先级内，综合评分差距在此阈值内时优先按负载分摊
+const adaptiveScoreLoadTieThreshold = 8.0
+
 // SelectBestChannel 基于性能画像选择最佳渠道（支持模型过滤）
-// 策略：优先级分组 + 模型支持过滤 + 健康评分 + 负载均衡
+// 策略：优先级分组 + 模型支持过滤 + 健康评分 + 负载均衡（含选渠预留）
 func (as *AdaptiveScheduler) SelectBestChannel(
 	activeChannels []ChannelInfo,
 	failedChannels map[int]bool,
@@ -43,6 +46,7 @@ func (as *AdaptiveScheduler) SelectBestChannel(
 	requestedModel string, // 用户请求的模型名
 	isHealthyFunc func(baseURLs []string, apiKeys []string) bool,
 	getUpstreamFunc func(int, ChannelKind) *config.UpstreamConfig,
+	getInFlightFunc func(channelIndex int) int64,
 ) *SelectionResult {
 	if as == nil || as.profileManager == nil {
 		return nil
@@ -54,7 +58,7 @@ func (as *AdaptiveScheduler) SelectBestChannel(
 	// 在每个优先级组内进行自适应选择
 	for _, priority := range priorities {
 		group := priorityGroups[priority]
-		selected := as.selectFromGroup(group, failedChannels, kind, requestedModel, isHealthyFunc, getUpstreamFunc)
+		selected := as.selectFromGroup(group, failedChannels, kind, requestedModel, isHealthyFunc, getUpstreamFunc, getInFlightFunc)
 		if selected != nil {
 			prefix := kindSchedulerLogPrefix(kind)
 			log.Printf("[%s-Adaptive] 选择渠道 [%d] %s (优先级: %d, 模型: %s, 健康评分: %.1f, 负载: %d, 等级: %s)",
@@ -89,6 +93,7 @@ func (as *AdaptiveScheduler) selectFromGroup(
 	requestedModel string,
 	isHealthyFunc func(baseURLs []string, apiKeys []string) bool,
 	getUpstreamFunc func(int, ChannelKind) *config.UpstreamConfig,
+	getInFlightFunc func(channelIndex int) int64,
 ) *AdaptiveSelectionResult {
 
 	var candidates []*channelCandidate
@@ -113,7 +118,18 @@ func (as *AdaptiveScheduler) selectFromGroup(
 			continue
 		}
 
-		resolvedModel, profile, loadScore, finalScore := as.selectBestModelProfile(baseURLs, upstream.APIKeys, targetModels, ch.Index)
+		reservedLoad := int64(0)
+		if getInFlightFunc != nil {
+			reservedLoad = getInFlightFunc(ch.Index)
+		}
+
+		resolvedModel, profile, loadScore, finalScore := as.selectBestModelProfile(
+			baseURLs,
+			upstream.APIKeys,
+			targetModels,
+			ch.Index,
+			reservedLoad,
+		)
 
 		candidates = append(candidates, &channelCandidate{
 			channel:       ch,
@@ -121,7 +137,7 @@ func (as *AdaptiveScheduler) selectFromGroup(
 			profile:       profile,
 			resolvedModel: resolvedModel,
 			healthScore:   profile.HealthScore,
-			activeReqs:    profile.ActiveRequests,
+			activeReqs:    profile.ActiveRequests + reservedLoad,
 			loadScore:     loadScore,
 			finalScore:    finalScore,
 		})
@@ -131,13 +147,23 @@ func (as *AdaptiveScheduler) selectFromGroup(
 		return nil
 	}
 
-	// 按综合评分排序（降序）
+	// 综合评分接近时优先负载更低的渠道，便于同协议多对话分摊到不同供应商
 	sort.Slice(candidates, func(i, j int) bool {
-		// 综合评分相同时，选活跃请求少的
-		if candidates[i].finalScore == candidates[j].finalScore {
+		scoreDiff := candidates[i].finalScore - candidates[j].finalScore
+		if scoreDiff > adaptiveScoreLoadTieThreshold {
+			return true
+		}
+		if scoreDiff < -adaptiveScoreLoadTieThreshold {
+			return false
+		}
+		if candidates[i].activeReqs != candidates[j].activeReqs {
 			return candidates[i].activeReqs < candidates[j].activeReqs
 		}
-		return candidates[i].finalScore > candidates[j].finalScore
+		if candidates[i].finalScore != candidates[j].finalScore {
+			return candidates[i].finalScore > candidates[j].finalScore
+		}
+		// 最终稳定次序，避免并发下总是落到 slice 中靠前的同一家
+		return candidates[i].channel.Index < candidates[j].channel.Index
 	})
 
 	// 选择评分最高的
@@ -153,18 +179,34 @@ func (as *AdaptiveScheduler) selectFromGroup(
 	}
 }
 
-func (as *AdaptiveScheduler) selectBestModelProfile(baseURLs []string, apiKeys []string, targetModels []string, channelIndex int) (string, metrics.PerformanceSnapshotView, float64, float64) {
-	var bestModel string
-	var bestProfile metrics.PerformanceSnapshotView
-	var bestLoadScore float64
-	var bestFinalScore float64
+// selectBestModelProfile 在渠道支持的模型列表中选择性能最优的模型画像。
+// reservedLoad 为选渠阶段的预留在途数，用于并发请求分摊。
+func (as *AdaptiveScheduler) selectBestModelProfile(
+	baseURLs []string,
+	apiKeys []string,
+	targetModels []string,
+	channelIdx int,
+	reservedLoad int64,
+) (string, metrics.PerformanceSnapshotView, float64, float64) {
+	if len(targetModels) == 0 {
+		return "", metrics.PerformanceSnapshotView{}, 100, 0
+	}
 
-	for modelIdx, targetModel := range targetModels {
-		profile := as.profileManager.GetAggregateProfileSnapshot(baseURLs, apiKeys, targetModel, channelIndex)
-		loadScore := as.calculateLoadScore(profile)
-		finalScore := as.calculateFinalScore(profile, loadScore)
-		if modelIdx == 0 || finalScore > bestFinalScore || (finalScore == bestFinalScore && profile.ActiveRequests < bestProfile.ActiveRequests) {
-			bestModel = targetModel
+	bestModel := targetModels[0]
+	bestProfile := as.profileManager.GetAggregateProfileSnapshot(baseURLs, apiKeys, bestModel, channelIdx)
+	bestLoadScore := as.calculateLoadScoreWithReserved(bestProfile, reservedLoad)
+	bestFinalScore := bestProfile.HealthScore - bestLoadScore*0.3
+
+	for i := 1; i < len(targetModels); i++ {
+		model := targetModels[i]
+		profile := as.profileManager.GetAggregateProfileSnapshot(baseURLs, apiKeys, model, channelIdx)
+		loadScore := as.calculateLoadScoreWithReserved(profile, reservedLoad)
+		finalScore := profile.HealthScore - loadScore*0.3
+
+		// 同分时优先在途更少的模型画像
+		if finalScore > bestFinalScore ||
+			(finalScore == bestFinalScore && profile.ActiveRequests+reservedLoad < bestProfile.ActiveRequests+reservedLoad) {
+			bestModel = model
 			bestProfile = profile
 			bestLoadScore = loadScore
 			bestFinalScore = finalScore
@@ -176,70 +218,79 @@ func (as *AdaptiveScheduler) selectBestModelProfile(baseURLs []string, apiKeys [
 
 // calculateLoadScore 计算负载评分（0-100，越低越好）
 func (as *AdaptiveScheduler) calculateLoadScore(profile metrics.PerformanceSnapshotView) float64 {
-	// 活跃请求数影响（0-50分）
-	activeScore := float64(0)
-	switch {
-	case profile.ActiveRequests == 0:
-		activeScore = 0 // 无负载
-	case profile.ActiveRequests <= 5:
-		activeScore = float64(profile.ActiveRequests) * 2 // 0-10分
-	case profile.ActiveRequests <= 20:
-		activeScore = 10 + float64(profile.ActiveRequests-5)*1.5 // 10-32.5分
-	case profile.ActiveRequests <= 50:
-		activeScore = 32.5 + float64(profile.ActiveRequests-20)*0.5 // 32.5-47.5分
-	default:
-		activeScore = 50 // 高负载
+	return as.calculateLoadScoreWithReserved(profile, 0)
+}
+
+// calculateLoadScoreWithReserved 计算含预留在途的负载评分（0-100，越低越好）。
+// 前几个并发请求的惩罚更陡，鼓励同优先级下把对话摊到不同供应商。
+func (as *AdaptiveScheduler) calculateLoadScoreWithReserved(profile metrics.PerformanceSnapshotView, reservedLoad int64) float64 {
+	effectiveActive := profile.ActiveRequests + reservedLoad
+	if effectiveActive < 0 {
+		effectiveActive = 0
 	}
 
-	// TPS 接近峰值时惩罚（0-50分）
+	// 活跃请求数影响（0-55分）：前 3 个请求快速抬升，便于瞬时分摊
+	activeScore := float64(0)
+	switch {
+	case effectiveActive == 0:
+		activeScore = 0
+	case effectiveActive == 1:
+		activeScore = 12
+	case effectiveActive == 2:
+		activeScore = 22
+	case effectiveActive == 3:
+		activeScore = 30
+	case effectiveActive <= 10:
+		activeScore = 30 + float64(effectiveActive-3)*2 // 32-44
+	case effectiveActive <= 20:
+		activeScore = 44 + float64(effectiveActive-10)*0.8 // 44-52
+	default:
+		activeScore = 52 + float64(effectiveActive-20)*0.15
+		if activeScore > 55 {
+			activeScore = 55
+		}
+	}
+
+	// TPS 利用率影响（0-45分）
 	tpsScore := float64(0)
-	if profile.Peak1MinTPS > 0 && profile.RecentTPS > 0 {
+	if profile.Peak1MinTPS > 0 {
 		utilization := profile.RecentTPS / profile.Peak1MinTPS
 		switch {
 		case utilization < 0.5:
-			tpsScore = 0 // 低利用率
-		case utilization < 0.7:
-			tpsScore = (utilization - 0.5) / 0.2 * 20 // 0-20分
-		case utilization < 0.9:
-			tpsScore = 20 + (utilization-0.7)/0.2*20 // 20-40分
+			tpsScore = utilization * 20 // 0-10分
+		case utilization < 0.8:
+			tpsScore = 10 + (utilization-0.5)*50 // 10-25分
+		case utilization < 1.0:
+			tpsScore = 25 + (utilization-0.8)*75 // 25-40分
 		default:
-			tpsScore = 40 + (utilization-0.9)/0.1*10 // 40-50分（接近峰值）
+			tpsScore = 40 + (utilization-1.0)*25 // 40-45分
+			if tpsScore > 45 {
+				tpsScore = 45
+			}
 		}
 	}
 
 	return activeScore + tpsScore
 }
 
-// calculateFinalScore 计算综合评分（0-100，越高越好）
-func (as *AdaptiveScheduler) calculateFinalScore(profile metrics.PerformanceSnapshotView, loadScore float64) float64 {
-	// 综合评分 = 健康评分(60%) + 负载反向评分(40%)
-	// 健康评分越高越好，负载评分越低越好
-	healthWeight := 0.6
-	loadWeight := 0.4
-
-	// 将负载评分反转（100-loadScore）使其越低分数越高
-	invertedLoadScore := 100.0 - loadScore
-
-	finalScore := profile.HealthScore*healthWeight + invertedLoadScore*loadWeight
-
-	return finalScore
-}
-
-// groupByPriority 按优先级分组（优先级低的数字排前面）
+// groupByPriority 按优先级分组渠道
 func (as *AdaptiveScheduler) groupByPriority(channels []ChannelInfo) (map[int][]ChannelInfo, []int) {
 	groups := make(map[int][]ChannelInfo)
 	for _, ch := range channels {
 		groups[ch.Priority] = append(groups[ch.Priority], ch)
 	}
+
+	// 优先级数值越小越优先
 	priorities := make([]int, 0, len(groups))
-	for priority := range groups {
-		priorities = append(priorities, priority)
+	for p := range groups {
+		priorities = append(priorities, p)
 	}
 	sort.Ints(priorities)
+
 	return groups, priorities
 }
 
-// GetChannelPerformanceReport 获取渠道性能报告（用于 Dashboard）
+// GetChannelPerformanceReport 获取所有渠道的性能报告
 func (as *AdaptiveScheduler) GetChannelPerformanceReport() []ChannelPerformanceReport {
 	if as == nil || as.profileManager == nil {
 		return nil
