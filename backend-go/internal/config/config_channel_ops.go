@@ -129,6 +129,15 @@ func applyCommonUpdates(upstream *UpstreamConfig, index int, updates UpstreamUpd
 	if updates.StripThoughtSignature != nil {
 		upstream.StripThoughtSignature = *updates.StripThoughtSignature
 	}
+	if updates.IncludeHistoryThinking != nil {
+		upstream.IncludeHistoryThinking = *updates.IncludeHistoryThinking
+	}
+	if updates.DisablePromptCacheKey != nil {
+		upstream.DisablePromptCacheKey = *updates.DisablePromptCacheKey
+	}
+	if updates.EnablePreviousResponseID != nil {
+		upstream.EnablePreviousResponseID = *updates.EnablePreviousResponseID
+	}
 	return shouldResetMetrics, nil
 }
 

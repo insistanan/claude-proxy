@@ -171,6 +171,7 @@ type OpenAIRequest struct {
 	Tools               []OpenAITool    `json:"tools,omitempty"`
 	ToolChoice          interface{}     `json:"tool_choice,omitempty"`      // string 或 object
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"` // none/minimal/low/medium/high/xhigh
+	PromptCacheKey      string          `json:"prompt_cache_key,omitempty"` // OpenAI Prompt Caching 路由键
 }
 
 // OpenAIMessage OpenAI 消息

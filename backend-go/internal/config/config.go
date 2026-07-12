@@ -41,6 +41,9 @@ type UpstreamConfig struct {
 	// Gemini 特定配置
 	InjectDummyThoughtSignature bool `json:"injectDummyThoughtSignature,omitempty"` // 给空 thought_signature 注入 dummy 值（兼容 x666.me 等要求必须有该字段的 API）
 	StripThoughtSignature       bool `json:"stripThoughtSignature,omitempty"`       // 移除 thought_signature 字段（兼容旧版 Gemini API）
+	IncludeHistoryThinking      bool `json:"includeHistoryThinking,omitempty"`      // 是否将历史 reasoning/thinking 回灌上游
+	DisablePromptCacheKey       bool `json:"disablePromptCacheKey,omitempty"`       // 是否禁用兼容上游的 prompt_cache_key
+	EnablePreviousResponseID    bool `json:"enablePreviousResponseID,omitempty"`    // Messages->Responses 是否启用 previous_response_id 链
 }
 
 // UnmarshalJSON 兼容旧配置中 modelMapping 的一对一字符串格式：
@@ -110,6 +113,9 @@ type UpstreamUpdate struct {
 	// Gemini 特定配置
 	InjectDummyThoughtSignature *bool `json:"injectDummyThoughtSignature"`
 	StripThoughtSignature       *bool `json:"stripThoughtSignature"`
+	IncludeHistoryThinking      *bool `json:"includeHistoryThinking"`
+	DisablePromptCacheKey       *bool `json:"disablePromptCacheKey"`
+	EnablePreviousResponseID    *bool `json:"enablePreviousResponseID"`
 }
 
 func (u *UpstreamUpdate) UnmarshalJSON(data []byte) error {

@@ -43,7 +43,6 @@ type claudeResponsesRequest struct {
 	Tools                []interface{}          `json:"tools,omitempty"`
 	ToolChoice           interface{}            `json:"tool_choice,omitempty"`
 	Reasoning            interface{}            `json:"reasoning,omitempty"`
-	Metadata             map[string]interface{} `json:"metadata,omitempty"`
 	PromptCacheKey       string                 `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention string                 `json:"prompt_cache_retention,omitempty"`
 	PreviousResponseID   string                 `json:"previous_response_id,omitempty"`
@@ -173,9 +172,8 @@ func claudeRequestToResponsesRequest(claudeReq *types.ClaudeRequest, upstream *c
 	if reasoning := claudeReasoningToResponsesReasoning(claudeReq); reasoning != nil {
 		req.Reasoning = reasoning
 	}
-	if len(claudeReq.Metadata) > 0 {
-		req.Metadata = claudeReq.Metadata
-	}
+	// Claude metadata 仅用于代理内部识别会话。
+	// 它在 Responses 中没有等价语义，且许多兼容网关会直接拒绝该字段，因此不向上游透传。
 	// prompt_cache_key：默认发送以提升缓存亲和；渠道可 DisablePromptCacheKey 关闭。
 	// retention 仅对官方 OpenAI 发送，避免第三方网关因未知字段拒请求。
 	if upstream == nil || !upstream.DisablePromptCacheKey {
@@ -1294,4 +1292,3 @@ func rememberResponsesChain(conversationID string, claudeReq *types.ClaudeReques
 		Model:             model,
 	})
 }
-
