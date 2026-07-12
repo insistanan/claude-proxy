@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -385,13 +386,10 @@ func cloneRecord(src *Record) *Record {
 }
 
 func sortRecords(records []*Record) {
-	for i := 0; i < len(records); i++ {
-		for j := i + 1; j < len(records); j++ {
-			if records[j].LastSeenAt.After(records[i].LastSeenAt) {
-				records[i], records[j] = records[j], records[i]
-			}
-		}
-	}
+	// 按 ID 固定顺序，避免 LastSeenAt/状态变化导致列表跳动
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].ID < records[j].ID
+	})
 }
 
 func firstNonEmpty(values ...string) string {

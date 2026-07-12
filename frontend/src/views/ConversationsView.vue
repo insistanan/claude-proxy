@@ -315,15 +315,15 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api, type ConversationEntry, type ConversationKind, type ConversationRouteOptionChannel } from '@/services/api'
 
 const headers = [
-  { title: 'ID', key: 'id' },
+  { title: 'ID', key: 'id', sortable: false },
   { title: '提示词', key: 'firstPrompt', sortable: false },
-  { title: '类型', key: 'apiKind' },
-  { title: '模型', key: 'lastModel' },
+  { title: '类型', key: 'apiKind', sortable: false },
+  { title: '模型', key: 'lastModel', sortable: false },
   { title: '状态', key: 'activity', sortable: false },
-  { title: '请求数', key: 'requestCount' },
-  { title: '错误数', key: 'errorCount' },
-  { title: '固定渠道', key: 'routeOverride' },
-  { title: '最近解析', key: 'lastResolved' },
+  { title: '请求数', key: 'requestCount', sortable: false },
+  { title: '错误数', key: 'errorCount', sortable: false },
+  { title: '固定渠道', key: 'routeOverride', sortable: false },
+  { title: '最近解析', key: 'lastResolved', sortable: false },
   { title: '操作', key: 'actions', sortable: false }
 ]
 
@@ -384,14 +384,18 @@ const copyText = async (text: string) => {
 
 const filteredConversations = computed(() => {
   const q = searchText.value.trim().toLowerCase()
-  return conversations.value.filter(item => {
-    if (kindFilter.value && item.apiKind !== kindFilter.value) return false
-    if (!q) return true
-    const promptMatch = item.prompts && item.prompts.some(p => p.toLowerCase().includes(q))
-    return [item.id, item.firstPrompt, item.lastModel, item.lastResolvedModel, item.lastError, item.routeOverride?.channelName, item.lastResolved?.channelName]
-      .filter(Boolean)
-      .some(value => String(value).toLowerCase().includes(q)) || promptMatch
-  })
+  return conversations.value
+    .filter(item => {
+      if (kindFilter.value && item.apiKind !== kindFilter.value) return false
+      if (!q) return true
+      const promptMatch = item.prompts && item.prompts.some(p => p.toLowerCase().includes(q))
+      return [item.id, item.firstPrompt, item.lastModel, item.lastResolvedModel, item.lastError, item.routeOverride?.channelName, item.lastResolved?.channelName]
+        .filter(Boolean)
+        .some(value => String(value).toLowerCase().includes(q)) || promptMatch
+    })
+    // 固定按 ID 展示，避免轮询刷新或状态变化导致行位置跳动
+    .slice()
+    .sort((a, b) => a.id.localeCompare(b.id))
 })
 
 const conversationPrompts = (item?: ConversationEntry | null): string[] => {
