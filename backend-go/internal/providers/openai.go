@@ -3,6 +3,8 @@ package providers
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +40,11 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	}
 
 	// --- 复用旧的转换逻辑 ---
+	// 按渠道配置处理历史 thinking：默认丢弃；开启 IncludeHistoryThinking 时转成可见 text，便于 Chat 上游保留。
+	if upstream != nil && upstream.IncludeHistoryThinking {
+		claudeReq.Messages = materializeClaudeThinkingAsText(claudeReq.Messages)
+	}
+
 	openaiReq := &types.OpenAIRequest{
 		Model:       config.ResolveUpstreamModel(claudeReq.Model, upstream),
 		Messages:    p.convertMessages(&claudeReq),
@@ -63,9 +70,13 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 		openaiReq.ToolChoice = nil
 	}
 
-	// 转换 thinking → reasoning_effort
-	if effort := p.convertThinkingToReasoningEffort(claudeReq.Thinking); effort != "" {
+	// 转换 thinking / output_config.effort → reasoning_effort
+	if effort := resolveClaudeReasoningEffort(&claudeReq); effort != "" {
 		openaiReq.ReasoningEffort = effort
+	}
+	// 稳定 prompt_cache_key：提升 OpenAI/兼容网关的缓存亲和；不支持端通常忽略。
+	if upstream == nil || !upstream.DisablePromptCacheKey {
+		openaiReq.PromptCacheKey = buildClaudeChatPromptCacheKey(&claudeReq, upstream, openaiReq.Model)
 	}
 	// --- 转换逻辑结束 ---
 
@@ -141,8 +152,9 @@ func (p *OpenAIProvider) convertMessages(claudeReq *types.ClaudeRequest) []types
 		}
 	}
 
-	// 转换普通消息
-	for _, msg := range claudeReq.Messages {
+	// 压缩过旧/过大 tool_result 后再转换，控制多轮上下文膨胀
+	compactedMessages := compactClaudeMessagesForUpstream(claudeReq.Messages)
+	for _, msg := range compactedMessages {
 		openaiMsg := p.convertMessage(msg)
 		messages = append(messages, openaiMsg...)
 	}
@@ -212,8 +224,8 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 		contentType, _ := content["type"].(string)
 
 		switch contentType {
-		case "thinking":
-			// thinking 块不转发到 OpenAI（OpenAI 不支持历史 thinking），跳过
+		case "thinking", "redacted_thinking":
+			// 历史 thinking 不转发到 Chat：减上下文膨胀，并保持多轮前缀稳定以利缓存
 		case "text":
 			if text, ok := content["text"].(string); ok {
 				textContents = append(textContents, text)
@@ -708,40 +720,11 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 			}
 
 			// 处理 thinking/reasoning 内容（必须在文本内容之前处理）
-			if reasoningContent, ok := delta["reasoning_content"].(string); ok && reasoningContent != "" {
-				// 如果有文本块正在进行，先关闭它
-				closeTextBlock()
-
-				if !thinkingBlockStarted {
-					thinkingBlockIndex = nextBlockIndex
-					nextBlockIndex++
-					// 发送 thinking content_block_start
-					startEvent := map[string]interface{}{
-						"type":  "content_block_start",
-						"index": thinkingBlockIndex,
-						"content_block": map[string]string{
-							"type":      "thinking",
-							"thinking":  "",
-							"signature": "",
-						},
-					}
-					startJSON, _ := json.Marshal(startEvent)
-					eventChan <- fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON)
-					thinkingBlockStarted = true
-				}
-
-				// 发送 thinking_delta
-				deltaEvent := map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": thinkingBlockIndex,
-					"delta": map[string]string{
-						"type":     "thinking_delta",
-						"thinking": reasoningContent,
-					},
-				}
-				deltaJSON, _ := json.Marshal(deltaEvent)
-				eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON)
-			}
+			// Do NOT emit reasoning_content as Claude thinking blocks.
+			// Cursor stores thinking in the local conversation and re-sends it every turn,
+			// which is a major source of multi-turn context explosion on reasoning models.
+			// Upstream still reasons; we simply do not materialize it into client history.
+			_ = delta["reasoning_content"]
 
 			// 处理文本内容
 			if content, ok := delta["content"].(string); ok && content != "" {
@@ -913,11 +896,36 @@ func normalizeOpenAIUsage(base *types.Usage, details *openAIUsageDetails) types.
 		if details.CacheTTL != "" {
 			usage.CacheTTL = details.CacheTTL
 		}
-		if cacheReadFromDetails > 0 && usage.InputTokens > cacheReadFromDetails {
-			usage.InputTokens -= cacheReadFromDetails
-		}
+		// Keep Anthropic-compatible split for Claude clients (Cursor):
+		//   input_tokens  = uncached / "new" input (what Cursor uses to feel "how full")
+		//   cache_read_*  = cache hit detail (admin metrics)
+		// Do NOT add cache_read into input_tokens: after Cursor compact, the next turn
+		// often still reports a large cache_read for stable system/tools prefixes; summing
+		// would make Cursor think context is still ~200K and re-compact immediately
+		// (user regression: used to drop 200K -> ~30K after summarize).
+		// Do NOT subtract cache from input either (would under-report when input is total-style).
+		usage.InputTokens = normalizeClaudeClientInputTokens(usage.InputTokens, usage.CacheReadInputTokens)
 	}
 	return usage
+}
+
+// normalizeClaudeClientInputTokens keeps input_tokens as the figure Cursor should use
+// for post-compact context meter (~true prompt size without double-counting cache).
+//
+// Gateways may report either:
+//  A) total-style: input already includes cache (input >= cache_read) -> use input as-is
+//  B) split-style: input is uncached-only (input < cache_read) -> keep uncached input only
+//     (cache_read stays in cache_read_input_tokens for admin; do not sum into input)
+func normalizeClaudeClientInputTokens(inputTokens int, cacheReadTokens int) int {
+	if inputTokens <= 0 {
+		return inputTokens
+	}
+	// Total-style already correct for client meter.
+	if cacheReadTokens > 0 && inputTokens >= cacheReadTokens {
+		return inputTokens
+	}
+	// Split-style: return uncached portion only.
+	return inputTokens
 }
 
 func mergeOpenAIUsageFromChunk(chunk map[string]interface{}, dst *types.Usage) bool {
@@ -943,6 +951,7 @@ func mergeOpenAIUsageFromChunk(chunk map[string]interface{}, dst *types.Usage) b
 }
 
 func buildOpenAIMessageDeltaEvent(stopReason string, usage types.Usage, hasUsage bool) string {
+	// Include cache for admin stream collector; stream.go strips cache_* before client write.
 	usageMap := map[string]interface{}{
 		"output_tokens": usage.OutputTokens,
 	}
@@ -1160,27 +1169,32 @@ func (p *OpenAIProvider) convertToolChoice(toolChoice interface{}) interface{} {
 	return nil
 }
 
-// convertThinkingToReasoningEffort 将 Claude thinking 配置转换为 OpenAI reasoning_effort
+// convertThinkingToReasoningEffort 保留给测试/兼容调用；实现统一走 resolveClaudeReasoningEffort。
 func (p *OpenAIProvider) convertThinkingToReasoningEffort(thinking interface{}) string {
-	if thinking == nil {
+	return resolveClaudeReasoningEffort(&types.ClaudeRequest{Thinking: thinking})
+}
+
+// buildClaudeChatPromptCacheKey builds a stable prompt_cache_key for Messages->Chat.
+func buildClaudeChatPromptCacheKey(claudeReq *types.ClaudeRequest, upstream *config.UpstreamConfig, model string) string {
+	if claudeReq == nil {
 		return ""
 	}
-
-	if obj, ok := thinking.(map[string]interface{}); ok {
-		thinkType, _ := obj["type"].(string)
-		switch thinkType {
-		case "enabled":
-			// 有明确 budget 的 thinking → high reasoning effort
-			return "high"
-		case "adaptive":
-			// adaptive 模式不设 reasoning_effort，使用上游默认
-			return ""
-		default:
-			return ""
-		}
+	channel := ""
+	baseURL := ""
+	if upstream != nil {
+		channel = strings.TrimSpace(upstream.Name)
+		baseURL = strings.TrimRight(upstream.GetEffectiveBaseURL(), "/#")
 	}
-
-	return ""
+	stableParts := map[string]interface{}{
+		"protocol": "claude-messages-to-openai-chat-v1",
+		"model":    model,
+		"channel":  channel,
+		"baseURL":  baseURL,
+		"system":   extractSystemText(claudeReq.System),
+		"tools":    normalizeToolsForPromptCacheKey(claudeReq.Tools),
+	}
+	sum := sha256.Sum256([]byte(canonicalJSON(stableParts)))
+	return "claude-chat-" + hex.EncodeToString(sum[:])[:24]
 }
 
 func extractSystemText(system interface{}) string {
@@ -1224,3 +1238,50 @@ func normalizeRole(role string) string {
 func generateID() string {
 	return fmt.Sprintf("msg_%d", time.Now().UnixNano())
 }
+
+
+// materializeClaudeThinkingAsText 将历史 thinking 块转为 text 块，供 Chat 上游在开启 IncludeHistoryThinking 时使用。
+func materializeClaudeThinkingAsText(messages []types.ClaudeMessage) []types.ClaudeMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]types.ClaudeMessage, len(messages))
+	for messageIndex, message := range messages {
+		blocks := utils.NormalizeContentBlocks(message.Content)
+		if len(blocks) == 0 {
+			out[messageIndex] = message
+			continue
+		}
+		changed := false
+		newBlocks := make([]map[string]interface{}, 0, len(blocks))
+		for _, block := range blocks {
+			blockType, _ := block["type"].(string)
+			if blockType == "thinking" {
+				text, _ := block["thinking"].(string)
+				if text == "" {
+					text, _ = block["text"].(string)
+				}
+				if text != "" {
+					newBlocks = append(newBlocks, map[string]interface{}{
+						"type": "text",
+						"text": "[thinking]\n" + text,
+					})
+					changed = true
+					continue
+				}
+			}
+			if blockType == "redacted_thinking" {
+				changed = true
+				continue
+			}
+			newBlocks = append(newBlocks, block)
+		}
+		if !changed {
+			out[messageIndex] = message
+			continue
+		}
+		out[messageIndex] = types.ClaudeMessage{Role: message.Role, Content: newBlocks}
+	}
+	return out
+}
+

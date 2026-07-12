@@ -48,7 +48,7 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 		model := config.ResolveUpstreamModel(responsesReq.Model, upstream)
 		targetModel = model
 		isStream = converters.ResponsesRequestStream(bodyBytes)
-		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, model, bodyBytes, isStream, nil, nil)
+		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, model, bodyBytes, isStream, nil, nil, upstream)
 		if err != nil {
 			return nil, bodyBytes, err
 		}
@@ -70,7 +70,7 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 		responsesReq.Model = config.ResolveUpstreamModel(responsesReq.Model, upstream)
 		targetModel = responsesReq.Model
 
-		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, responsesReq.Model, bodyBytes, responsesReq.Stream, sess, &responsesReq)
+		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, responsesReq.Model, bodyBytes, responsesReq.Stream, sess, &responsesReq, upstream)
 		if err != nil {
 			return nil, bodyBytes, err
 		}

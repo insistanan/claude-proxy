@@ -79,8 +79,10 @@ func TestOpenAIProviderHandleStreamResponse_MapsCachedUsage(t *testing.T) {
 	}
 
 	got := events.String()
-	if !strings.Contains(got, `"input_tokens":40`) {
-		t.Fatalf("missing adjusted input_tokens; events:\n%s", got)
+	// prompt_tokens=120 with cached_tokens=80: Claude client must see total occupancy 120,
+	// not uncached-only 40 (Cursor auto-compact depends on total-style input_tokens).
+	if !strings.Contains(got, `"input_tokens":120`) {
+		t.Fatalf("missing total input_tokens (prompt includes cache); events:\n%s", got)
 	}
 	if !strings.Contains(got, `"cache_read_input_tokens":80`) {
 		t.Fatalf("missing cache_read_input_tokens; events:\n%s", got)
