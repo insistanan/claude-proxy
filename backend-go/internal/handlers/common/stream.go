@@ -331,19 +331,8 @@ func ProcessStreamEvent(
 				hasCacheTokens = ctx.CollectedUsage.CacheReadInputTokens > 0
 			}
 
-			// 检测隐式缓存信号：message_start 的 input_tokens 远大于最终值
-			// 这种情况下不应该用本地估算值覆盖，因为低 input_tokens 是缓存命中的正常结果
-			hasImplicitCacheSignal := ctx.MessageStartInputTokens > 0 &&
-				ctx.CollectedUsage.InputTokens > 0 &&
-				ctx.MessageStartInputTokens > ctx.CollectedUsage.InputTokens
-
 			inputTokens := ctx.CollectedUsage.InputTokens
-			estimatedInputTokens := utils.EstimateRequestTokens(requestBody)
-			// 仅在无缓存信号（显式或隐式）且 input_tokens 异常小时才用估算值修补
-			if !hasCacheTokens && !hasImplicitCacheSignal && inputTokens < 10 && estimatedInputTokens > inputTokens {
-				inputTokens = estimatedInputTokens
-			}
-
+			// Never EstimateRequestTokens(full requestBody) into client usage.
 			outputTokens := ctx.CollectedUsage.OutputTokens
 			estimatedOutputTokens := utils.EstimateTokens(ctx.OutputTextBuffer.String())
 			if outputTokens <= 1 && estimatedOutputTokens > outputTokens {
@@ -359,14 +348,19 @@ func ProcessStreamEvent(
 
 			// 修补事件，包括推断的 cache_read_input_tokens
 			if hasEventData {
-				PatchTokensInEventDataWithCache(eventData, inputTokens, outputTokens, ctx.CollectedUsage.CacheReadInputTokens, hasCacheTokens, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
+				PatchTokensInEventDataWithCache(eventData, inputTokens, outputTokens, 0 /* no cache to client */, false, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
 				eventToSend = ReplaceSSEData(eventToSend, eventData)
 			} else {
-				eventToSend = PatchTokensInEventWithCache(eventToSend, inputTokens, outputTokens, ctx.CollectedUsage.CacheReadInputTokens, hasCacheTokens, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
+				eventToSend = PatchTokensInEventWithCache(eventToSend, inputTokens, outputTokens, 0 /* no cache to client */, false, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
 			}
 			ctx.NeedTokenPatch = false
 		}
 	}
+
+	// Strip cache_* from client-facing Claude SSE so Cursor Conversation meter
+	// does not treat gateway cache_read (often 100k-300k) as full context after compact.
+	// Admin metrics already collected cache via CheckEventUsageStatus above.
+	eventToSend = StripCacheFieldsFromClaudeSSE(eventToSend)
 
 	// 转发给客户端
 	if !ctx.ClientGone {
@@ -843,7 +837,7 @@ func PatchTokensInEventWithCache(event string, estimatedInputTokens, estimatedOu
 			// 写入推断的 cache_read_input_tokens（仅当字段不存在时）
 			if inferredCacheRead > 0 {
 				if _, exists := usage["cache_read_input_tokens"]; !exists {
-					usage["cache_read_input_tokens"] = inferredCacheRead
+					_ = inferredCacheRead // never write cache_read into client SSE
 					if enableLog {
 						log.Printf("[Messages-Stream-Token] 顶层usage: 写入推断的 cache_read_input_tokens=%d", inferredCacheRead)
 					}
@@ -858,7 +852,7 @@ func PatchTokensInEventWithCache(event string, estimatedInputTokens, estimatedOu
 				// 写入推断的 cache_read_input_tokens（仅当字段不存在时）
 				if inferredCacheRead > 0 {
 					if _, exists := usage["cache_read_input_tokens"]; !exists {
-						usage["cache_read_input_tokens"] = inferredCacheRead
+						_ = inferredCacheRead // never write cache_read into client SSE
 						if enableLog {
 							log.Printf("[Messages-Stream-Token] message.usage: 写入推断的 cache_read_input_tokens=%d", inferredCacheRead)
 						}
@@ -893,7 +887,7 @@ func PatchTokensInEventDataWithCache(data map[string]interface{}, estimatedInput
 		// 写入推断的 cache_read_input_tokens（仅当字段不存在时）
 		if inferredCacheRead > 0 {
 			if _, exists := usage["cache_read_input_tokens"]; !exists {
-				usage["cache_read_input_tokens"] = inferredCacheRead
+				_ = inferredCacheRead // never write cache_read into client SSE
 				if enableLog {
 					log.Printf("[Messages-Stream-Token] 顶层usage: 写入推断的 cache_read_input_tokens=%d", inferredCacheRead)
 				}
@@ -908,7 +902,7 @@ func PatchTokensInEventDataWithCache(data map[string]interface{}, estimatedInput
 			// 写入推断的 cache_read_input_tokens（仅当字段不存在时）
 			if inferredCacheRead > 0 {
 				if _, exists := usage["cache_read_input_tokens"]; !exists {
-					usage["cache_read_input_tokens"] = inferredCacheRead
+					_ = inferredCacheRead // never write cache_read into client SSE
 					if enableLog {
 						log.Printf("[Messages-Stream-Token] message.usage: 写入推断的 cache_read_input_tokens=%d", inferredCacheRead)
 					}
@@ -956,118 +950,75 @@ func PatchMessageStartInputTokensIfNeeded(event string, requestBody []byte, need
 		return event
 	}
 
-	hasCacheTokens := usageData.CacheCreationInputTokens > 0 ||
-		usageData.CacheReadInputTokens > 0 ||
-		usageData.CacheCreation5mInputTokens > 0 ||
-		usageData.CacheCreation1hInputTokens > 0
-
-	// 仅在 input_tokens 明显异常时提前补齐；缓存命中场景不应强行补 input_tokens（除非上游返回 nil）
-	if !needInputPatch && (hasCacheTokens || usageData.InputTokens >= 10) {
-		return event
-	}
-
-	estimatedInputTokens := utils.EstimateRequestTokens(requestBody)
-	if estimatedInputTokens <= 0 {
-		return event
-	}
-
-	return PatchTokensInEvent(event, estimatedInputTokens, 0, hasCacheTokens, enableLog, lowQuality)
+	// Do NOT replace real/missing input with EstimateRequestTokens(requestBody).
+	// requestBody is Cursor full history (often 100k-300k tokens). Writing that into
+	// message_start makes Cursor Conversation full immediately after compact and
+	// triggers compact thrash (admin may show in~21k while client saw estimated 200k+).
+	// Real usage arrives on message_delta; leave message_start alone when risky.
+	_ = requestBody
+	_ = needInputPatch
+	_ = usageData
+	_ = enableLog
+	_ = lowQuality
+	return event
 }
 
-// patchUsageFieldsWithLog 修补 usage 对象中的 token 字段
-// lowQuality 模式：偏差 > 5% 时使用本地估算值
+
 func patchUsageFieldsWithLog(usage map[string]interface{}, estimatedInput, estimatedOutput int, hasCacheTokens bool, enableLog bool, location string, lowQuality bool) {
 	originalInput := usage["input_tokens"]
 	originalOutput := usage["output_tokens"]
 	inputPatched := false
 	outputPatched := false
 
-	cacheCreation, _ := usage["cache_creation_input_tokens"].(float64)
-	cacheRead, _ := usage["cache_read_input_tokens"].(float64)
-	cacheCreation5m, _ := usage["cache_creation_5m_input_tokens"].(float64)
-	cacheCreation1h, _ := usage["cache_creation_1h_input_tokens"].(float64)
-	cacheTTL, _ := usage["cache_ttl"].(string)
+	// CRITICAL for Cursor compact thrash:
+	// estimatedInput often comes from EstimateRequestTokens(full requestBody) which is the
+	// entire Cursor transcript (100k-300k). NEVER replace a real positive input_tokens with
+	// a larger estimate. Only fill missing/zero/nil input. Admin logs still use CollectedUsage.
+	_ = hasCacheTokens
+	_ = lowQuality
 
-	// 低质量渠道模式：偏差 > 5% 时使用本地估算值
-	if lowQuality {
-		if v, ok := usage["input_tokens"].(float64); ok && estimatedInput > 0 {
-			currentInput := int(v)
-			if currentInput > 0 {
-				deviation := float64(abs(currentInput-estimatedInput)) / float64(estimatedInput)
-				if deviation > 0.05 {
-					usage["input_tokens"] = estimatedInput
-					inputPatched = true
-					if enableLog {
-						log.Printf("[Messages-Stream-Token-LowQuality] %s: input_tokens %d -> %d (偏差 %.1f%% > 5%%)",
-							location, currentInput, estimatedInput, deviation*100)
-					}
-				} else if enableLog {
-					log.Printf("[Messages-Stream-Token-LowQuality] %s: input_tokens %d ≈ %d (偏差 %.1f%% ≤ 5%%, 保留上游值)",
-						location, currentInput, estimatedInput, deviation*100)
-				}
+	if v, ok := usage["input_tokens"].(float64); ok {
+		currentInput := int(v)
+		if currentInput <= 1 && estimatedInput > 1 {
+			// Only fill near-zero missing values, never inflate.
+			// Cap estimate so a buggy caller cannot push 200k into the client meter.
+			safeEstimate := estimatedInput
+			if safeEstimate > 8000 {
+				safeEstimate = 0
 			}
-		} else if enableLog && estimatedInput > 0 {
-			log.Printf("[Messages-Stream-Token-LowQuality] %s: input_tokens=%v (上游无效值, 本地估算=%d)",
-				location, usage["input_tokens"], estimatedInput)
-		}
-		if v, ok := usage["output_tokens"].(float64); ok && estimatedOutput > 0 {
-			currentOutput := int(v)
-			if currentOutput > 0 {
-				deviation := float64(abs(currentOutput-estimatedOutput)) / float64(estimatedOutput)
-				if deviation > 0.05 {
-					usage["output_tokens"] = estimatedOutput
-					outputPatched = true
-					if enableLog {
-						log.Printf("[Messages-Stream-Token-LowQuality] %s: output_tokens %d -> %d (偏差 %.1f%% > 5%%)",
-							location, currentOutput, estimatedOutput, deviation*100)
-					}
-				} else if enableLog {
-					log.Printf("[Messages-Stream-Token-LowQuality] %s: output_tokens %d ≈ %d (偏差 %.1f%% ≤ 5%%, 保留上游值)",
-						location, currentOutput, estimatedOutput, deviation*100)
-				}
-			}
-		} else if enableLog && estimatedOutput > 0 {
-			log.Printf("[Messages-Stream-Token-LowQuality] %s: output_tokens=%v (上游无效值, 本地估算=%d)",
-				location, usage["output_tokens"], estimatedOutput)
-		}
-	}
-
-	// 常规修补逻辑（非 lowQuality 模式或 lowQuality 模式下未修补的情况）
-	if !inputPatched {
-		if v, ok := usage["input_tokens"].(float64); ok {
-			currentInput := int(v)
-			if !hasCacheTokens && ((currentInput <= 1) || (estimatedInput > currentInput && estimatedInput > 1)) {
-				usage["input_tokens"] = estimatedInput
+			if safeEstimate > 1 {
+				usage["input_tokens"] = safeEstimate
 				inputPatched = true
 			}
-		} else if usage["input_tokens"] == nil && estimatedInput > 0 {
-			// input_tokens 为 nil 时，用收集到的值修补
+		}
+	} else if usage["input_tokens"] == nil {
+		// nil: leave unset or use tiny safe fill only
+		if estimatedInput > 1 && estimatedInput <= 8000 {
 			usage["input_tokens"] = estimatedInput
 			inputPatched = true
 		}
 	}
 
-	if !outputPatched {
-		if v, ok := usage["output_tokens"].(float64); ok {
-			currentOutput := int(v)
-			if currentOutput <= 1 || (estimatedOutput > currentOutput && estimatedOutput > 1) {
-				usage["output_tokens"] = estimatedOutput
-				outputPatched = true
-			}
+	if v, ok := usage["output_tokens"].(float64); ok {
+		currentOutput := int(v)
+		if currentOutput <= 1 && estimatedOutput > currentOutput && estimatedOutput > 1 {
+			usage["output_tokens"] = estimatedOutput
+			outputPatched = true
 		}
+	} else if usage["output_tokens"] == nil && estimatedOutput > 0 {
+		usage["output_tokens"] = estimatedOutput
+		outputPatched = true
 	}
 
 	if enableLog {
 		if inputPatched || outputPatched {
-			log.Printf("[Messages-Stream-Token-Patch] %s: InputTokens=%v -> %v, OutputTokens=%v -> %v",
+			log.Printf("[Messages-Stream-Token-Patch] %s: InputTokens %v -> %v, OutputTokens %v -> %v",
 				location, originalInput, usage["input_tokens"], originalOutput, usage["output_tokens"])
 		}
-		log.Printf("[Messages-Stream-Token] %s: InputTokens=%v, OutputTokens=%v, CacheCreationInputTokens=%.0f, CacheReadInputTokens=%.0f, CacheCreation5m=%.0f, CacheCreation1h=%.0f, CacheTTL=%s",
-			location, usage["input_tokens"], usage["output_tokens"], cacheCreation, cacheRead, cacheCreation5m, cacheCreation1h, cacheTTL)
 	}
 }
 
-// abs 返回整数的绝对值
+
 func abs(x int) int {
 	if x < 0 {
 		return -x
@@ -1090,7 +1041,7 @@ func BuildStreamErrorEvent(err error) string {
 
 // BuildUsageEvent 构建带 usage 的 message_delta SSE 事件
 func BuildUsageEvent(requestBody []byte, outputText string) string {
-	inputTokens := utils.EstimateRequestTokens(requestBody)
+	inputTokens := 0 // do not estimate full Cursor body for client
 	outputTokens := utils.EstimateTokens(outputText)
 
 	event := map[string]interface{}{
@@ -1377,3 +1328,71 @@ func truncateForLog(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
+
+// StripCacheFieldsFromClaudeSSE removes cache_read / cache_creation / cached_tokens
+// from Claude SSE usage payloads before they reach the client (Cursor).
+// Keeps input_tokens and output_tokens only so Conversation meter tracks new input,
+// not gateway prompt-cache occupancy. Admin metrics already collected usage earlier.
+func StripCacheFieldsFromClaudeSSE(event string) string {
+	if event == "" {
+		return event
+	}
+	if !strings.Contains(event, "cache_read") && !strings.Contains(event, "cached_tokens") &&
+		!strings.Contains(event, "cache_creation") {
+		return event
+	}
+	lines := strings.Split(event, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var root map[string]interface{}
+		if err := json.Unmarshal([]byte(payload), &root); err != nil {
+			continue
+		}
+		changed := false
+		stripUsage := func(usage map[string]interface{}) {
+			for _, key := range []string{
+				"cache_read_input_tokens",
+				"cache_creation_input_tokens",
+				"cache_creation_5m_input_tokens",
+				"cache_creation_1h_input_tokens",
+				"cache_ttl",
+				"input_tokens_details",
+			} {
+				if _, exists := usage[key]; exists {
+					delete(usage, key)
+					changed = true
+				}
+			}
+		}
+		if usage, ok := root["usage"].(map[string]interface{}); ok {
+			stripUsage(usage)
+		}
+		if message, ok := root["message"].(map[string]interface{}); ok {
+			if usage, ok := message["usage"].(map[string]interface{}); ok {
+				stripUsage(usage)
+			}
+		}
+		if !changed {
+			continue
+		}
+		encoded, err := json.Marshal(root)
+		if err != nil {
+			continue
+		}
+		// Preserve "data: " prefix style
+		if strings.HasPrefix(line, "data: ") {
+			lines[i] = "data: " + string(encoded)
+		} else {
+			lines[i] = "data:" + string(encoded)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+

@@ -434,8 +434,21 @@ func handleNormalResponse(
 	// 转发上游响应头
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 
+	// 缓存字段会被 Cursor 计入 Conversation 上下文。流式出口已经剥离它们，
+	// 非流式响应也必须保持同一契约；内部 usage 仍用于后续指标记录。
+	clientResp := *claudeResp
+	if claudeResp.Usage != nil {
+		clientUsage := *claudeResp.Usage
+		clientUsage.CacheCreationInputTokens = 0
+		clientUsage.CacheCreation5mInputTokens = 0
+		clientUsage.CacheCreation1hInputTokens = 0
+		clientUsage.CacheReadInputTokens = 0
+		clientUsage.CacheTTL = ""
+		clientResp.Usage = &clientUsage
+	}
+
 	common.MarkRequestLogFirstToken(c)
-	c.JSON(200, claudeResp)
+	c.JSON(200, &clientResp)
 
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()

@@ -32,6 +32,11 @@ type HandleAllFailedFunc func(c *gin.Context, failoverErr *FailoverError, lastEr
 
 // HandleMultiChannelFailover 处理多渠道 failover 外壳逻辑（选渠道 + 聚合错误 + Trace 亲和）。
 // 具体“渠道内 Key/BaseURL 轮转”由 trySelectedChannel 实现（通常调用 TryUpstreamWithAllKeys）。
+//
+// 选渠成功后会占用 in-flight 预留：
+// - 若该渠道最终 Handled（成功/客户端取消等已写回响应），请求结束后释放预留
+// - 若该渠道失败并继续 failover，立即释放预留再选下一个
+// 这样并发新对话在选渠瞬间就能看到彼此的占用，避免都打到同一供应商。
 func HandleMultiChannelFailover(
 	c *gin.Context,
 	envCfg *config.EnvConfig,
@@ -80,14 +85,24 @@ func HandleMultiChannelFailover(
 
 		upstream := selection.Upstream
 		channelIndex := selection.ChannelIndex
+		releaseReservation := func() {
+			if selection != nil && selection.Reserved {
+				channelScheduler.ReleaseChannelReservation(selection.Kind, selection.ChannelIndex)
+				selection.Reserved = false
+			}
+		}
 
 		if envCfg.ShouldLog("info") && upstream != nil {
-			log.Printf("[%s-Select] 选择渠道: [%d] %s (原因: %s, 尝试 %d/%d)",
-				apiType, channelIndex, upstream.Name, selection.Reason, channelAttempt+1, maxChannelAttempts)
+			log.Printf("[%s-Select] 选择渠道: [%d] %s (原因: %s, 尝试 %d/%d, inFlight: %d)",
+				apiType, channelIndex, upstream.Name, selection.Reason, channelAttempt+1, maxChannelAttempts,
+				channelScheduler.GetChannelInFlight(kind, channelIndex))
 		}
 
 		result := trySelectedChannel(selection)
 		if result.Handled {
+			// 请求已完成（成功或已写回非 failover 错误），释放选渠预留。
+			// 注意：上游实际 ActiveRequests 仍由 ProfileManager 独立维护。
+			releaseReservation()
 			if onHandled != nil {
 				onHandled(selection, result)
 			}
@@ -127,6 +142,8 @@ func HandleMultiChannelFailover(
 			return
 		}
 
+		// 当前渠道失败，释放预留后再尝试下一渠道，避免“失败渠道”继续占负载。
+		releaseReservation()
 		failedChannels[channelIndex] = true
 
 		if result.FailoverError != nil {

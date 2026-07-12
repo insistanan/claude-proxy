@@ -147,11 +147,18 @@ func handleMultiChannelCompact(
 
 		upstream := selection.Upstream
 		channelIndex := selection.ChannelIndex
+		releaseReservation := func() {
+			if selection != nil && selection.Reserved {
+				channelScheduler.ReleaseChannelReservation(selection.Kind, selection.ChannelIndex)
+				selection.Reserved = false
+			}
+		}
 
 		// 每个渠道尝试所有 key
 		success, successKey, compactErr := tryCompactChannelWithAllKeys(c, upstream, cfgManager, channelScheduler, bodyBytes, envCfg)
 
 		if success {
+			releaseReservation()
 			// compact 不产生 usage，但仍需记录成功以更新熔断器/权重
 			if successKey != "" {
 				channelScheduler.RecordSuccessWithUsage(upstream.BaseURL, successKey, nil, scheduler.ChannelKindResponses)
@@ -162,6 +169,7 @@ func handleMultiChannelCompact(
 			return
 		}
 
+		releaseReservation()
 		failedChannels[channelIndex] = true
 		if compactErr != nil {
 			lastErr = compactErr

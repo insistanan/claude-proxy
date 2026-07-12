@@ -287,6 +287,16 @@ func TryUpstreamWithAllKeys(
 		return false, "", 0, nil, nil, nil
 	}
 
+	// 同会话优先最近成功的 BaseURL，尽量保持 prompt cache 亲和
+	if channelScheduler != nil && logCtx.ConversationID != "" {
+		if preferredBaseURL, ok := channelScheduler.GetPreferredBaseURL(logCtx.ConversationID); ok {
+			urlResults = scheduler.PreferBaseURLInResults(urlResults, preferredBaseURL)
+			if envCfg != nil && envCfg.ShouldLog("info") {
+				log.Printf("[%s-BaseURL-Affinity] conversation sticky prefer %s", apiType, preferredBaseURL)
+			}
+		}
+	}
+
 	var lastFailoverError *FailoverError
 	deprioritizeCandidates := make(map[string]bool)
 	requestLogID := nextAttemptLogID("req")
@@ -492,6 +502,10 @@ func TryUpstreamWithAllKeys(
 				pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, true, outputTokens)
 			}
 			recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "completed", resp.StatusCode, true, attemptStart, "", "", false, isStream, usage)
+			// 记录会话 BaseURL 粘滞，后续请求优先同 URL 以利 prompt cache
+			if channelScheduler != nil && logCtx.ConversationID != "" {
+				channelScheduler.SetPreferredBaseURL(logCtx.ConversationID, currentBaseURL)
+			}
 			return true, apiKey, originalIdx, nil, usage, nil
 		}
 
