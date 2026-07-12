@@ -16,42 +16,58 @@ import (
 // ResponsesToClaudeMessages 将 Responses 格式转换为 Claude Messages 格式
 // instructions 参数会被转换为 Claude API 的 system 参数（不在 messages 中）
 func ResponsesToClaudeMessages(sess *session.Session, newInput interface{}, instructions string) ([]types.ClaudeMessage, string, error) {
+	return ResponsesToClaudeMessagesWithOptions(sess, newInput, instructions, false)
+}
+
+// ResponsesToClaudeMessagesWithOptions converts Responses history+input to Claude messages.
+// includeHistoryThinking materializes type=reasoning as assistant text; default false skips it.
+// When session history exists and client input already replays the same prefix, avoid double-append.
+func ResponsesToClaudeMessagesWithOptions(sess *session.Session, newInput interface{}, instructions string, includeHistoryThinking bool) ([]types.ClaudeMessage, string, error) {
 	messages := []types.ClaudeMessage{}
 
-	// 1. 处理历史消息
-	if sess != nil {
-		for _, item := range sess.Messages {
-			msg, err := responsesItemToClaudeMessage(item)
-			if err != nil {
-				return nil, "", fmt.Errorf("转换历史消息失败: %w", err)
-			}
-			if msg != nil {
-				messages = append(messages, *msg)
-			}
-		}
-	}
-
-	// 2. 处理新输入
 	newItems, err := parseResponsesInput(newInput)
 	if err != nil {
 		return nil, "", err
 	}
 
+	// Session history first (previous_response_id chain).
+	historyMessages := make([]types.ClaudeMessage, 0)
+	if sess != nil {
+		for _, item := range sess.Messages {
+			msg, err := responsesItemToClaudeMessageWithOptions(item, includeHistoryThinking)
+			if err != nil {
+				return nil, "", fmt.Errorf("转换历史消息失败: %w", err)
+			}
+			if msg != nil {
+				historyMessages = append(historyMessages, *msg)
+			}
+		}
+	}
+
+	// Current input items.
+	currentMessages := make([]types.ClaudeMessage, 0, len(newItems))
 	for _, item := range newItems {
-		msg, err := responsesItemToClaudeMessage(item)
+		msg, err := responsesItemToClaudeMessageWithOptions(item, includeHistoryThinking)
 		if err != nil {
 			return nil, "", fmt.Errorf("转换新消息失败: %w", err)
 		}
 		if msg != nil {
-			messages = append(messages, *msg)
+			currentMessages = append(currentMessages, *msg)
 		}
 	}
+
+	// Dedup when client replays full history while also sending previous_response_id.
+	messages = mergeClaudeHistoryMessagesDedup(historyMessages, currentMessages)
 
 	return messages, instructions, nil
 }
 
 // responsesItemToClaudeMessage 单个 ResponsesItem 转换为 Claude Message
 func responsesItemToClaudeMessage(item types.ResponsesItem) (*types.ClaudeMessage, error) {
+	return responsesItemToClaudeMessageWithOptions(item, false)
+}
+
+func responsesItemToClaudeMessageWithOptions(item types.ResponsesItem, includeHistoryThinking bool) (*types.ClaudeMessage, error) {
 	switch item.Type {
 	case "message":
 		role := normalizeResponsesMessageRole(item.Role)
@@ -89,7 +105,19 @@ func responsesItemToClaudeMessage(item types.ResponsesItem) (*types.ClaudeMessag
 		return responsesItemToClaudeToolMessage(item)
 
 	case "reasoning":
-		return nil, nil
+		if !includeHistoryThinking {
+			return nil, nil
+		}
+		text := extractResponsesReasoningText(item)
+		if text == "" {
+			return nil, nil
+		}
+		return &types.ClaudeMessage{
+			Role: "assistant",
+			Content: []map[string]interface{}{
+				{"type": "text", "text": "[thinking]\n" + text},
+			},
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("未知的 item type: %s", item.Type)

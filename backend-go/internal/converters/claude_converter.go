@@ -1,22 +1,33 @@
 package converters
 
 import (
+	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
 // ============== Claude Messages API 转换器 ==============
 
 // ClaudeConverter 实现 Responses → Claude Messages API 转换
-type ClaudeConverter struct{}
+type ClaudeConverter struct {
+	// Upstream carries channel options (IncludeHistoryThinking, etc.).
+	// Injected by convertResponsesRequestWithStructConverter; may be nil in tests.
+	Upstream *config.UpstreamConfig
+}
 
 // ToProviderRequest 将 Responses 请求转换为 Claude Messages 格式
 func (c *ClaudeConverter) ToProviderRequest(sess *session.Session, req *types.ResponsesRequest) (interface{}, error) {
+	includeHistoryThinking := c != nil && c.Upstream != nil && c.Upstream.IncludeHistoryThinking
+
 	// 转换 messages 和 system
-	messages, system, err := ResponsesToClaudeMessages(sess, req.Input, req.Instructions)
+	messages, system, err := ResponsesToClaudeMessagesWithOptions(sess, req.Input, req.Instructions, includeHistoryThinking)
 	if err != nil {
 		return nil, err
 	}
+
+	// Context compact: truncate historical tool_result content (same policy as Messages entry).
+	messages = utils.CompactClaudeMessagesForUpstream(messages)
 
 	// 启用 Claude Prompt Caching：在最后一个 user message 添加 cache_control
 	// 这确保稳定的对话前缀能被缓存，提高后续请求的缓存命中率
