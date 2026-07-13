@@ -106,15 +106,31 @@ func (p *ClaudeProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 
 	// 使用统一的头部处理逻辑
 	req.Header = utils.PrepareUpstreamHeaders(c, req.URL.Host)
-	
+
 	if c.GetBool(utils.ContextKeyClaudeCodeDisguise) {
 		var streamRequest struct {
 			Stream bool `json:"stream"`
 		}
 		_ = json.Unmarshal(bodyBytes, &streamRequest)
 		utils.ApplyClaudeCodeDisguise(req.Header, streamRequest.Stream)
+
+		bodyBytes = utils.ApplyClaudeCodeBodyDisguise(
+			bodyBytes,
+			req.Header.Get("X-Claude-Code-Session-Id"),
+		)
+		if len(bodyBytes) > 0 {
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+			}
+		} else {
+			req.Body = nil
+			req.GetBody = nil
+		}
+		req.ContentLength = int64(len(bodyBytes))
+		req.Header.Del("Content-Length")
 	}
-	
+
 	// 设置认证头（会覆盖客户端的认证头）
 	utils.SetAuthenticationHeader(req.Header, apiKey)
 

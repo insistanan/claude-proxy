@@ -12,7 +12,7 @@ import (
 const (
 	ContextKeyClaudeCodeDisguise = "client-disguise-claude-code"
 	ContextKeyCodexDisguise      = "client-disguise-codex"
-	claudeCodeDisguiseVersion    = "2.1.92"
+	claudeCodeDisguiseVersion    = "2.1.161"
 	codexDisguiseVersion         = "0.144.0"
 )
 
@@ -166,20 +166,23 @@ func ApplyCodexDisguise(headers http.Header, stream bool) {
 
 // ApplyClaudeCodeDisguise 为非 Claude Code 客户端规范化身份头，并保留已有会话与能力字段。
 func ApplyClaudeCodeDisguise(headers http.Header, stream bool) {
-	userAgent := strings.ToLower(headers.Get("User-Agent"))
-	isClaudeCodeClient := strings.Contains(userAgent, "claude-cli") || strings.Contains(userAgent, "claude-code")
+	isClaudeCodeClient := isClaudeCodeUserAgent(headers.Get("User-Agent"))
 	if !isClaudeCodeClient {
 		headers.Set("User-Agent", "claude-cli/"+claudeCodeDisguiseVersion+" (external, cli)")
-		headers.Set("X-App", "cli")
 		headers.Set("X-Stainless-Lang", "js")
-		headers.Set("X-Stainless-Package-Version", "0.74.0")
+		headers.Set("X-Stainless-Package-Version", "0.94.0")
 		headers.Set("X-Stainless-Runtime", "node")
-		headers.Set("X-Stainless-Runtime-Version", "v22.12.0")
+		headers.Set("X-Stainless-Runtime-Version", "v24.3.0")
 		headers.Set("X-Stainless-Os", stainlessOS())
 		headers.Set("X-Stainless-Arch", stainlessArch())
 		headers.Set("X-Stainless-Retry-Count", "0")
 		headers.Set("X-Stainless-Timeout", "600")
 	}
+
+	// X-App 和 Beta 集合是严格 Claude Code 网关识别客户端的必要信号。
+	headers.Set("X-App", "cli")
+	headers.Set("Anthropic-Beta", mergeClaudeCodeBetaHeaders(headers.Values("Anthropic-Beta")))
+	headers.Set("Anthropic-Dangerous-Direct-Browser-Access", "true")
 
 	// X-Claude-Code-Session-Id: 会话 ID（如果没有则生成）
 	if headers.Get("X-Claude-Code-Session-Id") == "" {
@@ -194,13 +197,13 @@ func ApplyClaudeCodeDisguise(headers http.Header, stream bool) {
 		headers.Set("X-Stainless-Lang", "js")
 	}
 	if headers.Get("X-Stainless-Package-Version") == "" {
-		headers.Set("X-Stainless-Package-Version", "0.74.0")
+		headers.Set("X-Stainless-Package-Version", "0.94.0")
 	}
 	if headers.Get("X-Stainless-Runtime") == "" {
 		headers.Set("X-Stainless-Runtime", "node")
 	}
 	if headers.Get("X-Stainless-Runtime-Version") == "" {
-		headers.Set("X-Stainless-Runtime-Version", "v22.12.0")
+		headers.Set("X-Stainless-Runtime-Version", "v24.3.0")
 	}
 	if headers.Get("X-Stainless-Os") == "" {
 		headers.Set("X-Stainless-Os", stainlessOS())
@@ -219,8 +222,12 @@ func ApplyClaudeCodeDisguise(headers http.Header, stream bool) {
 	if headers.Get("anthropic-version") == "" {
 		headers.Set("anthropic-version", "2023-06-01")
 	}
-	if stream && headers.Get("Accept") == "" {
-		headers.Set("Accept", "text/event-stream")
+	if headers.Get("Accept") == "" {
+		if stream {
+			headers.Set("Accept", "text/event-stream")
+		} else {
+			headers.Set("Accept", "application/json")
+		}
 	}
 }
 
