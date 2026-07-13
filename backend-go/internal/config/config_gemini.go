@@ -21,31 +21,22 @@ func (cm *ConfigManager) GetCurrentGeminiUpstreamWithIndex() (*UpstreamConfig, i
 }
 
 func (cm *ConfigManager) AddGeminiUpstream(upstream UpstreamConfig) error {
+	_, err := cm.AddGeminiUpstreamWithResult(upstream)
+	return err
+}
+
+func (cm *ConfigManager) AddGeminiUpstreamWithResult(upstream UpstreamConfig) (AddedUpstream, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	prepareNewUpstream(&upstream)
-	
-	// 新渠道优先级设为 1（最高）
-	upstream.Priority = 1
-	
-	// 所有现有渠道的优先级 +1
-	for i := range cm.config.GeminiUpstream {
-		if cm.config.GeminiUpstream[i].Priority == 0 {
-			cm.config.GeminiUpstream[i].Priority = i + 2
-		} else {
-			cm.config.GeminiUpstream[i].Priority++
-		}
-	}
-	
-	// 插入到开头
-	cm.config.GeminiUpstream = append([]UpstreamConfig{upstream}, cm.config.GeminiUpstream...)
+	var result AddedUpstream
+	cm.config.GeminiUpstream, result = addUpstreamOp(cm.config.GeminiUpstream, upstream)
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return err
+		return AddedUpstream{}, err
 	}
-	log.Printf("[Config-Upstream] 已添加 Gemini 上游（优先级1）: %s", upstream.Name)
-	return nil
+	log.Printf("[Config-Upstream] 已添加 Gemini 上游（优先级1）: %s", cm.config.GeminiUpstream[result.Index].Name)
+	return result, nil
 }
 
 func (cm *ConfigManager) UpdateGeminiUpstream(index int, updates UpstreamUpdate) (shouldResetMetrics bool, err error) {
@@ -56,7 +47,7 @@ func (cm *ConfigManager) UpdateGeminiUpstream(index int, updates UpstreamUpdate)
 		return false, fmt.Errorf("无效的 Gemini 上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdates(&cm.config.GeminiUpstream[index], index, updates, "Gemini")
+	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.GeminiUpstream, index, updates, "Gemini")
 	if err != nil {
 		return false, err
 	}

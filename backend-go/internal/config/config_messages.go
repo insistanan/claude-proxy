@@ -21,31 +21,22 @@ func (cm *ConfigManager) GetCurrentUpstreamWithIndex() (*UpstreamConfig, int, er
 }
 
 func (cm *ConfigManager) AddUpstream(upstream UpstreamConfig) error {
+	_, err := cm.AddUpstreamWithResult(upstream)
+	return err
+}
+
+func (cm *ConfigManager) AddUpstreamWithResult(upstream UpstreamConfig) (AddedUpstream, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	prepareNewUpstream(&upstream)
-	
-	// 新渠道优先级设为 1（最高）
-	upstream.Priority = 1
-	
-	// 所有现有渠道的优先级 +1
-	for i := range cm.config.Upstream {
-		if cm.config.Upstream[i].Priority == 0 {
-			cm.config.Upstream[i].Priority = i + 2 // 原来是索引，现在变成索引+2
-		} else {
-			cm.config.Upstream[i].Priority++ // 原有优先级 +1
-		}
-	}
-	
-	// 插入到开头
-	cm.config.Upstream = append([]UpstreamConfig{upstream}, cm.config.Upstream...)
+	var result AddedUpstream
+	cm.config.Upstream, result = addUpstreamOp(cm.config.Upstream, upstream)
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return err
+		return AddedUpstream{}, err
 	}
-	log.Printf("[Config-Upstream] 已添加上游（优先级1）: %s", upstream.Name)
-	return nil
+	log.Printf("[Config-Upstream] 已添加上游（优先级1）: %s", cm.config.Upstream[result.Index].Name)
+	return result, nil
 }
 
 func (cm *ConfigManager) UpdateUpstream(index int, updates UpstreamUpdate) (shouldResetMetrics bool, err error) {
@@ -56,7 +47,7 @@ func (cm *ConfigManager) UpdateUpstream(index int, updates UpstreamUpdate) (shou
 		return false, fmt.Errorf("无效的上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdates(&cm.config.Upstream[index], index, updates, "Messages")
+	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.Upstream, index, updates, "Messages")
 	if err != nil {
 		return false, err
 	}
@@ -175,6 +166,8 @@ func (cm *ConfigManager) ConsumePromotionCount(channelIndex int, channelType str
 		upstreams = cm.config.GeminiUpstream
 	case "chat":
 		upstreams = cm.config.ChatUpstream
+	case "images":
+		upstreams = cm.config.ImagesUpstream
 	default:
 		upstreams = cm.config.Upstream
 	}
@@ -199,5 +192,3 @@ func (cm *ConfigManager) GetPromotedChannel() (int, bool) {
 	defer cm.mu.RUnlock()
 	return getPromotedOp(cm.config.Upstream)
 }
-
-

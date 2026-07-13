@@ -19,6 +19,8 @@ func (cm *ConfigManager) DuplicateChannel(kind string, index int) error {
 		cm.config.GeminiUpstream, err = insertClonedUpstream(cm.config.GeminiUpstream, index, now)
 	case "chat":
 		cm.config.ChatUpstream, err = insertClonedUpstream(cm.config.ChatUpstream, index, now)
+	case "images":
+		cm.config.ImagesUpstream, err = insertClonedUpstream(cm.config.ImagesUpstream, index, now)
 	default:
 		cm.config.Upstream, err = insertClonedUpstream(cm.config.Upstream, index, now)
 	}
@@ -40,6 +42,8 @@ func (cm *ConfigManager) TidyProblemChannels(kind string) error {
 		changed = reorderProblemChannelsStable(cm.config.GeminiUpstream)
 	case "chat":
 		changed = reorderProblemChannelsStable(cm.config.ChatUpstream)
+	case "images":
+		changed = reorderProblemChannelsStable(cm.config.ImagesUpstream)
 	default:
 		changed = reorderProblemChannelsStable(cm.config.Upstream)
 	}
@@ -84,6 +88,8 @@ func (cm *ConfigManager) runChannelLifecycle(now time.Time, cleanupDeprecated bo
 	cm.config.GeminiUpstream, listChanged = applyLifecycleToUpstreams(cm.config.GeminiUpstream, now, cleanupDeprecated, "Gemini")
 	changed = changed || listChanged
 	cm.config.ChatUpstream, listChanged = applyLifecycleToUpstreams(cm.config.ChatUpstream, now, cleanupDeprecated, "Chat")
+	changed = changed || listChanged
+	cm.config.ImagesUpstream, listChanged = applyLifecycleToUpstreams(cm.config.ImagesUpstream, now, cleanupDeprecated, "Images")
 	changed = changed || listChanged
 
 	if !changed {

@@ -22,32 +22,23 @@ func (cm *ConfigManager) GetCurrentChatUpstreamWithIndex() (*UpstreamConfig, int
 }
 
 func (cm *ConfigManager) AddChatUpstream(upstream UpstreamConfig) error {
+	_, err := cm.AddChatUpstreamWithResult(upstream)
+	return err
+}
+
+func (cm *ConfigManager) AddChatUpstreamWithResult(upstream UpstreamConfig) (AddedUpstream, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	prepareNewUpstream(&upstream)
 	upstream.DefaultModel = strings.TrimSpace(upstream.DefaultModel)
-	
-	// 新渠道优先级设为 1（最高）
-	upstream.Priority = 1
-	
-	// 所有现有渠道的优先级 +1
-	for i := range cm.config.ChatUpstream {
-		if cm.config.ChatUpstream[i].Priority == 0 {
-			cm.config.ChatUpstream[i].Priority = i + 2
-		} else {
-			cm.config.ChatUpstream[i].Priority++
-		}
-	}
-	
-	// 插入到开头
-	cm.config.ChatUpstream = append([]UpstreamConfig{upstream}, cm.config.ChatUpstream...)
+	var result AddedUpstream
+	cm.config.ChatUpstream, result = addUpstreamOp(cm.config.ChatUpstream, upstream)
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return err
+		return AddedUpstream{}, err
 	}
-	log.Printf("[Config-Upstream] 已添加 Chat 上游（优先级1）: %s", upstream.Name)
-	return nil
+	log.Printf("[Config-Upstream] 已添加 Chat 上游（优先级1）: %s", cm.config.ChatUpstream[result.Index].Name)
+	return result, nil
 }
 
 func (cm *ConfigManager) UpdateChatUpstream(index int, updates UpstreamUpdate) (shouldResetMetrics bool, err error) {
@@ -58,7 +49,7 @@ func (cm *ConfigManager) UpdateChatUpstream(index int, updates UpstreamUpdate) (
 		return false, fmt.Errorf("无效的 Chat 上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdates(&cm.config.ChatUpstream[index], index, updates, "Chat")
+	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.ChatUpstream, index, updates, "Chat")
 	if err != nil {
 		return false, err
 	}
@@ -184,4 +175,3 @@ func (cm *ConfigManager) GetPromotedChatChannel() (int, bool) {
 	defer cm.mu.RUnlock()
 	return getPromotedOp(cm.config.ChatUpstream)
 }
-

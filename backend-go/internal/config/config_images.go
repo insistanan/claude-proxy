@@ -20,29 +20,23 @@ func (cm *ConfigManager) GetCurrentImagesUpstreamWithIndex() (*UpstreamConfig, i
 }
 
 func (cm *ConfigManager) AddImagesUpstream(upstream UpstreamConfig) error {
+	_, err := cm.AddImagesUpstreamWithResult(upstream)
+	return err
+}
+
+func (cm *ConfigManager) AddImagesUpstreamWithResult(upstream UpstreamConfig) (AddedUpstream, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	prepareNewUpstream(&upstream)
 	upstream.DefaultModel = strings.TrimSpace(upstream.DefaultModel)
-
-	upstream.Priority = 1
-
-	for i := range cm.config.ImagesUpstream {
-		if cm.config.ImagesUpstream[i].Priority == 0 {
-			cm.config.ImagesUpstream[i].Priority = i + 2
-		} else {
-			cm.config.ImagesUpstream[i].Priority++
-		}
-	}
-
-	cm.config.ImagesUpstream = append([]UpstreamConfig{upstream}, cm.config.ImagesUpstream...)
+	var result AddedUpstream
+	cm.config.ImagesUpstream, result = addUpstreamOp(cm.config.ImagesUpstream, upstream)
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return err
+		return AddedUpstream{}, err
 	}
-	log.Printf("[Config-Upstream] 已添加 Images 上游（优先级1）: %s", upstream.Name)
-	return nil
+	log.Printf("[Config-Upstream] 已添加 Images 上游（优先级1）: %s", cm.config.ImagesUpstream[result.Index].Name)
+	return result, nil
 }
 
 func (cm *ConfigManager) UpdateImagesUpstream(index int, updates UpstreamUpdate) (shouldResetMetrics bool, err error) {
@@ -53,7 +47,7 @@ func (cm *ConfigManager) UpdateImagesUpstream(index int, updates UpstreamUpdate)
 		return false, fmt.Errorf("无效的 Images 上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdates(&cm.config.ImagesUpstream[index], index, updates, "Images")
+	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.ImagesUpstream, index, updates, "Images")
 	if err != nil {
 		return false, err
 	}

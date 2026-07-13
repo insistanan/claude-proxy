@@ -17,6 +17,7 @@ import (
 
 // UpstreamConfig 上游配置
 type UpstreamConfig struct {
+	ID                 string              `json:"id,omitempty"` // 稳定渠道标识，避免数组位置变化影响关联状态
 	BaseURL            string              `json:"baseUrl"`
 	BaseURLs           []string            `json:"baseUrls,omitempty"` // 多 BaseURL 支持（failover 模式）
 	APIKeys            []string            `json:"apiKeys"`
@@ -189,14 +190,14 @@ func decodeModelMapping(raw json.RawMessage) (map[string][]string, error) {
 		}
 	}
 
-	return modelMapping, nil
+	return normalizeModelMapping(modelMapping), nil
 }
 
 // Config 配置结构
 type Config struct {
 	Upstream        []UpstreamConfig `json:"upstream"`
 	CurrentUpstream int              `json:"currentUpstream,omitempty"` // 已废弃：旧格式兼容用
-	LoadBalance     string           `json:"loadBalance"`               // round-robin, random, failover
+	LoadBalance     string           `json:"loadBalance"`               // 当前仅支持 failover
 
 	// Responses 接口专用配置（独立于 /v1/messages）
 	ResponsesUpstream        []UpstreamConfig `json:"responsesUpstream"`
@@ -217,6 +218,10 @@ type Config struct {
 
 	// Fuzzy 模式：启用时模糊处理错误，所有非 2xx 错误都尝试 failover
 	FuzzyModeEnabled bool `json:"fuzzyModeEnabled"`
+
+	// 客户端伪装：仅规范化发往对应原生协议上游的客户端身份请求头
+	ClaudeCodeDisguiseEnabled bool `json:"claudeCodeDisguiseEnabled"`
+	CodexDisguiseEnabled      bool `json:"codexDisguiseEnabled"`
 }
 
 // FailedKey 失败密钥记录
@@ -463,5 +468,41 @@ func (cm *ConfigManager) SetFuzzyModeEnabled(enabled bool) error {
 		status = "启用"
 	}
 	log.Printf("[Config-FuzzyMode] Fuzzy 模式已%s", status)
+	return nil
+}
+
+// GetClaudeCodeDisguiseEnabled 获取 Claude Code 客户端伪装状态。
+func (cm *ConfigManager) GetClaudeCodeDisguiseEnabled() bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.config.ClaudeCodeDisguiseEnabled
+}
+
+// GetCodexDisguiseEnabled 获取 Codex 客户端伪装状态。
+func (cm *ConfigManager) GetCodexDisguiseEnabled() bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.config.CodexDisguiseEnabled
+}
+
+// SetClientDisguiseEnabled 设置指定协议的客户端伪装状态。
+func (cm *ConfigManager) SetClientDisguiseEnabled(protocol string, enabled bool) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	switch protocol {
+	case "messages":
+		cm.config.ClaudeCodeDisguiseEnabled = enabled
+	case "responses":
+		cm.config.CodexDisguiseEnabled = enabled
+	default:
+		return fmt.Errorf("不支持的伪装协议: %s", protocol)
+	}
+
+	if err := cm.saveConfigLocked(cm.config); err != nil {
+		return err
+	}
+
+	log.Printf("[Config-ClientDisguise] %s 客户端伪装已设置为 %v", protocol, enabled)
 	return nil
 }

@@ -71,8 +71,11 @@ func (cm *ConfigManager) loadConfig() error {
 	// 兼容旧格式：检测是否需要迁移
 	needMigration := cm.migrateOldFormat()
 
+	// 为旧配置补齐稳定标识并归一化优先级，避免新增、删除和恢复渠道后出现错绑或重复排序。
+	needNormalization := cm.normalizeChannelLists()
+
 	// 如果有默认值迁移或格式迁移，保存配置
-	if needSaveDefaults || needMigration {
+	if needSaveDefaults || needMigration || needNormalization {
 		if err := cm.saveConfigLocked(cm.config); err != nil {
 			log.Printf("[Config-Migration] 警告: 保存迁移后的配置失败: %v", err)
 			return err
@@ -109,6 +112,8 @@ func (cm *ConfigManager) createDefaultConfig() error {
 		ImagesUpstream:           []UpstreamConfig{},
 		ImagesLoadBalance:        "failover",
 		FuzzyModeEnabled:         true, // 默认启用 Fuzzy 模式
+		ClaudeCodeDisguiseEnabled: false,
+		CodexDisguiseEnabled:      false,
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cm.configFile), 0755); err != nil {
@@ -126,18 +131,38 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 
 	if cm.config.LoadBalance == "" {
 		cm.config.LoadBalance = "failover"
+		needSave = true
+	} else if cm.config.LoadBalance != "failover" {
+		cm.config.LoadBalance = "failover"
+		needSave = true
 	}
 	if cm.config.ResponsesLoadBalance == "" {
-		cm.config.ResponsesLoadBalance = cm.config.LoadBalance
+		cm.config.ResponsesLoadBalance = "failover"
+		needSave = true
+	} else if cm.config.ResponsesLoadBalance != "failover" {
+		cm.config.ResponsesLoadBalance = "failover"
+		needSave = true
 	}
 	if cm.config.GeminiLoadBalance == "" {
 		cm.config.GeminiLoadBalance = "failover"
+		needSave = true
+	} else if cm.config.GeminiLoadBalance != "failover" {
+		cm.config.GeminiLoadBalance = "failover"
+		needSave = true
 	}
 	if cm.config.ChatLoadBalance == "" {
 		cm.config.ChatLoadBalance = "failover"
+		needSave = true
+	} else if cm.config.ChatLoadBalance != "failover" {
+		cm.config.ChatLoadBalance = "failover"
+		needSave = true
 	}
 	if cm.config.ImagesLoadBalance == "" {
 		cm.config.ImagesLoadBalance = "failover"
+		needSave = true
+	} else if cm.config.ImagesLoadBalance != "failover" {
+		cm.config.ImagesLoadBalance = "failover"
+		needSave = true
 	}
 
 	// FuzzyModeEnabled 默认值处理：
@@ -169,12 +194,37 @@ func (cm *ConfigManager) migrateOldFormat() bool {
 	if cm.migrateUpstreams(cm.config.ResponsesUpstream, cm.config.CurrentResponsesUpstream, "Responses") {
 		needMigration = true
 	}
+	if cm.migrateUpstreams(cm.config.GeminiUpstream, 0, "Gemini") {
+		needMigration = true
+	}
+	if cm.migrateUpstreams(cm.config.ChatUpstream, 0, "Chat") {
+		needMigration = true
+	}
+	if cm.migrateUpstreams(cm.config.ImagesUpstream, 0, "Images") {
+		needMigration = true
+	}
 
 	if needMigration {
 		log.Printf("[Config-Migration] 检测到旧格式配置，正在迁移到新格式...")
 	}
 
 	return needMigration
+}
+
+func (cm *ConfigManager) normalizeChannelLists() bool {
+	changed := false
+	lists := [][]UpstreamConfig{
+		cm.config.Upstream,
+		cm.config.ResponsesUpstream,
+		cm.config.GeminiUpstream,
+		cm.config.ChatUpstream,
+		cm.config.ImagesUpstream,
+	}
+	for _, upstreams := range lists {
+		changed = ensureUpstreamIDs(upstreams) || changed
+		changed = normalizeUpstreamPriorities(upstreams) || changed
+	}
+	return changed
 }
 
 // migrateUpstreams 迁移单个渠道列表
@@ -214,71 +264,26 @@ func (cm *ConfigManager) migrateUpstreams(upstreams []UpstreamConfig, currentIdx
 // 返回 true 表示有配置被修改，需要保存
 func (cm *ConfigManager) validateChannelKeys() bool {
 	modified := false
-
-	// 检查 Messages 渠道
-	for i := range cm.config.Upstream {
-		upstream := &cm.config.Upstream[i]
-		status := upstream.Status
-		if status == "" {
-			status = "active"
-		}
-
-		// 如果是 active 状态但没有配置 key，自动设为 suspended
-		if status == "active" && len(upstream.APIKeys) == 0 {
-			upstream.Status = "suspended"
-			modified = true
-			log.Printf("[Config-Validate] 警告: Messages 渠道 [%d] %s 没有配置 API key，已自动暂停", i, upstream.Name)
-		}
-	}
-
-	// 检查 Responses 渠道
-	for i := range cm.config.ResponsesUpstream {
-		upstream := &cm.config.ResponsesUpstream[i]
-		status := upstream.Status
-		if status == "" {
-			status = "active"
-		}
-
-		// 如果是 active 状态但没有配置 key，自动设为 suspended
-		if status == "active" && len(upstream.APIKeys) == 0 {
-			upstream.Status = "suspended"
-			modified = true
-			log.Printf("[Config-Validate] 警告: Responses 渠道 [%d] %s 没有配置 API key，已自动暂停", i, upstream.Name)
-		}
-	}
-
-	// 检查 Gemini 渠道
-	for i := range cm.config.GeminiUpstream {
-		upstream := &cm.config.GeminiUpstream[i]
-		status := upstream.Status
-		if status == "" {
-			status = "active"
-		}
-
-		// 如果是 active 状态但没有配置 key，自动设为 suspended
-		if status == "active" && len(upstream.APIKeys) == 0 {
-			upstream.Status = "suspended"
-			modified = true
-			log.Printf("[Config-Validate] 警告: Gemini 渠道 [%d] %s 没有配置 API key，已自动暂停", i, upstream.Name)
-		}
-	}
-
-	// 检查 Chat 渠道
-	for i := range cm.config.ChatUpstream {
-		upstream := &cm.config.ChatUpstream[i]
-		status := upstream.Status
-		if status == "" {
-			status = "active"
-		}
-
-		if status == "active" && len(upstream.APIKeys) == 0 {
-			upstream.Status = "suspended"
-			modified = true
-			log.Printf("[Config-Validate] 警告: Chat 渠道 [%d] %s 没有配置 API key，已自动暂停", i, upstream.Name)
-		}
-	}
+	modified = validateUpstreamKeys(cm.config.Upstream, "Messages") || modified
+	modified = validateUpstreamKeys(cm.config.ResponsesUpstream, "Responses") || modified
+	modified = validateUpstreamKeys(cm.config.GeminiUpstream, "Gemini") || modified
+	modified = validateUpstreamKeys(cm.config.ChatUpstream, "Chat") || modified
+	modified = validateUpstreamKeys(cm.config.ImagesUpstream, "Images") || modified
 
 	return modified
+}
+
+func validateUpstreamKeys(upstreams []UpstreamConfig, label string) bool {
+	changed := false
+	for index := range upstreams {
+		upstream := &upstreams[index]
+		if GetChannelStatus(upstream) == ChannelStatusActive && len(upstream.APIKeys) == 0 {
+			upstream.Status = ChannelStatusSuspended
+			changed = true
+			log.Printf("[Config-Validate] 警告: %s 渠道 [%d] %s 没有配置 API key，已自动暂停", label, index, upstream.Name)
+		}
+	}
+	return changed
 }
 
 // saveConfigLocked 保存配置（已加锁）

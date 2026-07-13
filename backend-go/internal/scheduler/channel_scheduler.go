@@ -303,8 +303,10 @@ func (s *ChannelScheduler) SelectChannel(
 			return nil, fmt.Errorf("没有可用的活跃 Responses 渠道")
 		case ChannelKindChat:
 			return nil, fmt.Errorf("没有可用的活跃 Chat 渠道")
+		case ChannelKindImages:
+			return nil, fmt.Errorf("没有可用的活跃 Images 渠道")
 		default:
-			return nil, fmt.Errorf("没有可用的活跃 Messages 渠道")
+			return nil, fmt.Errorf("不支持的渠道类型: %s", kind)
 		}
 	}
 
@@ -387,7 +389,7 @@ func (s *ChannelScheduler) SelectChannel(
 
 	// 2. 检查 Trace 亲和性（仅在无促销渠道时生效，保证同一会话连续性）
 	if userID != "" {
-		if preferredIdx, ok := s.traceAffinity.GetPreferredChannel(userID); ok {
+		if preferredIdx, ok := s.traceAffinity.GetPreferredChannelForKind(string(kind), userID); ok {
 			foundPreferredChannel := false
 			affinityInvalidated := false
 			for _, ch := range activeChannels {
@@ -427,7 +429,7 @@ func (s *ChannelScheduler) SelectChannel(
 			}
 			// 亲和渠道不存在或已失效，清除亲和性记录
 			if !foundPreferredChannel || affinityInvalidated {
-				s.traceAffinity.Remove(userID)
+				s.traceAffinity.RemoveForKind(string(kind), userID)
 				prefix := kindSchedulerLogPrefix(kind)
 				if affinityInvalidated {
 					log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: user=%s, channel=%d (渠道不健康或状态异常)", prefix, maskUserID(userID), preferredIdx)
@@ -560,7 +562,6 @@ func (s *ChannelScheduler) pickLeastLoadedChannel(candidates []ChannelInfo, kind
 	return &candidates[bestIdx]
 }
 
-
 func (s *ChannelScheduler) filterVisionChannels(channels []ChannelInfo, kind ChannelKind) []ChannelInfo {
 	visionChannels := make([]ChannelInfo, 0, len(channels))
 	for _, ch := range channels {
@@ -680,20 +681,25 @@ func (s *ChannelScheduler) calculateChannelScore(upstream *config.UpstreamConfig
 	return baseScore
 }
 
-// getActiveChannels 获取活跃渠道列表（按动态分数排序）
+// getActiveChannels 获取故障转移序列（按配置优先级排序）。
+// 动态分数只用于同优先级渠道，不能越过用户配置的 failover 顺序。
 func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 	cfg := s.configManager.GetConfig()
 
 	var upstreams []config.UpstreamConfig
 	switch kind {
+	case ChannelKindMessages:
+		upstreams = cfg.Upstream
 	case ChannelKindResponses:
 		upstreams = cfg.ResponsesUpstream
 	case ChannelKindGemini:
 		upstreams = cfg.GeminiUpstream
 	case ChannelKindChat:
 		upstreams = cfg.ChatUpstream
+	case ChannelKindImages:
+		upstreams = cfg.ImagesUpstream
 	default:
-		upstreams = cfg.Upstream
+		return nil
 	}
 
 	// 筛选活跃渠道
@@ -708,7 +714,7 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 		if config.IsChannelSchedulable(&upstream) {
 			priority := upstream.Priority
 			if priority == 0 {
-				priority = i // 默认优先级为索引
+				priority = i + 1
 			}
 
 			// 计算渠道动态分数
@@ -725,14 +731,15 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 		}
 	}
 
-	// 按动态分数排序（分数越高优先级越高），分数相同时按配置优先级排序
+	// 配置优先级是主顺序；同优先级时再参考动态分数和稳定索引。
 	sort.Slice(activeChannels, func(i, j int) bool {
-		// 优先按分数排序（降序）
+		if activeChannels[i].Priority != activeChannels[j].Priority {
+			return activeChannels[i].Priority < activeChannels[j].Priority
+		}
 		if activeChannels[i].Score != activeChannels[j].Score {
 			return activeChannels[i].Score > activeChannels[j].Score
 		}
-		// 分数相同时按配置优先级排序（升序）
-		return activeChannels[i].Priority < activeChannels[j].Priority
+		return activeChannels[i].Index < activeChannels[j].Index
 	})
 
 	return activeChannels
@@ -745,14 +752,18 @@ func (s *ChannelScheduler) getUpstreamByIndex(index int, kind ChannelKind) *conf
 
 	var upstreams []config.UpstreamConfig
 	switch kind {
+	case ChannelKindMessages:
+		upstreams = cfg.Upstream
 	case ChannelKindResponses:
 		upstreams = cfg.ResponsesUpstream
 	case ChannelKindGemini:
 		upstreams = cfg.GeminiUpstream
 	case ChannelKindChat:
 		upstreams = cfg.ChatUpstream
+	case ChannelKindImages:
+		upstreams = cfg.ImagesUpstream
 	default:
-		upstreams = cfg.Upstream
+		return nil
 	}
 
 	if index >= 0 && index < len(upstreams) {
@@ -790,8 +801,12 @@ func (s *ChannelScheduler) RecordRequestEnd(baseURL, apiKey string, kind Channel
 
 // SetTraceAffinity 设置 Trace 亲和
 func (s *ChannelScheduler) SetTraceAffinity(userID string, channelIndex int) {
+	s.SetTraceAffinityForKind(ChannelKindMessages, userID, channelIndex)
+}
+
+func (s *ChannelScheduler) SetTraceAffinityForKind(kind ChannelKind, userID string, channelIndex int) {
 	if userID != "" {
-		s.traceAffinity.SetPreferredChannel(userID, channelIndex)
+		s.traceAffinity.SetPreferredChannelForKind(string(kind), userID, channelIndex)
 	}
 }
 
@@ -836,7 +851,6 @@ func PreferBaseURLInResults(results []urlhealth.URLLatencyResult, preferred stri
 	return reordered
 }
 
-
 func (s *ChannelScheduler) ConsumePromotionCount(channelIndex int, kind ChannelKind) {
 	channelType := "messages"
 	switch kind {
@@ -846,14 +860,20 @@ func (s *ChannelScheduler) ConsumePromotionCount(channelIndex int, kind ChannelK
 		channelType = "gemini"
 	case ChannelKindChat:
 		channelType = "chat"
+	case ChannelKindImages:
+		channelType = "images"
 	}
 	s.configManager.ConsumePromotionCount(channelIndex, channelType)
 }
 
 // UpdateTraceAffinity 更新 Trace 亲和时间（续期）
 func (s *ChannelScheduler) UpdateTraceAffinity(userID string) {
+	s.UpdateTraceAffinityForKind(ChannelKindMessages, userID)
+}
+
+func (s *ChannelScheduler) UpdateTraceAffinityForKind(kind ChannelKind, userID string) {
 	if userID != "" {
-		s.traceAffinity.UpdateLastUsed(userID)
+		s.traceAffinity.UpdateLastUsedForKind(string(kind), userID)
 	}
 }
 
@@ -1077,8 +1097,10 @@ func kindSchedulerLogPrefix(kind ChannelKind) string {
 		return "Scheduler-Gemini"
 	case ChannelKindChat:
 		return "Scheduler-Chat"
+	case ChannelKindImages:
+		return "Scheduler-Images"
 	default:
-		return "Scheduler"
+		return "Scheduler-Unknown"
 	}
 }
 
@@ -1095,8 +1117,10 @@ func urlManagerChannelKeyOrdinal(kind ChannelKind) int {
 		return 2
 	case ChannelKindChat:
 		return 3
+	case ChannelKindImages:
+		return 4
 	default:
-		return 0
+		return -1
 	}
 }
 

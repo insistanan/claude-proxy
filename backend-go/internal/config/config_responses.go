@@ -21,31 +21,22 @@ func (cm *ConfigManager) GetCurrentResponsesUpstreamWithIndex() (*UpstreamConfig
 }
 
 func (cm *ConfigManager) AddResponsesUpstream(upstream UpstreamConfig) error {
+	_, err := cm.AddResponsesUpstreamWithResult(upstream)
+	return err
+}
+
+func (cm *ConfigManager) AddResponsesUpstreamWithResult(upstream UpstreamConfig) (AddedUpstream, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	prepareNewUpstream(&upstream)
-	
-	// 新渠道优先级设为 1（最高）
-	upstream.Priority = 1
-	
-	// 所有现有渠道的优先级 +1
-	for i := range cm.config.ResponsesUpstream {
-		if cm.config.ResponsesUpstream[i].Priority == 0 {
-			cm.config.ResponsesUpstream[i].Priority = i + 2
-		} else {
-			cm.config.ResponsesUpstream[i].Priority++
-		}
-	}
-	
-	// 插入到开头
-	cm.config.ResponsesUpstream = append([]UpstreamConfig{upstream}, cm.config.ResponsesUpstream...)
+	var result AddedUpstream
+	cm.config.ResponsesUpstream, result = addUpstreamOp(cm.config.ResponsesUpstream, upstream)
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return err
+		return AddedUpstream{}, err
 	}
-	log.Printf("[Config-Upstream] 已添加 Responses 上游（优先级1）: %s", upstream.Name)
-	return nil
+	log.Printf("[Config-Upstream] 已添加 Responses 上游（优先级1）: %s", cm.config.ResponsesUpstream[result.Index].Name)
+	return result, nil
 }
 
 func (cm *ConfigManager) UpdateResponsesUpstream(index int, updates UpstreamUpdate) (shouldResetMetrics bool, err error) {
@@ -56,7 +47,7 @@ func (cm *ConfigManager) UpdateResponsesUpstream(index int, updates UpstreamUpda
 		return false, fmt.Errorf("无效的 Responses 上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdates(&cm.config.ResponsesUpstream[index], index, updates, "Responses")
+	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.ResponsesUpstream, index, updates, "Responses")
 	if err != nil {
 		return false, err
 	}

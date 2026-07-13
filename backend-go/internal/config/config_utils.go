@@ -58,9 +58,7 @@ func deduplicateBaseURLs(urls []string) []string {
 
 // validateLoadBalanceStrategy 验证负载均衡策略
 func validateLoadBalanceStrategy(strategy string) error {
-	// 只接受 failover 策略（round-robin 和 random 已移除）
-	// 为兼容旧配置，仍允许旧值但静默忽略
-	if strategy != "failover" && strategy != "round-robin" && strategy != "random" {
+	if strategy != "failover" {
 		return &ConfigError{Message: "无效的负载均衡策略: " + strategy}
 	}
 	return nil
@@ -126,9 +124,12 @@ func RedirectModelList(model string, upstream *UpstreamConfig) []string {
 	for source, target := range upstream.ModelMapping {
 		mappings = append(mappings, mapping{source, target})
 	}
-	// 按源模型长度降序排序
+	// 按源模型长度降序排序；长度相同按字典序稳定处理，避免 Go map 遍历导致请求间结果漂移。
 	sort.Slice(mappings, func(i, j int) bool {
-		return len(mappings[i].source) > len(mappings[j].source)
+		if len(mappings[i].source) != len(mappings[j].source) {
+			return len(mappings[i].source) > len(mappings[j].source)
+		}
+		return mappings[i].source < mappings[j].source
 	})
 
 	// 按排序后的顺序进行模糊匹配（先匹配原始模型，再匹配剥离后的）
@@ -199,7 +200,7 @@ func GetChannelStatus(upstream *UpstreamConfig) string {
 // GetChannelPriority 获取渠道优先级（带默认值处理）
 func GetChannelPriority(upstream *UpstreamConfig, index int) int {
 	if upstream.Priority == 0 {
-		return index
+		return index + 1
 	}
 	return upstream.Priority
 }
@@ -293,24 +294,31 @@ func setUpstreamStatus(upstream *UpstreamConfig, status string, now time.Time) e
 }
 
 func reorderProblemChannelsStable(upstreams []UpstreamConfig) bool {
-	normal := make([]UpstreamConfig, 0, len(upstreams))
-	problem := make([]UpstreamConfig, 0, len(upstreams))
-	for _, upstream := range upstreams {
-		status := GetChannelStatus(&upstream)
-		if status == ChannelStatusSuspended {
-			problem = append(problem, upstream)
-			continue
-		}
-		normal = append(normal, upstream)
+	ordered := make([]int, len(upstreams))
+	for index := range upstreams {
+		ordered[index] = index
 	}
-	reordered := append(normal, problem...)
-	changed := false
-	for i := range upstreams {
-		if upstreams[i].Name != reordered[i].Name || upstreams[i].Status != reordered[i].Status || upstreams[i].Priority != reordered[i].Priority {
-			changed = true
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		leftPool := channelStatusPool(&upstreams[left])
+		rightPool := channelStatusPool(&upstreams[right])
+		if leftPool != rightPool {
+			return leftPool < rightPool
 		}
-		reordered[i].Priority = i + 1
-		upstreams[i] = reordered[i]
+		leftPriority := GetChannelPriority(&upstreams[left], left)
+		rightPriority := GetChannelPriority(&upstreams[right], right)
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
+		}
+		return left < right
+	})
+	changed := false
+	for priority, index := range ordered {
+		wanted := priority + 1
+		if upstreams[index].Priority != wanted {
+			changed = true
+			upstreams[index].Priority = wanted
+		}
 	}
 	return changed
 }
@@ -320,6 +328,7 @@ func insertClonedUpstream(upstreams []UpstreamConfig, index int, now time.Time) 
 		return nil, fmt.Errorf("无效的上游索引: %d", index)
 	}
 	clone := *upstreams[index].Clone()
+	clone.ID = newUpstreamID()
 	clone.Name = clone.Name + " - 副本"
 	clone.PromotionUntil = nil
 	clone.PromotionCount = 0
@@ -329,39 +338,17 @@ func insertClonedUpstream(upstreams []UpstreamConfig, index int, now time.Time) 
 	}
 	prepareUpstreamLifecycle(&clone, now)
 
-	ordered := make([]int, 0, len(upstreams))
-	for i := range upstreams {
-		ordered = append(ordered, i)
-	}
-	sort.SliceStable(ordered, func(i, j int) bool {
-		return GetChannelPriority(&upstreams[ordered[i]], ordered[i]) < GetChannelPriority(&upstreams[ordered[j]], ordered[j])
-	})
-
-	targetOrder := len(ordered)
-	for i, idx := range ordered {
-		if idx == index {
-			targetOrder = i + 1
-			break
-		}
-	}
-
-	clone.Priority = targetOrder + 1
+	normalizeUpstreamPriorities(upstreams)
+	targetPriority := GetChannelPriority(&upstreams[index], index)
+	clone.Priority = targetPriority + 1
 	next := append([]UpstreamConfig(nil), upstreams...)
 	for i := range next {
-		next[i].Priority = sortPriorityForDuplicate(next[i].Priority, i, targetOrder)
+		if next[i].Priority > targetPriority {
+			next[i].Priority++
+		}
 	}
 	next = append(next, clone)
 	return next, nil
-}
-
-func sortPriorityForDuplicate(priority int, fallbackIndex int, targetOrder int) int {
-	if priority == 0 {
-		priority = fallbackIndex + 1
-	}
-	if priority > targetOrder {
-		return priority + 1
-	}
-	return priority
 }
 
 func sameTimePtr(a *time.Time, b *time.Time) bool {
@@ -381,9 +368,11 @@ func lifecycleMetadataChanged(before UpstreamConfig, after UpstreamConfig) bool 
 func applyLifecycleToUpstreams(upstreams []UpstreamConfig, now time.Time, cleanupDeprecated bool, label string) ([]UpstreamConfig, bool) {
 	changed := false
 	next := make([]UpstreamConfig, 0, len(upstreams))
+	poolChanged := make([]int, 0)
 	for i := range upstreams {
 		upstream := upstreams[i]
 		before := upstream
+		previousPool := channelStatusPool(&before)
 		prepareUpstreamLifecycle(&upstream, now)
 		if lifecycleMetadataChanged(before, upstream) {
 			changed = true
@@ -407,6 +396,12 @@ func applyLifecycleToUpstreams(upstreams []UpstreamConfig, now time.Time, cleanu
 			log.Printf("[Config-Lifecycle] %s 渠道 [%d] %s 已在弃用池超过 3 天，自动清理为删除占位", label, i, upstream.Name)
 		}
 		next = append(next, upstream)
+		if previousPool != channelStatusPool(&upstream) {
+			poolChanged = append(poolChanged, i)
+		}
+	}
+	for _, index := range poolChanged {
+		moveChannelToStatusPoolTail(next, index)
 	}
 	return next, changed
 }
