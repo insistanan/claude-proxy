@@ -117,7 +117,7 @@ func HandleMultiChannelFailover(
 				if affinityMgr == nil {
 					shouldSetAffinity = true
 				} else {
-					if _, hasAffinity := affinityMgr.GetPreferredChannel(userID); !hasAffinity {
+					if _, hasAffinity := affinityMgr.GetPreferredChannelForKind(string(kind), userID); !hasAffinity {
 						// 情况1：新会话，建立亲和
 						shouldSetAffinity = true
 					} else if selection.Reason == "trace_affinity" {
@@ -125,7 +125,7 @@ func HandleMultiChannelFailover(
 						shouldSetAffinity = true
 					} else {
 						// 情况3：检查原亲和渠道是否在本次失败
-						if oldChannelIdx, ok := affinityMgr.GetPreferredChannel(userID); ok {
+						if oldChannelIdx, ok := affinityMgr.GetPreferredChannelForKind(string(kind), userID); ok {
 							if failedChannels[oldChannelIdx] {
 								// 原亲和渠道失败，允许建立新亲和
 								shouldSetAffinity = true
@@ -135,7 +135,7 @@ func HandleMultiChannelFailover(
 				}
 
 				if shouldSetAffinity {
-					channelScheduler.SetTraceAffinity(userID, channelIndex)
+					channelScheduler.SetTraceAffinityForKind(kind, userID, channelIndex)
 				}
 				channelScheduler.ConsumePromotionCount(channelIndex, kind)
 			}

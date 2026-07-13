@@ -40,6 +40,7 @@ func Handler(
 		if c.IsAborted() {
 			return
 		}
+		c.Set(utils.ContextKeyCodexDisguise, cfgManager.GetCodexDisguiseEnabled())
 
 		startTime := time.Now()
 
@@ -340,6 +341,9 @@ func handleSuccess(
 	defer resp.Body.Close()
 
 	isStream := originalReq != nil && originalReq.Stream
+	if upstreamType == converters.ResponsesUpstreamResponses && isResponsesImageGenerationRequest(originalRequestJSON) {
+		return handleResponsesImagePassthrough(c, resp, envCfg, startTime, isStream)
+	}
 
 	if isStream {
 		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, hasImage), nil
@@ -430,6 +434,49 @@ func handleSuccess(
 		CacheCreation1hInputTokens: responsesResp.Usage.CacheCreation1hInputTokens,
 		CacheTTL:                   responsesResp.Usage.CacheTTL,
 	}, nil
+}
+
+func handleResponsesImagePassthrough(
+	c *gin.Context,
+	resp *http.Response,
+	envCfg *config.EnvConfig,
+	startTime time.Time,
+	requestedStream bool,
+) (*types.Usage, error) {
+	isStream := requestedStream || common.IsEventStreamResponse(resp)
+	if envCfg.EnableResponseLogs {
+		responseTime := time.Since(startTime).Milliseconds()
+		if isStream {
+			log.Printf("[Responses-Image-Stream] 原生生图流式响应开始: %dms, 状态: %d", responseTime, resp.StatusCode)
+		} else {
+			log.Printf("[Responses-Image] 原生生图响应开始转发: %dms, 状态: %d", responseTime, resp.StatusCode)
+		}
+	}
+
+	err := common.ForwardUpstreamResponseBody(c, resp, "application/json", isStream)
+	if envCfg.EnableResponseLogs {
+		responseTime := time.Since(startTime).Milliseconds()
+		log.Printf("[Responses-Image] 原生生图响应转发完成: %dms", responseTime)
+	}
+	return nil, err
+}
+
+func isResponsesImageGenerationRequest(bodyBytes []byte) bool {
+	var payload struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return false
+	}
+	for _, rawTool := range payload.Tools {
+		var tool struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(rawTool, &tool); err == nil && tool.Type == "image_generation" {
+			return true
+		}
+	}
+	return false
 }
 
 // patchResponsesUsage 补全 Responses 响应的 Token 统计
@@ -592,10 +639,7 @@ func handleStreamSuccess(
 	c.Status(resp.StatusCode)
 	flusher, _ := c.Writer.(http.Flusher)
 
-	scanner := bufio.NewScanner(resp.Body)
-	const maxCapacity = 1024 * 1024
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, maxCapacity)
+	reader := bufio.NewReaderSize(resp.Body, 64*1024)
 
 	// Token 统计状态
 	var outputTextBuffer bytes.Buffer
@@ -606,11 +650,20 @@ func handleStreamSuccess(
 	clientGone := false
 	var streamResponseID string
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	var streamReadErr error
+	for {
+		rawLine, readErr := reader.ReadBytes('\n')
+		if len(rawLine) == 0 && readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				streamReadErr = readErr
+			}
+			break
+		}
+
+		line := strings.TrimSuffix(strings.TrimSuffix(string(rawLine), "\n"), "\r")
 
 		if streamLoggingEnabled {
-			logBuffer.WriteString(line + "\n")
+			logBuffer.Write(rawLine)
 			if synthesizer != nil {
 				synthesizer.ProcessLine(line)
 			}
@@ -691,10 +744,17 @@ func handleStreamSuccess(
 				}
 			}
 		}
+
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				streamReadErr = readErr
+			}
+			break
+		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Printf("[Responses-Stream] 警告: 流式响应读取错误: %v", err)
+	if streamReadErr != nil {
+		log.Printf("[Responses-Stream] 警告: 流式响应读取错误: %v", streamReadErr)
 	}
 
 	if envCfg.EnableResponseLogs {

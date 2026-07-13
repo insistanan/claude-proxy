@@ -359,6 +359,8 @@ func ResolveRequestedUpstream(
 		upstreams = cfg.GeminiUpstream
 	case scheduler.ChannelKindChat:
 		upstreams = cfg.ChatUpstream
+	case scheduler.ChannelKindImages:
+		upstreams = cfg.ImagesUpstream
 	default:
 		return nil, -1, fmt.Errorf("不支持的渠道类型: %s", kind)
 	}

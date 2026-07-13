@@ -30,6 +30,7 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		if c.IsAborted() {
 			return
 		}
+		c.Set(utils.ContextKeyClaudeCodeDisguise, cfgManager.GetClaudeCodeDisguiseEnabled())
 
 		startTime := time.Now()
 

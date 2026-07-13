@@ -40,19 +40,35 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 			return
 		}
 
-		model := extractImagesModel(c.GetHeader("Content-Type"), bodyBytes)
+		requestMeta := extractImagesRequestMetadata(c.GetHeader("Content-Type"), bodyBytes)
+		model := requestMeta.Model
 		prompts := common.ExtractPromptJSONFieldPrompts(bodyBytes, "prompt")
 		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindImages, common.ExtractConversationID(c, bodyBytes), model, prompts, false)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindImages)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Images")
 
-		if channelScheduler.IsMultiChannelMode(scheduler.ChannelKindImages) {
-			handleImagesMultiChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, startTime)
+		requestedChannelIndex, hasRequestedChannel, err := common.ExtractRequestedChannelIndex(bodyBytes)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "INVALID_CHANNEL_INDEX"})
+			return
+		}
+		if hasRequestedChannel {
+			upstream, channelIndex, err := common.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindImages, requestedChannelIndex)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "INVALID_CHANNEL_INDEX"})
+				return
+			}
+			handleImagesSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, requestMeta.Stream, upstream, channelIndex, startTime)
 			return
 		}
 
-		handleImagesSingleChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, startTime)
+		if channelScheduler.IsMultiChannelMode(scheduler.ChannelKindImages) {
+			handleImagesMultiChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, requestMeta.Stream, startTime)
+			return
+		}
+
+		handleImagesSingleChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, requestMeta.Stream, startTime)
 	})
 }
 
@@ -65,6 +81,7 @@ func handleImagesMultiChannel(
 	bodyBytes []byte,
 	model string,
 	userID string,
+	isStream bool,
 	startTime time.Time,
 ) {
 	metricsManager := channelScheduler.GetImagesMetricsManager()
@@ -98,7 +115,7 @@ func handleImagesMultiChannel(
 				model,
 				sortedURLResults,
 				bodyBytes,
-				false,
+				isStream,
 				func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
 					return cfgManager.GetNextImagesAPIKey(upstream, failedKeys)
 				},
@@ -117,7 +134,7 @@ func handleImagesMultiChannel(
 					channelScheduler.MarkURLSuccess(scheduler.ChannelKindImages, channelIndex, url)
 				},
 				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return handleImagesSuccess(c, resp, envCfg, startTime)
+					return handleImagesSuccess(c, resp, envCfg, startTime, isStream)
 				},
 				common.AttemptLogContext{
 					ChannelIndex:    channelIndex,
@@ -166,6 +183,7 @@ func handleImagesSingleChannel(
 	bodyBytes []byte,
 	model string,
 	userID string,
+	isStream bool,
 	startTime time.Time,
 ) {
 	upstream, channelIndex, err := cfgManager.GetCurrentImagesUpstreamWithIndex()
@@ -173,6 +191,23 @@ func handleImagesSingleChannel(
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "未配置任何 Images 渠道，请先在管理界面添加渠道", "code": "NO_IMAGES_UPSTREAM"})
 		return
 	}
+	handleImagesSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, isStream, upstream, channelIndex, startTime)
+}
+
+func handleImagesSingleChannelWithUpstream(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	endpoint string,
+	bodyBytes []byte,
+	model string,
+	userID string,
+	isStream bool,
+	upstream *config.UpstreamConfig,
+	channelIndex int,
+	startTime time.Time,
+) {
 	if len(upstream.APIKeys) == 0 {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": fmt.Sprintf("当前 Images 渠道 \"%s\" 未配置API密钥", upstream.Name), "code": "NO_API_KEYS"})
 		return
@@ -195,7 +230,7 @@ func handleImagesSingleChannel(
 		model,
 		common.BuildDefaultURLResults(upstream.GetAllBaseURLs()),
 		bodyBytes,
-		false,
+		isStream,
 		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
 			return cfgManager.GetNextImagesAPIKey(upstream, failedKeys)
 		},
@@ -210,7 +245,7 @@ func handleImagesSingleChannel(
 		nil,
 		nil,
 		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleImagesSuccess(c, resp, envCfg, startTime)
+			return handleImagesSuccess(c, resp, envCfg, startTime, isStream)
 		},
 		common.AttemptLogContext{
 			ChannelIndex:    channelIndex,
@@ -223,6 +258,7 @@ func handleImagesSingleChannel(
 	if handled {
 		if successKey != "" {
 			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindImages, channelIndex, upstream.Name)
+			channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindImages)
 		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
 			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindImages, lastError)
 		}
@@ -261,6 +297,10 @@ func applyImagesModelMapping(contentType string, bodyBytes []byte, upstream *con
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
+		metadata := extractImagesRequestMetadata(contentType, bodyBytes)
+		if strings.TrimSpace(metadata.Model) == "" || config.ResolveUpstreamModel(metadata.Model, upstream) == metadata.Model {
+			return bodyBytes, contentType, nil
+		}
 		mappedBody, mappedContentType, err := applyImagesMultipartModelMapping(params["boundary"], bodyBytes, upstream)
 		if err != nil {
 			return nil, "", err
@@ -280,7 +320,13 @@ func applyImagesModelMapping(contentType string, bodyBytes []byte, upstream *con
 	}
 
 	if model, ok := payload["model"].(string); ok && strings.TrimSpace(model) != "" {
-		payload["model"] = config.ResolveUpstreamModel(model, upstream)
+		mappedModel := config.ResolveUpstreamModel(model, upstream)
+		if mappedModel == model {
+			return bodyBytes, contentType, nil
+		}
+		payload["model"] = mappedModel
+	} else {
+		return bodyBytes, contentType, nil
 	}
 
 	mappedBody, err := utils.MarshalJSONNoEscape(payload)
@@ -364,79 +410,101 @@ func buildOpenAIEndpointURL(baseURL string, endpoint string) string {
 	return baseURL + endpoint
 }
 
-func handleImagesSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig, startTime time.Time) (*types.Usage, error) {
+func handleImagesSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig, startTime time.Time, requestedStream bool) (*types.Usage, error) {
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
-		return nil, err
-	}
-	bodyBytes = utils.DecompressGzipIfNeeded(resp, bodyBytes)
-
+	isStream := requestedStream || common.IsEventStreamResponse(resp)
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
-		log.Printf("[Images-Timing] Images 响应完成: %dms, 状态: %d", responseTime, resp.StatusCode)
-		if envCfg.IsDevelopment() {
-			var formattedBody string
-			if envCfg.RawLogOutput {
-				formattedBody = utils.FormatJSONBytesRaw(bodyBytes)
-			} else {
-				formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
-			}
-			log.Printf("[Images-Response] 响应体:\n%s", formattedBody)
+		if isStream {
+			log.Printf("[Images-Stream] Images 流式响应开始: %dms, 状态: %d", responseTime, resp.StatusCode)
+		} else {
+			log.Printf("[Images-Timing] Images 响应开始转发: %dms, 状态: %d", responseTime, resp.StatusCode)
 		}
 	}
 
-	utils.ForwardResponseHeaders(resp.Header, c.Writer)
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/json"
+	err := common.ForwardUpstreamResponseBody(c, resp, "application/json", isStream)
+	if envCfg.EnableResponseLogs {
+		responseTime := time.Since(startTime).Milliseconds()
+		if isStream {
+			log.Printf("[Images-Stream] Images 流式响应完成: %dms", responseTime)
+		} else {
+			log.Printf("[Images-Timing] Images 响应转发完成: %dms", responseTime)
+		}
 	}
-	common.MarkRequestLogFirstToken(c)
-	c.Data(resp.StatusCode, contentType, bodyBytes)
-	return nil, nil
+	return nil, err
 }
 
-func extractImagesModel(contentType string, bodyBytes []byte) string {
+type imagesRequestMetadata struct {
+	Model  string
+	Stream bool
+}
+
+func extractImagesRequestMetadata(contentType string, bodyBytes []byte) imagesRequestMetadata {
+	var metadata imagesRequestMetadata
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return ""
+		return metadata
 	}
 
 	if strings.Contains(mediaType, "json") {
-		var req struct {
-			Model string `json:"model"`
+		var payload map[string]interface{}
+		decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+		decoder.UseNumber()
+		if err := decoder.Decode(&payload); err == nil {
+			metadata.Model, _ = payload["model"].(string)
+			metadata.Stream = parseImagesStreamValue(payload["stream"])
 		}
-		if err := json.Unmarshal(bodyBytes, &req); err == nil {
-			return req.Model
-		}
-		return ""
+		return metadata
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
 		boundary := params["boundary"]
 		if boundary == "" {
-			return ""
+			return metadata
 		}
 		reader := multipart.NewReader(bytes.NewReader(bodyBytes), boundary)
 		for {
 			part, err := reader.NextPart()
 			if err != nil {
-				return ""
+				return metadata
 			}
-			if part.FormName() != "model" {
+			fieldName := part.FormName()
+			if fieldName != "model" && fieldName != "stream" {
 				part.Close()
 				continue
 			}
-			modelBytes, err := io.ReadAll(io.LimitReader(part, 1024))
+			valueBytes, err := io.ReadAll(io.LimitReader(part, 4096))
 			part.Close()
 			if err != nil {
-				return ""
+				return metadata
 			}
-			return strings.TrimSpace(string(modelBytes))
+			value := strings.TrimSpace(string(valueBytes))
+			switch fieldName {
+			case "model":
+				metadata.Model = value
+			case "stream":
+				metadata.Stream = parseImagesStreamValue(value)
+			}
 		}
 	}
 
-	return ""
+	return metadata
+}
+
+func parseImagesStreamValue(value interface{}) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "1", "yes", "on":
+			return true
+		}
+	case json.Number:
+		return typed.String() == "1"
+	case float64:
+		return typed == 1
+	}
+	return false
 }
