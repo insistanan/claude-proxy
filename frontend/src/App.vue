@@ -272,6 +272,28 @@
           </div>
 
           <div class="action-bar-right">
+            <!-- 客户端伪装切换按钮：仅 Messages / Responses 显示 -->
+            <v-tooltip v-if="clientDisguiseProtocol" location="bottom" content-class="fuzzy-tooltip">
+              <template #activator="{ props }">
+                <v-btn
+                  v-bind="props"
+                  variant="tonal"
+                  size="large"
+                  :loading="systemStore.clientDisguiseLoading"
+                  :disabled="systemStore.clientDisguiseLoadError"
+                  :color="systemStore.clientDisguiseLoadError ? 'error' : (clientDisguiseEnabled ? 'success' : 'default')"
+                  class="action-btn"
+                  @click="toggleClientDisguise"
+                >
+                  <v-icon start size="20">
+                    {{ systemStore.clientDisguiseLoadError ? 'mdi-alert-circle-outline' : (clientDisguiseEnabled ? 'mdi-robot' : 'mdi-robot-outline') }}
+                  </v-icon>
+                  {{ clientDisguiseLabel }}
+                </v-btn>
+              </template>
+              <span>{{ clientDisguiseTooltip }}</span>
+            </v-tooltip>
+
             <!-- Fuzzy 模式切换按钮 -->
             <v-tooltip location="bottom" content-class="fuzzy-tooltip">
               <template #activator="{ props }">
@@ -493,7 +515,7 @@ const refreshChannels = async () => {
   }
 }
 
-const saveChannel = async (channel: Omit<Channel, 'index' | 'latency' | 'status'>, options?: { isQuickAdd?: boolean }) => {
+const saveChannel = async (channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>, options?: { isQuickAdd?: boolean }) => {
   try {
     const result = await channelStore.saveChannel(channel, dialogStore.editingChannel?.index ?? null, options)
     showToast(result.message, 'success')
@@ -683,6 +705,66 @@ const toggleFuzzyMode = async () => {
     showToast(`切换 Fuzzy 模式失败: ${e instanceof Error ? e.message : '未知错误'}`, 'error')
   } finally {
     systemStore.setFuzzyModeLoading(false)
+  }
+}
+
+const clientDisguiseProtocol = computed<'messages' | 'responses' | null>(() => {
+  if (channelStore.activeTab === 'messages' || channelStore.activeTab === 'responses') {
+    return channelStore.activeTab
+  }
+  return null
+})
+
+const clientDisguiseEnabled = computed(() => {
+  return clientDisguiseProtocol.value === 'messages'
+    ? preferencesStore.claudeCodeDisguiseEnabled
+    : clientDisguiseProtocol.value === 'responses'
+      ? preferencesStore.codexDisguiseEnabled
+      : false
+})
+
+const clientDisguiseLabel = computed(() => clientDisguiseProtocol.value === 'responses' ? 'Codex 伪装' : 'Claude 伪装')
+
+const clientDisguiseTooltip = computed(() => {
+  if (systemStore.clientDisguiseLoadError) return '加载失败，请刷新页面'
+  const clientName = clientDisguiseProtocol.value === 'responses' ? 'Codex CLI' : 'Claude Code'
+  return clientDisguiseEnabled.value
+    ? `${clientName} 伪装已启用：规范化客户端身份头，保留已有会话和协议能力字段`
+    : `${clientName} 伪装已关闭：透明转发客户端身份头`
+})
+
+const loadClientDisguiseStatus = async () => {
+  systemStore.setClientDisguiseLoadError(false)
+  try {
+    const status = await api.getClientDisguise()
+    preferencesStore.setClientDisguise('messages', status.claudeCodeDisguiseEnabled)
+    preferencesStore.setClientDisguise('responses', status.codexDisguiseEnabled)
+  } catch (e) {
+    console.error('Failed to load client disguise status:', e)
+    systemStore.setClientDisguiseLoadError(true)
+    showToast('加载客户端伪装状态失败，请刷新页面重试', 'warning')
+  }
+}
+
+const toggleClientDisguise = async () => {
+  const protocol = clientDisguiseProtocol.value
+  if (!protocol) return
+  if (systemStore.clientDisguiseLoadError) {
+    showToast('客户端伪装状态未知，请先刷新页面', 'warning')
+    return
+  }
+
+  const nextEnabled = !clientDisguiseEnabled.value
+  systemStore.setClientDisguiseLoading(true)
+  try {
+    await api.setClientDisguise(protocol, nextEnabled)
+    preferencesStore.setClientDisguise(protocol, nextEnabled)
+    const clientName = protocol === 'responses' ? 'Codex' : 'Claude Code'
+    showToast(`${clientName} 伪装已${nextEnabled ? '启用' : '关闭'}`, 'success')
+  } catch (e) {
+    showToast(`切换客户端伪装失败: ${e instanceof Error ? e.message : '未知错误'}`, 'error')
+  } finally {
+    systemStore.setClientDisguiseLoading(false)
   }
 }
 
@@ -930,6 +1012,8 @@ onMounted(async () => {
     await refreshChannels()
     // 加载 Fuzzy 模式状态
     await loadFuzzyModeStatus()
+    // 加载 Messages / Responses 客户端伪装状态
+    await loadClientDisguiseStatus()
     // 启动自动刷新
     startAutoRefresh()
     // 初始化完成后根据最新刷新结果设置系统状态

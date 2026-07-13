@@ -19,6 +19,10 @@ export const usePreferencesStore = defineStore('preferences', () => {
   // Fuzzy 模式开关
   const fuzzyModeEnabled = ref(true)
 
+  // 服务端持久化的客户端伪装开关
+  const claudeCodeDisguiseEnabled = ref(false)
+  const codexDisguiseEnabled = ref(false)
+
   // 全局统计面板展开状态
   const showGlobalStats = ref(false)
 
@@ -55,6 +59,14 @@ export const usePreferencesStore = defineStore('preferences', () => {
     fuzzyModeEnabled.value = !fuzzyModeEnabled.value
   }
 
+  function setClientDisguise(protocol: 'messages' | 'responses', enabled: boolean) {
+    if (protocol === 'messages') {
+      claudeCodeDisguiseEnabled.value = enabled
+    } else {
+      codexDisguiseEnabled.value = enabled
+    }
+  }
+
   /**
    * 切换全局统计面板
    */
@@ -66,6 +78,8 @@ export const usePreferencesStore = defineStore('preferences', () => {
     // 状态
     darkModePreference,
     fuzzyModeEnabled,
+    claudeCodeDisguiseEnabled,
+    codexDisguiseEnabled,
     showGlobalStats,
 
     // 方法
@@ -73,6 +87,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
     toggleDarkMode,
     setFuzzyMode,
     toggleFuzzyMode,
+    setClientDisguise,
     toggleGlobalStats,
   }
 }, {

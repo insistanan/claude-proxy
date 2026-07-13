@@ -82,6 +82,7 @@ export interface ChannelMetrics {
 }
 
 export interface Channel {
+  id?: string
   name: string
   serviceType: 'openai' | 'gemini' | 'claude' | 'responses' | 'chat'
   baseUrl: string
@@ -110,6 +111,13 @@ export interface Channel {
   deprecatedAt?: string      // 移入弃用池时间
   injectDummyThoughtSignature?: boolean  // Gemini 特定：为 functionCall 注入 dummy thought_signature（兼容第三方 API）
   stripThoughtSignature?: boolean        // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
+}
+
+export interface CreatedChannelResponse {
+  channel: {
+    id: string
+    index: number
+  }
 }
 
 export interface ChannelsResponse {
@@ -613,8 +621,8 @@ class ApiService {
     return this.request('/messages/channels')
   }
 
-  async addChannel(channel: Omit<Channel, 'index' | 'latency' | 'status'>): Promise<void> {
-    await this.request('/messages/channels', {
+  async addChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
+    return this.request('/messages/channels', {
       method: 'POST',
       body: JSON.stringify(channel)
     })
@@ -689,8 +697,8 @@ class ApiService {
     return this.request('/responses/channels')
   }
 
-  async addResponsesChannel(channel: Omit<Channel, 'index' | 'latency' | 'status'>): Promise<void> {
-    await this.request('/responses/channels', {
+  async addResponsesChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
+    return this.request('/responses/channels', {
       method: 'POST',
       body: JSON.stringify(channel)
     })
@@ -728,8 +736,8 @@ class ApiService {
     return this.request('/chat/channels')
   }
 
-  async addChatChannel(channel: Omit<Channel, 'index' | 'latency' | 'status'>): Promise<void> {
-    await this.request('/chat/channels', {
+  async addChatChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
+    return this.request('/chat/channels', {
       method: 'POST',
       body: JSON.stringify(channel)
     })
@@ -860,6 +868,9 @@ class ApiService {
     }
     if (type === 'chat') {
       return this.getChatChannelDashboard()
+    }
+    if (type === 'images') {
+      return this.getImagesChannelDashboard()
     }
     const query = type === 'responses' ? '?type=responses' : ''
     return this.request(`/messages/channels/dashboard${query}`)
@@ -1012,6 +1023,22 @@ class ApiService {
     })
   }
 
+  // 获取 Messages / Responses 客户端伪装状态
+  async getClientDisguise(): Promise<{
+    claudeCodeDisguiseEnabled: boolean
+    codexDisguiseEnabled: boolean
+  }> {
+    return this.request('/settings/client-disguise')
+  }
+
+  // 设置指定协议的客户端伪装状态
+  async setClientDisguise(protocol: 'messages' | 'responses', enabled: boolean): Promise<void> {
+    await this.request('/settings/client-disguise', {
+      method: 'PUT',
+      body: JSON.stringify({ protocol, enabled })
+    })
+  }
+
   // ============== 历史指标 API ==============
 
   // 获取 Messages 渠道历史指标（用于时间序列图表）
@@ -1074,8 +1101,8 @@ class ApiService {
     return this.request('/gemini/channels')
   }
 
-  async addGeminiChannel(channel: Omit<Channel, 'index' | 'latency' | 'status'>): Promise<void> {
-    await this.request('/gemini/channels', {
+  async addGeminiChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
+    return this.request('/gemini/channels', {
       method: 'POST',
       body: JSON.stringify(channel)
     })
@@ -1216,7 +1243,7 @@ class ApiService {
     return this.request('/images/channels')
   }
 
-  async addImagesChannel(channel: Omit<Channel, 'index' | 'latency' | 'status'>): Promise<void> {
+  async addImagesChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
     return this.request('/images/channels', {
       method: 'POST',
       body: JSON.stringify(channel),
@@ -1255,6 +1282,31 @@ class ApiService {
       method: 'POST',
       body: JSON.stringify({ duration: durationSeconds, count: count ?? 0 }),
     })
+  }
+
+  async setImagesChannelStatus(channelId: number, status: ChannelStatus): Promise<void> {
+    await this.request(`/images/channels/${channelId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status })
+    })
+  }
+
+  async resumeImagesChannel(channelId: number): Promise<void> {
+    await this.request(`/images/channels/${channelId}/resume`, {
+      method: 'POST'
+    })
+  }
+
+  async getImagesChannelMetrics(): Promise<ChannelMetrics[]> {
+    return this.request('/images/channels/metrics')
+  }
+
+  async getImagesChannelMetricsHistory(duration: '1h' | '6h' | '24h' = '24h'): Promise<MetricsHistoryResponse[]> {
+    return this.request(`/images/channels/metrics/history?duration=${duration}`)
+  }
+
+  async getImagesChannelKeyMetricsHistory(channelId: number, duration: '1h' | '6h' | '24h' | 'today' = '6h'): Promise<ChannelKeyMetricsHistoryResponse> {
+    return this.request(`/images/channels/${channelId}/keys/metrics/history?duration=${duration}`)
   }
 
   async pingImagesChannel(id: number): Promise<PingResult> {
@@ -1296,6 +1348,24 @@ export const fetchHealth = async (): Promise<HealthResponse> => {
 }
 
 export const api = new ApiService()
+
+const handleImagesTestResponse = async (response: Response, onChunk: (chunk: string) => void): Promise<void> => {
+  const payload = await response.json()
+  const image = Array.isArray(payload?.data) ? payload.data[0] : undefined
+  if (typeof image?.url === 'string' && image.url) {
+    onChunk(image.url)
+    return
+  }
+  if (typeof image?.revised_prompt === 'string' && image.revised_prompt) {
+    onChunk(image.revised_prompt)
+    return
+  }
+  if (typeof image?.b64_json === 'string' && image.b64_json) {
+    onChunk('图像生成成功（上游返回 Base64 图像数据）')
+    return
+  }
+  onChunk('图像请求成功')
+}
 
 /**
  * 测试渠道连通性（演练台专用）
@@ -1453,6 +1523,17 @@ export const testChannel = async (
       }
       break
     }
+
+    case 'images': {
+      endpoint = '/v1/images/generations'
+      body = {
+        model: 'gpt-image-1',
+        prompt: message,
+        n: 1,
+        metadata: createConversationMetadata()
+      }
+      break
+    }
   }
 
   const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -1463,6 +1544,11 @@ export const testChannel = async (
 
   if (!response.ok) {
     throw new Error(`请求失败: ${response.status} ${response.statusText}`)
+  }
+
+  if (apiType === 'images') {
+    await handleImagesTestResponse(response, onChunk)
+    return
   }
 
   const reader = response.body?.getReader()
@@ -1682,6 +1768,17 @@ export const testChannelWithModel = async (
       }
       break
     }
+
+    case 'images': {
+      endpoint = '/v1/images/generations'
+      body = {
+        model,
+        prompt: message,
+        n: 1,
+        metadata: createConversationMetadata()
+      }
+      break
+    }
   }
 
   const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -1706,6 +1803,11 @@ export const testChannelWithModel = async (
       // 解析失败，使用默认错误消息
     }
     throw new Error(errorMessage)
+  }
+
+  if (apiType === 'images') {
+    await handleImagesTestResponse(response, onChunk)
+    return
   }
 
   const reader = response.body?.getReader()

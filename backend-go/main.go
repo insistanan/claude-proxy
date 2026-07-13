@@ -335,6 +335,8 @@ func main() {
 		// Fuzzy 模式设置
 		apiGroup.GET("/settings/fuzzy-mode", handlers.GetFuzzyMode(cfgManager))
 		apiGroup.PUT("/settings/fuzzy-mode", handlers.SetFuzzyMode(cfgManager))
+		apiGroup.GET("/settings/client-disguise", handlers.GetClientDisguise(cfgManager))
+		apiGroup.PUT("/settings/client-disguise", handlers.SetClientDisguise(cfgManager))
 	}
 
 	// 代理端点 - Messages API

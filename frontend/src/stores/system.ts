@@ -34,6 +34,8 @@ export const useSystemStore = defineStore('system', () => {
   // Fuzzy 模式加载状态
   const fuzzyModeLoading = ref(false)
   const fuzzyModeLoadError = ref(false)
+  const clientDisguiseLoading = ref(false)
+  const clientDisguiseLoadError = ref(false)
 
   // ===== 计算属性 =====
 
@@ -107,6 +109,14 @@ export const useSystemStore = defineStore('system', () => {
     fuzzyModeLoadError.value = error
   }
 
+  function setClientDisguiseLoading(loading: boolean) {
+    clientDisguiseLoading.value = loading
+  }
+
+  function setClientDisguiseLoadError(error: boolean) {
+    clientDisguiseLoadError.value = error
+  }
+
   /**
    * 重置系统状态
    */
@@ -124,6 +134,8 @@ export const useSystemStore = defineStore('system', () => {
     isCheckingVersion.value = false
     fuzzyModeLoading.value = false
     fuzzyModeLoadError.value = false
+    clientDisguiseLoading.value = false
+    clientDisguiseLoadError.value = false
   }
 
   return {
@@ -133,6 +145,8 @@ export const useSystemStore = defineStore('system', () => {
     isCheckingVersion,
     fuzzyModeLoading,
     fuzzyModeLoadError,
+    clientDisguiseLoading,
+    clientDisguiseLoadError,
 
     // 计算属性
     systemStatusText,
@@ -145,6 +159,8 @@ export const useSystemStore = defineStore('system', () => {
     setCheckingVersion,
     setFuzzyModeLoading,
     setFuzzyModeLoadError,
+    setClientDisguiseLoading,
+    setClientDisguiseLoadError,
     resetSystemState,
   }
 })

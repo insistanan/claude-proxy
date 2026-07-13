@@ -2,6 +2,8 @@
 package handlers
 
 import (
+	"net/http"
+
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/gin-gonic/gin"
 )
@@ -34,6 +36,46 @@ func SetFuzzyMode(cfgManager *config.ConfigManager) gin.HandlerFunc {
 		c.JSON(200, gin.H{
 			"success":          true,
 			"fuzzyModeEnabled": req.Enabled,
+		})
+	}
+}
+
+// GetClientDisguise 获取 Messages 与 Responses 的客户端伪装状态。
+func GetClientDisguise(cfgManager *config.ConfigManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"claudeCodeDisguiseEnabled": cfgManager.GetClaudeCodeDisguiseEnabled(),
+			"codexDisguiseEnabled":      cfgManager.GetCodexDisguiseEnabled(),
+		})
+	}
+}
+
+// SetClientDisguise 设置指定协议的客户端伪装状态。
+func SetClientDisguise(cfgManager *config.ConfigManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Protocol string `json:"protocol" binding:"required"`
+			Enabled  bool   `json:"enabled"`
+		}
+
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数"})
+			return
+		}
+
+		if req.Protocol != "messages" && req.Protocol != "responses" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "protocol 仅支持 messages 或 responses"})
+			return
+		}
+
+		if err := cfgManager.SetClientDisguiseEnabled(req.Protocol, req.Enabled); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存客户端伪装设置失败"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"protocol": req.Protocol,
+			"enabled":  req.Enabled,
 		})
 	}
 }

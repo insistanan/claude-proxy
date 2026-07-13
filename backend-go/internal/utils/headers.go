@@ -2,9 +2,18 @@ package utils
 
 import (
 	"net/http"
+	"runtime"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+)
+
+const (
+	ContextKeyClaudeCodeDisguise = "client-disguise-claude-code"
+	ContextKeyCodexDisguise      = "client-disguise-codex"
+	claudeCodeDisguiseVersion    = "2.1.92"
+	codexDisguiseVersion         = "0.144.0"
 )
 
 // PrepareUpstreamHeaders 准备上游请求头（统一头部处理逻辑）
@@ -115,44 +124,72 @@ func ForwardResponseHeaders(upstreamHeaders http.Header, clientWriter http.Respo
 	}
 }
 
-// EnsureCodexHeaders 确保 Codex CLI 所需的请求头存在（如果客户端没发送则补充）
-// 参考：https://github.com/openai/codex 源码
-func EnsureCodexHeaders(headers http.Header) {
+// ApplyCodexDisguise 为非 Codex 客户端规范化身份头，并保留已有会话与追踪字段。
+func ApplyCodexDisguise(headers http.Header, stream bool) {
+	userAgent := strings.ToLower(headers.Get("User-Agent"))
+	isCodexClient := strings.Contains(userAgent, "codex_cli_rs") ||
+		strings.Contains(userAgent, "codex-tui") ||
+		strings.Contains(userAgent, "codex-cli")
+	if !isCodexClient {
+		headers.Set("User-Agent", codexUserAgent())
+	}
+	if headers.Get("originator") == "" {
+		headers.Set("originator", "codex_cli_rs")
+	}
+	if headers.Get("version") == "" {
+		headers.Set("version", codexDisguiseVersion)
+	}
+
+	if headers.Get("session_id") == "" {
+		headers.Set("session_id", uuid.NewString())
+	}
+
 	// X-Codex-Installation-Id: 客户端安装 ID（如果没有则生成一个）
 	if headers.Get("X-Codex-Installation-Id") == "" {
-		headers.Set("X-Codex-Installation-Id", "proxy-generated-installation-id")
+		headers.Set("X-Codex-Installation-Id", uuid.NewString())
 	}
 
 	// X-Codex-Window-Id: 编辑器窗口 ID（如果没有则使用默认值）
 	if headers.Get("X-Codex-Window-Id") == "" {
-		headers.Set("X-Codex-Window-Id", "proxy-window-1")
+		headers.Set("X-Codex-Window-Id", uuid.NewString())
 	}
 
 	// X-Request-Id: 请求追踪 ID（如果没有则生成）
 	if headers.Get("X-Request-Id") == "" && headers.Get("X-Oai-Request-Id") == "" {
-		headers.Set("X-Request-Id", generateRequestID())
+		headers.Set("X-Request-Id", uuid.NewString())
 	}
 
-	// User-Agent: Codex CLI 标识
-	if headers.Get("User-Agent") == "" {
-		headers.Set("User-Agent", "codex-cli")
+	if stream && headers.Get("Accept") == "" {
+		headers.Set("Accept", "text/event-stream")
 	}
 }
 
-// EnsureClaudeCodeHeaders 确保 Claude Code CLI 所需的请求头存在（如果客户端没发送则补充）
-// 参考：https://code.claude.com/docs/en/llm-gateway
-func EnsureClaudeCodeHeaders(headers http.Header) {
-	// X-Claude-Code-Session-Id: 会话 ID（如果没有则生成）
-	if headers.Get("X-Claude-Code-Session-Id") == "" {
-		headers.Set("X-Claude-Code-Session-Id", generateSessionID())
+// ApplyClaudeCodeDisguise 为非 Claude Code 客户端规范化身份头，并保留已有会话与能力字段。
+func ApplyClaudeCodeDisguise(headers http.Header, stream bool) {
+	userAgent := strings.ToLower(headers.Get("User-Agent"))
+	isClaudeCodeClient := strings.Contains(userAgent, "claude-cli") || strings.Contains(userAgent, "claude-code")
+	if !isClaudeCodeClient {
+		headers.Set("User-Agent", "claude-cli/"+claudeCodeDisguiseVersion+" (external, cli)")
+		headers.Set("X-App", "cli")
+		headers.Set("X-Stainless-Lang", "js")
+		headers.Set("X-Stainless-Package-Version", "0.74.0")
+		headers.Set("X-Stainless-Runtime", "node")
+		headers.Set("X-Stainless-Runtime-Version", "v22.12.0")
+		headers.Set("X-Stainless-Os", stainlessOS())
+		headers.Set("X-Stainless-Arch", stainlessArch())
+		headers.Set("X-Stainless-Retry-Count", "0")
+		headers.Set("X-Stainless-Timeout", "600")
 	}
 
-	// X-App: CLI 标识
+	// X-Claude-Code-Session-Id: 会话 ID（如果没有则生成）
+	if headers.Get("X-Claude-Code-Session-Id") == "" {
+		headers.Set("X-Claude-Code-Session-Id", uuid.NewString())
+	}
+
+	// 真实 Claude Code 请求可能缺少部分可选字段，仅补缺失值。
 	if headers.Get("X-App") == "" {
 		headers.Set("X-App", "cli")
 	}
-
-	// Stainless SDK 标准请求头（如果没有则补充）
 	if headers.Get("X-Stainless-Lang") == "" {
 		headers.Set("X-Stainless-Lang", "js")
 	}
@@ -166,10 +203,10 @@ func EnsureClaudeCodeHeaders(headers http.Header) {
 		headers.Set("X-Stainless-Runtime-Version", "v22.12.0")
 	}
 	if headers.Get("X-Stainless-Os") == "" {
-		headers.Set("X-Stainless-Os", "Linux")
+		headers.Set("X-Stainless-Os", stainlessOS())
 	}
 	if headers.Get("X-Stainless-Arch") == "" {
-		headers.Set("X-Stainless-Arch", "x64")
+		headers.Set("X-Stainless-Arch", stainlessArch())
 	}
 	if headers.Get("X-Stainless-Retry-Count") == "" {
 		headers.Set("X-Stainless-Retry-Count", "0")
@@ -178,34 +215,71 @@ func EnsureClaudeCodeHeaders(headers http.Header) {
 		headers.Set("X-Stainless-Timeout", "600")
 	}
 
-	// User-Agent: Claude Code CLI 标识
-	userAgent := headers.Get("User-Agent")
-	if userAgent == "" || (!strings.Contains(strings.ToLower(userAgent), "claude-cli") && !strings.Contains(strings.ToLower(userAgent), "claude-code")) {
-		headers.Set("User-Agent", "claude-cli/2.1.92 (external, cli)")
-	}
-
 	// anthropic-version: API 版本
 	if headers.Get("anthropic-version") == "" {
 		headers.Set("anthropic-version", "2023-06-01")
 	}
-}
-
-// generateRequestID 生成请求 ID
-func generateRequestID() string {
-	return "proxy-req-" + randomHex(16)
-}
-
-// generateSessionID 生成会话 ID
-func generateSessionID() string {
-	return "proxy-session-" + randomHex(32)
-}
-
-// randomHex 生成指定长度的随机十六进制字符串
-func randomHex(n int) string {
-	const hexChars = "0123456789abcdef"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = hexChars[i%len(hexChars)]
+	if stream && headers.Get("Accept") == "" {
+		headers.Set("Accept", "text/event-stream")
 	}
-	return string(b)
+}
+
+// EnsureCodexHeaders 保留旧调用入口，按非流式请求补全 Codex 特征。
+func EnsureCodexHeaders(headers http.Header) {
+	ApplyCodexDisguise(headers, false)
+}
+
+// EnsureClaudeCodeHeaders 保留旧调用入口，按非流式请求补全 Claude Code 特征。
+func EnsureClaudeCodeHeaders(headers http.Header) {
+	ApplyClaudeCodeDisguise(headers, false)
+}
+
+func codexUserAgent() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "codex_cli_rs/" + codexDisguiseVersion + " (Mac OS; " + runtime.GOARCH + ") " + codexTargetTriple()
+	case "windows":
+		return "codex_cli_rs/" + codexDisguiseVersion + " (Windows; " + runtime.GOARCH + ") " + codexTargetTriple()
+	default:
+		return "codex_cli_rs/" + codexDisguiseVersion + " (Linux; " + runtime.GOARCH + ") " + codexTargetTriple()
+	}
+}
+
+func codexTargetTriple() string {
+	arch := "x86_64"
+	if runtime.GOARCH == "arm64" {
+		arch = "aarch64"
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return arch + "-apple-darwin"
+	case "windows":
+		return arch + "-pc-windows-msvc"
+	default:
+		return arch + "-unknown-linux-gnu"
+	}
+}
+
+func stainlessOS() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "MacOS"
+	case "windows":
+		return "Windows"
+	case "linux":
+		return "Linux"
+	default:
+		return "Unknown"
+	}
+}
+
+func stainlessArch() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x64"
+	case "arm64":
+		return "arm64"
+	default:
+		return runtime.GOARCH
+	}
 }
