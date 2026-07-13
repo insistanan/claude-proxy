@@ -327,7 +327,7 @@ const headers = [
   { title: '操作', key: 'actions', sortable: false }
 ]
 
-const kindItems: ConversationKind[] = ['messages', 'responses', 'gemini', 'chat']
+const kindItems: ConversationKind[] = ['messages', 'responses', 'gemini', 'chat', 'images']
 type RouteSelectItem = {
   title: string
   value: number
@@ -347,7 +347,8 @@ const routeOptions = ref<Record<ConversationKind, RouteSelectItem[]>>({
   messages: [],
   responses: [],
   gemini: [],
-  chat: []
+  chat: [],
+  images: []
 })
 let clockTimer: ReturnType<typeof setInterval> | null = null
 let refreshTimer: ReturnType<typeof setInterval> | null = null
@@ -424,7 +425,8 @@ const loadRouteOptions = async () => {
     messages: [],
     responses: [],
     gemini: [],
-    chat: []
+    chat: [],
+    images: []
   }
   for (const group of res.kinds) {
     next[group.kind] = group.channels.map(ch => ({
@@ -491,7 +493,7 @@ const formatModelChain = (item: ConversationEntry): string => {
 
 const fallbackModelLabel = (kind: ConversationKind): string => {
   if (kind === 'messages') return 'claude'
-  if (kind === 'responses' || kind === 'chat') return 'GPT'
+  if (kind === 'responses' || kind === 'chat' || kind === 'images') return 'GPT'
   if (kind === 'gemini') return 'gemini'
   return '--'
 }

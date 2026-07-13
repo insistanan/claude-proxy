@@ -9,7 +9,7 @@ export interface Message {
 }
 
 export interface PlaygroundState {
-  apiType: 'messages' | 'responses' | 'gemini' | 'chat' | null
+  apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images' | null
   channelIndex: number | null
   messages: Message[]
   isStreaming: boolean

@@ -79,7 +79,7 @@ const apexchart = VueApexCharts
 // Props
 const props = defineProps<{
   channelId: number
-  channelType: 'messages' | 'responses' | 'gemini' | 'chat'
+  channelType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
 }>()
 
 // View mode type

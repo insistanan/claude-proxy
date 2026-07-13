@@ -114,10 +114,11 @@ type TypeFilter = ConversationKind | ''
 
 const typeItems: Array<{ title: string; value: TypeFilter }> = [
   { title: '全部', value: '' },
-  { title: 'Claude', value: 'messages' },
-  { title: 'Codex', value: 'responses' },
+  { title: 'Messages', value: 'messages' },
+  { title: 'Responses', value: 'responses' },
   { title: 'Gemini', value: 'gemini' },
-  { title: 'Chat', value: 'chat' }
+  { title: 'Chat', value: 'chat' },
+  { title: 'Images', value: 'images' }
 ]
 
 const typeFilter = ref<TypeFilter>('')
@@ -142,21 +143,23 @@ const loadLogs = async () => {
 }
 
 const typeLabelMap: Record<ConversationKind, string> = {
-  messages: 'Claude',
-  responses: 'Codex',
+  messages: 'Messages',
+  responses: 'Responses',
   gemini: 'Gemini',
-  chat: 'Chat'
+  chat: 'Chat',
+  images: 'Images'
 }
 
 const typeColorMap: Record<ConversationKind, string> = {
   messages: 'primary',
   responses: 'secondary',
   gemini: 'success',
-  chat: 'info'
+  chat: 'info',
+  images: 'warning'
 }
 
 const normalizedType = (value?: string): ConversationKind => {
-  if (value === 'responses' || value === 'gemini' || value === 'chat') return value
+  if (value === 'responses' || value === 'gemini' || value === 'chat' || value === 'images') return value
   return 'messages'
 }
 

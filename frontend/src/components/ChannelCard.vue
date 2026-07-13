@@ -339,7 +339,7 @@ import QuickTestModal from './QuickTestModal.vue'
 
 interface Props {
   channel: Channel
-  apiType: 'messages' | 'responses' | 'gemini' | 'chat'
+  apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
 }
 
 const props = defineProps<Props>()
@@ -510,7 +510,8 @@ const getServiceIcon = () => {
     'openai': 'mdi-robot',
     'claude': 'mdi-message-processing',
     'gemini': 'mdi-diamond-stone',
-    'chat': 'mdi-chat-processing'
+    'chat': 'mdi-chat-processing',
+    'images': 'mdi-image'
   }
   return iconMap[props.channel.serviceType] || 'mdi-api'
 }
@@ -521,7 +522,8 @@ const getServiceIconColor = () => {
     'openai': 'primary',
     'claude': 'orange',
     'gemini': 'purple',
-    'chat': 'primary'
+    'chat': 'primary',
+    'images': 'warning'
   }
   return colorMap[props.channel.serviceType] || 'grey'
 }
@@ -532,7 +534,8 @@ const getServiceDisplayName = () => {
     'openai': 'OpenAI API',
     'claude': 'Claude API',
     'gemini': 'Gemini API',
-    'chat': 'OpenAI Chat'
+    'chat': 'OpenAI Chat',
+    'images': 'OpenAI Images'
   }
   return nameMap[props.channel.serviceType] || 'Custom API'
 }

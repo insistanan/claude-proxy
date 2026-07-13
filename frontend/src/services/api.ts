@@ -219,7 +219,7 @@ export interface ChannelLogsResponse {
   logs: ChannelLogEntry[]
 }
 
-export type ConversationKind = 'messages' | 'responses' | 'gemini' | 'chat'
+export type ConversationKind = 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
 
 export interface RequestLogEntry extends ChannelLogEntry {
   apiType: ConversationKind
@@ -807,13 +807,13 @@ class ApiService {
     })
   }
 
-  async duplicateChannel(type: 'messages' | 'responses' | 'gemini' | 'chat', channelId: number): Promise<void> {
+  async duplicateChannel(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', channelId: number): Promise<void> {
     await this.request(`/${type}/channels/${channelId}/duplicate`, {
       method: 'POST'
     })
   }
 
-  async tidyProblemChannels(type: 'messages' | 'responses' | 'gemini' | 'chat'): Promise<void> {
+  async tidyProblemChannels(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'): Promise<void> {
     await this.request(`/${type}/channels/tidy`, {
       method: 'POST'
     })
@@ -840,7 +840,7 @@ class ApiService {
   }
 
   // 获取调度器统计信息
-  async getSchedulerStats(type?: 'messages' | 'responses' | 'gemini' | 'chat'): Promise<{
+  async getSchedulerStats(type?: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'): Promise<{
     multiChannelMode: boolean
     activeChannelCount: number
     traceAffinityCount: number
@@ -853,7 +853,7 @@ class ApiService {
   }
 
   // 获取渠道仪表盘数据（合并 channels + metrics + stats）
-  async getChannelDashboard(type: 'messages' | 'responses' | 'gemini' | 'chat' = 'messages'): Promise<ChannelDashboardResponse> {
+  async getChannelDashboard(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images' = 'messages'): Promise<ChannelDashboardResponse> {
     // Gemini 使用降级实现：组合 getChannels + getMetrics
     if (type === 'gemini') {
       return this.getGeminiChannelDashboard()
@@ -921,7 +921,7 @@ class ApiService {
     return this.request('/chat/channels/metrics')
   }
 
-  async getChannelLogs(type: 'messages' | 'responses' | 'gemini' | 'chat', channelId: number): Promise<ChannelLogsResponse> {
+  async getChannelLogs(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', channelId: number): Promise<ChannelLogsResponse> {
     return this.request(`/${type}/channels/${channelId}/logs`)
   }
 
@@ -1061,6 +1061,11 @@ class ApiService {
   // 获取 Chat 全局统计历史
   async getChatGlobalStats(duration: '1h' | '6h' | '24h' | 'today' = '24h'): Promise<GlobalStatsHistoryResponse> {
     return this.request(`/chat/global/stats/history?duration=${duration}`)
+  }
+
+  // 获取 Images 全局统计历史
+  async getImagesGlobalStats(duration: '1h' | '6h' | '24h' | 'today' = '24h'): Promise<GlobalStatsHistoryResponse> {
+    return this.request(`/images/global/stats/history?duration=${duration}`)
   }
 
   // ============== Gemini 渠道管理 API ==============
@@ -1204,6 +1209,65 @@ class ApiService {
   async getChatChannelDashboard(): Promise<ChannelDashboardResponse> {
     return this.request('/chat/channels/dashboard')
   }
+
+  // ===== Images API =====
+
+  async getImagesChannels(): Promise<ChannelsResponse> {
+    return this.request('/images/channels')
+  }
+
+  async addImagesChannel(channel: Omit<Channel, 'index' | 'latency' | 'status'>): Promise<void> {
+    return this.request('/images/channels', {
+      method: 'POST',
+      body: JSON.stringify(channel),
+    })
+  }
+
+  async updateImagesChannel(id: number, channel: Partial<Channel>): Promise<void> {
+    return this.request(`/images/channels/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(channel),
+    })
+  }
+
+  async deleteImagesChannel(id: number): Promise<void> {
+    return this.request(`/images/channels/${id}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async reorderImagesChannels(order: number[]): Promise<void> {
+    return this.request('/images/channels/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ order }),
+    })
+  }
+
+  async updateImagesLoadBalance(strategy: string): Promise<void> {
+    return this.request('/images/loadbalance', {
+      method: 'PUT',
+      body: JSON.stringify({ strategy }),
+    })
+  }
+
+  async setImagesChannelPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void> {
+    return this.request(`/images/channels/${channelId}/promotion`, {
+      method: 'POST',
+      body: JSON.stringify({ duration: durationSeconds, count: count ?? 0 }),
+    })
+  }
+
+  async pingImagesChannel(id: number): Promise<PingResult> {
+    return this.request(`/images/ping/${id}`)
+  }
+
+  async pingAllImagesChannels(): Promise<Array<{ id: number; name: string; latency: number; status: string }>> {
+    return this.request('/images/ping')
+  }
+
+  async getImagesChannelDashboard(): Promise<ChannelDashboardResponse> {
+    return this.request('/images/channels/dashboard')
+  }
 }
 
 // 健康检查响应类型
@@ -1242,7 +1306,7 @@ export const api = new ApiService()
  * @param sessionContext 会话上下文（用于模拟客户端）
  */
 export const testChannel = async (
-  apiType: 'messages' | 'responses' | 'gemini' | 'chat',
+  apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
   channelIndex: number,
   message: string,
   onChunk: (chunk: string) => void,
@@ -1486,7 +1550,7 @@ export const testChannel = async (
  * @param onChunk 流式返回回调
  */
 export const testChannelWithModel = async (
-  apiType: 'messages' | 'responses' | 'gemini' | 'chat',
+  apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
   channelIndex: number,
   model: string,
   message: string,

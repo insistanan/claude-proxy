@@ -146,10 +146,11 @@ const modelOptions = ref<Array<{ title: string; value: string }>>([])
 const selectedModel = ref<string | null>(null)
 
 const apiTypeOptions = [
-  { title: 'Claude Messages', value: 'messages' },
-  { title: 'Codex Responses', value: 'responses' },
+  { title: 'Messages', value: 'messages' },
+  { title: 'Responses', value: 'responses' },
   { title: 'Google Gemini', value: 'gemini' },
-  { title: 'OpenAI Chat', value: 'chat' }
+  { title: 'OpenAI Chat', value: 'chat' },
+  { title: 'Images', value: 'images' }
 ]
 
 const channelOptions = computed(() => {
@@ -180,7 +181,7 @@ const canInput = computed(() => {
   )
 })
 
-const onApiTypeChange = (value: 'messages' | 'responses' | 'gemini' | 'chat' | null) => {
+const onApiTypeChange = (value: 'messages' | 'responses' | 'gemini' | 'chat' | 'images' | null) => {
   playgroundStore.setApiType(value)
   selectedModel.value = null
   modelOptions.value = []

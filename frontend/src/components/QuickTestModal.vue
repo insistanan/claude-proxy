@@ -93,7 +93,7 @@ import { fetchUpstreamModels, testChannelWithModel } from '@/services/api'
 const props = defineProps<{
   modelValue: boolean
   channel: Channel | null
-  apiType: 'messages' | 'responses' | 'gemini' | 'chat'
+  apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
 }>()
 
 const emit = defineEmits<{

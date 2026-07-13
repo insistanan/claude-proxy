@@ -98,7 +98,7 @@ import { api, type ChannelKeyMetricsHistoryResponse } from '../services/api'
 const apexchart = VueApexCharts
 
 const props = defineProps<{
-  channelType: 'messages' | 'responses' | 'gemini' | 'chat'
+  channelType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
   channelIndex: number  // 单渠道模式：指定渠道索引
   channelName: string   // 渠道名称（用于图例）
 }>()

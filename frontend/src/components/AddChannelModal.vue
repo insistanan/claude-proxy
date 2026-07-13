@@ -126,7 +126,7 @@
                   <div class="flex-grow-1">
                     <div class="text-body-2 font-weight-medium">渠道类型</div>
                     <div class="text-caption text-medium-emphasis">
-                      {{ props.channelType === 'gemini' ? 'Gemini' : props.channelType === 'responses' ? 'Responses (Codex)' : props.channelType === 'chat' ? 'OpenAI Chat' : 'Claude (Messages)' }} -
+                      {{ props.channelType === 'gemini' ? 'Gemini' : props.channelType === 'responses' ? 'Responses' : props.channelType === 'chat' ? 'OpenAI Chat' : props.channelType === 'images' ? 'Images' : 'Messages' }} -
                       {{ getDefaultServiceType() }}
                     </div>
                   </div>
@@ -309,7 +309,7 @@
 
                   <!-- 添加新映射 -->
                   <div class="d-flex align-center ga-2">
-                    <v-select
+                    <v-combobox
                       v-model="newMapping.source"
                       label="源模型名"
                       :items="sourceModelOptions"
@@ -317,7 +317,9 @@
                       density="comfortable"
                       hide-details
                       class="flex-1-1"
-                      placeholder="选择源模型名"
+                      placeholder="选择或输入源模型名"
+                      clearable
+                      @keyup.enter="addModelMapping"
                     />
                     <v-icon color="primary">mdi-arrow-right</v-icon>
                     <v-combobox
@@ -692,7 +694,7 @@ import {
 interface Props {
   show: boolean
   channel?: Channel | null
-  channelType?: 'messages' | 'responses' | 'gemini' | 'chat'
+  channelType?: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -774,7 +776,10 @@ const getDefaultServiceType = (): string => {
   if (props.channelType === 'chat') {
     return 'OpenAI Chat'
   }
-  return 'Claude'
+  if (props.channelType === 'images') {
+    return 'OpenAI Images'
+  }
+  return 'Messages'
 }
 
 // 获取默认服务类型值
@@ -785,7 +790,7 @@ const getDefaultServiceTypeValue = (): 'openai' | 'gemini' | 'claude' | 'respons
   if (props.channelType === 'responses') {
     return 'responses'
   }
-  if (props.channelType === 'chat') {
+  if (props.channelType === 'chat' || props.channelType === 'images') {
     return 'openai'
   }
   return 'claude'
@@ -799,7 +804,7 @@ const _getDefaultBaseUrl = (): string => {
   if (props.channelType === 'responses') {
     return 'https://api.openai.com/v1'
   }
-  if (props.channelType === 'chat') {
+  if (props.channelType === 'chat' || props.channelType === 'images') {
     return 'https://api.openai.com/v1'
   }
   return 'https://api.anthropic.com'

@@ -72,11 +72,11 @@
       <div class="header-title">
         <div :class="$vuetify.display.mobile ? 'text-body-2' : 'text-h6'" class="font-weight-bold d-flex align-center">
           <router-link to="/channels/messages" class="api-type-text" :class="{ active: topNavActive === 'messages' }">
-            Claude
+            Messages
           </router-link>
           <span class="api-type-text separator">/</span>
           <router-link to="/channels/responses" class="api-type-text" :class="{ active: topNavActive === 'responses' }">
-            Codex
+            Responses
           </router-link>
           <span class="api-type-text separator">/</span>
           <router-link to="/channels/gemini" class="api-type-text" :class="{ active: topNavActive === 'gemini' }">
@@ -85,6 +85,10 @@
           <span class="api-type-text separator">/</span>
           <router-link to="/channels/chat" class="api-type-text" :class="{ active: topNavActive === 'chat' }">
             Chat
+          </router-link>
+          <span class="api-type-text separator">/</span>
+          <router-link to="/channels/images" class="api-type-text" :class="{ active: topNavActive === 'images' }">
+            Images
           </router-link>
           <span class="api-type-text separator">/</span>
           <router-link to="/conversations" class="api-type-text" :class="{ active: topNavActive === 'conversations' }">
@@ -175,7 +179,7 @@
             <div class="d-flex align-center">
               <v-icon size="20" class="mr-2">mdi-chart-areaspline</v-icon>
               <span class="text-subtitle-1 font-weight-bold">
-                {{ channelStore.activeTab === 'messages' ? 'Claude Messages' : (channelStore.activeTab === 'responses' ? 'Codex Responses' : (channelStore.activeTab === 'gemini' ? 'Gemini' : 'OpenAI Chat')) }} 流量统计
+                {{ channelStore.activeTab === 'messages' ? 'Messages' : (channelStore.activeTab === 'responses' ? 'Responses' : (channelStore.activeTab === 'gemini' ? 'Gemini' : (channelStore.activeTab === 'images' ? 'Images' : 'OpenAI Chat'))) }} 流量统计
               </span>
             </div>
             <v-btn icon size="small" variant="text">
