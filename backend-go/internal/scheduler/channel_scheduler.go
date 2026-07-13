@@ -23,10 +23,12 @@ type ChannelScheduler struct {
 	responsesMetricsManager  *metrics.MetricsManager // Responses 渠道指标
 	geminiMetricsManager     *metrics.MetricsManager // Gemini 渠道指标
 	chatMetricsManager       *metrics.MetricsManager // Chat 渠道指标
+	imagesMetricsManager     *metrics.MetricsManager // Images 渠道指标
 	messagesChannelLogStore  *metrics.ChannelLogStore
 	responsesChannelLogStore *metrics.ChannelLogStore
 	geminiChannelLogStore    *metrics.ChannelLogStore
 	chatChannelLogStore      *metrics.ChannelLogStore
+	imagesChannelLogStore    *metrics.ChannelLogStore
 	requestLogStore          *metrics.RequestLogStore
 	traceAffinity            *session.TraceAffinityManager
 	baseURLAffinity          *session.BaseURLAffinityManager
@@ -41,7 +43,7 @@ type ChannelScheduler struct {
 
 // ChannelKind 标识调度器所处理的渠道类型
 // 注意：这里的 kind 与 upstream.ServiceType（openai/claude/gemini）不同，
-// kind 对应的是本代理对外暴露的一等公民入口：messages / responses / gemini / chat。
+// kind 对应的是本代理对外暴露的一等公民入口：messages / responses / gemini / chat / images。
 type ChannelKind string
 
 const (
@@ -49,6 +51,7 @@ const (
 	ChannelKindResponses ChannelKind = "responses"
 	ChannelKindGemini    ChannelKind = "gemini"
 	ChannelKindChat      ChannelKind = "chat"
+	ChannelKindImages    ChannelKind = "images"
 )
 
 // NewChannelScheduler 创建多渠道调度器
@@ -58,6 +61,7 @@ func NewChannelScheduler(
 	responsesMetrics *metrics.MetricsManager,
 	geminiMetrics *metrics.MetricsManager,
 	chatMetrics *metrics.MetricsManager,
+	imagesMetrics *metrics.MetricsManager,
 	traceAffinity *session.TraceAffinityManager,
 	urlMgr *urlhealth.URLManager,
 ) *ChannelScheduler {
@@ -67,10 +71,12 @@ func NewChannelScheduler(
 		responsesMetricsManager:  responsesMetrics,
 		geminiMetricsManager:     geminiMetrics,
 		chatMetricsManager:       chatMetrics,
+		imagesMetricsManager:     imagesMetrics,
 		messagesChannelLogStore:  metrics.NewChannelLogStore(),
 		responsesChannelLogStore: metrics.NewChannelLogStore(),
 		geminiChannelLogStore:    metrics.NewChannelLogStore(),
 		chatChannelLogStore:      metrics.NewChannelLogStore(),
+		imagesChannelLogStore:    metrics.NewChannelLogStore(),
 		traceAffinity:            traceAffinity,
 		baseURLAffinity:          session.NewBaseURLAffinityManager(),
 		urlManager:               urlMgr,
@@ -87,6 +93,8 @@ func (s *ChannelScheduler) getMetricsManager(kind ChannelKind) *metrics.MetricsM
 		return s.geminiMetricsManager
 	case ChannelKindChat:
 		return s.chatMetricsManager
+	case ChannelKindImages:
+		return s.imagesMetricsManager
 	default:
 		return s.messagesMetricsManager
 	}
@@ -100,6 +108,8 @@ func (s *ChannelScheduler) GetChannelLogStore(kind ChannelKind) *metrics.Channel
 		return s.geminiChannelLogStore
 	case ChannelKindChat:
 		return s.chatChannelLogStore
+	case ChannelKindImages:
+		return s.imagesChannelLogStore
 	default:
 		return s.messagesChannelLogStore
 	}
@@ -940,6 +950,11 @@ func (s *ChannelScheduler) GetGeminiMetricsManager() *metrics.MetricsManager {
 // GetChatMetricsManager 获取 Chat 渠道指标管理器
 func (s *ChannelScheduler) GetChatMetricsManager() *metrics.MetricsManager {
 	return s.chatMetricsManager
+}
+
+// GetImagesMetricsManager 获取 Images 渠道指标管理器
+func (s *ChannelScheduler) GetImagesMetricsManager() *metrics.MetricsManager {
+	return s.imagesMetricsManager
 }
 
 // GetTraceAffinityManager 获取 Trace 亲和性管理器

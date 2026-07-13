@@ -211,6 +211,10 @@ type Config struct {
 	ChatUpstream    []UpstreamConfig `json:"chatUpstream"`
 	ChatLoadBalance string           `json:"chatLoadBalance"`
 
+	// Images 接口专用配置（OpenAI Images API，独立渠道池）
+	ImagesUpstream    []UpstreamConfig `json:"imagesUpstream"`
+	ImagesLoadBalance string           `json:"imagesLoadBalance"`
+
 	// Fuzzy 模式：启用时模糊处理错误，所有非 2xx 错误都尝试 failover
 	FuzzyModeEnabled bool `json:"fuzzyModeEnabled"`
 }
@@ -272,6 +276,13 @@ func (cm *ConfigManager) GetConfig() Config {
 		cloned.ChatUpstream = make([]UpstreamConfig, len(cm.config.ChatUpstream))
 		for i := range cm.config.ChatUpstream {
 			cloned.ChatUpstream[i] = *cm.config.ChatUpstream[i].Clone()
+		}
+	}
+
+	if cm.config.ImagesUpstream != nil {
+		cloned.ImagesUpstream = make([]UpstreamConfig, len(cm.config.ImagesUpstream))
+		for i := range cm.config.ImagesUpstream {
+			cloned.ImagesUpstream[i] = *cm.config.ImagesUpstream[i].Clone()
 		}
 	}
 

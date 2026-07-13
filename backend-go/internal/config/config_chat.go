@@ -184,3 +184,4 @@ func (cm *ConfigManager) GetPromotedChatChannel() (int, bool) {
 	defer cm.mu.RUnlock()
 	return getPromotedOp(cm.config.ChatUpstream)
 }
+

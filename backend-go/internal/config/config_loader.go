@@ -106,6 +106,8 @@ func (cm *ConfigManager) createDefaultConfig() error {
 		GeminiLoadBalance:        "failover",
 		ChatUpstream:             []UpstreamConfig{},
 		ChatLoadBalance:          "failover",
+		ImagesUpstream:           []UpstreamConfig{},
+		ImagesLoadBalance:        "failover",
 		FuzzyModeEnabled:         true, // 默认启用 Fuzzy 模式
 	}
 
@@ -133,6 +135,9 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 	}
 	if cm.config.ChatLoadBalance == "" {
 		cm.config.ChatLoadBalance = "failover"
+	}
+	if cm.config.ImagesLoadBalance == "" {
+		cm.config.ImagesLoadBalance = "failover"
 	}
 
 	// FuzzyModeEnabled 默认值处理：
