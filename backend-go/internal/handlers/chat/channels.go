@@ -29,6 +29,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			priority := config.GetChannelPriority(&up, i)
 
 			upstreams = append(upstreams, gin.H{
+				"id":                 up.ID,
 				"index":              i,
 				"name":               up.Name,
 				"serviceType":        up.ServiceType,
@@ -66,12 +67,16 @@ func AddUpstream(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			return
 		}
 
-		if err := cfgManager.AddChatUpstream(upstream); err != nil {
+		created, err := cfgManager.AddChatUpstreamWithResult(upstream)
+		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
 
-		c.JSON(200, gin.H{"message": "Chat upstream added successfully"})
+		c.JSON(200, gin.H{
+			"message": "Chat upstream added successfully",
+			"channel": gin.H{"id": created.ID, "index": created.Index},
+		})
 	}
 }
 
@@ -124,6 +129,7 @@ func DeleteUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelSche
 		}
 
 		sch.DeleteChannelMetrics(removed, scheduler.ChannelKindChat)
+		sch.GetTraceAffinityManager().RemoveByChannelForKind(string(scheduler.ChannelKindChat), id)
 		c.JSON(200, gin.H{"message": "Chat upstream deleted successfully"})
 	}
 }
@@ -373,7 +379,7 @@ func pingChannelWithAPIKey(ch *config.UpstreamConfig) gin.H {
 		go func(testURL string) {
 			startTime := time.Now()
 			testURL = strings.TrimSuffix(testURL, "/")
-			
+
 			// 根据 ServiceType 构建测试端点
 			var endpoint string
 			switch ch.ServiceType {

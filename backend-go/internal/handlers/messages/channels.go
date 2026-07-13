@@ -29,6 +29,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			priority := config.GetChannelPriority(&up, i)
 
 			upstreams = append(upstreams, gin.H{
+				"id":                 up.ID,
 				"index":              i,
 				"name":               up.Name,
 				"serviceType":        up.ServiceType,
@@ -65,14 +66,17 @@ func AddUpstream(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			return
 		}
 
-		if err := cfgManager.AddUpstream(upstream); err != nil {
+		created, err := cfgManager.AddUpstreamWithResult(upstream)
+		if err != nil {
 			c.JSON(500, gin.H{"error": "Failed to save config"})
 			return
 		}
+		cfg := cfgManager.GetConfig()
 
 		c.JSON(200, gin.H{
 			"message":  "上游已添加",
-			"upstream": upstream,
+			"upstream": cfg.Upstream[created.Index],
+			"channel":  gin.H{"id": created.ID, "index": created.Index},
 		})
 	}
 }
@@ -137,6 +141,7 @@ func DeleteUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelSche
 
 		// 删除成功后清理指标数据（使用 RemoveUpstream 返回的渠道信息）
 		sch.DeleteChannelMetrics(removed, scheduler.ChannelKindMessages)
+		sch.GetTraceAffinityManager().RemoveByChannelForKind(string(scheduler.ChannelKindMessages), id)
 
 		c.JSON(200, gin.H{
 			"message": "上游已删除",

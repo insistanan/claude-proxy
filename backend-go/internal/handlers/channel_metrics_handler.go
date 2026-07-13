@@ -13,14 +13,18 @@ import (
 
 func upstreamsByKind(cfg config.Config, kind scheduler.ChannelKind) ([]config.UpstreamConfig, string) {
 	switch kind {
+	case scheduler.ChannelKindMessages:
+		return cfg.Upstream, cfg.LoadBalance
 	case scheduler.ChannelKindResponses:
 		return cfg.ResponsesUpstream, cfg.ResponsesLoadBalance
 	case scheduler.ChannelKindGemini:
 		return cfg.GeminiUpstream, cfg.GeminiLoadBalance
 	case scheduler.ChannelKindChat:
 		return cfg.ChatUpstream, cfg.ChatLoadBalance
+	case scheduler.ChannelKindImages:
+		return cfg.ImagesUpstream, cfg.ImagesLoadBalance
 	default:
-		return cfg.Upstream, cfg.LoadBalance
+		return nil, ""
 	}
 }
 
@@ -210,6 +214,8 @@ func GetSchedulerStats(sch *scheduler.ChannelScheduler) gin.HandlerFunc {
 			kind = scheduler.ChannelKindGemini
 		case "chat":
 			kind = scheduler.ChannelKindChat
+		case "images":
+			kind = scheduler.ChannelKindImages
 		}
 
 		metricsManager := sch.GetMessagesMetricsManager()
@@ -220,12 +226,14 @@ func GetSchedulerStats(sch *scheduler.ChannelScheduler) gin.HandlerFunc {
 			metricsManager = sch.GetGeminiMetricsManager()
 		case scheduler.ChannelKindChat:
 			metricsManager = sch.GetChatMetricsManager()
+		case scheduler.ChannelKindImages:
+			metricsManager = sch.GetImagesMetricsManager()
 		}
 
 		stats := gin.H{
 			"multiChannelMode":    sch.IsMultiChannelMode(kind),
 			"activeChannelCount":  sch.GetActiveChannelCount(kind),
-			"traceAffinityCount":  sch.GetTraceAffinityManager().Size(),
+			"traceAffinityCount":  sch.GetTraceAffinityManager().SizeForKind(string(kind)),
 			"traceAffinityTTL":    sch.GetTraceAffinityManager().GetTTL().String(),
 			"failureThreshold":    metricsManager.GetFailureThreshold() * 100,
 			"windowSize":          metricsManager.GetWindowSize(),
@@ -611,7 +619,7 @@ func truncateKeyMask(keyMask string, maxLen int) string {
 }
 
 // GetChannelDashboard 获取渠道仪表盘数据（合并 channels + metrics + stats）
-// GET /api/channels/dashboard?type=messages|responses|gemini|chat
+// GET /api/channels/dashboard?type=messages|responses|gemini|chat|images
 // 将原本需要 3 个请求的数据合并为 1 个请求，减少网络开销
 func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -623,6 +631,8 @@ func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.Channe
 			kind = scheduler.ChannelKindGemini
 		case "chat":
 			kind = scheduler.ChannelKindChat
+		case "images":
+			kind = scheduler.ChannelKindImages
 		}
 
 		cfg := cfgManager.GetConfig()
@@ -635,6 +645,8 @@ func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.Channe
 			metricsManager = sch.GetGeminiMetricsManager()
 		case scheduler.ChannelKindChat:
 			metricsManager = sch.GetChatMetricsManager()
+		case scheduler.ChannelKindImages:
+			metricsManager = sch.GetImagesMetricsManager()
 		}
 
 		// 1. 构建 channels 数据
@@ -647,6 +659,7 @@ func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.Channe
 			priority := config.GetChannelPriority(&up, i)
 
 			channels = append(channels, gin.H{
+				"id":                 up.ID,
 				"index":              i,
 				"name":               up.Name,
 				"serviceType":        up.ServiceType,
@@ -707,7 +720,7 @@ func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.Channe
 		stats := gin.H{
 			"multiChannelMode":    sch.IsMultiChannelMode(kind),
 			"activeChannelCount":  sch.GetActiveChannelCount(kind),
-			"traceAffinityCount":  sch.GetTraceAffinityManager().Size(),
+			"traceAffinityCount":  sch.GetTraceAffinityManager().SizeForKind(string(kind)),
 			"traceAffinityTTL":    sch.GetTraceAffinityManager().GetTTL().String(),
 			"failureThreshold":    metricsManager.GetFailureThreshold() * 100,
 			"windowSize":          metricsManager.GetWindowSize(),

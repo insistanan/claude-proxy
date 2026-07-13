@@ -145,6 +145,7 @@ func GetConversationRouteOptions(cfgManager *config.ConfigManager) gin.HandlerFu
 				buildRouteOptionGroup(cfgManager, scheduler.ChannelKindResponses, "Codex"),
 				buildRouteOptionGroup(cfgManager, scheduler.ChannelKindGemini, "Gemini"),
 				buildRouteOptionGroup(cfgManager, scheduler.ChannelKindChat, "Chat"),
+				buildRouteOptionGroup(cfgManager, scheduler.ChannelKindImages, "Images"),
 			},
 		})
 	}
@@ -193,20 +194,24 @@ func lookupChannelName(cfgManager *config.ConfigManager, kind scheduler.ChannelK
 
 func getConfigUpstreams(cfg config.Config, kind scheduler.ChannelKind) []config.UpstreamConfig {
 	switch kind {
+	case scheduler.ChannelKindMessages:
+		return cfg.Upstream
 	case scheduler.ChannelKindResponses:
 		return cfg.ResponsesUpstream
 	case scheduler.ChannelKindGemini:
 		return cfg.GeminiUpstream
 	case scheduler.ChannelKindChat:
 		return cfg.ChatUpstream
+	case scheduler.ChannelKindImages:
+		return cfg.ImagesUpstream
 	default:
-		return cfg.Upstream
+		return nil
 	}
 }
 
 func isValidConversationKind(kind string) bool {
 	switch kind {
-	case string(scheduler.ChannelKindMessages), string(scheduler.ChannelKindResponses), string(scheduler.ChannelKindGemini), string(scheduler.ChannelKindChat):
+	case string(scheduler.ChannelKindMessages), string(scheduler.ChannelKindResponses), string(scheduler.ChannelKindGemini), string(scheduler.ChannelKindChat), string(scheduler.ChannelKindImages):
 		return true
 	default:
 		return false

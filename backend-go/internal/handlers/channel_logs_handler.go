@@ -40,14 +40,18 @@ func getChannelName(cfgManager *config.ConfigManager, kind scheduler.ChannelKind
 	cfg := cfgManager.GetConfig()
 	var upstreams []config.UpstreamConfig
 	switch kind {
+	case scheduler.ChannelKindMessages:
+		upstreams = cfg.Upstream
 	case scheduler.ChannelKindResponses:
 		upstreams = cfg.ResponsesUpstream
 	case scheduler.ChannelKindGemini:
 		upstreams = cfg.GeminiUpstream
 	case scheduler.ChannelKindChat:
 		upstreams = cfg.ChatUpstream
+	case scheduler.ChannelKindImages:
+		upstreams = cfg.ImagesUpstream
 	default:
-		upstreams = cfg.Upstream
+		return "", false
 	}
 
 	if channelID < 0 || channelID >= len(upstreams) {

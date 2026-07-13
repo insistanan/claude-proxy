@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type Channel, type ChannelsResponse, type ChannelMetrics, type ChannelDashboardResponse } from '@/services/api'
+import { api, type Channel, type ChannelsResponse, type ChannelMetrics, type ChannelDashboardResponse, type CreatedChannelResponse } from '@/services/api'
 
 /**
  * 渠道数据管理 Store
@@ -36,31 +36,31 @@ export const useChannelStore = defineStore('channel', () => {
   const channelsData = ref<ChannelsResponse>({
     channels: [],
     current: -1,
-    loadBalance: 'round-robin'
+    loadBalance: 'failover'
   })
 
   const responsesChannelsData = ref<ChannelsResponse>({
     channels: [],
     current: -1,
-    loadBalance: 'round-robin'
+    loadBalance: 'failover'
   })
 
   const geminiChannelsData = ref<ChannelsResponse>({
     channels: [],
     current: -1,
-    loadBalance: 'round-robin'
+    loadBalance: 'failover'
   })
 
   const chatChannelsData = ref<ChannelsResponse>({
     channels: [],
     current: -1,
-    loadBalance: 'round-robin'
+    loadBalance: 'failover'
   })
 
   const imagesChannelsData = ref<ChannelsResponse>({
     channels: [],
     current: -1,
-    loadBalance: 'round-robin'
+    loadBalance: 'failover'
   })
 
   // Dashboard 数据缓存结构（每个 tab 独立缓存）
@@ -267,7 +267,7 @@ export const useChannelStore = defineStore('channel', () => {
    * 保存渠道（添加或更新）
    */
   async function saveChannel(
-    channel: Omit<Channel, 'index' | 'latency' | 'status'>,
+    channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>,
     editingChannelIndex: number | null,
     options?: { isQuickAdd?: boolean }
   ) {
@@ -292,71 +292,43 @@ export const useChannelStore = defineStore('channel', () => {
       return { success: true, message: '渠道更新成功' }
     } else {
       // 添加新渠道
+      let createdChannel: CreatedChannelResponse
       if (isGemini) {
-        await api.addGeminiChannel(channel)
+        createdChannel = await api.addGeminiChannel(channel)
       } else if (isChat) {
-        await api.addChatChannel(channel)
+        createdChannel = await api.addChatChannel(channel)
       } else if (isImages) {
-        await api.addImagesChannel(channel)
+        createdChannel = await api.addImagesChannel(channel)
       } else if (isResponses) {
-        await api.addResponsesChannel(channel)
+        createdChannel = await api.addResponsesChannel(channel)
       } else {
-        await api.addChannel(channel)
+        createdChannel = await api.addChannel(channel)
       }
 
-      // 快速添加模式：将新渠道设为第一优先级并设置5分钟促销期
+      // 快速添加模式：后端新增时已设为最高优先级，仅为本次创建的渠道设置促销期。
       if (options?.isQuickAdd) {
-        await refreshChannels() // 先刷新获取新渠道的 index
-        const data = isGemini ? geminiChannelsData.value : (isImages ? imagesChannelsData.value : (isChat ? chatChannelsData.value : (isResponses ? responsesChannelsData.value : channelsData.value)))
-
-        // 找到新添加的渠道（应该是列表中 index 最大的 active 状态渠道）
-        const activeChannels = data.channels?.filter(ch => ch.status !== 'disabled' && ch.status !== 'deprecated' && ch.status !== 'deleted') || []
-        if (activeChannels.length > 0) {
-          // 新添加的渠道会分配到最大的 index
-          const newChannel = activeChannels.reduce((max, ch) => ch.index > max.index ? ch : max, activeChannels[0])
-
-          try {
-            // 1. 重新排序：将新渠道放到第一位
-            const otherIndexes = activeChannels
-              .filter(ch => ch.index !== newChannel.index)
-              .sort((a, b) => (a.priority ?? a.index) - (b.priority ?? b.index))
-              .map(ch => ch.index)
-            const newOrder = [newChannel.index, ...otherIndexes]
-
-            if (isGemini) {
-              await api.reorderGeminiChannels(newOrder)
-            } else if (isImages) {
-              await api.reorderImagesChannels(newOrder)
-            } else if (isChat) {
-              await api.reorderChatChannels(newOrder)
-            } else if (isResponses) {
-              await api.reorderResponsesChannels(newOrder)
-            } else {
-              await api.reorderChannels(newOrder)
-            }
-
-            // 2. 设置促销期（默认300秒，不限次数）
-            if (isGemini) {
-              await api.setGeminiChannelPromotion(newChannel.index, 300, 0)
-            } else if (isImages) {
-              await api.setImagesChannelPromotion(newChannel.index, 300, 0)
-            } else if (isChat) {
-              await api.setChatChannelPromotion(newChannel.index, 300, 0)
-            } else if (isResponses) {
-              await api.setResponsesChannelPromotion(newChannel.index, 300, 0)
-            } else {
-              await api.setChannelPromotion(newChannel.index, 300, 0)
-            }
-
-            return {
-              success: true,
-              message: '渠道添加成功',
-              quickAddMessage: `渠道 ${channel.name} 已设为最高优先级（5分钟内优先使用）`
-            }
-          } catch (err) {
-            console.warn('设置快速添加优先级失败:', err)
-            // 不影响主流程
+        try {
+          const channelIndex = createdChannel.channel.index
+          if (isGemini) {
+            await api.setGeminiChannelPromotion(channelIndex, 300, 0)
+          } else if (isImages) {
+            await api.setImagesChannelPromotion(channelIndex, 300, 0)
+          } else if (isChat) {
+            await api.setChatChannelPromotion(channelIndex, 300, 0)
+          } else if (isResponses) {
+            await api.setResponsesChannelPromotion(channelIndex, 300, 0)
+          } else {
+            await api.setChannelPromotion(channelIndex, 300, 0)
           }
+
+          return {
+            success: true,
+            message: '渠道添加成功',
+            quickAddMessage: `渠道 ${channel.name} 已设为最高优先级（5分钟内优先使用）`
+          }
+        } catch (err) {
+          console.warn('设置快速添加优先级失败:', err)
+          // 不影响主流程
         }
       }
 
@@ -522,27 +494,27 @@ export const useChannelStore = defineStore('channel', () => {
     channelsData.value = {
       channels: [],
       current: -1,
-      loadBalance: 'round-robin'
+      loadBalance: 'failover'
     }
     responsesChannelsData.value = {
       channels: [],
       current: -1,
-      loadBalance: 'round-robin'
+      loadBalance: 'failover'
     }
     geminiChannelsData.value = {
       channels: [],
       current: -1,
-      loadBalance: 'round-robin'
+      loadBalance: 'failover'
     }
     chatChannelsData.value = {
       channels: [],
       current: -1,
-      loadBalance: 'round-robin'
+      loadBalance: 'failover'
     }
     imagesChannelsData.value = {
       channels: [],
       current: -1,
-      loadBalance: 'round-robin'
+      loadBalance: 'failover'
     }
 
     // 清空所有 tab 的独立缓存

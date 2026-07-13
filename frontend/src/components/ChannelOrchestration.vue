@@ -1075,7 +1075,10 @@ const isMultiChannelMode = computed(() => {
 const initActiveChannels = () => {
   const newActive = props.channels
     .filter(isChannelInFailoverSequence)
-    .sort((a, b) => (a.priority ?? a.index) - (b.priority ?? b.index))
+    .sort((a, b) => {
+      const priorityDifference = (a.priority ?? a.index + 1) - (b.priority ?? b.index + 1)
+      return priorityDifference || a.index - b.index
+    })
 
   // 检查是否需要更新：比较 index 列表是否变化
   const currentIndexes = activeChannels.value.map(ch => ch.index).join(',')
@@ -1258,7 +1261,9 @@ const toggleVisionDefault = async (channel: Channel) => {
   try {
     if (props.channelType === 'gemini') {
       await api.updateGeminiChannel(channel.index, { visionCapable: nextValue })
-    } else if (props.channelType === 'chat' || props.channelType === 'images') {
+    } else if (props.channelType === 'images') {
+      await api.updateImagesChannel(channel.index, { visionCapable: nextValue })
+    } else if (props.channelType === 'chat') {
       await api.updateChatChannel(channel.index, { visionCapable: nextValue })
     } else if (props.channelType === 'responses') {
       await api.updateResponsesChannel(channel.index, { visionCapable: nextValue })
@@ -1574,11 +1579,13 @@ const refreshMetrics = async () => {
     const [metricsData, statsData] = await Promise.all([
       props.channelType === 'gemini'
         ? api.getGeminiChannelMetrics()
-        : props.channelType === 'chat' || props.channelType === 'images'
-          ? api.getChatChannelMetrics()
-        : props.channelType === 'responses'
-          ? api.getResponsesChannelMetrics()
-          : api.getChannelMetrics(),
+        : props.channelType === 'images'
+          ? api.getImagesChannelMetrics()
+          : props.channelType === 'chat'
+            ? api.getChatChannelMetrics()
+            : props.channelType === 'responses'
+              ? api.getResponsesChannelMetrics()
+              : api.getChannelMetrics(),
       api.getSchedulerStats(props.channelType)
     ])
     metrics.value = metricsData
@@ -1603,7 +1610,9 @@ const saveOrder = async () => {
     const order = activeChannels.value.map(ch => ch.index)
     if (props.channelType === 'gemini') {
       await api.reorderGeminiChannels(order)
-    } else if (props.channelType === 'chat' || props.channelType === 'images') {
+    } else if (props.channelType === 'images') {
+      await api.reorderImagesChannels(order)
+    } else if (props.channelType === 'chat') {
       await api.reorderChatChannels(order)
     } else if (props.channelType === 'responses') {
       await api.reorderResponsesChannels(order)
@@ -1675,7 +1684,9 @@ const setChannelStatus = async (channelId: number, status: ChannelStatus) => {
   try {
     if (props.channelType === 'gemini') {
       await api.setGeminiChannelStatus(channelId, status)
-    } else if (props.channelType === 'chat' || props.channelType === 'images') {
+    } else if (props.channelType === 'images') {
+      await api.setImagesChannelStatus(channelId, status)
+    } else if (props.channelType === 'chat') {
       await api.setChatChannelStatus(channelId, status)
     } else if (props.channelType === 'responses') {
       await api.setResponsesChannelStatus(channelId, status)
@@ -1700,7 +1711,9 @@ const resumeChannel = async (channelId: number) => {
   try {
     if (props.channelType === 'gemini') {
       await api.resumeGeminiChannel(channelId)
-    } else if (props.channelType === 'chat' || props.channelType === 'images') {
+    } else if (props.channelType === 'images') {
+      await api.resumeImagesChannel(channelId)
+    } else if (props.channelType === 'chat') {
       await api.resumeChatChannel(channelId)
     } else if (props.channelType === 'responses') {
       await api.resumeResponsesChannel(channelId)
@@ -1908,7 +1921,9 @@ const confirmPromotion = async () => {
     if (channel.status === 'suspended') {
       if (props.channelType === 'gemini') {
         await api.resumeGeminiChannel(channel.index)
-      } else if (props.channelType === 'chat' || props.channelType === 'images') {
+      } else if (props.channelType === 'images') {
+        await api.resumeImagesChannel(channel.index)
+      } else if (props.channelType === 'chat') {
         await api.resumeChatChannel(channel.index)
       } else if (props.channelType === 'responses') {
         await api.resumeResponsesChannel(channel.index)
@@ -1920,7 +1935,9 @@ const confirmPromotion = async () => {
 
     if (props.channelType === 'gemini') {
       await api.setGeminiChannelPromotion(channel.index, durationSeconds, count)
-    } else if (props.channelType === 'chat' || props.channelType === 'images') {
+    } else if (props.channelType === 'images') {
+      await api.setImagesChannelPromotion(channel.index, durationSeconds, count)
+    } else if (props.channelType === 'chat') {
       await api.setChatChannelPromotion(channel.index, durationSeconds, count)
     } else if (props.channelType === 'responses') {
       await api.setResponsesChannelPromotion(channel.index, durationSeconds, count)

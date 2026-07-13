@@ -27,6 +27,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			priority := config.GetChannelPriority(&up, i)
 
 			upstreams = append(upstreams, gin.H{
+				"id":                 up.ID,
 				"index":              i,
 				"name":               up.Name,
 				"serviceType":        up.ServiceType,
@@ -63,12 +64,16 @@ func AddUpstream(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			return
 		}
 
-		if err := cfgManager.AddImagesUpstream(upstream); err != nil {
+		created, err := cfgManager.AddImagesUpstreamWithResult(upstream)
+		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
 
-		c.JSON(200, gin.H{"message": "Images upstream added successfully"})
+		c.JSON(200, gin.H{
+			"message": "Images upstream added successfully",
+			"channel": gin.H{"id": created.ID, "index": created.Index},
+		})
 	}
 }
 
@@ -119,6 +124,7 @@ func DeleteUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelSche
 		}
 
 		sch.DeleteChannelMetrics(removed, scheduler.ChannelKindImages)
+		sch.GetTraceAffinityManager().RemoveByChannelForKind(string(scheduler.ChannelKindImages), id)
 		c.JSON(200, gin.H{"message": "Images upstream deleted successfully"})
 	}
 }

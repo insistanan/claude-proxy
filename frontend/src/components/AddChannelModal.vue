@@ -286,11 +286,11 @@
                             </div>
                             <div class="d-flex flex-wrap ga-1 mt-1">
                               <v-chip
-                                v-for="(target, idx) in targets"
-                                :key="idx"
+                                v-for="target in targets"
+                                :key="`${source}:${target}`"
                                 size="x-small"
                                 closable
-                                @click:close="removeModelMapping(source, target)"
+                                @click:close.stop="removeModelMapping(source, target)"
                               >
                                 <code class="text-caption">{{ target }}</code>
                               </v-chip>
@@ -703,7 +703,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   'update:show': [value: boolean]
-  save: [channel: Omit<Channel, 'index' | 'latency' | 'status'>, options?: { isQuickAdd?: boolean }]
+  save: [channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>, options?: { isQuickAdd?: boolean }]
 }>()
 
 // 主题
@@ -1416,7 +1416,7 @@ const loadChannelData = (channel: Channel) => {
   form.name = channel.name
   form.serviceType = channel.serviceType
   form.baseUrl = channel.baseUrl
-  form.baseUrls = channel.baseUrls || []
+  form.baseUrls = [...(channel.baseUrls || [])]
   form.website = channel.website || ''
   form.insecureSkipVerify = !!channel.insecureSkipVerify
   form.lowQuality = !!channel.lowQuality
@@ -1439,7 +1439,7 @@ const loadChannelData = (channel: Channel) => {
   // 清空原始密钥映射（现在不需要了）
   originalKeyMap.value.clear()
 
-  form.modelMapping = { ...(channel.modelMapping || {}) }
+  form.modelMapping = cloneModelMapping(channel.modelMapping)
   form.defaultModel = channel.defaultModel || ''
 
   // 立即同步 baseUrl 到预览变量，避免等待 debounce
@@ -1455,6 +1455,19 @@ const loadChannelData = (channel: Channel) => {
   fetchModelsError.value = ''
   keyModelsStatus.value.clear()
   hasTriedFetchModels.value = false
+}
+
+const cloneModelMapping = (mapping?: Record<string, string[]>): Record<string, string[]> => {
+  const cloned: Record<string, string[]> = {}
+  for (const [rawSource, rawTargets] of Object.entries(mapping || {})) {
+    const source = rawSource.trim()
+    if (!source) continue
+    const targets = [...new Set(rawTargets.map(target => target.trim()).filter(Boolean))]
+    if (targets.length > 0) {
+      cloned[source] = targets
+    }
+  }
+  return cloned
 }
 
 const addApiKey = () => {
@@ -1719,7 +1732,7 @@ const handleSubmit = async () => {
       : [form.baseUrl.trim().replace(/[#/]+$/, '')].filter(Boolean)
 
   // 构建渠道数据
-  const channelData: Omit<Channel, 'index' | 'latency' | 'status'> = {
+  const channelData: Omit<Channel, 'id' | 'index' | 'latency' | 'status'> = {
     name: form.name.trim(),
     serviceType: form.serviceType as 'openai' | 'gemini' | 'claude' | 'responses' | 'chat',
     baseUrl: deduplicatedUrls[0] || '',
@@ -1732,7 +1745,7 @@ const handleSubmit = async () => {
     stripThoughtSignature: form.stripThoughtSignature,
     description: form.description.trim(),
     apiKeys: processedApiKeys,
-    modelMapping: props.channelType === 'chat' ? {} : form.modelMapping,
+    modelMapping: props.channelType === 'chat' ? {} : cloneModelMapping(form.modelMapping),
     defaultModel: props.channelType === 'chat' ? getStringValue(form.defaultModel).trim() : ''
   }
 

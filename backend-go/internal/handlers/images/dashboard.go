@@ -23,6 +23,7 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 			priority := config.GetChannelPriority(&up, i)
 
 			channels = append(channels, gin.H{
+				"id":                 up.ID,
 				"index":              i,
 				"name":               up.Name,
 				"serviceType":        up.ServiceType,
@@ -81,7 +82,7 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 		stats := gin.H{
 			"multiChannelMode":    sch.IsMultiChannelMode(scheduler.ChannelKindImages),
 			"activeChannelCount":  sch.GetActiveChannelCount(scheduler.ChannelKindImages),
-			"traceAffinityCount":  sch.GetTraceAffinityManager().Size(),
+			"traceAffinityCount":  sch.GetTraceAffinityManager().SizeForKind(string(scheduler.ChannelKindImages)),
 			"traceAffinityTTL":    sch.GetTraceAffinityManager().GetTTL().String(),
 			"failureThreshold":    metricsManager.GetFailureThreshold() * 100,
 			"windowSize":          metricsManager.GetWindowSize(),

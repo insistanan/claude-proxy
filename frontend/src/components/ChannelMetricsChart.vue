@@ -428,6 +428,8 @@ const refreshData = async () => {
       keyHistoryData.value = await api.getGeminiChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
     } else if (props.channelType === 'chat') {
       keyHistoryData.value = await api.getChatChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
+    } else if (props.channelType === 'images') {
+      keyHistoryData.value = await api.getImagesChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
     } else {
       keyHistoryData.value = await api.getResponsesChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
     }
