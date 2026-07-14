@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -310,17 +311,9 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	originalChannels := activeChannels
-	if hasImage {
-		visionChannels := s.filterVisionChannels(activeChannels, kind)
-		prefix := kindSchedulerLogPrefix(kind)
-		if len(visionChannels) > 0 {
-			activeChannels = visionChannels
-			log.Printf("[%s-Vision] 检测到含图请求，Vision 渠道候选数: %d/%d", prefix, len(visionChannels), len(originalChannels))
-		} else {
-			log.Printf("[%s-Vision] 警告: 检测到含图请求，但没有可用 Vision 渠道，回退全渠道", prefix)
-		}
-	}
+	// 图片不再改变最终回答渠道的选择。是否直接处理图片或启用图片理解层，
+	// 由选中的渠道配置在请求发送前决定。
+	_ = hasImage
 
 	// 获取对应类型的指标管理器
 	metricsManager := s.getMetricsManager(kind)
@@ -330,7 +323,7 @@ func (s *ChannelScheduler) SelectChannel(
 			if override.Kind != string(kind) {
 				return nil, fmt.Errorf("该对话已固定到 %s 渠道池，当前请求为 %s", override.Kind, kind)
 			}
-			for _, ch := range originalChannels {
+			for _, ch := range activeChannels {
 				if ch.Index != override.ChannelIndex {
 					continue
 				}
@@ -562,17 +555,6 @@ func (s *ChannelScheduler) pickLeastLoadedChannel(candidates []ChannelInfo, kind
 	return &candidates[bestIdx]
 }
 
-func (s *ChannelScheduler) filterVisionChannels(channels []ChannelInfo, kind ChannelKind) []ChannelInfo {
-	visionChannels := make([]ChannelInfo, 0, len(channels))
-	for _, ch := range channels {
-		upstream := s.getUpstreamByIndex(ch.Index, kind)
-		if upstream != nil && upstream.VisionCapable {
-			visionChannels = append(visionChannels, ch)
-		}
-	}
-	return visionChannels
-}
-
 // findPromotedChannels 查找所有处于促销期的渠道（按优先级排序）
 func (s *ChannelScheduler) findPromotedChannels(activeChannels []ChannelInfo, kind ChannelKind) []ChannelInfo {
 	var promoted []ChannelInfo
@@ -774,6 +756,63 @@ func (s *ChannelScheduler) getUpstreamByIndex(index int, kind ChannelKind) *conf
 	return nil
 }
 
+// SelectVisionChannel 通过稳定渠道 ID 解析图片理解层指定的原生图片理解渠道，
+// 并为这次内部调用预留在途负载，避免其从渠道调度与实时指标中消失。
+func (s *ChannelScheduler) SelectVisionChannel(ctx context.Context, kind ChannelKind, channelID string) (*SelectionResult, error) {
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return nil, fmt.Errorf("图片理解层未指定图片理解渠道")
+	}
+
+	cfg := s.configManager.GetConfig()
+	var upstreams []config.UpstreamConfig
+	switch kind {
+	case ChannelKindMessages:
+		upstreams = cfg.Upstream
+	case ChannelKindResponses:
+		upstreams = cfg.ResponsesUpstream
+	case ChannelKindGemini:
+		upstreams = cfg.GeminiUpstream
+	case ChannelKindChat:
+		upstreams = cfg.ChatUpstream
+	case ChannelKindImages:
+		upstreams = cfg.ImagesUpstream
+	default:
+		return nil, fmt.Errorf("不支持的图片理解渠道类型: %s", kind)
+	}
+
+	for index := range upstreams {
+		upstream := &upstreams[index]
+		if upstream.ID != channelID {
+			continue
+		}
+		if !upstream.VisionCapable {
+			return nil, fmt.Errorf("渠道 %q 未标记为支持图片理解", upstream.Name)
+		}
+		if config.GetChannelStatus(upstream) != config.ChannelStatusActive || len(upstream.APIKeys) == 0 {
+			return nil, fmt.Errorf("图片理解渠道 %q 当前不可用", upstream.Name)
+		}
+		metricsManager := s.getMetricsManager(kind)
+		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys) {
+			return nil, fmt.Errorf("图片理解渠道 %q 当前不健康", upstream.Name)
+		}
+		return s.reserveAndReturn(&SelectionResult{
+			Upstream:     upstream.Clone(),
+			ChannelIndex: index,
+			Reason:       "vision_layer",
+		}, kind), nil
+	}
+
+	return nil, fmt.Errorf("图片理解渠道 %q 不存在", channelID)
+}
+
 // RecordSuccess 记录渠道成功（使用 baseURL + apiKey）
 func (s *ChannelScheduler) RecordSuccess(baseURL, apiKey string, kind ChannelKind) {
 	s.getMetricsManager(kind).RecordSuccess(baseURL, apiKey)
@@ -797,6 +836,26 @@ func (s *ChannelScheduler) RecordRequestStart(baseURL, apiKey string, kind Chann
 // RecordRequestEnd 记录请求结束
 func (s *ChannelScheduler) RecordRequestEnd(baseURL, apiKey string, kind ChannelKind) {
 	s.getMetricsManager(kind).RecordRequestEnd(baseURL, apiKey)
+}
+
+// RecordRequestConnected 记录已经开始连接上游的请求，用于实时活跃度和调用历史。
+func (s *ChannelScheduler) RecordRequestConnected(baseURL, apiKey, model string, kind ChannelKind) uint64 {
+	return s.getMetricsManager(kind).RecordRequestConnected(baseURL, apiKey, model)
+}
+
+// RecordRequestFinalizeSuccess 回写已连接请求的成功结果与用量。
+func (s *ChannelScheduler) RecordRequestFinalizeSuccess(baseURL, apiKey string, requestID uint64, usage *types.Usage, kind ChannelKind) {
+	s.getMetricsManager(kind).RecordRequestFinalizeSuccess(baseURL, apiKey, requestID, usage)
+}
+
+// RecordRequestFinalizeFailure 回写已连接请求的失败结果。
+func (s *ChannelScheduler) RecordRequestFinalizeFailure(baseURL, apiKey string, requestID uint64, kind ChannelKind) {
+	s.getMetricsManager(kind).RecordRequestFinalizeFailure(baseURL, apiKey, requestID)
+}
+
+// ShouldSuspendKey 返回指定 Key 是否因熔断而不应继续使用。
+func (s *ChannelScheduler) ShouldSuspendKey(baseURL, apiKey string, kind ChannelKind) bool {
+	return s.getMetricsManager(kind).ShouldSuspendKey(baseURL, apiKey)
 }
 
 // SetTraceAffinity 设置 Trace 亲和

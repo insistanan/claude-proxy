@@ -99,19 +99,19 @@ func (cm *ConfigManager) loadConfig() error {
 // createDefaultConfig 创建默认配置
 func (cm *ConfigManager) createDefaultConfig() error {
 	defaultConfig := Config{
-		Upstream:                 []UpstreamConfig{},
-		CurrentUpstream:          0,
-		LoadBalance:              "failover",
-		ResponsesUpstream:        []UpstreamConfig{},
-		CurrentResponsesUpstream: 0,
-		ResponsesLoadBalance:     "failover",
-		GeminiUpstream:           []UpstreamConfig{},
-		GeminiLoadBalance:        "failover",
-		ChatUpstream:             []UpstreamConfig{},
-		ChatLoadBalance:          "failover",
-		ImagesUpstream:           []UpstreamConfig{},
-		ImagesLoadBalance:        "failover",
-		FuzzyModeEnabled:         true, // 默认启用 Fuzzy 模式
+		Upstream:                  []UpstreamConfig{},
+		CurrentUpstream:           0,
+		LoadBalance:               "failover",
+		ResponsesUpstream:         []UpstreamConfig{},
+		CurrentResponsesUpstream:  0,
+		ResponsesLoadBalance:      "failover",
+		GeminiUpstream:            []UpstreamConfig{},
+		GeminiLoadBalance:         "failover",
+		ChatUpstream:              []UpstreamConfig{},
+		ChatLoadBalance:           "failover",
+		ImagesUpstream:            []UpstreamConfig{},
+		ImagesLoadBalance:         "failover",
+		FuzzyModeEnabled:          true, // 默认启用 Fuzzy 模式
 		ClaudeCodeDisguiseEnabled: false,
 		CodexDisguiseEnabled:      false,
 	}
@@ -175,6 +175,24 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 			cm.config.FuzzyModeEnabled = true
 			needSave = true
 			log.Printf("[Config-Migration] FuzzyModeEnabled 字段不存在，设为默认值 true")
+		}
+		if rawResponses, exists := rawMap["responsesUpstream"]; exists {
+			var responseItems []map[string]json.RawMessage
+			if err := json.Unmarshal(rawResponses, &responseItems); err == nil {
+				for index := range cm.config.ResponsesUpstream {
+					if index >= len(responseItems) {
+						break
+					}
+					if _, explicitlyConfigured := responseItems[index]["visionCapable"]; !explicitlyConfigured {
+						cm.config.ResponsesUpstream[index].VisionCapable = true
+						cm.config.ResponsesUpstream[index].VisionLayerEnabled = false
+						cm.config.ResponsesUpstream[index].VisionLayerChannelID = ""
+						cm.config.ResponsesUpstream[index].VisionLayerModel = ""
+						needSave = true
+						log.Printf("[Config-Migration] Responses 渠道 [%d] 默认启用图片理解", index)
+					}
+				}
+			}
 		}
 	}
 

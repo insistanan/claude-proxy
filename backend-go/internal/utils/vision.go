@@ -58,6 +58,12 @@ func ValueHasVisionContent(value interface{}) bool {
 		if typeVal, _ := v["type"].(string); isVisionContentType(typeVal) {
 			return true
 		}
+		// Gemini 的内联图片不使用 type 字段，而是以 inlineData 表示。
+		if inlineData, ok := v["inlineData"].(map[string]interface{}); ok {
+			if data, _ := inlineData["data"].(string); strings.TrimSpace(data) != "" {
+				return true
+			}
+		}
 		for _, item := range v {
 			if ValueHasVisionContent(item) {
 				return true

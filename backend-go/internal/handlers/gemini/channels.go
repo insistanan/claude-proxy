@@ -45,6 +45,9 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"promotionCount":              up.PromotionCount,
 				"lowQuality":                  up.LowQuality,
 				"visionCapable":               up.VisionCapable,
+				"visionLayerEnabled":          up.VisionLayerEnabled,
+				"visionLayerChannelId":        up.VisionLayerChannelID,
+				"visionLayerModel":            up.VisionLayerModel,
 				"injectDummyThoughtSignature": up.InjectDummyThoughtSignature,
 				"stripThoughtSignature":       up.StripThoughtSignature,
 			})

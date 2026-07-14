@@ -45,6 +45,9 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 				"promotionUntil":              up.PromotionUntil,
 				"lowQuality":                  up.LowQuality,
 				"visionCapable":               up.VisionCapable,
+				"visionLayerEnabled":          up.VisionLayerEnabled,
+				"visionLayerChannelId":        up.VisionLayerChannelID,
+				"visionLayerModel":            up.VisionLayerModel,
 				"injectDummyThoughtSignature": up.InjectDummyThoughtSignature,
 				"stripThoughtSignature":       up.StripThoughtSignature,
 			})

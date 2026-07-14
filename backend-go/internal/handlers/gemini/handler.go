@@ -422,6 +422,14 @@ func buildProviderRequest(
 	model string,
 	isStream bool,
 ) (*http.Request, error) {
+	if preparedBody := common.PreparedRequestBody(c, nil); len(preparedBody) > 0 {
+		var preparedRequest types.GeminiRequest
+		if err := json.Unmarshal(preparedBody, &preparedRequest); err != nil {
+			return nil, fmt.Errorf("解析图片理解层后的 Gemini 请求失败: %w", err)
+		}
+		geminiReq = &preparedRequest
+	}
+
 	// 应用模型映射
 	mappedModel := config.ResolveUpstreamModel(model, upstream)
 

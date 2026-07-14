@@ -143,8 +143,8 @@
                 临时 {{ formatDateTime(element.temporaryUntil) }}
               </v-chip>
               <v-tooltip
-                v-if="shouldShowVisionDefault(element)"
-                text="图片理解默认模型"
+                v-if="shouldShowVisionCapability(element)"
+                text="支持图片理解"
                 location="top"
                 :open-delay="150"
               >
@@ -338,14 +338,14 @@
                     </template>
                     <v-list-item-title>复制渠道</v-list-item-title>
                   </v-list-item>
-                  <v-list-item v-if="supportsVisionDefault" @click="toggleVisionDefault(element)">
+                  <v-list-item v-if="supportsVisionCapability" @click="toggleVisionCapability(element)">
                     <template #prepend>
                       <v-icon size="small" :color="element.visionCapable ? 'success' : 'primary'">
                         {{ element.visionCapable ? 'mdi-check-circle' : 'mdi-image-search-outline' }}
                       </v-icon>
                     </template>
                     <v-list-item-title>
-                      {{ element.visionCapable ? '取消图片理解默认模型' : '设为图片理解默认模型' }}
+                      {{ element.visionCapable ? '取消支持图片理解' : '设为支持图片理解' }}
                     </v-list-item-title>
                   </v-list-item>
                   <v-list-item @click="copyChannelConfig(element)">
@@ -503,8 +503,8 @@
                 临时 {{ formatDateTime(channel.temporaryUntil) }}
               </v-chip>
               <v-tooltip
-                v-if="shouldShowVisionDefault(channel)"
-                text="图片理解默认模型"
+                v-if="shouldShowVisionCapability(channel)"
+                text="支持图片理解"
                 location="top"
                 :open-delay="150"
               >
@@ -561,14 +561,14 @@
                   </template>
                   <v-list-item-title>复制渠道</v-list-item-title>
                 </v-list-item>
-                <v-list-item v-if="supportsVisionDefault" @click="toggleVisionDefault(channel)">
+                <v-list-item v-if="supportsVisionCapability" @click="toggleVisionCapability(channel)">
                   <template #prepend>
                     <v-icon size="small" :color="channel.visionCapable ? 'success' : 'primary'">
                       {{ channel.visionCapable ? 'mdi-check-circle' : 'mdi-image-search-outline' }}
                     </v-icon>
                   </template>
                   <v-list-item-title>
-                    {{ channel.visionCapable ? '取消图片理解默认模型' : '设为图片理解默认模型' }}
+                    {{ channel.visionCapable ? '取消支持图片理解' : '设为支持图片理解' }}
                   </v-list-item-title>
                 </v-list-item>
                 <v-divider />
@@ -864,7 +864,7 @@ const emit = defineEmits<{
   (_e: 'success', _message: string): void
 }>()
 
-const supportsVisionDefault = computed(() => props.channelType !== 'gemini')
+const supportsVisionCapability = computed(() => true)
 
 // 快捷测试弹窗状态
 const showQuickTestModal = ref(false)
@@ -1212,8 +1212,8 @@ const formatPromotionRemaining = (until?: string, count?: number): string => {
   return `${minutes}分钟`
 }
 
-const shouldShowVisionDefault = (channel: Channel): boolean => {
-  return supportsVisionDefault.value && !!channel.visionCapable
+const shouldShowVisionCapability = (channel: Channel): boolean => {
+  return supportsVisionCapability.value && !!channel.visionCapable
 }
 
 // 格式化统计数据：有请求显示"N 请求 (X%)"，无请求显示"--"
@@ -1255,7 +1255,7 @@ const getWebsiteUrl = (channel: Channel): string => {
   }
 }
 
-const toggleVisionDefault = async (channel: Channel) => {
+const toggleVisionCapability = async (channel: Channel) => {
   const nextValue = !channel.visionCapable
 
   try {
@@ -1273,12 +1273,12 @@ const toggleVisionDefault = async (channel: Channel) => {
 
     emit('refresh')
     emit('success', nextValue
-      ? `已将 ${channel.name} 设为图片理解默认模型`
-      : `已取消 ${channel.name} 的图片理解默认模型`)
+      ? `已将 ${channel.name} 设为支持图片理解`
+      : `已取消 ${channel.name} 的图片理解支持`)
   } catch (error) {
-    console.error('Failed to update vision default:', error)
+    console.error('Failed to update vision capability:', error)
     const errorMessage = error instanceof Error ? error.message : '未知错误'
-    emit('error', `设置图片理解默认模型失败: ${errorMessage}`)
+    emit('error', `设置图片理解能力失败: ${errorMessage}`)
   }
 }
 

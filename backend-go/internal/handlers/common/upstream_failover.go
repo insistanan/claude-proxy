@@ -19,6 +19,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/claude-proxy/internal/visionlayer"
 	"github.com/gin-gonic/gin"
 )
 
@@ -57,6 +58,7 @@ var attemptLogCounter uint64
 var profileRequestCounter uint64
 
 const requestLogFirstTokenAtKey = "__request_log_first_token_at"
+const preparedRequestBodyKey = "__prepared_request_body"
 
 // nextProfileRequestID 生成唯一请求 ID 用于性能画像追踪
 func nextProfileRequestID() uint64 {
@@ -106,6 +108,27 @@ func TryUpstreamWithModelMappingFailover(
 	handleSuccess HandleSuccessFunc,
 	logCtx AttemptLogContext,
 ) (handled bool, successKey string, successBaseURLIdx int, failoverErr *FailoverError, usage *types.Usage, lastError error) {
+	preparedBody, err := visionlayer.Prepare(
+		c,
+		envCfg,
+		cfgManager,
+		channelScheduler,
+		kind,
+		upstream,
+		requestedModel,
+		requestBody,
+		utils.DetectImageContent(requestBody),
+	)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": err.Error(),
+			"code":  "VISION_LAYER_UNAVAILABLE",
+		})
+		return true, "", 0, nil, nil, err
+	}
+	requestBody = preparedBody
+	RestoreRequestBody(c, requestBody)
+	SetPreparedRequestBody(c, requestBody)
 
 	// 获取该模型的映射列表
 	targetModels := config.ResolveUpstreamModelList(requestedModel, upstream)

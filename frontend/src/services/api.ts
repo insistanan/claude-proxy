@@ -105,7 +105,10 @@ export interface Channel {
   promotionCount?: number    // 促销期剩余请求次数
   latencyTestTime?: number   // 延迟测试时间戳（用于 5 分钟后自动清除显示）
   lowQuality?: boolean       // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
-  visionCapable?: boolean    // 是否为图片理解默认模型
+  visionCapable?: boolean    // 渠道是否原生支持图片理解
+  visionLayerEnabled?: boolean // 是否为当前渠道启用图片理解层
+  visionLayerChannelId?: string // 图片理解层指定调用的稳定渠道标识
+  visionLayerModel?: string  // 可选：覆盖透传给图片理解渠道的模型名
   temporary?: boolean        // 临时渠道：一天后自动移入弃用池
   temporaryUntil?: string    // 临时渠道到期时间
   deprecatedAt?: string      // 移入弃用池时间

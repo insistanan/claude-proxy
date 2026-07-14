@@ -29,6 +29,11 @@ func (cm *ConfigManager) AddResponsesUpstreamWithResult(upstream UpstreamConfig)
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	// Codex Responses 渠道默认直接支持图片理解。
+	upstream.VisionCapable = true
+	upstream.VisionLayerEnabled = false
+	upstream.VisionLayerChannelID = ""
+	upstream.VisionLayerModel = ""
 	var result AddedUpstream
 	cm.config.ResponsesUpstream, result = addUpstreamOp(cm.config.ResponsesUpstream, upstream)
 

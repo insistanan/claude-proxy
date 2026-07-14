@@ -30,15 +30,18 @@ type UpstreamConfig struct {
 	ModelMapping       map[string][]string `json:"modelMapping,omitempty"` // 模型重定向：源模型 -> 目标模型列表（支持多个备选）
 	DefaultModel       string              `json:"defaultModel,omitempty"`
 	// 多渠道调度相关字段
-	Priority       int        `json:"priority"`                 // 渠道优先级（数字越小优先级越高，默认按索引）
-	Status         string     `json:"status"`                   // 渠道状态：active（正常）, suspended（暂停）, disabled（备用池）
-	PromotionUntil *time.Time `json:"promotionUntil,omitempty"` // 促销期截止时间，在此期间内优先使用此渠道（忽略trace亲和）
-	PromotionCount int        `json:"promotionCount,omitempty"` // 促销期剩余请求次数，每次成功请求递减，到0自动清除
-	LowQuality     bool       `json:"lowQuality,omitempty"`     // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
-	VisionCapable  bool       `json:"visionCapable,omitempty"`  // 是否作为图片理解默认渠道（同一分组最多一个）
-	Temporary      bool       `json:"temporary,omitempty"`      // 临时渠道：到期后自动移入弃用池
-	TemporaryUntil *time.Time `json:"temporaryUntil,omitempty"` // 临时渠道到期时间
-	DeprecatedAt   *time.Time `json:"deprecatedAt,omitempty"`   // 移入弃用池时间
+	Priority             int        `json:"priority"`                       // 渠道优先级（数字越小优先级越高，默认按索引）
+	Status               string     `json:"status"`                         // 渠道状态：active（正常）, suspended（暂停）, disabled（备用池）
+	PromotionUntil       *time.Time `json:"promotionUntil,omitempty"`       // 促销期截止时间，在此期间内优先使用此渠道（忽略trace亲和）
+	PromotionCount       int        `json:"promotionCount,omitempty"`       // 促销期剩余请求次数，每次成功请求递减，到0自动清除
+	LowQuality           bool       `json:"lowQuality,omitempty"`           // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
+	VisionCapable        bool       `json:"visionCapable,omitempty"`        // 渠道是否原生支持图片理解，可直接接收图片，也可被图片理解层调用
+	VisionLayerEnabled   bool       `json:"visionLayerEnabled,omitempty"`   // 是否为不支持图片的当前渠道启用图片理解层
+	VisionLayerChannelID string     `json:"visionLayerChannelId,omitempty"` // 图片理解层指定调用的稳定渠道标识
+	VisionLayerModel     string     `json:"visionLayerModel,omitempty"`     // 可选：覆盖透传给图片理解渠道的模型名
+	Temporary            bool       `json:"temporary,omitempty"`            // 临时渠道：到期后自动移入弃用池
+	TemporaryUntil       *time.Time `json:"temporaryUntil,omitempty"`       // 临时渠道到期时间
+	DeprecatedAt         *time.Time `json:"deprecatedAt,omitempty"`         // 移入弃用池时间
 	// Gemini 特定配置
 	InjectDummyThoughtSignature bool `json:"injectDummyThoughtSignature,omitempty"` // 给空 thought_signature 注入 dummy 值（兼容 x666.me 等要求必须有该字段的 API）
 	StripThoughtSignature       bool `json:"stripThoughtSignature,omitempty"`       // 移除 thought_signature 字段（兼容旧版 Gemini API）
@@ -102,15 +105,18 @@ type UpstreamUpdate struct {
 	ModelMapping       map[string][]string `json:"modelMapping"` // 支持一对多映射
 	DefaultModel       *string             `json:"defaultModel"`
 	// 多渠道调度相关字段
-	Priority       *int       `json:"priority"`
-	Status         *string    `json:"status"`
-	PromotionUntil *time.Time `json:"promotionUntil"`
-	PromotionCount *int       `json:"promotionCount"`
-	LowQuality     *bool      `json:"lowQuality"`
-	VisionCapable  *bool      `json:"visionCapable"`
-	Temporary      *bool      `json:"temporary"`
-	TemporaryUntil *time.Time `json:"temporaryUntil"`
-	DeprecatedAt   *time.Time `json:"deprecatedAt"`
+	Priority             *int       `json:"priority"`
+	Status               *string    `json:"status"`
+	PromotionUntil       *time.Time `json:"promotionUntil"`
+	PromotionCount       *int       `json:"promotionCount"`
+	LowQuality           *bool      `json:"lowQuality"`
+	VisionCapable        *bool      `json:"visionCapable"`
+	VisionLayerEnabled   *bool      `json:"visionLayerEnabled"`
+	VisionLayerChannelID *string    `json:"visionLayerChannelId"`
+	VisionLayerModel     *string    `json:"visionLayerModel"`
+	Temporary            *bool      `json:"temporary"`
+	TemporaryUntil       *time.Time `json:"temporaryUntil"`
+	DeprecatedAt         *time.Time `json:"deprecatedAt"`
 	// Gemini 特定配置
 	InjectDummyThoughtSignature *bool `json:"injectDummyThoughtSignature"`
 	StripThoughtSignature       *bool `json:"stripThoughtSignature"`

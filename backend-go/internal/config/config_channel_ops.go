@@ -255,6 +255,26 @@ func applyCommonUpdates(upstream *UpstreamConfig, index int, updates UpstreamUpd
 	}
 	if updates.VisionCapable != nil {
 		upstream.VisionCapable = *updates.VisionCapable
+		if *updates.VisionCapable {
+			upstream.VisionLayerEnabled = false
+			upstream.VisionLayerChannelID = ""
+			upstream.VisionLayerModel = ""
+		}
+	}
+	if updates.VisionLayerEnabled != nil {
+		upstream.VisionLayerEnabled = *updates.VisionLayerEnabled
+		if *updates.VisionLayerEnabled {
+			upstream.VisionCapable = false
+		} else {
+			upstream.VisionLayerChannelID = ""
+			upstream.VisionLayerModel = ""
+		}
+	}
+	if updates.VisionLayerChannelID != nil {
+		upstream.VisionLayerChannelID = strings.TrimSpace(*updates.VisionLayerChannelID)
+	}
+	if updates.VisionLayerModel != nil {
+		upstream.VisionLayerModel = strings.TrimSpace(*updates.VisionLayerModel)
 	}
 	if updates.Temporary != nil {
 		upstream.Temporary = *updates.Temporary
@@ -294,7 +314,41 @@ func applyCommonUpdatesToList(upstreams []UpstreamConfig, index int, updates Ups
 	if previousPool != channelStatusPool(&upstreams[index]) {
 		moveChannelToStatusPoolTail(upstreams, index)
 	}
+	if err := validateVisionLayerConfig(upstreams, index); err != nil {
+		return false, err
+	}
 	return shouldResetMetrics, nil
+}
+
+func validateVisionLayerConfig(upstreams []UpstreamConfig, ownerIndex int) error {
+	if ownerIndex < 0 || ownerIndex >= len(upstreams) {
+		return fmt.Errorf("图片理解层所属渠道索引无效: %d", ownerIndex)
+	}
+	owner := &upstreams[ownerIndex]
+	if owner.VisionCapable && owner.VisionLayerEnabled {
+		return fmt.Errorf("渠道不能同时标记为支持图片理解并启用图片理解层")
+	}
+	if !owner.VisionLayerEnabled {
+		return nil
+	}
+	targetID := strings.TrimSpace(owner.VisionLayerChannelID)
+	if targetID == "" {
+		return fmt.Errorf("启用图片理解层后必须选择图片理解渠道")
+	}
+	for targetIndex := range upstreams {
+		target := &upstreams[targetIndex]
+		if target.ID != targetID {
+			continue
+		}
+		if targetIndex == ownerIndex {
+			return fmt.Errorf("图片理解渠道不能选择当前渠道自身")
+		}
+		if !target.VisionCapable {
+			return fmt.Errorf("所选渠道 %q 未标记为支持图片理解", target.Name)
+		}
+		return nil
+	}
+	return fmt.Errorf("图片理解渠道 %q 不存在", targetID)
 }
 
 // applyAPIKeysUpdate 处理 API Keys 更新逻辑（历史记录、自动激活）

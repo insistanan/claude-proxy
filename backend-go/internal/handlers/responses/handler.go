@@ -340,6 +340,16 @@ func handleSuccess(
 ) (*types.Usage, error) {
 	defer resp.Body.Close()
 
+	// 图片理解层会将原图替换为文本观察结果。Responses 的本地会话必须保存这份
+	// 实际发送给上游的内容，避免后续 previous_response_id 再把原图交给纯文本渠道。
+	if preparedBody := common.PreparedRequestBody(c, nil); len(preparedBody) > 0 {
+		var preparedRequest types.ResponsesRequest
+		if err := json.Unmarshal(preparedBody, &preparedRequest); err == nil {
+			originalReq = &preparedRequest
+			originalRequestJSON = preparedBody
+		}
+	}
+
 	isStream := originalReq != nil && originalReq.Stream
 	if upstreamType == converters.ResponsesUpstreamResponses && isResponsesImageGenerationRequest(originalRequestJSON) {
 		return handleResponsesImagePassthrough(c, resp, envCfg, startTime, isStream)

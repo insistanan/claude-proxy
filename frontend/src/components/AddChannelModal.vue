@@ -601,6 +601,69 @@
               </div>
             </v-col>
 
+            <!-- 图片理解能力与图片理解层 -->
+            <v-col cols="12">
+              <v-card variant="outlined" rounded="lg">
+                <v-card-title class="d-flex align-center ga-2 pa-4 pb-2">
+                  <v-icon color="primary">mdi-image-search-outline</v-icon>
+                  <span class="text-body-1 font-weight-bold">图片理解</span>
+                </v-card-title>
+                <v-card-text class="pt-2">
+                  <div class="d-flex align-center justify-space-between">
+                    <div>
+                      <div class="text-body-1 font-weight-medium">本渠道支持图片理解</div>
+                      <div class="text-caption text-medium-emphasis">
+                        启用后，图片会直接发送给当前模型；该渠道也可被其他渠道的图片理解层调用。
+                      </div>
+                    </div>
+                    <v-switch v-model="form.visionCapable" inset color="primary" hide-details />
+                  </div>
+
+                  <v-divider class="my-4" />
+
+                  <div class="d-flex align-center justify-space-between">
+                    <div>
+                      <div class="text-body-1 font-weight-medium">添加图片理解层</div>
+                      <div class="text-caption text-medium-emphasis">
+                        当前模型不直接看图，由指定的图片理解模型先生成看图结果，再由当前模型回答。
+                      </div>
+                    </div>
+                    <v-switch v-model="form.visionLayerEnabled" inset color="secondary" hide-details />
+                  </div>
+
+                  <v-select
+                    v-if="form.visionLayerEnabled"
+                    v-model="form.visionLayerChannelId"
+                    class="mt-4"
+                    label="图片理解渠道 *"
+                    :items="visionChannelOptions"
+                    :loading="visionChannelsLoading"
+                    :disabled="visionChannelOptions.length === 0"
+                    placeholder="选择一个支持图片理解的渠道"
+                    hint="图片会交给该渠道处理；默认原样透传用户请求的模型名。"
+                    persistent-hint
+                    prepend-inner-icon="mdi-image-search-outline"
+                    variant="outlined"
+                    density="comfortable"
+                    :error-messages="visionLayerChannelError"
+                  />
+
+                  <v-text-field
+                    v-if="form.visionLayerEnabled"
+                    v-model="form.visionLayerModel"
+                    class="mt-4"
+                    label="图片理解模型（可选）"
+                    placeholder="留空则原样透传用户请求的模型名"
+                    hint="仅当需要让图片理解渠道固定使用某个模型时填写。"
+                    persistent-hint
+                    prepend-inner-icon="mdi-image-search-outline"
+                    variant="outlined"
+                    density="comfortable"
+                  />
+                </v-card-text>
+              </v-card>
+            </v-col>
+
             <!-- 临时渠道标记 -->
             <v-col cols="12">
               <div class="d-flex align-center justify-space-between">
@@ -684,7 +747,7 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTheme } from 'vuetify'
 import type { Channel } from '../services/api'
-import { fetchUpstreamModels, ApiError } from '../services/api'
+import { api, fetchUpstreamModels, ApiError } from '../services/api'
 import {
   isValidApiKey as _isValidApiKey,
   isValidUrl as _isValidQuickInputUrl,
@@ -1165,6 +1228,9 @@ const form = reactive({
   insecureSkipVerify: false,
   lowQuality: false,
   visionCapable: false,
+  visionLayerEnabled: false,
+  visionLayerChannelId: '',
+  visionLayerModel: '',
   temporary: false,
   injectDummyThoughtSignature: false,
   stripThoughtSignature: false,
@@ -1339,8 +1405,64 @@ const subtitleClasses = computed(() => {
 
 const isFormValid = computed(() => {
   return (
-    form.name.trim() && form.serviceType && form.baseUrl.trim() && isValidUrl(form.baseUrl) && form.apiKeys.length > 0
+    form.name.trim() && form.serviceType && form.baseUrl.trim() && isValidUrl(form.baseUrl) && form.apiKeys.length > 0 &&
+    (!form.visionLayerEnabled || form.visionLayerChannelId)
   )
+})
+
+const visionChannels = ref<Channel[]>([])
+const visionChannelsLoading = ref(false)
+
+const visionChannelOptions = computed(() => {
+  const currentChannelID = props.channel?.id
+  return visionChannels.value
+    .filter(channel => channel.id && channel.id !== currentChannelID && channel.visionCapable && channel.status === 'active')
+    .map(channel => ({ title: `${channel.name}（${channel.serviceType}）`, value: channel.id }))
+})
+
+const visionLayerChannelError = computed(() => {
+  if (form.visionLayerEnabled && !form.visionLayerChannelId) {
+    return '启用图片理解层后必须选择图片理解渠道'
+  }
+  return ''
+})
+
+const loadVisionChannels = async () => {
+  visionChannelsLoading.value = true
+  try {
+    const response = props.channelType === 'gemini'
+      ? await api.getGeminiChannels()
+      : props.channelType === 'responses'
+        ? await api.getResponsesChannels()
+      : props.channelType === 'chat'
+        ? await api.getChatChannels()
+        : props.channelType === 'images'
+          ? await api.getImagesChannels()
+        : await api.getChannels()
+    visionChannels.value = response.channels || []
+  } catch (error) {
+    console.error('加载图片理解渠道失败:', error)
+    visionChannels.value = []
+  } finally {
+    visionChannelsLoading.value = false
+  }
+}
+
+watch(() => form.visionCapable, enabled => {
+  if (enabled) {
+    form.visionLayerEnabled = false
+    form.visionLayerChannelId = ''
+    form.visionLayerModel = ''
+  }
+})
+
+watch(() => form.visionLayerEnabled, enabled => {
+  if (enabled) {
+    form.visionCapable = false
+  } else {
+    form.visionLayerChannelId = ''
+    form.visionLayerModel = ''
+  }
 })
 
 // 工具函数
@@ -1367,7 +1489,10 @@ const resetForm = () => {
   form.website = ''
   form.insecureSkipVerify = false
   form.lowQuality = false
-  form.visionCapable = false
+  form.visionCapable = props.channelType === 'responses'
+  form.visionLayerEnabled = false
+  form.visionLayerChannelId = ''
+  form.visionLayerModel = ''
   form.temporary = false
   form.injectDummyThoughtSignature = false
   form.stripThoughtSignature = false
@@ -1421,6 +1546,9 @@ const loadChannelData = (channel: Channel) => {
   form.insecureSkipVerify = !!channel.insecureSkipVerify
   form.lowQuality = !!channel.lowQuality
   form.visionCapable = !!channel.visionCapable
+  form.visionLayerEnabled = !!channel.visionLayerEnabled
+  form.visionLayerChannelId = channel.visionLayerChannelId || ''
+  form.visionLayerModel = channel.visionLayerModel || ''
   form.temporary = !!channel.temporary
   form.injectDummyThoughtSignature = !!channel.injectDummyThoughtSignature
   form.stripThoughtSignature = !!channel.stripThoughtSignature
@@ -1740,6 +1868,9 @@ const handleSubmit = async () => {
     insecureSkipVerify: form.insecureSkipVerify,
     lowQuality: form.lowQuality,
     visionCapable: form.visionCapable,
+    visionLayerEnabled: form.visionLayerEnabled,
+    visionLayerChannelId: form.visionLayerChannelId || undefined,
+    visionLayerModel: form.visionLayerModel.trim(),
     temporary: form.temporary,
     injectDummyThoughtSignature: form.injectDummyThoughtSignature,
     stripThoughtSignature: form.stripThoughtSignature,
@@ -1770,6 +1901,7 @@ watch(
       // 无论是编辑还是新增，都先清理密钥错误状态
       apiKeyError.value = ''
       duplicateKeyIndex.value = -1
+      void loadVisionChannels()
 
       if (props.channel) {
         // 编辑模式：使用表单模式

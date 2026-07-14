@@ -446,7 +446,6 @@ func (u *UpstreamConfig) Clone() *UpstreamConfig {
 		t := *u.DeprecatedAt
 		cloned.DeprecatedAt = &t
 	}
-
 	return &cloned
 }
 

@@ -431,6 +431,7 @@ func handleSingleChannelWithUpstream(
 }
 
 func buildChatUpstreamRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string, originalBody []byte) (*http.Request, error) {
+	originalBody = common.PreparedRequestBody(c, originalBody)
 	bodyBytes, err := applyChatModelMapping(originalBody, upstream)
 	if err != nil {
 		return nil, err
@@ -594,6 +595,7 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 }
 
 func buildChatDirectRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string, bodyBytes []byte) (*http.Request, error) {
+	bodyBytes = common.PreparedRequestBody(c, bodyBytes)
 	url := buildChatCompletionsURL(upstream.GetEffectiveBaseURL())
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
