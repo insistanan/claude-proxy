@@ -1,9 +1,7 @@
 package common
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
-	"strings"
+	"log"
 
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
@@ -17,7 +15,7 @@ func ObserveConversation(
 	firstPrompt string,
 	stream bool,
 ) string {
-	return ObserveConversationPrompts(channelScheduler, kind, conversationID, model, []string{firstPrompt}, stream)
+	return ObserveConversationPrompts(channelScheduler, kind, conversationID, model, []string{firstPrompt}, nil, stream)
 }
 
 func ObserveConversationPrompts(
@@ -26,6 +24,7 @@ func ObserveConversationPrompts(
 	conversationID string,
 	model string,
 	prompts []string,
+	imageFingerprints []string,
 	stream bool,
 ) string {
 	if channelScheduler == nil {
@@ -40,30 +39,19 @@ func ObserveConversationPrompts(
 	if len(prompts) > 0 {
 		firstPrompt = prompts[0]
 	}
-	fallbackKey := buildConversationFallbackKey(model, firstPrompt)
 	record := registry.ObserveRequest(conversation.Observation{
-		APIKind:        string(kind),
-		Model:          model,
-		Stream:         stream,
-		ConversationID: conversationID,
-		FallbackKey:    fallbackKey,
-		FirstPrompt:    firstPrompt,
-		Prompts:        prompts,
+		APIKind:           string(kind),
+		Model:             model,
+		Stream:            stream,
+		ConversationID:    conversationID,
+		FirstPrompt:       firstPrompt,
+		Prompts:           prompts,
+		ImageFingerprints: imageFingerprints,
 	})
 	if record == nil {
 		return conversationID
 	}
 	return record.ID
-}
-
-func buildConversationFallbackKey(model string, firstPrompt string) string {
-	model = strings.TrimSpace(model)
-	firstPrompt = strings.TrimSpace(firstPrompt)
-	if model == "" && firstPrompt == "" {
-		return ""
-	}
-	sum := sha1.Sum([]byte(model + "\n" + firstPrompt))
-	return "fallback_" + hex.EncodeToString(sum[:8])
 }
 
 func MarkConversationSuccess(channelScheduler *scheduler.ChannelScheduler, conversationID string, kind scheduler.ChannelKind, channelIndex int, channelName string) {
@@ -85,4 +73,17 @@ func MarkConversationFailure(channelScheduler *scheduler.ChannelScheduler, conve
 		return
 	}
 	channelScheduler.MarkConversationFailure(conversationID, kind, err.Error())
+}
+
+func AssociateConversationExternalID(channelScheduler *scheduler.ChannelScheduler, conversationID string, kind scheduler.ChannelKind, externalID string) {
+	if channelScheduler == nil || conversationID == "" || externalID == "" {
+		return
+	}
+	registry := channelScheduler.GetConversationRegistry()
+	if registry == nil {
+		return
+	}
+	if err := registry.AssociateExternalID(conversationID, string(kind), externalID); err != nil {
+		log.Printf("[Conversation] 关联外部对话 ID 失败: %v", err)
+	}
 }

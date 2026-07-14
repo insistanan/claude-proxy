@@ -134,6 +134,27 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 			},
 			want: "deepseek-v4-pro",
 		},
+		{
+			name:  "wildcard mapping handles every model",
+			model: "custom-model-2026",
+			upstream: &UpstreamConfig{
+				ModelMapping: map[string][]string{
+					"*": {"gpt-5.4"},
+				},
+			},
+			want: "gpt-5.4",
+		},
+		{
+			name:  "wildcard mapping takes precedence over specific mapping",
+			model: "gpt-5.4-codex",
+			upstream: &UpstreamConfig{
+				ModelMapping: map[string][]string{
+					"*":     {"gpt-5.4"},
+					"codex": {"gpt-5.4-codex"},
+				},
+			},
+			want: "gpt-5.4",
+		},
 	}
 
 	for _, tt := range tests {

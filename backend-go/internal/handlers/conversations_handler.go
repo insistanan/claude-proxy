@@ -7,12 +7,17 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
+	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/gin-gonic/gin"
 )
 
 type routeOverrideRequest struct {
 	Kind         string `json:"kind"`
 	ChannelIndex int    `json:"channelIndex"`
+}
+
+type conversationNameRequest struct {
+	Name string `json:"name"`
 }
 
 type routeOptionChannel struct {
@@ -72,6 +77,57 @@ func GetConversation(channelScheduler *scheduler.ChannelScheduler) gin.HandlerFu
 			return
 		}
 		c.JSON(http.StatusOK, item)
+	}
+}
+
+func SetConversationName(channelScheduler *scheduler.ChannelScheduler) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		registry := getConversationRegistry(channelScheduler)
+		if registry == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "conversation registry is not initialized"})
+			return
+		}
+		var req conversationNameRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		item, err := registry.SetName(c.Param("id"), req.Name)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, item)
+	}
+}
+
+func DeleteConversation(channelScheduler *scheduler.ChannelScheduler, sessionManager *session.SessionManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		registry := getConversationRegistry(channelScheduler)
+		if registry == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "conversation registry is not initialized"})
+			return
+		}
+		conversationID := c.Param("id")
+		if _, ok := registry.Get(conversationID); !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
+			return
+		}
+		if sessionManager == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "response session manager is not initialized"})
+			return
+		}
+		// 先删除 Responses 会话链；若持久化删除失败，保留对话记录供用户重试。
+		if err := sessionManager.DeleteConversation(conversationID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if err := registry.Delete(conversationID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		session.DefaultResponseChainManager().Clear(conversationID)
+		c.Status(http.StatusNoContent)
 	}
 }
 
@@ -221,6 +277,7 @@ func isValidConversationKind(kind string) bool {
 func matchConversationQuery(item *conversation.Record, query string) bool {
 	values := []string{
 		item.ID,
+		item.Name,
 		item.APIKind,
 		item.LastModel,
 		item.FirstPrompt,

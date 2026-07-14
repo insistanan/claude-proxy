@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -20,26 +21,6 @@ func TestBuildIdentityKey(t *testing.T) {
 				FirstPrompt:    "Hello",
 			},
 			expected: "messages|conv_123",
-		},
-		{
-			name: "with fallback key - same model and prompt should produce same key",
-			obs: Observation{
-				APIKind:     "messages",
-				Model:       "claude-opus",
-				FallbackKey: "fallback_abc123",
-				FirstPrompt: "Hello world",
-			},
-			expected: "messages|fallback|fallback_abc123",
-		},
-		{
-			name: "with fallback key - different prompt should use same fallback if hash matches",
-			obs: Observation{
-				APIKind:     "messages",
-				Model:       "claude-opus",
-				FallbackKey: "fallback_abc123",
-				FirstPrompt: "Hello world",
-			},
-			sameAs: "messages|fallback|fallback_abc123",
 		},
 		{
 			name: "without ID or fallback - should generate unique ID",
@@ -74,57 +55,10 @@ func TestBuildIdentityKey(t *testing.T) {
 	}
 }
 
-func TestBuildIdentityKey_SameFallbackProducesSameKey(t *testing.T) {
-	obs1 := Observation{
-		APIKind:     "messages",
-		Model:       "claude-opus",
-		FallbackKey: "fallback_test123",
-		FirstPrompt: "What is Go?",
-	}
-
-	obs2 := Observation{
-		APIKind:     "messages",
-		Model:       "claude-opus",
-		FallbackKey: "fallback_test123",
-		FirstPrompt: "What is Go?",
-	}
-
-	key1 := buildIdentityKey(obs1)
-	key2 := buildIdentityKey(obs2)
-
-	if key1 != key2 {
-		t.Errorf("Same fallback key should produce same identity key, got %v and %v", key1, key2)
-	}
-}
-
-func TestBuildIdentityKey_DifferentFallbackProducesDifferentKey(t *testing.T) {
-	obs1 := Observation{
-		APIKind:     "messages",
-		Model:       "claude-opus",
-		FallbackKey: "fallback_aaa",
-		FirstPrompt: "First question",
-	}
-
-	obs2 := Observation{
-		APIKind:     "messages",
-		Model:       "claude-sonnet",
-		FallbackKey: "fallback_bbb",
-		FirstPrompt: "Second question",
-	}
-
-	key1 := buildIdentityKey(obs1)
-	key2 := buildIdentityKey(obs2)
-
-	if key1 == key2 {
-		t.Errorf("Different fallback keys should produce different identity keys, both got %v", key1)
-	}
-}
-
 func TestBuildIdentityKey_ExplicitIDTakesPrecedence(t *testing.T) {
 	obs := Observation{
 		APIKind:        "messages",
 		ConversationID: "explicit_conv_id",
-		FallbackKey:    "fallback_xyz",
 		Model:          "claude-opus",
 		FirstPrompt:    "Test",
 	}
@@ -136,13 +70,88 @@ func TestBuildIdentityKey_ExplicitIDTakesPrecedence(t *testing.T) {
 		t.Errorf("Explicit conversation ID should take precedence, got %v want %v", result, expected)
 	}
 
-	// 确保没有包含 fallback
-	if containsString(result, "fallback") {
-		t.Error("Result should not contain 'fallback' when explicit ID is provided")
+}
+
+func TestBuildIdentityKey_WithoutExplicitIDDoesNotMerge(t *testing.T) {
+	obs := Observation{APIKind: "messages", Model: "claude-opus", FirstPrompt: "What is Go?"}
+	if first, second := buildIdentityKey(obs), buildIdentityKey(obs); first == second {
+		t.Fatalf("requests without an explicit conversation ID must not be merged: %q", first)
 	}
 }
 
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && s[:len(substr)] == substr || 
-		len(s) > len(substr) && containsString(s[1:], substr)
+func TestPersistentRegistryRestoresNameImageFingerprintsAndResponseAlias(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "conversations.db")
+	registry, err := NewPersistentRegistry(dbPath)
+	if err != nil {
+		t.Fatalf("NewPersistentRegistry() error = %v", err)
+	}
+
+	created := registry.ObserveRequest(Observation{
+		APIKind:           "responses",
+		ConversationID:    "thread_123",
+		Model:             "gpt-5",
+		Prompts:           []string{"请分析这张图片"},
+		ImageFingerprints: []string{"sha256:image-a"},
+	})
+	if created == nil {
+		t.Fatal("ObserveRequest() returned nil")
+	}
+	if _, err := registry.SetName(created.ID, "图片分析"); err != nil {
+		t.Fatalf("SetName() error = %v", err)
+	}
+	if err := registry.AssociateExternalID(created.ID, "responses", "resp_123"); err != nil {
+		t.Fatalf("AssociateExternalID() error = %v", err)
+	}
+	if err := registry.SaveImageUnderstanding("image-cache-key", "第一张图片的描述"); err != nil {
+		t.Fatalf("SaveImageUnderstanding() error = %v", err)
+	}
+	registry.Stop()
+	legacyStore, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("open legacy store error = %v", err)
+	}
+	if _, err := legacyStore.db.Exec(`UPDATE conversations
+		SET route_override_json = '{"kind":"","channelIndex":0}', last_resolved_json = 'null'
+		WHERE id = ?`, created.ID); err != nil {
+		t.Fatalf("prepare legacy optional JSON error = %v", err)
+	}
+	if err := legacyStore.Close(); err != nil {
+		t.Fatalf("close legacy store error = %v", err)
+	}
+
+	restored, err := NewPersistentRegistry(dbPath)
+	if err != nil {
+		t.Fatalf("restore NewPersistentRegistry() error = %v", err)
+	}
+	defer restored.Stop()
+
+	continued := restored.ObserveRequest(Observation{
+		APIKind:        "responses",
+		ConversationID: "resp_123",
+		Prompts:        []string{"继续"},
+	})
+	if continued.ID != created.ID {
+		t.Fatalf("response alias should keep the same conversation: got %s want %s", continued.ID, created.ID)
+	}
+	if continued.Name != "图片分析" {
+		t.Fatalf("name = %q, want %q", continued.Name, "图片分析")
+	}
+	if continued.RouteOverride != nil {
+		t.Fatalf("RouteOverride = %#v, want nil", continued.RouteOverride)
+	}
+	if continued.LastResolved != nil {
+		t.Fatalf("LastResolved = %#v, want nil", continued.LastResolved)
+	}
+	if len(continued.ImageFingerprints) != 1 || continued.ImageFingerprints[0] != "sha256:image-a" {
+		t.Fatalf("image fingerprints = %#v", continued.ImageFingerprints)
+	}
+	if result, ok, err := restored.LoadImageUnderstanding("image-cache-key"); err != nil || !ok || result != "第一张图片的描述" {
+		t.Fatalf("LoadImageUnderstanding() = (%q, %v, %v)", result, ok, err)
+	}
+	if err := restored.Delete(created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, ok := restored.Get(created.ID); ok {
+		t.Fatal("deleted conversation is still available")
+	}
 }

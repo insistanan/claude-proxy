@@ -100,6 +100,10 @@ func RedirectModelList(model string, upstream *UpstreamConfig) []string {
 	if upstream.ModelMapping == nil || len(upstream.ModelMapping) == 0 {
 		return []string{model}
 	}
+	// "*" 是任意源模型规则。配置后，所有模型请求都使用它的目标模型列表。
+	if mapped, ok := upstream.ModelMapping["*"]; ok && len(mapped) > 0 {
+		return mapped
+	}
 
 	// 1. 先尝试精确匹配原始模型名（包括后缀）
 	if mapped, ok := upstream.ModelMapping[model]; ok && len(mapped) > 0 {

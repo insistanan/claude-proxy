@@ -1,6 +1,9 @@
 package utils
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -33,6 +36,163 @@ func DetectImageContent(body []byte) bool {
 	}
 
 	return false
+}
+
+// ExtractImageFingerprints 提取请求中图片的不可逆指纹。
+// 内嵌图片按解码后的原始字节计算 SHA-256；远程图片不会下载，
+// 仅记录 URL 的 SHA-256，避免代理因会话记录额外访问外部地址。
+func ExtractImageFingerprints(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+
+	var payload interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+	add := func(fingerprint string) {
+		if fingerprint == "" {
+			return
+		}
+		if _, ok := seen[fingerprint]; ok {
+			return
+		}
+		seen[fingerprint] = struct{}{}
+		result = append(result, fingerprint)
+	}
+
+	var visit func(interface{})
+	visit = func(value interface{}) {
+		switch v := value.(type) {
+		case []interface{}:
+			for _, item := range v {
+				visit(item)
+			}
+		case map[string]interface{}:
+			if inlineData, ok := v["inlineData"].(map[string]interface{}); ok {
+				if data, ok := inlineData["data"].(string); ok {
+					add(base64Fingerprint(data))
+				}
+			}
+
+			typeValue, _ := v["type"].(string)
+			typeValue = strings.ToLower(strings.TrimSpace(typeValue))
+			if typeValue == "image" {
+				if source, ok := v["source"].(map[string]interface{}); ok {
+					sourceType, _ := source["type"].(string)
+					switch strings.ToLower(strings.TrimSpace(sourceType)) {
+					case "base64":
+						if data, ok := source["data"].(string); ok {
+							add(base64Fingerprint(data))
+						}
+					case "url":
+						if url, ok := source["url"].(string); ok {
+							add(imageReferenceFingerprint(url))
+						}
+					}
+				}
+			}
+			if typeValue == "image_url" || typeValue == "input_image" {
+				if url, ok := extractImageURL(v, typeValue); ok {
+					add(imageReferenceFingerprint(url))
+				}
+			}
+			if fileData, ok := v["fileData"].(map[string]interface{}); ok {
+				mimeType, _ := fileData["mimeType"].(string)
+				fileURI, _ := fileData["fileUri"].(string)
+				if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "image/") {
+					add(imageReferenceFingerprint(fileURI))
+				}
+			}
+
+			for _, item := range v {
+				visit(item)
+			}
+		}
+	}
+	visit(payload)
+	return result
+}
+
+// ImageFingerprintForBlock 为单个图片内容块生成不可逆指纹。
+// 该指纹用于图片理解结果的逐图缓存，不保存图片原文。
+func ImageFingerprintForBlock(block map[string]interface{}) string {
+	if block == nil {
+		return ""
+	}
+	if inlineData, ok := block["inlineData"].(map[string]interface{}); ok {
+		if data, ok := inlineData["data"].(string); ok {
+			return base64Fingerprint(data)
+		}
+	}
+
+	typeValue, _ := block["type"].(string)
+	typeValue = strings.ToLower(strings.TrimSpace(typeValue))
+	if typeValue == "image" {
+		if source, ok := block["source"].(map[string]interface{}); ok {
+			sourceType, _ := source["type"].(string)
+			switch strings.ToLower(strings.TrimSpace(sourceType)) {
+			case "base64":
+				if data, ok := source["data"].(string); ok {
+					return base64Fingerprint(data)
+				}
+			case "url":
+				if url, ok := source["url"].(string); ok {
+					return imageReferenceFingerprint(url)
+				}
+			}
+		}
+	}
+	if typeValue == "image_url" || typeValue == "input_image" {
+		if url, ok := extractImageURL(block, typeValue); ok {
+			return imageReferenceFingerprint(url)
+		}
+	}
+	if fileData, ok := block["fileData"].(map[string]interface{}); ok {
+		mimeType, _ := fileData["mimeType"].(string)
+		fileURI, _ := fileData["fileUri"].(string)
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "image/") {
+			return imageReferenceFingerprint(fileURI)
+		}
+	}
+	return ""
+}
+
+func base64Fingerprint(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || r == '\t' || r == ' ' {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(value)
+		if err != nil {
+			return ""
+		}
+	}
+	sum := sha256.Sum256(decoded)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func imageReferenceFingerprint(reference string) string {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return ""
+	}
+	if _, data, ok := parseDataURL(reference); ok {
+		return base64Fingerprint(data)
+	}
+	sum := sha256.Sum256([]byte(reference))
+	return "url-sha256:" + hex.EncodeToString(sum[:])
 }
 
 // ResponsesItemHasVisionContent 检测单个 ResponsesItem 是否包含图片内容。

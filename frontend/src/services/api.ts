@@ -264,6 +264,7 @@ export interface ConversationResolvedChannel {
 
 export interface ConversationEntry {
   id: string
+  name?: string
   apiKind: ConversationKind
   lastModel?: string
   lastResolvedModel?: string
@@ -280,6 +281,7 @@ export interface ConversationEntry {
   lastError?: string
   routeOverride?: ConversationRouteOverride
   lastResolved?: ConversationResolvedChannel
+  imageFingerprints?: string[]
 }
 
 export interface ConversationsResponse {
@@ -957,6 +959,19 @@ class ApiService {
 
   async getConversation(id: string): Promise<ConversationEntry> {
     return this.request(`/conversations/${encodeURIComponent(id)}`)
+  }
+
+  async setConversationName(id: string, name: string): Promise<ConversationEntry> {
+    return this.request(`/conversations/${encodeURIComponent(id)}/name`, {
+      method: 'PUT',
+      body: JSON.stringify({ name })
+    })
+  }
+
+  async deleteConversation(id: string): Promise<void> {
+    await this.request(`/conversations/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    })
   }
 
   async getConversationRouteOptions(): Promise<ConversationRouteOptionsResponse> {

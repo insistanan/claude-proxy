@@ -308,11 +308,24 @@
                   </div>
 
                   <!-- 添加新映射 -->
+                  <div class="d-flex align-center ga-2 mb-3">
+                    <v-btn
+                      size="small"
+                      color="primary"
+                      variant="tonal"
+                      @click="newMapping.source = '*'"
+                    >
+                      使用 * 匹配任意源模型
+                    </v-btn>
+                    <span class="text-caption text-medium-emphasis">选择后，任何请求模型都会映射到右侧目标模型。</span>
+                  </div>
                   <div class="d-flex align-center ga-2">
                     <v-combobox
                       v-model="newMapping.source"
                       label="源模型名"
                       :items="sourceModelOptions"
+                      item-title="title"
+                      item-value="value"
                       variant="outlined"
                       density="comfortable"
                       hide-details
@@ -1187,20 +1200,23 @@ const allSourceModelOptions = computed(() => {
 
 // 可选的源模型选项
 // 允许重复选择同一个源模型，以便为其继续追加多个目标模型
-const sourceModelOptions = computed(() => allSourceModelOptions.value)
+const sourceModelOptions = computed(() => [
+  { title: '*（任意源模型）', value: '*' },
+  ...allSourceModelOptions.value
+])
 
 // 模型重定向的示例文本 - 根据渠道类型动态显示
 const modelMappingHint = computed(() => {
   if (props.channelType === 'gemini') {
-    return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 gemini-flash 可匹配 gemini-2.5-flash 等版本）。例如：将 "gemini-pro" 重定向到 "gemini-2.5-pro"'
+    return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 gemini-flash 可匹配 gemini-2.5-flash 等版本）；选择 "*（任意源模型）" 会将所有模型请求映射到指定目标。'
   }
   if (props.channelType === 'responses') {
-    return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 gpt-5.5 可匹配 gpt-5.5-codex 等变体）。例如：将 "o3" 重定向到 "gpt-5.5"'
+    return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 gpt-5.5 可匹配 gpt-5.5-codex 等变体）；选择 "*（任意源模型）" 会将所有模型请求映射到指定目标。'
   }
   if (props.channelType === 'chat') {
-    return '配置模型名称映射，将请求中的 Chat 模型名重定向到目标模型。例如：将 "gpt-4o" 重定向到 "gpt-4.1"'
+    return '配置模型名称映射，将请求中的 Chat 模型名重定向到目标模型；选择 "*（任意源模型）" 会将所有模型请求映射到指定目标。'
   } else {
-    return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 opus 可匹配 claude-opus-4-5-20251101 等版本）。例如：将 "opus" 重定向到 "claude-3-5-sonnet"'
+    return '配置模型名称映射，将请求中的模型名重定向到目标模型。使用模糊匹配（如 opus 可匹配 claude-opus-4-5-20251101 等版本）；选择 "*（任意源模型）" 会将所有模型请求映射到指定目标。'
   }
 })
 

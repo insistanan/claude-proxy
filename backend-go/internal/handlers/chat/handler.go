@@ -56,12 +56,9 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		}
 
 		hasImage := utils.DetectImageContent(bodyBytes)
-		userID := chatReqUserID(bodyBytes)
-		if userID == "" {
-			userID = common.ExtractConversationID(c, bodyBytes)
-		}
+		userID := common.ExtractConversationID(c, bodyBytes)
 		prompts := common.ExtractPromptsFromOpenAI(chatReq.Messages)
-		userID = common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindChat, userID, chatReq.Model, prompts, chatReq.Stream)
+		userID = common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindChat, userID, chatReq.Model, prompts, utils.ExtractImageFingerprints(bodyBytes), chatReq.Stream)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindChat)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Chat")
@@ -1000,14 +997,4 @@ func mergeChatUsage(current, next *types.Usage) *types.Usage {
 		current.CompletionTokens = next.CompletionTokens
 	}
 	return current
-}
-
-func chatReqUserID(bodyBytes []byte) string {
-	var req struct {
-		User string `json:"user"`
-	}
-	if err := json.Unmarshal(bodyBytes, &req); err == nil {
-		return req.User
-	}
-	return ""
 }

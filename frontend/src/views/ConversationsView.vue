@@ -49,6 +49,13 @@
           </span>
         </template>
 
+        <template #item.name="{ item }">
+          <span v-if="item.name" class="clickable-prompt font-weight-medium" title="点击查看对话详情" @click="openDetailDialog(item)">
+            {{ item.name }}
+          </span>
+          <span v-else class="text-medium-emphasis">未命名</span>
+        </template>
+
         <template #item.apiKind="{ item }">
           <v-chip size="small" variant="tonal">{{ item.apiKind }}</v-chip>
         </template>
@@ -116,6 +123,9 @@
         </template>
 
         <template #item.actions="{ item }">
+          <v-btn size="small" variant="text" prepend-icon="mdi-pencil" @click="openNameDialog(item)">
+            命名
+          </v-btn>
           <v-btn size="small" variant="text" prepend-icon="mdi-swap-horizontal" @click="openRouteDialog(item)">
             固定渠道
           </v-btn>
@@ -128,6 +138,9 @@
             @click="clearRoute(item)"
           >
             清除
+          </v-btn>
+          <v-btn size="small" variant="text" color="error" prepend-icon="mdi-delete" @click="openDeleteDialog(item)">
+            删除
           </v-btn>
         </template>
       </v-data-table>
@@ -160,6 +173,45 @@
       </v-card>
     </v-dialog>
 
+    <v-dialog v-model="nameDialog" max-width="520">
+      <v-card rounded="lg">
+        <v-card-title>给对话命名</v-card-title>
+        <v-card-text>
+          <div class="text-body-2 text-medium-emphasis mb-3">{{ editingNameConversation?.id }}</div>
+          <v-text-field
+            v-model="conversationName"
+            label="对话名称"
+            maxlength="120"
+            counter="120"
+            variant="outlined"
+            density="compact"
+            autofocus
+            @keyup.enter="saveName"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="nameDialog = false">取消</v-btn>
+          <v-btn color="primary" :loading="saving" @click="saveName">保存</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <v-dialog v-model="deleteDialog" max-width="480">
+      <v-card rounded="lg">
+        <v-card-title>删除对话</v-card-title>
+        <v-card-text>
+          确定删除“{{ deletingConversation?.name || deletingConversation?.firstPrompt || deletingConversation?.id }}”吗？
+          此操作会删除该对话的提示词、图片指纹、固定渠道设置和 Responses 持久化会话链，且无法恢复。
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="deleteDialog = false">取消</v-btn>
+          <v-btn color="error" :loading="saving" @click="deleteConversation">删除</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- 详情 Dialog -->
     <v-dialog v-model="detailDialog" max-width="720">
       <v-card rounded="lg" class="pa-2">
@@ -182,6 +234,10 @@
               <v-chip v-else size="small" color="grey" variant="tonal">已完成/空闲</v-chip>
             </div>
           </div>
+
+          <v-alert v-if="selectedConversation?.name" type="info" variant="tonal" density="compact" class="mb-4">
+            对话名称：{{ selectedConversation.name }}
+          </v-alert>
 
           <!-- Grid Info -->
           <v-row class="mb-2" dense>
@@ -233,6 +289,22 @@
               </div>
             </v-col>
           </v-row>
+
+          <div class="mt-4">
+            <div class="text-subtitle-2 font-weight-bold mb-2 d-flex align-center ga-2">
+              <span class="prompt-section-marker" aria-hidden="true"></span>
+              <span>图片指纹（{{ selectedConversation?.imageFingerprints?.length || 0 }}）</span>
+            </div>
+            <div v-if="!selectedConversation?.imageFingerprints?.length" class="text-caption text-medium-emphasis">
+              该对话尚未收到图片。
+            </div>
+            <div v-else class="image-fingerprint-list">
+              <div v-for="fingerprint in selectedConversation.imageFingerprints" :key="fingerprint" class="image-fingerprint-item">
+                <span class="font-mono">{{ fingerprint }}</span>
+                <v-btn size="x-small" icon="mdi-content-copy" variant="text" color="primary" title="复制图片指纹" @click="copyText(fingerprint)" />
+              </div>
+            </div>
+          </div>
 
           <!-- 错误信息 (如果有) -->
           <v-alert
@@ -295,6 +367,15 @@
         </v-card-text>
 
         <v-card-actions class="border-t mt-2 pt-2">
+          <v-btn
+            v-if="selectedConversation"
+            color="error"
+            variant="tonal"
+            prepend-icon="mdi-delete"
+            @click="openDeleteDialog(selectedConversation)"
+          >
+            删除对话
+          </v-btn>
           <v-spacer />
           <v-btn color="primary" variant="tonal" prepend-icon="mdi-swap-horizontal" @click="openRouteOverrideFromDetail()">
             去固定该会话渠道
@@ -316,6 +397,7 @@ import { api, type ConversationEntry, type ConversationKind, type ConversationRo
 
 const headers = [
   { title: 'ID', key: 'id', sortable: false },
+  { title: '名称', key: 'name', sortable: false },
   { title: '提示词', key: 'firstPrompt', sortable: false },
   { title: '类型', key: 'apiKind', sortable: false },
   { title: '模型', key: 'lastModel', sortable: false },
@@ -343,6 +425,11 @@ const now = ref(Date.now())
 const routeDialog = ref(false)
 const editingConversation = ref<ConversationEntry | null>(null)
 const selectedChannelIndex = ref<number | null>(null)
+const nameDialog = ref(false)
+const editingNameConversation = ref<ConversationEntry | null>(null)
+const conversationName = ref('')
+const deleteDialog = ref(false)
+const deletingConversation = ref<ConversationEntry | null>(null)
 const routeOptions = ref<Record<ConversationKind, RouteSelectItem[]>>({
   messages: [],
   responses: [],
@@ -362,6 +449,53 @@ const snackbarColor = ref('success')
 const openDetailDialog = (item: ConversationEntry) => {
   selectedConversation.value = item
   detailDialog.value = true
+}
+
+const updateConversation = (updated: ConversationEntry) => {
+  conversations.value = conversations.value.map(item => item.id === updated.id ? updated : item)
+  if (selectedConversation.value?.id === updated.id) {
+    selectedConversation.value = updated
+  }
+}
+
+const openNameDialog = (item: ConversationEntry) => {
+  editingNameConversation.value = item
+  conversationName.value = item.name || ''
+  nameDialog.value = true
+}
+
+const saveName = async () => {
+  if (!editingNameConversation.value || !conversationName.value.trim()) return
+  saving.value = true
+  try {
+    const updated = await api.setConversationName(editingNameConversation.value.id, conversationName.value.trim())
+    updateConversation(updated)
+    nameDialog.value = false
+  } finally {
+    saving.value = false
+  }
+}
+
+const openDeleteDialog = (item: ConversationEntry) => {
+  deletingConversation.value = item
+  deleteDialog.value = true
+}
+
+const deleteConversation = async () => {
+  if (!deletingConversation.value) return
+  saving.value = true
+  try {
+    const id = deletingConversation.value.id
+    await api.deleteConversation(id)
+    conversations.value = conversations.value.filter(item => item.id !== id)
+    if (selectedConversation.value?.id === id) {
+      detailDialog.value = false
+      selectedConversation.value = null
+    }
+    deleteDialog.value = false
+  } finally {
+    saving.value = false
+  }
 }
 
 const openRouteOverrideFromDetail = () => {
@@ -390,7 +524,7 @@ const filteredConversations = computed(() => {
       if (kindFilter.value && item.apiKind !== kindFilter.value) return false
       if (!q) return true
       const promptMatch = item.prompts && item.prompts.some(p => p.toLowerCase().includes(q))
-      return [item.id, item.firstPrompt, item.lastModel, item.lastResolvedModel, item.lastError, item.routeOverride?.channelName, item.lastResolved?.channelName]
+      return [item.id, item.name, item.firstPrompt, item.lastModel, item.lastResolvedModel, item.lastError, item.routeOverride?.channelName, item.lastResolved?.channelName]
         .filter(Boolean)
         .some(value => String(value).toLowerCase().includes(q)) || promptMatch
     })
@@ -466,9 +600,7 @@ const saveRoute = async () => {
       editingConversation.value.apiKind,
       selectedChannelIndex.value
     )
-    conversations.value = conversations.value.map(item =>
-      item.id === updated.id ? updated : item
-    )
+    updateConversation(updated)
     routeDialog.value = false
   } finally {
     saving.value = false
@@ -477,9 +609,7 @@ const saveRoute = async () => {
 
 const clearRoute = async (item: ConversationEntry) => {
   const updated = await api.clearConversationRoute(item.id)
-  conversations.value = conversations.value.map(entry =>
-    entry.id === updated.id ? updated : entry
-  )
+  updateConversation(updated)
 }
 
 const formatModelChain = (item: ConversationEntry): string => {
@@ -606,6 +736,31 @@ onUnmounted(() => {
 <style scoped>
 .conversation-prompts {
   max-width: 420px;
+}
+
+.image-fingerprint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.image-fingerprint-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  background: #f8f9fa;
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.image-fingerprint-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 .conversation-prompt-line {

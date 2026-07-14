@@ -292,7 +292,7 @@ func configuredChatModels(upstream *config.UpstreamConfig) []configuredModel {
 
 	for clientModel, upstreamModels := range upstream.ModelMapping {
 		clientModel = strings.TrimSpace(clientModel)
-		if clientModel == "" || seen[clientModel] || len(upstreamModels) == 0 {
+		if clientModel == "" || clientModel == "*" || seen[clientModel] || len(upstreamModels) == 0 {
 			continue
 		}
 		// 使用第一个目标模型作为默认展示

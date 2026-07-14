@@ -43,7 +43,7 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		requestMeta := extractImagesRequestMetadata(c.GetHeader("Content-Type"), bodyBytes)
 		model := requestMeta.Model
 		prompts := common.ExtractPromptJSONFieldPrompts(bodyBytes, "prompt")
-		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindImages, common.ExtractConversationID(c, bodyBytes), model, prompts, false)
+		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindImages, common.ExtractConversationID(c, bodyBytes), model, prompts, utils.ExtractImageFingerprints(bodyBytes), false)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindImages)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Images")

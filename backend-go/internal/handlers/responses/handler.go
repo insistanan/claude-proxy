@@ -66,7 +66,7 @@ func Handler(
 
 		// 提取对话标识
 		prompts := common.ExtractPromptsFromResponsesInput(responsesReq.Input)
-		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindResponses, common.ExtractConversationID(c, bodyBytes), responsesReq.Model, prompts, responsesReq.Stream)
+		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindResponses, common.ExtractConversationID(c, bodyBytes), responsesReq.Model, prompts, utils.ExtractImageFingerprints(bodyBytes), responsesReq.Stream)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindResponses)
 
 		// 记录原始请求信息（仅在入口处记录一次）
@@ -172,7 +172,7 @@ func handleMultiChannel(
 					channelScheduler.MarkURLSuccess(scheduler.ChannelKindResponses, channelIndex, url)
 				},
 				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
+					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage, channelScheduler, userID)
 				},
 				common.AttemptLogContext{
 					ChannelIndex:    channelIndex,
@@ -300,7 +300,7 @@ func handleSingleChannelWithUpstream(
 		nil,
 		nil,
 		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage)
+			return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage, channelScheduler, userID)
 		},
 		common.AttemptLogContext{
 			ChannelIndex:    channelIndex,
@@ -337,6 +337,8 @@ func handleSuccess(
 	originalReq *types.ResponsesRequest,
 	originalRequestJSON []byte,
 	hasImage bool,
+	channelScheduler *scheduler.ChannelScheduler,
+	conversationID string,
 ) (*types.Usage, error) {
 	defer resp.Body.Close()
 
@@ -356,7 +358,7 @@ func handleSuccess(
 	}
 
 	if isStream {
-		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, hasImage), nil
+		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, hasImage, channelScheduler, conversationID), nil
 	}
 
 	// 非流式响应处理
@@ -402,10 +404,11 @@ func handleSuccess(
 
 	// Token 补全逻辑
 	patchResponsesUsage(responsesResp, originalRequestJSON, envCfg)
+	common.AssociateConversationExternalID(channelScheduler, conversationID, scheduler.ChannelKindResponses, responsesResp.ID)
 
-	// 更新会话
-	if originalReq.Store == nil || *originalReq.Store {
-		sess, err := sessionManager.GetOrCreateSession(originalReq.PreviousResponseID)
+	// 客户端的 store 只控制上游是否保存，不能关闭本代理自己的七天会话持久化。
+	if originalReq != nil {
+		sess, err := sessionManager.GetOrCreateSessionForConversation(originalReq.PreviousResponseID, conversationID)
 		if err == nil {
 			previousResponseID := sess.LastResponseID
 			inputItems, _ := parseInputToItems(originalReq.Input)
@@ -421,12 +424,16 @@ func handleSuccess(
 			}
 
 			sessionManager.UpdateLastResponseID(sess.ID, responsesResp.ID)
-			sessionManager.RecordResponseMapping(responsesResp.ID, sess.ID)
+			if err := sessionManager.RecordResponseMapping(responsesResp.ID, sess.ID); err != nil {
+				log.Printf("[Session-Mapping] 持久化响应映射失败: %v", err)
+			}
 
 			if previousResponseID != "" {
 				responsesResp.PreviousID = previousResponseID
 				responsesResp.PreviousResponseID = previousResponseID
 			}
+		} else {
+			log.Printf("[Session] 保存 Responses 会话失败: %v", err)
 		}
 	}
 
@@ -623,6 +630,8 @@ func handleStreamSuccess(
 	originalReq *types.ResponsesRequest,
 	originalRequestJSON []byte,
 	hasImage bool,
+	channelScheduler *scheduler.ChannelScheduler,
+	conversationID string,
 ) *types.Usage {
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
@@ -795,8 +804,9 @@ func handleStreamSuccess(
 		}
 	}
 
-	if originalReq != nil && (originalReq.Store == nil || *originalReq.Store) {
-		if sess, err := sessionManager.GetOrCreateSession(originalReq.PreviousResponseID); err == nil {
+	// 即使客户端向上游声明 store=false，本代理仍需保存会话链，保证重启后可继续。
+	if originalReq != nil {
+		if sess, err := sessionManager.GetOrCreateSessionForConversation(originalReq.PreviousResponseID, conversationID); err == nil {
 			inputItems, _ := parseInputToItems(originalReq.Input)
 			for _, item := range inputItems {
 				_ = sessionManager.AppendMessage(sess.ID, item, 0)
@@ -816,10 +826,15 @@ func handleStreamSuccess(
 
 			if streamResponseID != "" {
 				_ = sessionManager.UpdateLastResponseID(sess.ID, streamResponseID)
-				sessionManager.RecordResponseMapping(streamResponseID, sess.ID)
+				if err := sessionManager.RecordResponseMapping(streamResponseID, sess.ID); err != nil {
+					log.Printf("[Session-Mapping] 持久化流式响应映射失败: %v", err)
+				}
 			}
+		} else {
+			log.Printf("[Session] 保存 Responses 流式会话失败: %v", err)
 		}
 	}
+	common.AssociateConversationExternalID(channelScheduler, conversationID, scheduler.ChannelKindResponses, streamResponseID)
 
 	// 返回收集到的 usage 数据
 	return &types.Usage{

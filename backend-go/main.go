@@ -67,14 +67,19 @@ func main() {
 	}
 	defer cfgManager.Close()
 
-	// 初始化会话管理器（Responses API 专用）
-	sessionManager := session.NewSessionManager(
-		24*time.Hour, // 24小时过期
-		100,          // 最多100条消息
-		100000,       // 最多100k tokens
+	// 初始化会话管理器（Responses API 专用），与对话记录共用持久化数据库。
+	sessionManager, err := session.NewPersistentSessionManager(
+		".config/conversations.db",
+		7*24*time.Hour, // 与对话记录一致，保留 7 天
+		0,              // 不按消息数删除整段会话
+		0,              // 不按 Token 数删除整段会话
 	)
+	if err != nil {
+		log.Fatalf("初始化 Responses 会话持久化存储失败: %v", err)
+	}
+	defer sessionManager.Stop()
 	sessionManager.SetMaxSessions(5000) // 全局最多 5000 个活跃 session
-	log.Printf("[Session-Init] 会话管理器已初始化 (上限: 5000)")
+	log.Printf("[Session-Init] 持久化会话管理器已初始化 (保留: 7天, 上限: 5000)")
 
 	// 初始化指标持久化存储（可选）
 	var metricsStore *metrics.SQLiteStore
@@ -113,7 +118,10 @@ func main() {
 		imagesMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
 	}
 	traceAffinityManager := session.NewTraceAffinityManager()
-	conversationRegistry := conversation.NewRegistry()
+	conversationRegistry, err := conversation.NewPersistentRegistry(".config/conversations.db")
+	if err != nil {
+		log.Fatalf("初始化对话持久化存储失败: %v", err)
+	}
 	defer conversationRegistry.Stop()
 
 	// 初始化 URL 管理器（非阻塞，动态排序）
@@ -329,6 +337,8 @@ func main() {
 		apiGroup.GET("/conversations/route-options", handlers.GetConversationRouteOptions(cfgManager))
 		apiGroup.GET("/conversations", handlers.ListConversations(channelScheduler))
 		apiGroup.GET("/conversations/:id", handlers.GetConversation(channelScheduler))
+		apiGroup.PUT("/conversations/:id/name", handlers.SetConversationName(channelScheduler))
+		apiGroup.DELETE("/conversations/:id", handlers.DeleteConversation(channelScheduler, sessionManager))
 		apiGroup.PUT("/conversations/:id/route", handlers.SetConversationRouteOverride(channelScheduler, cfgManager))
 		apiGroup.DELETE("/conversations/:id/route", handlers.ClearConversationRouteOverride(channelScheduler))
 
@@ -479,7 +489,7 @@ func syncUpstreamProfiles(mm *metrics.MetricsManager, pm *metrics.ProfileManager
 		models[model] = struct{}{}
 	}
 	for sourceModel, targetModels := range upstream.ModelMapping {
-		if source := strings.TrimSpace(sourceModel); source != "" {
+		if source := strings.TrimSpace(sourceModel); source != "" && source != "*" {
 			models[source] = struct{}{}
 		}
 		for _, targetModel := range targetModels {

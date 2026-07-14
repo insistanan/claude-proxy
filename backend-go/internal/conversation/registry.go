@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -11,18 +12,18 @@ import (
 )
 
 const (
-	defaultMaxIdle         = 24 * time.Hour
+	defaultMaxIdle         = 7 * 24 * time.Hour
 	defaultCleanupInterval = 10 * time.Minute
 )
 
 type Observation struct {
-	APIKind        string
-	Model          string
-	Stream         bool
-	ConversationID string
-	FallbackKey    string
-	FirstPrompt    string
-	Prompts        []string
+	APIKind           string
+	Model             string
+	Stream            bool
+	ConversationID    string
+	FirstPrompt       string
+	Prompts           []string
+	ImageFingerprints []string
 }
 
 type RouteOverride struct {
@@ -41,6 +42,7 @@ type ChannelRef struct {
 
 type Record struct {
 	ID                string         `json:"id"`
+	Name              string         `json:"name,omitempty"`
 	APIKind           string         `json:"apiKind"`
 	LastModel         string         `json:"lastModel,omitempty"`
 	LastResolvedModel string         `json:"lastResolvedModel,omitempty"`
@@ -58,6 +60,7 @@ type Record struct {
 	LastError         string         `json:"lastError,omitempty"`
 	RouteOverride     *RouteOverride `json:"routeOverride,omitempty"`
 	LastResolved      *ChannelRef    `json:"lastResolved,omitempty"`
+	ImageFingerprints []string       `json:"imageFingerprints,omitempty"`
 
 	identityKey string
 }
@@ -79,21 +82,72 @@ type Registry struct {
 	identityIndex map[string]string
 	maxIdle       time.Duration
 	stopCh        chan struct{}
+	doneCh        chan struct{}
+	stopOnce      sync.Once
+	store         *SQLiteStore
 }
 
 func NewRegistry() *Registry {
+	return newRegistry(nil)
+}
+
+func NewPersistentRegistry(dbPath string) (*Registry, error) {
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	r := newRegistry(store)
+	records, err := store.LoadAll()
+	if err != nil {
+		r.Stop()
+		return nil, err
+	}
+	for _, rec := range records {
+		if rec == nil || rec.ID == "" || rec.identityKey == "" {
+			continue
+		}
+		rec.IsSending = false
+		rec.ActiveRequests = 0
+		r.records[rec.ID] = rec
+		r.identityIndex[rec.identityKey] = rec.ID
+	}
+	aliases, err := store.LoadAliases()
+	if err != nil {
+		r.Stop()
+		return nil, err
+	}
+	for alias, recordID := range aliases {
+		if _, ok := r.records[recordID]; ok {
+			r.identityIndex[alias] = recordID
+		}
+	}
+	r.cleanup()
+	return r, nil
+}
+
+func newRegistry(store *SQLiteStore) *Registry {
 	r := &Registry{
 		records:       make(map[string]*Record),
 		identityIndex: make(map[string]string),
 		maxIdle:       defaultMaxIdle,
 		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
+		store:         store,
 	}
 	go r.cleanupLoop()
 	return r
 }
 
 func (r *Registry) Stop() {
-	close(r.stopCh)
+	r.stopOnce.Do(func() {
+		close(r.stopCh)
+		<-r.doneCh
+		if r.store != nil {
+			if err := r.store.Close(); err != nil {
+				log.Printf("[Conversation] 关闭持久化存储失败: %v", err)
+			}
+		}
+	})
 }
 
 func (r *Registry) ObserveRequest(obs Observation) *Record {
@@ -132,6 +186,7 @@ func (r *Registry) ObserveRequest(obs Observation) *Record {
 		rec.FirstPrompt = firstPromptFromObservation(obs)
 	}
 	appendPrompts(rec, promptsFromObservation(obs)...)
+	appendImageFingerprints(rec, obs.ImageFingerprints...)
 	rec.Stream = obs.Stream
 	if rec.ActiveRequests < 0 {
 		rec.ActiveRequests = 0
@@ -142,6 +197,7 @@ func (r *Registry) ObserveRequest(obs Observation) *Record {
 	rec.LastRequestAt = now
 	rec.RequestCount++
 
+	r.persistLocked(rec)
 	return cloneRecord(rec)
 }
 
@@ -170,6 +226,7 @@ func (r *Registry) MarkAttempt(recordID string, kind string, channelIndex int, c
 		ChannelName:  channelName,
 		UpdatedAt:    now,
 	}
+	r.persistLocked(rec)
 }
 
 func (r *Registry) MarkSuccess(recordID string, kind string, channelIndex int, channelName string) {
@@ -195,6 +252,7 @@ func (r *Registry) MarkSuccess(recordID string, kind string, channelIndex int, c
 		ChannelName:  channelName,
 		UpdatedAt:    now,
 	}
+	r.persistLocked(rec)
 }
 
 func (r *Registry) MarkFailure(recordID string, kind string, errorMessage string) {
@@ -215,6 +273,7 @@ func (r *Registry) MarkFailure(recordID string, kind string, errorMessage string
 	rec.LastCompletedAt = now
 	rec.ErrorCount++
 	rec.LastError = truncate(errorMessage, 500)
+	r.persistLocked(rec)
 }
 
 func (r *Registry) MarkComplete(recordID string, kind string) {
@@ -237,6 +296,7 @@ func (r *Registry) MarkComplete(recordID string, kind string) {
 	rec.IsSending = rec.ActiveRequests > 0
 	rec.LastSeenAt = now
 	rec.LastCompletedAt = now
+	r.persistLocked(rec)
 }
 
 func (r *Registry) List() []*Record {
@@ -285,6 +345,7 @@ func (r *Registry) SetRouteOverride(recordID string, kind string, channelIndex i
 	}
 	rec.LastSeenAt = now
 
+	r.persistLocked(rec)
 	return cloneRecord(rec), nil
 }
 
@@ -300,7 +361,67 @@ func (r *Registry) ClearRouteOverride(recordID string) (*Record, error) {
 	}
 	rec.RouteOverride = nil
 	rec.LastSeenAt = now
+	r.persistLocked(rec)
 	return cloneRecord(rec), nil
+}
+
+func (r *Registry) SetName(recordID string, name string) (*Record, error) {
+	name = truncate(name, 120)
+	if name == "" {
+		return nil, fmt.Errorf("conversation name is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := r.records[recordID]
+	if rec == nil {
+		return nil, fmt.Errorf("conversation not found")
+	}
+	rec.Name = name
+	rec.LastSeenAt = time.Now()
+	r.persistLocked(rec)
+	return cloneRecord(rec), nil
+}
+
+func (r *Registry) Delete(recordID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := r.records[recordID]
+	if rec == nil {
+		return fmt.Errorf("conversation not found")
+	}
+	if r.store != nil {
+		if err := r.store.Delete(recordID); err != nil {
+			return err
+		}
+	}
+	delete(r.records, recordID)
+	r.removeIdentityKeysLocked(recordID)
+	return nil
+}
+
+// AssociateExternalID 将客户端后续会携带的外部响应 ID 关联到已有对话。
+// 目前主要用于 Responses API 的 previous_response_id 链。
+func (r *Registry) AssociateExternalID(recordID string, apiKind string, externalID string) error {
+	if strings.TrimSpace(recordID) == "" || strings.TrimSpace(externalID) == "" {
+		return nil
+	}
+	alias := explicitIdentityKey(apiKind, externalID)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.records[recordID] == nil {
+		return fmt.Errorf("conversation not found")
+	}
+	if existingID, ok := r.identityIndex[alias]; ok && existingID != recordID {
+		return fmt.Errorf("external conversation ID is already associated with another conversation")
+	}
+	if r.store != nil {
+		if err := r.store.UpsertAlias(alias, recordID); err != nil {
+			return err
+		}
+	}
+	r.identityIndex[alias] = recordID
+	return nil
 }
 
 func (r *Registry) GetRouteOverride(recordID string) (*RouteOverride, bool) {
@@ -315,7 +436,24 @@ func (r *Registry) GetRouteOverride(recordID string) (*RouteOverride, bool) {
 	return &override, true
 }
 
+// LoadImageUnderstanding 读取单张图片已持久化的理解结果。
+func (r *Registry) LoadImageUnderstanding(cacheKey string) (string, bool, error) {
+	if r == nil || r.store == nil {
+		return "", false, nil
+	}
+	return r.store.LoadImageUnderstanding(cacheKey)
+}
+
+// SaveImageUnderstanding 持久化单张图片的理解结果。
+func (r *Registry) SaveImageUnderstanding(cacheKey string, result string) error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+	return r.store.UpsertImageUnderstanding(cacheKey, result)
+}
+
 func (r *Registry) cleanupLoop() {
+	defer close(r.doneCh)
 	ticker := time.NewTicker(defaultCleanupInterval)
 	defer ticker.Stop()
 
@@ -340,29 +478,39 @@ func (r *Registry) cleanup() {
 			continue
 		}
 		delete(r.records, id)
-		delete(r.identityIndex, rec.identityKey)
+		r.removeIdentityKeysLocked(id)
+		if r.store != nil {
+			if err := r.store.Delete(id); err != nil {
+				log.Printf("[Conversation] 清理过期对话失败: %v", err)
+			}
+		}
+	}
+}
+
+func (r *Registry) removeIdentityKeysLocked(recordID string) {
+	for identityKey, currentRecordID := range r.identityIndex {
+		if currentRecordID == recordID {
+			delete(r.identityIndex, identityKey)
+		}
 	}
 }
 
 func buildIdentityKey(obs Observation) string {
 	convID := strings.TrimSpace(obs.ConversationID)
 	if convID != "" {
-		kind := firstNonEmpty(strings.TrimSpace(obs.APIKind), "unknown")
-		return strings.ToLower(strings.Join([]string{kind, convID}, "|"))
+		return explicitIdentityKey(obs.APIKind, convID)
 	}
 
-	// 没有显式 conv_id 时，使用 fallback key 作为稳定标识
-	// 这确保同一客户端的多轮对话能够被正确关联到同一会话
-	fallback := strings.TrimSpace(obs.FallbackKey)
-	if fallback != "" {
-		kind := firstNonEmpty(strings.TrimSpace(obs.APIKind), "unknown")
-		return strings.ToLower(strings.Join([]string{kind, "fallback", fallback}, "|"))
-	}
-
-	// 如果连 fallback key 都没有（极少数情况），生成唯一 ID
+	// 无可靠会话标识时不能依据用户、模型或首条提示词猜测，
+	// 否则不同 agent 对话会被错误合并。
 	token := generateID("anon")
 	kind := firstNonEmpty(strings.TrimSpace(obs.APIKind), "unknown")
 	return strings.ToLower(strings.Join([]string{kind, token}, "|"))
+}
+
+func explicitIdentityKey(apiKind string, value string) string {
+	kind := firstNonEmpty(strings.TrimSpace(apiKind), "unknown")
+	return strings.ToLower(strings.Join([]string{kind, strings.TrimSpace(value)}, "|"))
 }
 
 func cloneRecord(src *Record) *Record {
@@ -381,6 +529,9 @@ func cloneRecord(src *Record) *Record {
 	if src.Prompts != nil {
 		dst.Prompts = make([]string, len(src.Prompts))
 		copy(dst.Prompts, src.Prompts)
+	}
+	if src.ImageFingerprints != nil {
+		dst.ImageFingerprints = append([]string{}, src.ImageFingerprints...)
 	}
 	return &dst
 }
@@ -436,6 +587,33 @@ func appendPrompts(rec *Record, prompts ...string) {
 		if !exists {
 			rec.Prompts = append(rec.Prompts, prompt)
 		}
+	}
+}
+
+func appendImageFingerprints(rec *Record, fingerprints ...string) {
+	if rec == nil {
+		return
+	}
+	seen := make(map[string]bool, len(rec.ImageFingerprints))
+	for _, current := range rec.ImageFingerprints {
+		seen[current] = true
+	}
+	for _, fingerprint := range fingerprints {
+		fingerprint = strings.TrimSpace(fingerprint)
+		if fingerprint == "" || seen[fingerprint] {
+			continue
+		}
+		rec.ImageFingerprints = append(rec.ImageFingerprints, fingerprint)
+		seen[fingerprint] = true
+	}
+}
+
+func (r *Registry) persistLocked(rec *Record) {
+	if r.store == nil || rec == nil {
+		return
+	}
+	if err := r.store.Upsert(rec); err != nil {
+		log.Printf("[Conversation] 保存对话失败: %v", err)
 	}
 }
 

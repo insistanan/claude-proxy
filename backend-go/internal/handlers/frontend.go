@@ -21,11 +21,21 @@ func ServeFrontend(r *gin.Engine, frontendFS embed.FS) {
 		return
 	}
 
+	// index.html 和 SPA 路由必须每次重新校验，避免升级 exe 后浏览器继续使用旧前端。
+	// 带内容哈希的 assets 文件可长期缓存。
+	r.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/assets/") {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		}
+		c.Next()
+	})
+
 	// 使用 Gin 的静态文件服务 - /assets 路由
 	r.StaticFS("/assets", http.FS(distFS))
 
 	// 根路径返回 index.html
 	r.GET("/", func(c *gin.Context) {
+		setFrontendEntryNoCache(c)
 		indexContent, err := fs.ReadFile(distFS, "index.html")
 		if err != nil {
 			c.Data(503, "text/html; charset=utf-8", []byte(getErrorPage()))
@@ -57,12 +67,16 @@ func ServeFrontend(r *gin.Engine, frontendFS embed.FS) {
 		fileContent, err := fs.ReadFile(distFS, path)
 		if err == nil {
 			// 文件存在，根据扩展名设置正确的 Content-Type
+			if strings.HasSuffix(strings.ToLower(path), ".html") {
+				setFrontendEntryNoCache(c)
+			}
 			contentType := getContentType(path)
 			c.Data(200, contentType, fileContent)
 			return
 		}
 
 		// 文件不存在，返回 index.html (SPA 路由支持)
+		setFrontendEntryNoCache(c)
 		indexContent, err := fs.ReadFile(distFS, "index.html")
 		if err != nil {
 			c.Data(503, "text/html; charset=utf-8", []byte(getErrorPage()))
@@ -70,6 +84,12 @@ func ServeFrontend(r *gin.Engine, frontendFS embed.FS) {
 		}
 		c.Data(200, "text/html; charset=utf-8", indexContent)
 	})
+}
+
+func setFrontendEntryNoCache(c *gin.Context) {
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 }
 
 // isAPIPath 检查路径是否为 API 端点

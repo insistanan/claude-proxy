@@ -256,62 +256,89 @@ func removeEmptySignaturesInMessages(data map[string]interface{}) (bool, int) {
 	return modified, removedCount
 }
 
-// ExtractUserID 从请求体中提取对话标识（用于 Messages API）
-func ExtractUserID(bodyBytes []byte) string {
-	var req struct {
-		PromptCacheKey string                 `json:"prompt_cache_key"`
-		Metadata       map[string]interface{} `json:"metadata"`
-	}
-	if err := json.Unmarshal(bodyBytes, &req); err == nil {
-		if req.PromptCacheKey != "" {
-			return req.PromptCacheKey
+// ExtractConversationID 从请求中提取明确的对话标识。
+// 无明确标识时返回空，调用方会创建独立会话，避免错误合并不同 agent 的对话。
+func ExtractConversationID(c *gin.Context, bodyBytes []byte) string {
+	if c != nil {
+		for _, header := range []string{"X-Conversation-Id", "Conversation_id", "Conversation-Id", "X-Claude-Code-Session-Id"} {
+			if value := strings.TrimSpace(c.GetHeader(header)); value != "" {
+				return value
+			}
 		}
-		for _, key := range []string{"user_id", "conversation_id", "session_id", "thread_id"} {
-			if value, ok := req.Metadata[key].(string); ok && strings.TrimSpace(value) != "" {
-				return strings.TrimSpace(value)
+		if value := strings.TrimSpace(c.Query("conversation_id")); value != "" {
+			return value
+		}
+		if metadataID := extractCodexThreadID(c.GetHeader("X-Codex-Turn-Metadata")); metadataID != "" {
+			return metadataID
+		}
+		for _, header := range []string{"Session_id", "Session-Id", "X-Session-Id"} {
+			if value := strings.TrimSpace(c.GetHeader(header)); value != "" {
+				return value
 			}
 		}
 	}
+	var req struct {
+		PreviousResponseID string                 `json:"previous_response_id"`
+		ConversationID     string                 `json:"conversation_id"`
+		SessionID          string                 `json:"session_id"`
+		ThreadID           string                 `json:"thread_id"`
+		Metadata           map[string]interface{} `json:"metadata"`
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err == nil {
+		for _, value := range []string{req.ConversationID, req.SessionID, req.ThreadID} {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+		if metadataID := extractMetadataConversationID(req.Metadata); metadataID != "" {
+			return metadataID
+		}
+		if strings.TrimSpace(req.PreviousResponseID) != "" {
+			return strings.TrimSpace(req.PreviousResponseID)
+		}
+	}
+
 	return ""
 }
 
-// ExtractConversationID 从请求中提取对话标识（用于 Responses API）
-// 优先级: Conversation_id Header > Session_id Header > X-Gemini-Api-Privileged-User-Id > prompt_cache_key > metadata.user_id
-// 当无法提取到显式 conv_id 时，返回空字符串，让上层 fallback 机制处理
-func ExtractConversationID(c *gin.Context, bodyBytes []byte) string {
-	// 1. HTTP Header: Conversation_id
-	if convID := c.GetHeader("Conversation_id"); convID != "" {
-		return convID
-	}
-
-	// 2. HTTP Header: Session_id
-	if sessID := c.GetHeader("Session_id"); sessID != "" {
-		return sessID
-	}
-
-	// 3. HTTP Header: X-Gemini-Api-Privileged-User-Id (Gemini 专用)
-	if geminiUserID := c.GetHeader("X-Gemini-Api-Privileged-User-Id"); geminiUserID != "" {
-		return geminiUserID
-	}
-
-	// 4. Request Body: prompt_cache_key 或 metadata.user_id
-	var req struct {
-		PromptCacheKey     string `json:"prompt_cache_key"`
-		PreviousResponseID string `json:"previous_response_id"`
-		Metadata           struct {
-			UserID string `json:"user_id"`
-		} `json:"metadata"`
-	}
-	if err := json.Unmarshal(bodyBytes, &req); err == nil {
-		if req.PromptCacheKey != "" {
-			return req.PromptCacheKey
-		}
-		if req.Metadata.UserID != "" {
-			return req.Metadata.UserID
+func extractMetadataConversationID(metadata map[string]interface{}) string {
+	for _, key := range []string{"conversation_id", "conversationId", "session_id", "sessionId", "thread_id", "threadId"} {
+		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
 		}
 	}
 
-	return ""
+	// Claude Code 的 metadata.user_id 是 JSON 时，内部的 session_id 才是会话标识。
+	// 普通 user_id 仍是用户身份，不能用于会话合并。
+	userID, _ := metadata["user_id"].(string)
+	if !strings.HasPrefix(strings.TrimSpace(userID), "{") {
+		return ""
+	}
+	var payload struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(userID), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.SessionID)
+}
+
+func extractCodexThreadID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var metadata struct {
+		ThreadID  string `json:"thread_id"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(value), &metadata); err != nil {
+		return ""
+	}
+	if threadID := strings.TrimSpace(metadata.ThreadID); threadID != "" {
+		return threadID
+	}
+	return strings.TrimSpace(metadata.SessionID)
 }
 
 // ExtractRequestedChannelIndex 从请求体 metadata.channel_index 中提取显式指定的渠道索引。
