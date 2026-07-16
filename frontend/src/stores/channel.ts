@@ -136,14 +136,14 @@ export const useChannelStore = defineStore('channel', () => {
   const activeChannelCount = computed(() => {
     const data = currentChannelsData.value
     if (!data.channels) return 0
-    return data.channels.filter(ch => ch.status === 'active' || ch.status === undefined || ch.status === '').length
+    return data.channels.filter(ch => !ch.excludeFromConversation && (ch.status === 'active' || ch.status === undefined || ch.status === '')).length
   })
 
   // 参与故障转移的渠道数（active + suspended）
   const failoverChannelCount = computed(() => {
     const data = currentChannelsData.value
     if (!data.channels) return 0
-    return data.channels.filter(ch => ch.status !== 'disabled' && ch.status !== 'deprecated' && ch.status !== 'deleted').length
+    return data.channels.filter(ch => !ch.excludeFromConversation && ch.status !== 'disabled' && ch.status !== 'deprecated' && ch.status !== 'deleted').length
   })
 
   // ===== 辅助方法 =====

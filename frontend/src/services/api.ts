@@ -83,6 +83,7 @@ export interface ChannelMetrics {
 
 export interface Channel {
   id?: string
+  poolId?: string
   name: string
   serviceType: 'openai' | 'gemini' | 'claude' | 'responses' | 'chat'
   baseUrl: string
@@ -106,6 +107,8 @@ export interface Channel {
   latencyTestTime?: number   // 延迟测试时间戳（用于 5 分钟后自动清除显示）
   lowQuality?: boolean       // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
   visionCapable?: boolean    // 渠道是否原生支持图片理解
+  excludeFromConversation?: boolean // 不参与常规对话调度，仅作为图片理解渠道使用
+  disablePromptCacheKey?: boolean // 不向上游发送 prompt_cache_key
   visionLayerEnabled?: boolean // 是否为当前渠道启用图片理解层
   visionLayerChannelId?: string // 图片理解层指定调用的稳定渠道标识
   visionLayerModel?: string  // 可选：覆盖透传给图片理解渠道的模型名
@@ -114,6 +117,13 @@ export interface Channel {
   deprecatedAt?: string      // 移入弃用池时间
   injectDummyThoughtSignature?: boolean  // Gemini 特定：为 functionCall 注入 dummy thought_signature（兼容第三方 API）
   stripThoughtSignature?: boolean        // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
+}
+
+export interface ChannelPool {
+  id: string
+  name: string
+  modelMatcher: string
+  priority: number
 }
 
 export interface CreatedChannelResponse {
@@ -398,23 +408,25 @@ function buildModelsURL(baseURL: string, method: 'openai-v1' | 'openai-root' | '
 
   // 根据不同方法构建端点
   switch (method) {
-    case 'openai-v1':
+    case 'openai-v1': {
       let endpoint = '/models'
       if (!hasVersionSuffix && !skipVersionPrefix) {
         endpoint = '/v1' + endpoint
       }
       return baseURL + endpoint
+    }
     
     case 'openai-root':
       return baseURL + '/models'
     
-    case 'anthropic':
+    case 'anthropic': {
       // Anthropic 也使用 /v1/models
       let anthEndpoint = '/models'
       if (!hasVersionSuffix && !skipVersionPrefix) {
         anthEndpoint = '/v1' + anthEndpoint
       }
       return baseURL + anthEndpoint
+    }
     
     case 'gemini':
       // 移除尾部的 /v1 或 /v1beta
@@ -506,7 +518,7 @@ export async function fetchUpstreamModels(
         if (data.models && Array.isArray(data.models)) {
           return {
             object: 'list',
-            data: data.models.map((m: any) => ({
+            data: data.models.map((m: { name?: string; model?: string; modified_at?: string | number }) => ({
               id: m.name || m.model || '',
               object: 'model',
               created: m.modified_at || Date.now(),
@@ -519,7 +531,7 @@ export async function fetchUpstreamModels(
         if (data.models && Array.isArray(data.models)) {
           return {
             object: 'list',
-            data: data.models.map((m: any) => ({
+            data: data.models.map((m: { name?: string }) => ({
               id: m.name ? m.name.replace('models/', '') : '',
               object: 'model',
               created: Date.now(),
@@ -536,8 +548,8 @@ export async function fetchUpstreamModels(
       
       // 如果没有返回模型，尝试下一个方法
       lastError = new Error(`${method}: 未找到可用模型`)
-    } catch (error: any) {
-      lastError = error
+    } catch (error: unknown) {
+		lastError = error instanceof Error ? error : new Error(String(error))
       continue
     }
   }
@@ -624,6 +636,22 @@ class ApiService {
 
   async getChannels(): Promise<ChannelsResponse> {
     return this.request('/messages/channels')
+  }
+
+  async getChannelPools(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'): Promise<{ pools: ChannelPool[] }> {
+    return this.request(`/${type}/pools`)
+  }
+
+  async createChannelPool(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', pool: Pick<ChannelPool, 'name' | 'modelMatcher'>): Promise<{ pool: ChannelPool }> {
+    return this.request(`/${type}/pools`, { method: 'POST', body: JSON.stringify(pool) })
+  }
+
+  async updateChannelPool(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', id: string, pool: Partial<Pick<ChannelPool, 'name' | 'modelMatcher'>>): Promise<void> {
+    await this.request(`/${type}/pools/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(pool) })
+  }
+
+  async deleteChannelPool(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', id: string): Promise<void> {
+    await this.request(`/${type}/pools/${encodeURIComponent(id)}`, { method: 'DELETE' })
   }
 
   async addChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
@@ -970,6 +998,12 @@ class ApiService {
 
   async deleteConversation(id: string): Promise<void> {
     await this.request(`/conversations/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    })
+  }
+
+  async deleteAllConversations(): Promise<void> {
+    await this.request('/conversations', {
       method: 'DELETE'
     })
   }
@@ -1367,7 +1401,7 @@ export const fetchHealth = async (): Promise<HealthResponse> => {
 
 export const api = new ApiService()
 
-const handleImagesTestResponse = async (response: Response, onChunk: (chunk: string) => void): Promise<void> => {
+const handleImagesTestResponse = async (response: Response, onChunk: (_chunk: string) => void): Promise<void> => {
   const payload = await response.json()
   const image = Array.isArray(payload?.data) ? payload.data[0] : undefined
   if (typeof image?.url === 'string' && image.url) {
@@ -1397,14 +1431,14 @@ export const testChannel = async (
   apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
   channelIndex: number,
   message: string,
-  onChunk: (chunk: string) => void,
+  onChunk: (_chunk: string) => void,
   sessionContext?: {
     sessionId?: string
     threadId?: string
     interactionId?: string
-    onInteractionId?: (id: string) => void
+		onInteractionId?: (_id: string) => void
     responseId?: string
-    onResponseId?: (id: string) => void
+		onResponseId?: (_id: string) => void
   }
 ): Promise<void> => {
   const authStore = useAuthStore()
@@ -1450,7 +1484,7 @@ export const testChannel = async (
   })
 
   let endpoint = ''
-  let body: any = {}
+	let body: Record<string, unknown> = {}
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-api-key': accessKey
@@ -1574,7 +1608,7 @@ export const testChannel = async (
     throw new Error('无法读取响应流')
   }
 
-  const decoder = new TextDecoder()
+  const decoder = new globalThis.TextDecoder()
   let buffer = ''
 
   const processSSELine = (line: string) => {
@@ -1658,7 +1692,7 @@ export const testChannelWithModel = async (
   channelIndex: number,
   model: string,
   message: string,
-  onChunk: (chunk: string) => void
+  onChunk: (_chunk: string) => void
 ): Promise<void> => {
   const authStore = useAuthStore()
   const baseUrl = import.meta.env.PROD ? '' : (import.meta.env.VITE_BACKEND_URL || '')
@@ -1703,7 +1737,7 @@ export const testChannelWithModel = async (
   })
 
   let endpoint = ''
-  let body: any = {}
+	let body: Record<string, unknown> = {}
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-api-key': accessKey
@@ -1833,7 +1867,7 @@ export const testChannelWithModel = async (
     throw new Error('无法读取响应流')
   }
 
-  const decoder = new TextDecoder()
+  const decoder = new globalThis.TextDecoder()
   let buffer = ''
 
   const processSSELine = (line: string) => {

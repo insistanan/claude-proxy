@@ -27,6 +27,10 @@
           刷新
         </v-btn>
 
+        <v-btn color="error" prepend-icon="mdi-delete" variant="tonal" :disabled="conversations.length === 0" @click="openDeleteAllDialog">
+          清空全部
+        </v-btn>
+
         <v-spacer />
 
         <div class="text-body-2 text-medium-emphasis">
@@ -43,24 +47,24 @@
         item-key="id"
         density="compact"
       >
-        <template #item.id="{ item }">
+        <template #[`item.id`]="{ item }">
           <span class="clickable-id font-mono text-primary font-weight-bold" title="点击查看对话详情" @click="openDetailDialog(item)">
             {{ item.id }}
           </span>
         </template>
 
-        <template #item.name="{ item }">
+        <template #[`item.name`]="{ item }">
           <span v-if="item.name" class="clickable-prompt font-weight-medium" title="点击查看对话详情" @click="openDetailDialog(item)">
             {{ item.name }}
           </span>
           <span v-else class="text-medium-emphasis">未命名</span>
         </template>
 
-        <template #item.apiKind="{ item }">
+        <template #[`item.apiKind`]="{ item }">
           <v-chip size="small" variant="tonal">{{ item.apiKind }}</v-chip>
         </template>
 
-        <template #item.firstPrompt="{ item }">
+        <template #[`item.firstPrompt`]="{ item }">
           <div v-if="conversationPrompts(item).length > 0" class="conversation-prompts clickable-prompt" title="点击查看对话详情" @click="openDetailDialog(item)">
             <div
               v-for="(prompt, idx) in conversationPrompts(item)"
@@ -74,13 +78,13 @@
           <span v-else class="text-medium-emphasis">--</span>
         </template>
 
-        <template #item.lastModel="{ item }">
+        <template #[`item.lastModel`]="{ item }">
           <div class="model-chain">
             <span class="model-name">{{ formatModelChain(item) }}</span>
           </div>
         </template>
 
-        <template #item.activity="{ item }">
+        <template #[`item.activity`]="{ item }">
           <v-chip
             v-if="item.isSending"
             size="small"
@@ -96,7 +100,7 @@
           </span>
         </template>
 
-        <template #item.routeOverride="{ item }">
+        <template #[`item.routeOverride`]="{ item }">
           <div v-if="item.routeOverride" class="resolved-channel">
             <div>
               {{ item.routeOverride.kind }} / #{{ item.routeOverride.channelIndex }}
@@ -109,7 +113,7 @@
           <span v-else class="text-medium-emphasis">默认调度</span>
         </template>
 
-        <template #item.lastResolved="{ item }">
+        <template #[`item.lastResolved`]="{ item }">
           <div v-if="item.lastResolved" class="resolved-channel">
             <div>
               {{ item.lastResolved.kind }} / #{{ item.lastResolved.channelIndex }}
@@ -122,7 +126,7 @@
           <span v-else class="text-medium-emphasis">未解析</span>
         </template>
 
-        <template #item.actions="{ item }">
+        <template #[`item.actions`]="{ item }">
           <v-btn size="small" variant="text" prepend-icon="mdi-pencil" @click="openNameDialog(item)">
             命名
           </v-btn>
@@ -202,12 +206,35 @@
         <v-card-title>删除对话</v-card-title>
         <v-card-text>
           确定删除“{{ deletingConversation?.name || deletingConversation?.firstPrompt || deletingConversation?.id }}”吗？
-          此操作会删除该对话的提示词、图片指纹、固定渠道设置和 Responses 持久化会话链，且无法恢复。
+          此操作会删除该对话的提示词、图片指纹、图片理解结果、固定渠道设置和 Responses 持久化会话链，且无法恢复。
         </v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="deleteDialog = false">取消</v-btn>
           <v-btn color="error" :loading="saving" @click="deleteConversation">删除</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <v-dialog v-model="deleteAllDialog" max-width="520">
+      <v-card rounded="lg">
+        <v-card-title>清空全部对话</v-card-title>
+        <v-card-text>
+          此操作会删除全部对话、图片理解结果、固定渠道设置和 Responses 持久化会话链，且无法恢复。
+          <v-text-field
+            v-model="deleteAllConfirmation"
+            label="输入 清空全部 以确认"
+            variant="outlined"
+            density="compact"
+            class="mt-4"
+            autofocus
+            @keyup.enter="deleteAllConversations"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="deleteAllDialog = false">取消</v-btn>
+          <v-btn color="error" :disabled="deleteAllConfirmation !== '清空全部'" :loading="saving" @click="deleteAllConversations">清空全部</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -420,7 +447,7 @@ const loading = ref(false)
 const saving = ref(false)
 const conversations = ref<ConversationEntry[]>([])
 const searchText = ref('')
-const kindFilter = ref<ConversationKind | ''>('')
+const kindFilter = ref<ConversationKind | null>(null)
 const now = ref(Date.now())
 const routeDialog = ref(false)
 const editingConversation = ref<ConversationEntry | null>(null)
@@ -430,6 +457,8 @@ const editingNameConversation = ref<ConversationEntry | null>(null)
 const conversationName = ref('')
 const deleteDialog = ref(false)
 const deletingConversation = ref<ConversationEntry | null>(null)
+const deleteAllDialog = ref(false)
+const deleteAllConfirmation = ref('')
 const routeOptions = ref<Record<ConversationKind, RouteSelectItem[]>>({
   messages: [],
   responses: [],
@@ -491,9 +520,42 @@ const deleteConversation = async () => {
     if (selectedConversation.value?.id === id) {
       detailDialog.value = false
       selectedConversation.value = null
-    }
-    deleteDialog.value = false
-  } finally {
+		}
+		deleteDialog.value = false
+		snackbarText.value = '对话已删除'
+		snackbarColor.value = 'success'
+		snackbar.value = true
+	} catch (error) {
+		snackbarText.value = error instanceof Error ? error.message : '删除对话失败'
+		snackbarColor.value = 'error'
+		snackbar.value = true
+	} finally {
+    saving.value = false
+  }
+}
+
+const openDeleteAllDialog = () => {
+  deleteAllConfirmation.value = ''
+  deleteAllDialog.value = true
+}
+
+const deleteAllConversations = async () => {
+  if (deleteAllConfirmation.value !== '清空全部') return
+  saving.value = true
+  try {
+    await api.deleteAllConversations()
+    conversations.value = []
+    selectedConversation.value = null
+    detailDialog.value = false
+    deleteAllDialog.value = false
+    snackbarText.value = '已清空全部对话'
+		snackbarColor.value = 'success'
+		snackbar.value = true
+	} catch (error) {
+		snackbarText.value = error instanceof Error ? error.message : '清空全部对话失败'
+		snackbarColor.value = 'error'
+		snackbar.value = true
+	} finally {
     saving.value = false
   }
 }
@@ -510,7 +572,7 @@ const copyText = async (text: string) => {
     snackbarText.value = '已复制到剪贴板'
     snackbarColor.value = 'success'
     snackbar.value = true
-  } catch (e) {
+  } catch {
     snackbarText.value = '复制失败，请手动选择复制'
     snackbarColor.value = 'error'
     snackbar.value = true

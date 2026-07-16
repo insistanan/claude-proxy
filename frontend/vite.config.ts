@@ -52,17 +52,31 @@ export default defineConfig(({ mode }) => {
         }
       }
     },
-    build: {
-      outDir: 'dist',
-      emptyOutDir: true,
+	build: {
+	  outDir: 'dist',
+	  emptyOutDir: true,
+	  // ApexCharts 与 Vuetify 已拆为独立 vendor chunk；两者压缩后约 520-590 kB。
+	  chunkSizeWarningLimit: 600,
       // 确保资源路径正确
       assetsDir: 'assets',
       // 优化代码分割
       rollupOptions: {
-        output: {
-          manualChunks: {
-            'vue-vendor': ['vue', 'vuetify']
-          }
+		output: {
+		  manualChunks(id) {
+			if (id.includes('/node_modules/apexcharts/') || id.includes('/node_modules/vue3-apexcharts/')) {
+			  return 'charts-vendor'
+			}
+			if (id.includes('/node_modules/vuetify/')) {
+			  return 'vuetify-vendor'
+			}
+			if (id.includes('/node_modules/@mdi/js/')) {
+			  return 'mdi-icons'
+			}
+			if (id.includes('/node_modules/vue/') || id.includes('/node_modules/vue-router/') || id.includes('/node_modules/pinia/')) {
+			  return 'vue-vendor'
+			}
+			return undefined
+		  }
         }
       }
     }

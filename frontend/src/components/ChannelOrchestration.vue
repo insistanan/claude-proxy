@@ -17,6 +17,15 @@
 
     <v-divider />
 
+    <ChannelPoolGrid
+      :channels="channels"
+      :channel-type="channelType"
+      @edit="$emit('edit', $event)"
+      @delete="$emit('delete', $event)"
+      @error="$emit('error', $event)"
+      @success="$emit('success', $event)"
+    />
+
     <!-- 故障转移序列 (active + suspended) -->
     <div class="pt-3 pb-2">
       <div class="d-flex align-center justify-space-between mb-2">
@@ -747,15 +756,15 @@
             <div class="channel-logs-table-shell">
               <v-table density="compact" class="channel-logs-table">
                 <colgroup>
-                  <col class="log-col-time">
-                  <col class="log-col-status">
-                  <col class="log-col-model">
-                  <col class="log-col-token">
-                  <col class="log-col-cache">
-                  <col class="log-col-upstream">
-                  <col class="log-col-key">
-                  <col class="log-col-duration">
-                  <col class="log-col-error">
+                  <col class="log-col-time" />
+                  <col class="log-col-status" />
+                  <col class="log-col-model" />
+                  <col class="log-col-token" />
+                  <col class="log-col-cache" />
+                  <col class="log-col-upstream" />
+                  <col class="log-col-key" />
+                  <col class="log-col-duration" />
+                  <col class="log-col-error" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -830,6 +839,7 @@ import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
 import { api, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
+import ChannelPoolGrid from './ChannelPoolGrid.vue'
 import KeyTrendChart from './KeyTrendChart.vue'
 import QuickTestModal from './QuickTestModal.vue'
 
@@ -1047,15 +1057,15 @@ const activeChannels = ref<Channel[]>([])
 
 // 计算属性：非活跃渠道 - 仅 disabled 状态
 const inactiveChannels = computed(() => {
-  return props.channels.filter(ch => ch.status === 'disabled')
+	return props.channels.filter(ch => !ch.excludeFromConversation && ch.status === 'disabled')
 })
 
 const deprecatedChannels = computed(() => {
-  return props.channels.filter(ch => ch.status === 'deprecated')
+	return props.channels.filter(ch => !ch.excludeFromConversation && ch.status === 'deprecated')
 })
 
 const isChannelInFailoverSequence = (channel: Channel) => {
-  return channel.status !== 'disabled' && channel.status !== 'deprecated' && channel.status !== 'deleted'
+	return !channel.excludeFromConversation && channel.status !== 'disabled' && channel.status !== 'deprecated' && channel.status !== 'deleted'
 }
 
 // 计算属性：是否为多渠道模式
@@ -1064,9 +1074,9 @@ const isChannelInFailoverSequence = (channel: Channel) => {
 // 2. 有一个 active + 几个 suspended → 单渠道模式
 // 3. 有多个 active 渠道 → 多渠道模式
 const isMultiChannelMode = computed(() => {
-  const activeCount = props.channels.filter(
-    ch => ch.status === 'active' || ch.status === undefined || ch.status === ''
-  ).length
+	const activeCount = props.channels.filter(
+		ch => !ch.excludeFromConversation && (ch.status === 'active' || ch.status === undefined || ch.status === '')
+	).length
   return activeCount > 1
 })
 

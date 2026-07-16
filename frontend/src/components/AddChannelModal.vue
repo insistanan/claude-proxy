@@ -299,7 +299,7 @@
                         </v-list-item-title>
 
                         <template #append>
-                          <v-btn size="small" color="error" icon variant="text" @click="removeModelMapping(source)" title="删除所有映射">
+                          <v-btn size="small" color="error" icon variant="text" title="删除所有映射" @click="removeModelMapping(source)">
                             <v-icon size="small" color="error">mdi-delete</v-icon>
                           </v-btn>
                         </template>
@@ -622,6 +622,16 @@
                   <span class="text-body-1 font-weight-bold">图片理解</span>
                 </v-card-title>
                 <v-card-text class="pt-2">
+                  <v-select
+                    v-model="form.poolId"
+                    label="故障转移子池"
+                    :items="poolOptions"
+                    :loading="poolsLoading"
+                    :error-messages="poolLoadError"
+                    variant="outlined"
+                    density="comfortable"
+                  />
+                  <v-divider class="my-4" />
                   <div class="d-flex align-center justify-space-between">
                     <div>
                       <div class="text-body-1 font-weight-medium">本渠道支持图片理解</div>
@@ -673,6 +683,40 @@
                     variant="outlined"
                     density="comfortable"
                   />
+                </v-card-text>
+              </v-card>
+            </v-col>
+
+            <!-- 对话与缓存兼容性 -->
+            <v-col v-if="props.channelType !== 'images'" cols="12">
+              <v-card variant="outlined" rounded="lg">
+                <v-card-title class="d-flex align-center ga-2 pa-4 pb-2">
+                  <v-icon color="primary">mdi-chat-outline</v-icon>
+                  <span class="text-body-1 font-weight-bold">对话与缓存</span>
+                </v-card-title>
+                <v-card-text class="pt-2">
+                  <div class="d-flex align-center justify-space-between">
+                    <div>
+                      <div class="text-body-1 font-weight-medium">不参与对话</div>
+                      <div class="text-caption text-medium-emphasis">
+                        启用后不参与常规对话调度，仍可作为其他渠道的图片理解模型。
+                      </div>
+                    </div>
+                    <v-switch v-model="form.excludeFromConversation" inset color="primary" hide-details />
+                  </div>
+
+                  <template v-if="form.serviceType === 'openai' || form.serviceType === 'responses'">
+                    <v-divider class="my-4" />
+                    <div class="d-flex align-center justify-space-between">
+                      <div>
+                        <div class="text-body-1 font-weight-medium">不支持缓存键</div>
+                        <div class="text-caption text-medium-emphasis">
+                          移除 prompt_cache_key，避免严格校验的兼容渠道返回参数不支持错误。
+                        </div>
+                      </div>
+                      <v-switch v-model="form.disablePromptCacheKey" inset color="secondary" hide-details />
+                    </div>
+                  </template>
                 </v-card-text>
               </v-card>
             </v-col>
@@ -759,7 +803,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTheme } from 'vuetify'
-import type { Channel } from '../services/api'
+import type { Channel, ChannelPool } from '../services/api'
 import { api, fetchUpstreamModels, ApiError } from '../services/api'
 import {
   isValidApiKey as _isValidApiKey,
@@ -1116,10 +1160,15 @@ const handleQuickSubmit = () => {
     serviceType: detectedServiceType.value || getDefaultServiceTypeValue(),
     baseUrl: detectedBaseUrl.value,
     baseUrls: detectedBaseUrls.value,
-    apiKeys: detectedApiKeys.value,
-    modelMapping: {},
-    defaultModel: ''
-  }
+	apiKeys: detectedApiKeys.value,
+	modelMapping: {},
+	defaultModel: '',
+	poolId: 'default',
+	visionCapable: props.channelType === 'responses',
+	excludeFromConversation: false,
+	visionLayerEnabled: false,
+	disablePromptCacheKey: false
+	}
 
   // 传递 isQuickAdd 标志，让 App.vue 知道需要进行后续处理
   emit('save', channelData, { isQuickAdd: true })
@@ -1244,12 +1293,15 @@ const form = reactive({
   insecureSkipVerify: false,
   lowQuality: false,
   visionCapable: false,
+  poolId: 'default',
+  excludeFromConversation: false,
   visionLayerEnabled: false,
   visionLayerChannelId: '',
   visionLayerModel: '',
   temporary: false,
   injectDummyThoughtSignature: false,
   stripThoughtSignature: false,
+  disablePromptCacheKey: false,
   description: '',
   apiKeys: [] as string[],
   modelMapping: {} as Record<string, string[]>,  // 支持一对多映射
@@ -1428,11 +1480,16 @@ const isFormValid = computed(() => {
 
 const visionChannels = ref<Channel[]>([])
 const visionChannelsLoading = ref(false)
+const pools = ref<ChannelPool[]>([])
+const poolsLoading = ref(false)
+const poolLoadError = ref('')
+const poolOptions = computed(() => pools.value.map(pool => ({ title: `${pool.name}（${pool.modelMatcher}）`, value: pool.id })))
 
 const visionChannelOptions = computed(() => {
   const currentChannelID = props.channel?.id
   return visionChannels.value
-    .filter(channel => channel.id && channel.id !== currentChannelID && channel.visionCapable && channel.status === 'active')
+    .filter(channel => channel.id && channel.id !== currentChannelID && channel.visionCapable && channel.status === 'active' &&
+      (channel.excludeFromConversation || (channel.poolId || 'default') === form.poolId))
     .map(channel => ({ title: `${channel.name}（${channel.serviceType}）`, value: channel.id }))
 })
 
@@ -1464,12 +1521,41 @@ const loadVisionChannels = async () => {
   }
 }
 
+const loadPools = async () => {
+	poolsLoading.value = true
+	poolLoadError.value = ''
+	try {
+    const response = await api.getChannelPools(props.channelType)
+    pools.value = response.pools || []
+		if (!pools.value.some(pool => pool.id === form.poolId)) form.poolId = 'default'
+	} catch (error) {
+		pools.value = []
+		poolLoadError.value = error instanceof Error ? error.message : '加载子池失败'
+	} finally {
+    poolsLoading.value = false
+  }
+}
+
 watch(() => form.visionCapable, enabled => {
-  if (enabled) {
+	if (enabled) {
     form.visionLayerEnabled = false
     form.visionLayerChannelId = ''
-    form.visionLayerModel = ''
-  }
+		form.visionLayerModel = ''
+	} else {
+		form.excludeFromConversation = false
+	}
+})
+
+watch(() => form.excludeFromConversation, enabled => {
+	if (enabled) {
+		form.visionCapable = true
+	}
+})
+
+watch([() => form.poolId, visionChannelOptions], () => {
+	if (form.visionLayerChannelId && !visionChannelOptions.value.some(option => option.value === form.visionLayerChannelId)) {
+		form.visionLayerChannelId = ''
+	}
 })
 
 watch(() => form.visionLayerEnabled, enabled => {
@@ -1506,12 +1592,15 @@ const resetForm = () => {
   form.insecureSkipVerify = false
   form.lowQuality = false
   form.visionCapable = props.channelType === 'responses'
+  form.poolId = 'default'
+  form.excludeFromConversation = false
   form.visionLayerEnabled = false
   form.visionLayerChannelId = ''
   form.visionLayerModel = ''
   form.temporary = false
   form.injectDummyThoughtSignature = false
   form.stripThoughtSignature = false
+  form.disablePromptCacheKey = false
   form.description = ''
   form.apiKeys = []
   form.modelMapping = {}
@@ -1562,12 +1651,15 @@ const loadChannelData = (channel: Channel) => {
   form.insecureSkipVerify = !!channel.insecureSkipVerify
   form.lowQuality = !!channel.lowQuality
   form.visionCapable = !!channel.visionCapable
+  form.poolId = channel.poolId || 'default'
+  form.excludeFromConversation = !!channel.excludeFromConversation
   form.visionLayerEnabled = !!channel.visionLayerEnabled
   form.visionLayerChannelId = channel.visionLayerChannelId || ''
   form.visionLayerModel = channel.visionLayerModel || ''
   form.temporary = !!channel.temporary
   form.injectDummyThoughtSignature = !!channel.injectDummyThoughtSignature
   form.stripThoughtSignature = !!channel.stripThoughtSignature
+  form.disablePromptCacheKey = !!channel.disablePromptCacheKey
   form.description = channel.description || ''
 
   // 同步 baseUrlsText（优先使用 baseUrls，否则使用 baseUrl）
@@ -1884,12 +1976,15 @@ const handleSubmit = async () => {
     insecureSkipVerify: form.insecureSkipVerify,
     lowQuality: form.lowQuality,
     visionCapable: form.visionCapable,
+    poolId: form.poolId,
+    excludeFromConversation: form.excludeFromConversation,
     visionLayerEnabled: form.visionLayerEnabled,
     visionLayerChannelId: form.visionLayerChannelId || undefined,
     visionLayerModel: form.visionLayerModel.trim(),
     temporary: form.temporary,
     injectDummyThoughtSignature: form.injectDummyThoughtSignature,
     stripThoughtSignature: form.stripThoughtSignature,
+    disablePromptCacheKey: form.disablePromptCacheKey,
     description: form.description.trim(),
     apiKeys: processedApiKeys,
     modelMapping: props.channelType === 'chat' ? {} : cloneModelMapping(form.modelMapping),
@@ -1918,6 +2013,7 @@ watch(
       apiKeyError.value = ''
       duplicateKeyIndex.value = -1
       void loadVisionChannels()
+      void loadPools()
 
       if (props.channel) {
         // 编辑模式：使用表单模式

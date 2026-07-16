@@ -54,7 +54,7 @@
 
         <!-- 对话区域 -->
         <v-card variant="outlined" class="message-area mb-4" rounded="lg">
-          <v-card-text class="pa-4" style="height: 500px; overflow-y: auto;" ref="messageContainer">
+          <v-card-text ref="messageContainer" class="pa-4" style="height: 500px; overflow-y: auto;">
             <div v-if="playgroundStore.messages.length === 0" class="text-center text-medium-emphasis py-8">
               <v-icon size="64" color="grey-lighten-1">mdi-chat-outline</v-icon>
               <div class="text-h6 mt-4">选择协议和渠道开始对话</div>
@@ -97,10 +97,10 @@
           <v-col cols="12" class="d-flex ga-2 justify-end">
             <v-btn
               color="error"
-              variant="text"
-              prepend-icon="mdi-delete"
-              @click="clearMessages"
-              :disabled="playgroundStore.messages.length === 0"
+			  variant="text"
+			  prepend-icon="mdi-delete"
+			  :disabled="playgroundStore.messages.length === 0"
+			  @click="clearMessages"
             >
               清空对话
             </v-btn>
@@ -137,7 +137,7 @@ const channelStore = useChannelStore()
 const userInput = ref('')
 const showError = ref(false)
 const errorMessage = ref('')
-const messageContainer = ref<HTMLElement>()
+const messageContainer = ref<{ scrollTop: number; scrollHeight: number } | null>(null)
 
 // 模型选择相关
 const isLoadingModels = ref(false)
