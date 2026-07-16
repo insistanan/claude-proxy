@@ -29,6 +29,7 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 
 			channels = append(channels, gin.H{
 				"id":                          up.ID,
+				"poolId":                      up.PoolID,
 				"index":                       i,
 				"name":                        up.Name,
 				"serviceType":                 up.ServiceType,
@@ -45,6 +46,8 @@ func GetDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelSchedu
 				"promotionUntil":              up.PromotionUntil,
 				"lowQuality":                  up.LowQuality,
 				"visionCapable":               up.VisionCapable,
+				"excludeFromConversation":     up.ExcludeFromConversation,
+				"disablePromptCacheKey":       up.DisablePromptCacheKey,
 				"visionLayerEnabled":          up.VisionLayerEnabled,
 				"visionLayerChannelId":        up.VisionLayerChannelID,
 				"visionLayerModel":            up.VisionLayerModel,

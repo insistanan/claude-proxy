@@ -19,6 +19,12 @@ func (cm *ConfigManager) GetCurrentImagesUpstreamWithIndex() (*UpstreamConfig, i
 	return getFirstActiveWithIndex(cm.config.ImagesUpstream, "Images")
 }
 
+func (cm *ConfigManager) GetCurrentImagesUpstreamWithIndexForModel(model string) (*UpstreamConfig, int, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return getFirstActiveWithIndexForModel(cm.config.ImagesUpstream, cm.config.ImagesPools, "Images", model)
+}
+
 func (cm *ConfigManager) AddImagesUpstream(upstream UpstreamConfig) error {
 	_, err := cm.AddImagesUpstreamWithResult(upstream)
 	return err
@@ -29,10 +35,15 @@ func (cm *ConfigManager) AddImagesUpstreamWithResult(upstream UpstreamConfig) (A
 	defer cm.mu.Unlock()
 
 	upstream.DefaultModel = strings.TrimSpace(upstream.DefaultModel)
-	var result AddedUpstream
-	cm.config.ImagesUpstream, result = addUpstreamOp(cm.config.ImagesUpstream, upstream)
+	previous := cm.config.ImagesUpstream
+	next, result, err := addValidatedUpstreamOp(previous, cm.config.ImagesPools, upstream)
+	if err != nil {
+		return AddedUpstream{}, err
+	}
+	cm.config.ImagesUpstream = next
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.ImagesUpstream = previous
 		return AddedUpstream{}, err
 	}
 	log.Printf("[Config-Upstream] 已添加 Images 上游（优先级1）: %s", cm.config.ImagesUpstream[result.Index].Name)
@@ -47,12 +58,16 @@ func (cm *ConfigManager) UpdateImagesUpstream(index int, updates UpstreamUpdate)
 		return false, fmt.Errorf("无效的 Images 上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.ImagesUpstream, index, updates, "Images")
+	previous := cm.config.ImagesUpstream
+	next := cloneUpstreamList(previous)
+	shouldResetMetrics, err = applyCommonUpdatesToList(next, cm.config.ImagesPools, index, updates, "Images")
 	if err != nil {
 		return false, err
 	}
 
+	cm.config.ImagesUpstream = next
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.ImagesUpstream = previous
 		return false, err
 	}
 	log.Printf("[Config-Upstream] 已更新 Images 上游: [%d] %s", index, cm.config.ImagesUpstream[index].Name)

@@ -21,6 +21,12 @@ func (cm *ConfigManager) GetCurrentChatUpstreamWithIndex() (*UpstreamConfig, int
 	return getFirstActiveWithIndex(cm.config.ChatUpstream, "Chat")
 }
 
+func (cm *ConfigManager) GetCurrentChatUpstreamWithIndexForModel(model string) (*UpstreamConfig, int, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return getFirstActiveWithIndexForModel(cm.config.ChatUpstream, cm.config.ChatPools, "Chat", model)
+}
+
 func (cm *ConfigManager) AddChatUpstream(upstream UpstreamConfig) error {
 	_, err := cm.AddChatUpstreamWithResult(upstream)
 	return err
@@ -31,10 +37,15 @@ func (cm *ConfigManager) AddChatUpstreamWithResult(upstream UpstreamConfig) (Add
 	defer cm.mu.Unlock()
 
 	upstream.DefaultModel = strings.TrimSpace(upstream.DefaultModel)
-	var result AddedUpstream
-	cm.config.ChatUpstream, result = addUpstreamOp(cm.config.ChatUpstream, upstream)
+	previous := cm.config.ChatUpstream
+	next, result, err := addValidatedUpstreamOp(previous, cm.config.ChatPools, upstream)
+	if err != nil {
+		return AddedUpstream{}, err
+	}
+	cm.config.ChatUpstream = next
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.ChatUpstream = previous
 		return AddedUpstream{}, err
 	}
 	log.Printf("[Config-Upstream] 已添加 Chat 上游（优先级1）: %s", cm.config.ChatUpstream[result.Index].Name)
@@ -49,12 +60,16 @@ func (cm *ConfigManager) UpdateChatUpstream(index int, updates UpstreamUpdate) (
 		return false, fmt.Errorf("无效的 Chat 上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.ChatUpstream, index, updates, "Chat")
+	previous := cm.config.ChatUpstream
+	next := cloneUpstreamList(previous)
+	shouldResetMetrics, err = applyCommonUpdatesToList(next, cm.config.ChatPools, index, updates, "Chat")
 	if err != nil {
 		return false, err
 	}
 
+	cm.config.ChatUpstream = next
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.ChatUpstream = previous
 		return false, err
 	}
 	log.Printf("[Config-Upstream] 已更新 Chat 上游: [%d] %s", index, cm.config.ChatUpstream[index].Name)

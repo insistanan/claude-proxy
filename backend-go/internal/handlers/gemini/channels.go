@@ -28,6 +28,7 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 
 			upstreams = append(upstreams, gin.H{
 				"id":                          up.ID,
+				"poolId":                      up.PoolID,
 				"index":                       i,
 				"name":                        up.Name,
 				"serviceType":                 up.ServiceType,
@@ -45,6 +46,8 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"promotionCount":              up.PromotionCount,
 				"lowQuality":                  up.LowQuality,
 				"visionCapable":               up.VisionCapable,
+				"excludeFromConversation":     up.ExcludeFromConversation,
+				"disablePromptCacheKey":       up.DisablePromptCacheKey,
 				"visionLayerEnabled":          up.VisionLayerEnabled,
 				"visionLayerChannelId":        up.VisionLayerChannelID,
 				"visionLayerModel":            up.VisionLayerModel,

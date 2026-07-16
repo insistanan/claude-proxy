@@ -20,6 +20,12 @@ func (cm *ConfigManager) GetCurrentUpstreamWithIndex() (*UpstreamConfig, int, er
 	return getFirstActiveWithIndex(cm.config.Upstream, "上游")
 }
 
+func (cm *ConfigManager) GetCurrentUpstreamWithIndexForModel(model string) (*UpstreamConfig, int, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return getFirstActiveWithIndexForModel(cm.config.Upstream, cm.config.MessagePools, "Messages", model)
+}
+
 func (cm *ConfigManager) AddUpstream(upstream UpstreamConfig) error {
 	_, err := cm.AddUpstreamWithResult(upstream)
 	return err
@@ -29,10 +35,15 @@ func (cm *ConfigManager) AddUpstreamWithResult(upstream UpstreamConfig) (AddedUp
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	var result AddedUpstream
-	cm.config.Upstream, result = addUpstreamOp(cm.config.Upstream, upstream)
+	previous := cm.config.Upstream
+	next, result, err := addValidatedUpstreamOp(previous, cm.config.MessagePools, upstream)
+	if err != nil {
+		return AddedUpstream{}, err
+	}
+	cm.config.Upstream = next
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.Upstream = previous
 		return AddedUpstream{}, err
 	}
 	log.Printf("[Config-Upstream] 已添加上游（优先级1）: %s", cm.config.Upstream[result.Index].Name)
@@ -47,12 +58,16 @@ func (cm *ConfigManager) UpdateUpstream(index int, updates UpstreamUpdate) (shou
 		return false, fmt.Errorf("无效的上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.Upstream, index, updates, "Messages")
+	previous := cm.config.Upstream
+	next := cloneUpstreamList(previous)
+	shouldResetMetrics, err = applyCommonUpdatesToList(next, cm.config.MessagePools, index, updates, "Messages")
 	if err != nil {
 		return false, err
 	}
 
+	cm.config.Upstream = next
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.Upstream = previous
 		return false, err
 	}
 	log.Printf("[Config-Upstream] 已更新上游: [%d] %s", index, cm.config.Upstream[index].Name)

@@ -83,7 +83,7 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		}
 
 		// 检查是否为多渠道模式
-		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindMessages)
+		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindMessages, claudeReq.Model)
 
 		if isMultiChannel {
 			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, hasImage, startTime)
@@ -217,7 +217,7 @@ func handleSingleChannel(
 	userID string,
 	startTime time.Time,
 ) {
-	upstream, channelIndex, err := cfgManager.GetCurrentUpstreamWithIndex()
+	upstream, channelIndex, err := cfgManager.GetCurrentUpstreamWithIndexForModel(claudeReq.Model)
 	if err != nil {
 		c.JSON(503, gin.H{
 			"error": "未配置任何渠道，请先在管理界面添加渠道",

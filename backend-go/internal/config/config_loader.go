@@ -100,16 +100,21 @@ func (cm *ConfigManager) loadConfig() error {
 func (cm *ConfigManager) createDefaultConfig() error {
 	defaultConfig := Config{
 		Upstream:                  []UpstreamConfig{},
+		MessagePools:              []ChannelPool{defaultChannelPool()},
 		CurrentUpstream:           0,
 		LoadBalance:               "failover",
 		ResponsesUpstream:         []UpstreamConfig{},
+		ResponsesPools:            []ChannelPool{defaultChannelPool()},
 		CurrentResponsesUpstream:  0,
 		ResponsesLoadBalance:      "failover",
 		GeminiUpstream:            []UpstreamConfig{},
+		GeminiPools:               []ChannelPool{defaultChannelPool()},
 		GeminiLoadBalance:         "failover",
 		ChatUpstream:              []UpstreamConfig{},
+		ChatPools:                 []ChannelPool{defaultChannelPool()},
 		ChatLoadBalance:           "failover",
 		ImagesUpstream:            []UpstreamConfig{},
+		ImagesPools:               []ChannelPool{defaultChannelPool()},
 		ImagesLoadBalance:         "failover",
 		FuzzyModeEnabled:          true, // 默认启用 Fuzzy 模式
 		ClaudeCodeDisguiseEnabled: false,
@@ -183,7 +188,9 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 					if index >= len(responseItems) {
 						break
 					}
-					if _, explicitlyConfigured := responseItems[index]["visionCapable"]; !explicitlyConfigured {
+					_, capabilityConfigured := responseItems[index]["visionCapable"]
+					_, layerConfigured := responseItems[index]["visionLayerEnabled"]
+					if !capabilityConfigured && !layerConfigured {
 						cm.config.ResponsesUpstream[index].VisionCapable = true
 						cm.config.ResponsesUpstream[index].VisionLayerEnabled = false
 						cm.config.ResponsesUpstream[index].VisionLayerChannelID = ""
@@ -194,6 +201,27 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 				}
 			}
 		}
+	}
+
+	poolSets := []struct {
+		pools     *[]ChannelPool
+		upstreams []UpstreamConfig
+		label     string
+	}{
+		{&cm.config.MessagePools, cm.config.Upstream, "Messages"},
+		{&cm.config.ResponsesPools, cm.config.ResponsesUpstream, "Responses"},
+		{&cm.config.GeminiPools, cm.config.GeminiUpstream, "Gemini"},
+		{&cm.config.ChatPools, cm.config.ChatUpstream, "Chat"},
+		{&cm.config.ImagesPools, cm.config.ImagesUpstream, "Images"},
+	}
+	for _, set := range poolSets {
+		normalized, changed, err := ensurePoolsAndAssignments(*set.pools, set.upstreams)
+		if err != nil {
+			log.Printf("[Config-Migration] %s 子池配置无效，已恢复默认子池: %v", set.label, err)
+			normalized, changed, _ = ensurePoolsAndAssignments(nil, set.upstreams)
+		}
+		*set.pools = normalized
+		needSave = needSave || changed
 	}
 
 	return needSave
@@ -241,6 +269,12 @@ func (cm *ConfigManager) normalizeChannelLists() bool {
 	for _, upstreams := range lists {
 		changed = ensureUpstreamIDs(upstreams) || changed
 		changed = normalizeUpstreamPriorities(upstreams) || changed
+		for index := range upstreams {
+			if upstreams[index].VisionCapable && upstreams[index].VisionLayerEnabled {
+				upstreams[index].VisionCapable = false
+				changed = true
+			}
+		}
 	}
 	return changed
 }

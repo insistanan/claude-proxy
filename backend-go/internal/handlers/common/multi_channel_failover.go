@@ -63,7 +63,7 @@ func HandleMultiChannelFailover(
 	var lastError error
 	var lastFailoverError *FailoverError
 
-	maxChannelAttempts := channelScheduler.GetActiveChannelCount(kind)
+	maxChannelAttempts := channelScheduler.GetActiveChannelCountForModel(kind, requestedModel)
 
 	for channelAttempt := 0; channelAttempt < maxChannelAttempts; channelAttempt++ {
 		// 检查客户端是否已断开连接

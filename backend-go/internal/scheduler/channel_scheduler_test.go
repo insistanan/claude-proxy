@@ -61,16 +61,18 @@ func createTestScheduler(t *testing.T, cfg config.Config) (*ChannelScheduler, fu
 	responsesMetrics := metrics.NewMetricsManager()
 	geminiMetrics := metrics.NewMetricsManager()
 	chatMetrics := metrics.NewMetricsManager()
+	imagesMetrics := metrics.NewMetricsManager()
 	traceAffinity := session.NewTraceAffinityManager()
 	urlManager := urlhealth.NewURLManager(30*time.Second, 3)
 
-	scheduler := NewChannelScheduler(cfgManager, messagesMetrics, responsesMetrics, geminiMetrics, chatMetrics, traceAffinity, urlManager)
+	scheduler := NewChannelScheduler(cfgManager, messagesMetrics, responsesMetrics, geminiMetrics, chatMetrics, imagesMetrics, traceAffinity, urlManager)
 
 	return scheduler, func() {
 		messagesMetrics.Stop()
 		responsesMetrics.Stop()
 		geminiMetrics.Stop()
 		chatMetrics.Stop()
+		imagesMetrics.Stop()
 		cleanup()
 	}
 }
@@ -131,6 +133,39 @@ func TestPromotedChannelBypassesHealthCheck(t *testing.T) {
 
 	if result.Upstream.Name != "promoted-channel" {
 		t.Errorf("期望选择 promoted-channel，实际选择了 %s", result.Upstream.Name)
+	}
+}
+
+func TestSchedulerScopesChannelCountAndSelectionToModelPool(t *testing.T) {
+	cfg := config.Config{
+		MessagePools: []config.ChannelPool{
+			{ID: "sonnet", Name: "Sonnet", ModelMatcher: "sonnet", Priority: 1},
+			{ID: config.DefaultChannelPoolID, Name: "默认子池", ModelMatcher: "*", Priority: 2},
+		},
+		Upstream: []config.UpstreamConfig{
+			{ID: "default", Name: "default", PoolID: config.DefaultChannelPoolID, BaseURL: "https://default.example.com", APIKeys: []string{"sk-default"}, Status: "active", Priority: 1},
+			{ID: "sonnet-a", Name: "sonnet-a", PoolID: "sonnet", BaseURL: "https://sonnet-a.example.com", APIKeys: []string{"sk-a"}, Status: "active", Priority: 2},
+			{ID: "sonnet-b", Name: "sonnet-b", PoolID: "sonnet", BaseURL: "https://sonnet-b.example.com", APIKeys: []string{"sk-b"}, Status: "active", Priority: 3},
+			{ID: "vision", Name: "vision", PoolID: "sonnet", BaseURL: "https://vision.example.com", APIKeys: []string{"sk-vision"}, Status: "active", VisionCapable: true, ExcludeFromConversation: true},
+		},
+	}
+	scheduler, cleanup := createTestScheduler(t, cfg)
+	defer cleanup()
+
+	if got := scheduler.GetActiveChannelCountForModel(ChannelKindMessages, "claude-sonnet-4"); got != 2 {
+		t.Fatalf("sonnet channel count = %d, want 2", got)
+	}
+	if got := scheduler.GetActiveChannelCountForModel(ChannelKindMessages, "claude-opus-4"); got != 1 {
+		t.Fatalf("default channel count = %d, want 1", got)
+	}
+
+	selected, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{}, ChannelKindMessages, "claude-sonnet-4", true)
+	if err != nil {
+		t.Fatalf("SelectChannel() error = %v", err)
+	}
+	defer scheduler.ReleaseChannelReservation(selected.Kind, selected.ChannelIndex)
+	if selected.Upstream.PoolID != "sonnet" || selected.Upstream.ExcludeFromConversation {
+		t.Fatalf("selected upstream = %#v", selected.Upstream)
 	}
 }
 
@@ -273,9 +308,9 @@ func TestExpiredPromotionNotBypassHealthCheck(t *testing.T) {
 	}
 }
 
-// TestSelectChannel_SamePrioritySpreadsAcrossProviders
-// 验证：同协议、同优先级、无 Trace 亲和时，连续新对话会因 in-flight 预留分摊到不同供应商。
-func TestSelectChannel_SamePrioritySpreadsAcrossProviders(t *testing.T) {
+// TestSelectChannel_DuplicatePrioritiesNormalizeToFailoverOrder
+// 验证：重复优先级会被配置层归一化为严格故障转移顺序，只有当前渠道失败后才进入下一渠道。
+func TestSelectChannel_DuplicatePrioritiesNormalizeToFailoverOrder(t *testing.T) {
 	cfg := config.Config{
 		Upstream: []config.UpstreamConfig{
 			{
@@ -318,28 +353,29 @@ func TestSelectChannel_SamePrioritySpreadsAcrossProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("第二次选渠失败: %v", err)
 	}
-	if second.ChannelIndex == first.ChannelIndex {
-		t.Fatalf("期望第二次分摊到不同供应商，两次都选了 index=%d (reasons: %s, %s)",
-			first.ChannelIndex, first.Reason, second.Reason)
+	if second.ChannelIndex != first.ChannelIndex {
+		t.Fatalf("严格优先级下应保持首选渠道，first=%d second=%d (reasons: %s, %s)",
+			first.ChannelIndex, second.ChannelIndex, first.Reason, second.Reason)
 	}
 
-	third, err := scheduler.SelectChannel(context.Background(), "user-3", make(map[int]bool), ChannelKindMessages, "", false)
+	failedChannels := map[int]bool{first.ChannelIndex: true}
+	third, err := scheduler.SelectChannel(context.Background(), "user-3", failedChannels, ChannelKindMessages, "", false)
 	if err != nil {
 		t.Fatalf("第三次选渠失败: %v", err)
 	}
-	if third.ChannelIndex == first.ChannelIndex || third.ChannelIndex == second.ChannelIndex {
-		t.Fatalf("期望第三次再分摊到第三家，实际: first=%d second=%d third=%d",
-			first.ChannelIndex, second.ChannelIndex, third.ChannelIndex)
+	if third.ChannelIndex == first.ChannelIndex {
+		t.Fatalf("首选渠道失败后未切换，first=%d third=%d", first.ChannelIndex, third.ChannelIndex)
 	}
 
-	// 释放第一家后，下一次应优先回到负载最低的渠道
+	scheduler.ReleaseChannelReservation(second.Kind, second.ChannelIndex)
+	scheduler.ReleaseChannelReservation(third.Kind, third.ChannelIndex)
 	scheduler.ReleaseChannelReservation(first.Kind, first.ChannelIndex)
 	fourth, err := scheduler.SelectChannel(context.Background(), "user-4", make(map[int]bool), ChannelKindMessages, "", false)
 	if err != nil {
 		t.Fatalf("第四次选渠失败: %v", err)
 	}
 	if fourth.ChannelIndex != first.ChannelIndex {
-		t.Fatalf("释放后期望回到 index=%d，实际 index=%d (reason=%s)",
+		t.Fatalf("恢复后期望回到首选 index=%d，实际 index=%d (reason=%s)",
 			first.ChannelIndex, fourth.ChannelIndex, fourth.Reason)
 	}
 }
@@ -393,8 +429,8 @@ func TestSelectChannel_ProtocolIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("messages 第二次选渠失败: %v", err)
 	}
-	if msg1.ChannelIndex == msg2.ChannelIndex {
-		t.Fatalf("messages 协议内应分摊，两次都选了 index=%d", msg1.ChannelIndex)
+	if msg1.ChannelIndex != msg2.ChannelIndex {
+		t.Fatalf("messages 严格优先级应保持首选渠道: %d != %d", msg1.ChannelIndex, msg2.ChannelIndex)
 	}
 
 	// responses 协议有独立渠道列表与 in-flight 计数，首次选择不应被 messages 占用影响
@@ -406,19 +442,23 @@ func TestSelectChannel_ProtocolIsolation(t *testing.T) {
 		t.Fatalf("responses 选渠 index 非法: %d", resp1.ChannelIndex)
 	}
 
-	// responses 内部也应分摊
+	// responses 也独立遵循自身严格优先级顺序
 	resp2, err := scheduler.SelectChannel(context.Background(), "resp-user-2", make(map[int]bool), ChannelKindResponses, "", false)
 	if err != nil {
 		t.Fatalf("responses 第二次选渠失败: %v", err)
 	}
-	if resp1.ChannelIndex == resp2.ChannelIndex {
-		t.Fatalf("responses 协议内应分摊，两次都选了 index=%d", resp1.ChannelIndex)
+	if resp1.ChannelIndex != resp2.ChannelIndex {
+		t.Fatalf("responses 严格优先级应保持首选渠道: %d != %d", resp1.ChannelIndex, resp2.ChannelIndex)
 	}
+	scheduler.ReleaseChannelReservation(msg1.Kind, msg1.ChannelIndex)
+	scheduler.ReleaseChannelReservation(msg2.Kind, msg2.ChannelIndex)
+	scheduler.ReleaseChannelReservation(resp1.Kind, resp1.ChannelIndex)
+	scheduler.ReleaseChannelReservation(resp2.Kind, resp2.ChannelIndex)
 }
 
-// TestSelectChannel_AdaptiveSpreadsAcrossProviders
-// 验证：带模型请求走 adaptive 路径时，评分接近的同优先级渠道也会按负载分摊。
-func TestSelectChannel_AdaptiveSpreadsAcrossProviders(t *testing.T) {
+// TestSelectChannel_AdaptiveRespectsFailoverPriority
+// 验证：带模型画像的自适应评分也不能越过配置优先级。
+func TestSelectChannel_AdaptiveRespectsFailoverPriority(t *testing.T) {
 	cfg := config.Config{
 		Upstream: []config.UpstreamConfig{
 			{
@@ -467,8 +507,10 @@ func TestSelectChannel_AdaptiveSpreadsAcrossProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("adaptive 第二次选渠失败: %v", err)
 	}
-	if first.ChannelIndex == second.ChannelIndex {
-		t.Fatalf("adaptive 路径期望分摊到不同供应商，两次都选了 index=%d (reasons: %s, %s)",
-			first.ChannelIndex, first.Reason, second.Reason)
+	if first.ChannelIndex != second.ChannelIndex {
+		t.Fatalf("adaptive 路径越过了严格优先级: first=%d second=%d (reasons: %s, %s)",
+			first.ChannelIndex, second.ChannelIndex, first.Reason, second.Reason)
 	}
+	scheduler.ReleaseChannelReservation(first.Kind, first.ChannelIndex)
+	scheduler.ReleaseChannelReservation(second.Kind, second.ChannelIndex)
 }

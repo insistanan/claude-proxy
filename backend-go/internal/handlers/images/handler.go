@@ -63,7 +63,7 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 			return
 		}
 
-		if channelScheduler.IsMultiChannelMode(scheduler.ChannelKindImages) {
+		if channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindImages, model) {
 			handleImagesMultiChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, requestMeta.Stream, startTime)
 			return
 		}
@@ -186,7 +186,7 @@ func handleImagesSingleChannel(
 	isStream bool,
 	startTime time.Time,
 ) {
-	upstream, channelIndex, err := cfgManager.GetCurrentImagesUpstreamWithIndex()
+	upstream, channelIndex, err := cfgManager.GetCurrentImagesUpstreamWithIndexForModel(model)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "未配置任何 Images 渠道，请先在管理界面添加渠道", "code": "NO_IMAGES_UPSTREAM"})
 		return

@@ -20,6 +20,12 @@ func (cm *ConfigManager) GetCurrentResponsesUpstreamWithIndex() (*UpstreamConfig
 	return getFirstActiveWithIndex(cm.config.ResponsesUpstream, "Responses")
 }
 
+func (cm *ConfigManager) GetCurrentResponsesUpstreamWithIndexForModel(model string) (*UpstreamConfig, int, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return getFirstActiveWithIndexForModel(cm.config.ResponsesUpstream, cm.config.ResponsesPools, "Responses", model)
+}
+
 func (cm *ConfigManager) AddResponsesUpstream(upstream UpstreamConfig) error {
 	_, err := cm.AddResponsesUpstreamWithResult(upstream)
 	return err
@@ -29,15 +35,15 @@ func (cm *ConfigManager) AddResponsesUpstreamWithResult(upstream UpstreamConfig)
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	// Codex Responses 渠道默认直接支持图片理解。
-	upstream.VisionCapable = true
-	upstream.VisionLayerEnabled = false
-	upstream.VisionLayerChannelID = ""
-	upstream.VisionLayerModel = ""
-	var result AddedUpstream
-	cm.config.ResponsesUpstream, result = addUpstreamOp(cm.config.ResponsesUpstream, upstream)
+	previous := cm.config.ResponsesUpstream
+	next, result, err := addValidatedUpstreamOp(previous, cm.config.ResponsesPools, upstream)
+	if err != nil {
+		return AddedUpstream{}, err
+	}
+	cm.config.ResponsesUpstream = next
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.ResponsesUpstream = previous
 		return AddedUpstream{}, err
 	}
 	log.Printf("[Config-Upstream] 已添加 Responses 上游（优先级1）: %s", cm.config.ResponsesUpstream[result.Index].Name)
@@ -52,12 +58,16 @@ func (cm *ConfigManager) UpdateResponsesUpstream(index int, updates UpstreamUpda
 		return false, fmt.Errorf("无效的 Responses 上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.ResponsesUpstream, index, updates, "Responses")
+	previous := cm.config.ResponsesUpstream
+	next := cloneUpstreamList(previous)
+	shouldResetMetrics, err = applyCommonUpdatesToList(next, cm.config.ResponsesPools, index, updates, "Responses")
 	if err != nil {
 		return false, err
 	}
 
+	cm.config.ResponsesUpstream = next
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.ResponsesUpstream = previous
 		return false, err
 	}
 	log.Printf("[Config-Upstream] 已更新 Responses 上游: [%d] %s", index, cm.config.ResponsesUpstream[index].Name)

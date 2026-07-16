@@ -20,6 +20,12 @@ func (cm *ConfigManager) GetCurrentGeminiUpstreamWithIndex() (*UpstreamConfig, i
 	return getFirstActiveWithIndex(cm.config.GeminiUpstream, "Gemini")
 }
 
+func (cm *ConfigManager) GetCurrentGeminiUpstreamWithIndexForModel(model string) (*UpstreamConfig, int, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return getFirstActiveWithIndexForModel(cm.config.GeminiUpstream, cm.config.GeminiPools, "Gemini", model)
+}
+
 func (cm *ConfigManager) AddGeminiUpstream(upstream UpstreamConfig) error {
 	_, err := cm.AddGeminiUpstreamWithResult(upstream)
 	return err
@@ -29,10 +35,15 @@ func (cm *ConfigManager) AddGeminiUpstreamWithResult(upstream UpstreamConfig) (A
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	var result AddedUpstream
-	cm.config.GeminiUpstream, result = addUpstreamOp(cm.config.GeminiUpstream, upstream)
+	previous := cm.config.GeminiUpstream
+	next, result, err := addValidatedUpstreamOp(previous, cm.config.GeminiPools, upstream)
+	if err != nil {
+		return AddedUpstream{}, err
+	}
+	cm.config.GeminiUpstream = next
 
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.GeminiUpstream = previous
 		return AddedUpstream{}, err
 	}
 	log.Printf("[Config-Upstream] 已添加 Gemini 上游（优先级1）: %s", cm.config.GeminiUpstream[result.Index].Name)
@@ -47,12 +58,16 @@ func (cm *ConfigManager) UpdateGeminiUpstream(index int, updates UpstreamUpdate)
 		return false, fmt.Errorf("无效的 Gemini 上游索引: %d", index)
 	}
 
-	shouldResetMetrics, err = applyCommonUpdatesToList(cm.config.GeminiUpstream, index, updates, "Gemini")
+	previous := cm.config.GeminiUpstream
+	next := cloneUpstreamList(previous)
+	shouldResetMetrics, err = applyCommonUpdatesToList(next, cm.config.GeminiPools, index, updates, "Gemini")
 	if err != nil {
 		return false, err
 	}
 
+	cm.config.GeminiUpstream = next
 	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.GeminiUpstream = previous
 		return false, err
 	}
 	log.Printf("[Config-Upstream] 已更新 Gemini 上游: [%d] %s", index, cm.config.GeminiUpstream[index].Name)

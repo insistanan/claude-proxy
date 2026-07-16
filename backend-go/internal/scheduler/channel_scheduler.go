@@ -294,8 +294,12 @@ func (s *ChannelScheduler) SelectChannel(
 	registry := s.conversationRegistry
 	s.mu.RUnlock()
 
-	// 获取活跃渠道列表（configManager 自身有独立锁保护）
-	activeChannels := s.getActiveChannels(kind)
+	pool, err := config.SelectChannelPool(s.getChannelPools(kind), requestedModel)
+	if err != nil {
+		return nil, fmt.Errorf("选择 %s 子池失败: %w", kind, err)
+	}
+	// 先按模型路由到子池，再在该子池内执行完整的故障转移流程。
+	activeChannels := s.getActiveChannels(kind, pool.ID)
 	if len(activeChannels) == 0 {
 		switch kind {
 		case ChannelKindGemini:
@@ -665,7 +669,7 @@ func (s *ChannelScheduler) calculateChannelScore(upstream *config.UpstreamConfig
 
 // getActiveChannels 获取故障转移序列（按配置优先级排序）。
 // 动态分数只用于同优先级渠道，不能越过用户配置的 failover 顺序。
-func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
+func (s *ChannelScheduler) getActiveChannels(kind ChannelKind, poolIDs ...string) []ChannelInfo {
 	cfg := s.configManager.GetConfig()
 
 	var upstreams []config.UpstreamConfig
@@ -684,6 +688,10 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 		return nil
 	}
 
+	poolID := ""
+	if len(poolIDs) > 0 {
+		poolID = poolIDs[0]
+	}
 	// 筛选活跃渠道
 	var activeChannels []ChannelInfo
 	for i, upstream := range upstreams {
@@ -693,7 +701,12 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 		}
 
 		// 只选择故障转移序列中的渠道（suspended 也显示在序列中，备用/弃用/删除占位排除）
-		if config.IsChannelSchedulable(&upstream) {
+		upstreamPoolID := strings.TrimSpace(upstream.PoolID)
+		if upstreamPoolID == "" {
+			upstreamPoolID = config.DefaultChannelPoolID
+		}
+		if config.IsChannelSchedulable(&upstream) && !upstream.ExcludeFromConversation &&
+			(poolID == "" || upstreamPoolID == poolID) {
 			priority := upstream.Priority
 			if priority == 0 {
 				priority = i + 1
@@ -727,6 +740,24 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind) []ChannelInfo {
 	return activeChannels
 }
 
+func (s *ChannelScheduler) getChannelPools(kind ChannelKind) []config.ChannelPool {
+	cfg := s.configManager.GetConfig()
+	switch kind {
+	case ChannelKindMessages:
+		return cfg.MessagePools
+	case ChannelKindResponses:
+		return cfg.ResponsesPools
+	case ChannelKindGemini:
+		return cfg.GeminiPools
+	case ChannelKindChat:
+		return cfg.ChatPools
+	case ChannelKindImages:
+		return cfg.ImagesPools
+	default:
+		return nil
+	}
+}
+
 // getUpstreamByIndex 根据索引获取上游配置
 // 注意：返回的是副本，避免指向 slice 元素的指针在 slice 重分配后失效
 func (s *ChannelScheduler) getUpstreamByIndex(index int, kind ChannelKind) *config.UpstreamConfig {
@@ -758,7 +789,7 @@ func (s *ChannelScheduler) getUpstreamByIndex(index int, kind ChannelKind) *conf
 
 // SelectVisionChannel 通过稳定渠道 ID 解析图片理解层指定的原生图片理解渠道，
 // 并为这次内部调用预留在途负载，避免其从渠道调度与实时指标中消失。
-func (s *ChannelScheduler) SelectVisionChannel(ctx context.Context, kind ChannelKind, channelID string) (*SelectionResult, error) {
+func (s *ChannelScheduler) SelectVisionChannel(ctx context.Context, kind ChannelKind, channelID string, ownerPoolID string) (*SelectionResult, error) {
 	if ctx != nil {
 		select {
 		case <-ctx.Done():
@@ -767,6 +798,10 @@ func (s *ChannelScheduler) SelectVisionChannel(ctx context.Context, kind Channel
 		}
 	}
 	channelID = strings.TrimSpace(channelID)
+	ownerPoolID = strings.TrimSpace(ownerPoolID)
+	if ownerPoolID == "" {
+		ownerPoolID = config.DefaultChannelPoolID
+	}
 	if channelID == "" {
 		return nil, fmt.Errorf("图片理解层未指定图片理解渠道")
 	}
@@ -795,6 +830,13 @@ func (s *ChannelScheduler) SelectVisionChannel(ctx context.Context, kind Channel
 		}
 		if !upstream.VisionCapable {
 			return nil, fmt.Errorf("渠道 %q 未标记为支持图片理解", upstream.Name)
+		}
+		targetPoolID := strings.TrimSpace(upstream.PoolID)
+		if targetPoolID == "" {
+			targetPoolID = config.DefaultChannelPoolID
+		}
+		if !upstream.ExcludeFromConversation && targetPoolID != ownerPoolID {
+			return nil, fmt.Errorf("图片理解渠道 %q 不在当前子池或公用纯图片理解池", upstream.Name)
 		}
 		if config.GetChannelStatus(upstream) != config.ChannelStatusActive || len(upstream.APIKeys) == 0 {
 			return nil, fmt.Errorf("图片理解渠道 %q 当前不可用", upstream.Name)
@@ -1084,9 +1126,22 @@ func (s *ChannelScheduler) GetActiveChannelCount(kind ChannelKind) int {
 	return len(s.getActiveChannels(kind))
 }
 
+// GetActiveChannelCountForModel 返回指定模型命中子池内可参与故障转移的渠道数。
+func (s *ChannelScheduler) GetActiveChannelCountForModel(kind ChannelKind, model string) int {
+	pool, err := config.SelectChannelPool(s.getChannelPools(kind), model)
+	if err != nil {
+		return 0
+	}
+	return len(s.getActiveChannels(kind, pool.ID))
+}
+
 // IsMultiChannelMode 判断是否为多渠道模式
 func (s *ChannelScheduler) IsMultiChannelMode(kind ChannelKind) bool {
 	return s.GetActiveChannelCount(kind) > 1
+}
+
+func (s *ChannelScheduler) IsMultiChannelModeForModel(kind ChannelKind, model string) bool {
+	return s.GetActiveChannelCountForModel(kind, model) > 1
 }
 
 // maskUserID 掩码 user_id（保护隐私）

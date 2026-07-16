@@ -3,6 +3,7 @@ package responses
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -50,14 +51,15 @@ func CompactHandler(
 
 		// 提取对话标识用于 Trace 亲和性
 		userID := common.ExtractConversationID(c, bodyBytes)
+		model := compactRequestModel(bodyBytes)
 
 		// 检查是否为多渠道模式
-		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindResponses)
+		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindResponses, model)
 
 		if isMultiChannel {
-			handleMultiChannelCompact(c, envCfg, cfgManager, channelScheduler, bodyBytes, userID)
+			handleMultiChannelCompact(c, envCfg, cfgManager, channelScheduler, bodyBytes, userID, model)
 		} else {
-			handleSingleChannelCompact(c, envCfg, cfgManager, bodyBytes)
+			handleSingleChannelCompact(c, envCfg, cfgManager, bodyBytes, model)
 		}
 	})
 }
@@ -68,8 +70,9 @@ func handleSingleChannelCompact(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
 	bodyBytes []byte,
+	model string,
 ) {
-	upstream, err := cfgManager.GetCurrentResponsesUpstream()
+	upstream, _, err := cfgManager.GetCurrentResponsesUpstreamWithIndexForModel(model)
 	if err != nil {
 		c.JSON(503, gin.H{"error": "未配置任何 Responses 渠道"})
 		return
@@ -135,13 +138,14 @@ func handleMultiChannelCompact(
 	channelScheduler *scheduler.ChannelScheduler,
 	bodyBytes []byte,
 	userID string,
+	model string,
 ) {
 	failedChannels := make(map[int]bool)
-	maxAttempts := channelScheduler.GetActiveChannelCount(scheduler.ChannelKindResponses)
+	maxAttempts := channelScheduler.GetActiveChannelCountForModel(scheduler.ChannelKindResponses, model)
 	var lastErr *compactError
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		selection, err := channelScheduler.SelectChannel(c.Request.Context(), userID, failedChannels, scheduler.ChannelKindResponses, "", false)
+		selection, err := channelScheduler.SelectChannel(c.Request.Context(), userID, failedChannels, scheduler.ChannelKindResponses, model, false)
 		if err != nil {
 			break
 		}
@@ -194,6 +198,16 @@ func handleMultiChannelCompact(
 	} else {
 		c.JSON(503, gin.H{"error": "所有 Responses 渠道都不可用"})
 	}
+}
+
+func compactRequestModel(body []byte) string {
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Model)
 }
 
 // tryCompactChannelWithAllKeys 尝试渠道的所有 key
@@ -264,6 +278,16 @@ func tryCompactWithKey(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
 ) (bool, *compactError) {
+	if upstream != nil && upstream.DisablePromptCacheKey {
+		var payload map[string]interface{}
+		if json.Unmarshal(bodyBytes, &payload) == nil {
+			delete(payload, "prompt_cache_key")
+			delete(payload, "prompt_cache_retention")
+			if sanitized, err := utils.MarshalJSONNoEscape(payload); err == nil {
+				bodyBytes = sanitized
+			}
+		}
+	}
 	targetURL := buildCompactURL(upstream)
 	req, err := http.NewRequestWithContext(c.Request.Context(), "POST", targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {

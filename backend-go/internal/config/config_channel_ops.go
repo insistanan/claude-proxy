@@ -51,7 +51,7 @@ func bestUpstreamIndex(upstreams []UpstreamConfig, activeOnly bool) int {
 	bestPriority := 0
 	for index := range upstreams {
 		upstream := &upstreams[index]
-		if !IsChannelSchedulable(upstream) {
+		if !IsChannelSchedulable(upstream) || upstream.ExcludeFromConversation {
 			continue
 		}
 		if activeOnly && GetChannelStatus(upstream) != ChannelStatusActive {
@@ -73,6 +73,9 @@ func prepareNewUpstream(upstream *UpstreamConfig) {
 	}
 	if upstream.Status == "" {
 		upstream.Status = "active"
+	}
+	if strings.TrimSpace(upstream.PoolID) == "" {
+		upstream.PoolID = DefaultChannelPoolID
 	}
 	prepareUpstreamLifecycle(upstream, time.Now())
 	upstream.APIKeys = deduplicateStrings(upstream.APIKeys)
@@ -198,13 +201,40 @@ func addUpstreamOp(upstreams []UpstreamConfig, upstream UpstreamConfig) ([]Upstr
 	return upstreams, AddedUpstream{ID: upstream.ID, Index: len(upstreams) - 1}
 }
 
+func addValidatedUpstreamOp(upstreams []UpstreamConfig, pools []ChannelPool, upstream UpstreamConfig) ([]UpstreamConfig, AddedUpstream, error) {
+	candidate := cloneUpstreamList(upstreams)
+	candidate, result := addUpstreamOp(candidate, upstream)
+	if err := ValidateChannelPoolAssignment(pools, candidate[result.Index].PoolID); err != nil {
+		return nil, AddedUpstream{}, err
+	}
+	if err := validateAllVisionLayerConfigs(candidate); err != nil {
+		return nil, AddedUpstream{}, err
+	}
+	return candidate, result, nil
+}
+
+func cloneUpstreamList(upstreams []UpstreamConfig) []UpstreamConfig {
+	cloned := make([]UpstreamConfig, len(upstreams))
+	for index := range upstreams {
+		cloned[index] = *upstreams[index].Clone()
+	}
+	return cloned
+}
+
 // applyCommonUpdates 应用通用的 UpstreamUpdate 字段到上游配置
 // 返回 shouldResetMetrics 标识是否需要重置指标
 func applyCommonUpdates(upstream *UpstreamConfig, index int, updates UpstreamUpdate, label string) (bool, error) {
+	if updates.VisionCapable != nil && *updates.VisionCapable &&
+		updates.VisionLayerEnabled != nil && *updates.VisionLayerEnabled {
+		return false, fmt.Errorf("渠道不能同时标记为支持图片理解并启用图片理解层")
+	}
 	shouldResetMetrics := false
 
 	if updates.Name != nil {
 		upstream.Name = *updates.Name
+	}
+	if updates.PoolID != nil {
+		upstream.PoolID = strings.TrimSpace(*updates.PoolID)
 	}
 	if updates.BaseURL != nil {
 		upstream.BaseURL = *updates.BaseURL
@@ -261,6 +291,9 @@ func applyCommonUpdates(upstream *UpstreamConfig, index int, updates UpstreamUpd
 			upstream.VisionLayerModel = ""
 		}
 	}
+	if updates.ExcludeFromConversation != nil {
+		upstream.ExcludeFromConversation = *updates.ExcludeFromConversation
+	}
 	if updates.VisionLayerEnabled != nil {
 		upstream.VisionLayerEnabled = *updates.VisionLayerEnabled
 		if *updates.VisionLayerEnabled {
@@ -305,19 +338,38 @@ func applyCommonUpdates(upstream *UpstreamConfig, index int, updates UpstreamUpd
 }
 
 // applyCommonUpdatesToList 应用渠道更新，并在状态池发生变化时同步调整优先级。
-func applyCommonUpdatesToList(upstreams []UpstreamConfig, index int, updates UpstreamUpdate, label string) (bool, error) {
+func applyCommonUpdatesToList(upstreams []UpstreamConfig, pools []ChannelPool, index int, updates UpstreamUpdate, label string) (bool, error) {
+	original := upstreams[index].Clone()
 	previousPool := channelStatusPool(&upstreams[index])
 	shouldResetMetrics, err := applyCommonUpdates(&upstreams[index], index, updates, label)
 	if err != nil {
+		upstreams[index] = *original
+		return false, err
+	}
+	if err := ValidateChannelPoolAssignment(pools, upstreams[index].PoolID); err != nil {
+		upstreams[index] = *original
+		return false, err
+	}
+	if err := validateAllVisionLayerConfigs(upstreams); err != nil {
+		upstreams[index] = *original
 		return false, err
 	}
 	if previousPool != channelStatusPool(&upstreams[index]) {
 		moveChannelToStatusPoolTail(upstreams, index)
 	}
-	if err := validateVisionLayerConfig(upstreams, index); err != nil {
-		return false, err
-	}
 	return shouldResetMetrics, nil
+}
+
+func validateAllVisionLayerConfigs(upstreams []UpstreamConfig) error {
+	for index := range upstreams {
+		if GetChannelStatus(&upstreams[index]) == ChannelStatusDeleted {
+			continue
+		}
+		if err := validateVisionLayerConfig(upstreams, index); err != nil {
+			return fmt.Errorf("渠道 %q 配置无效: %w", upstreams[index].Name, err)
+		}
+	}
+	return nil
 }
 
 func validateVisionLayerConfig(upstreams []UpstreamConfig, ownerIndex int) error {
@@ -325,6 +377,9 @@ func validateVisionLayerConfig(upstreams []UpstreamConfig, ownerIndex int) error
 		return fmt.Errorf("图片理解层所属渠道索引无效: %d", ownerIndex)
 	}
 	owner := &upstreams[ownerIndex]
+	if owner.ExcludeFromConversation && !owner.VisionCapable {
+		return fmt.Errorf("不参与对话的渠道必须标记为支持图片理解")
+	}
 	if owner.VisionCapable && owner.VisionLayerEnabled {
 		return fmt.Errorf("渠道不能同时标记为支持图片理解并启用图片理解层")
 	}
@@ -345,6 +400,9 @@ func validateVisionLayerConfig(upstreams []UpstreamConfig, ownerIndex int) error
 		}
 		if !target.VisionCapable {
 			return fmt.Errorf("所选渠道 %q 未标记为支持图片理解", target.Name)
+		}
+		if !target.ExcludeFromConversation && target.PoolID != owner.PoolID {
+			return fmt.Errorf("图片理解渠道必须位于当前子池或公用纯图片理解池")
 		}
 		return nil
 	}
@@ -406,6 +464,14 @@ func removeFromSlice(upstreams []UpstreamConfig, index int, label string) ([]Ups
 		return upstreams, nil, fmt.Errorf("无效的%s上游索引: %d（已删除）", label, index)
 	}
 	removed := upstreams[index]
+	for ownerIndex := range upstreams {
+		if ownerIndex == index || !upstreams[ownerIndex].VisionLayerEnabled {
+			continue
+		}
+		if strings.TrimSpace(upstreams[ownerIndex].VisionLayerChannelID) == removed.ID {
+			return upstreams, nil, fmt.Errorf("渠道 %q 正被 %q 的图片理解层使用，无法删除", removed.Name, upstreams[ownerIndex].Name)
+		}
+	}
 	upstreams[index] = UpstreamConfig{
 		ID:       removed.ID,
 		Name:     removed.Name,

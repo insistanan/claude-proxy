@@ -17,7 +17,8 @@ import (
 
 // UpstreamConfig 上游配置
 type UpstreamConfig struct {
-	ID                 string              `json:"id,omitempty"` // 稳定渠道标识，避免数组位置变化影响关联状态
+	ID                 string              `json:"id,omitempty"`     // 稳定渠道标识，避免数组位置变化影响关联状态
+	PoolID             string              `json:"poolId,omitempty"` // 所属对话子池；空值迁移到默认子池
 	BaseURL            string              `json:"baseUrl"`
 	BaseURLs           []string            `json:"baseUrls,omitempty"` // 多 BaseURL 支持（failover 模式）
 	APIKeys            []string            `json:"apiKeys"`
@@ -30,18 +31,19 @@ type UpstreamConfig struct {
 	ModelMapping       map[string][]string `json:"modelMapping,omitempty"` // 模型重定向：源模型 -> 目标模型列表（支持多个备选）
 	DefaultModel       string              `json:"defaultModel,omitempty"`
 	// 多渠道调度相关字段
-	Priority             int        `json:"priority"`                       // 渠道优先级（数字越小优先级越高，默认按索引）
-	Status               string     `json:"status"`                         // 渠道状态：active（正常）, suspended（暂停）, disabled（备用池）
-	PromotionUntil       *time.Time `json:"promotionUntil,omitempty"`       // 促销期截止时间，在此期间内优先使用此渠道（忽略trace亲和）
-	PromotionCount       int        `json:"promotionCount,omitempty"`       // 促销期剩余请求次数，每次成功请求递减，到0自动清除
-	LowQuality           bool       `json:"lowQuality,omitempty"`           // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
-	VisionCapable        bool       `json:"visionCapable,omitempty"`        // 渠道是否原生支持图片理解，可直接接收图片，也可被图片理解层调用
-	VisionLayerEnabled   bool       `json:"visionLayerEnabled,omitempty"`   // 是否为不支持图片的当前渠道启用图片理解层
-	VisionLayerChannelID string     `json:"visionLayerChannelId,omitempty"` // 图片理解层指定调用的稳定渠道标识
-	VisionLayerModel     string     `json:"visionLayerModel,omitempty"`     // 可选：覆盖透传给图片理解渠道的模型名
-	Temporary            bool       `json:"temporary,omitempty"`            // 临时渠道：到期后自动移入弃用池
-	TemporaryUntil       *time.Time `json:"temporaryUntil,omitempty"`       // 临时渠道到期时间
-	DeprecatedAt         *time.Time `json:"deprecatedAt,omitempty"`         // 移入弃用池时间
+	Priority                int        `json:"priority"`                          // 渠道优先级（数字越小优先级越高，默认按索引）
+	Status                  string     `json:"status"`                            // 渠道状态：active（正常）, suspended（暂停）, disabled（备用池）
+	PromotionUntil          *time.Time `json:"promotionUntil,omitempty"`          // 促销期截止时间，在此期间内优先使用此渠道（忽略trace亲和）
+	PromotionCount          int        `json:"promotionCount,omitempty"`          // 促销期剩余请求次数，每次成功请求递减，到0自动清除
+	LowQuality              bool       `json:"lowQuality,omitempty"`              // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
+	VisionCapable           bool       `json:"visionCapable"`                     // 渠道是否原生支持图片理解，可直接接收图片，也可被图片理解层调用
+	ExcludeFromConversation bool       `json:"excludeFromConversation,omitempty"` // 不参与常规对话调度，仅可作为图片理解渠道使用
+	VisionLayerEnabled      bool       `json:"visionLayerEnabled,omitempty"`      // 是否为不支持图片的当前渠道启用图片理解层
+	VisionLayerChannelID    string     `json:"visionLayerChannelId,omitempty"`    // 图片理解层指定调用的稳定渠道标识
+	VisionLayerModel        string     `json:"visionLayerModel,omitempty"`        // 可选：覆盖透传给图片理解渠道的模型名
+	Temporary               bool       `json:"temporary,omitempty"`               // 临时渠道：到期后自动移入弃用池
+	TemporaryUntil          *time.Time `json:"temporaryUntil,omitempty"`          // 临时渠道到期时间
+	DeprecatedAt            *time.Time `json:"deprecatedAt,omitempty"`            // 移入弃用池时间
 	// Gemini 特定配置
 	InjectDummyThoughtSignature bool `json:"injectDummyThoughtSignature,omitempty"` // 给空 thought_signature 注入 dummy 值（兼容 x666.me 等要求必须有该字段的 API）
 	StripThoughtSignature       bool `json:"stripThoughtSignature,omitempty"`       // 移除 thought_signature 字段（兼容旧版 Gemini API）
@@ -95,6 +97,7 @@ func (u *UpstreamConfig) UnmarshalJSON(data []byte) error {
 // UpstreamUpdate 用于部分更新 UpstreamConfig
 type UpstreamUpdate struct {
 	Name               *string             `json:"name"`
+	PoolID             *string             `json:"poolId"`
 	ServiceType        *string             `json:"serviceType"`
 	BaseURL            *string             `json:"baseUrl"`
 	BaseURLs           []string            `json:"baseUrls"`
@@ -105,18 +108,19 @@ type UpstreamUpdate struct {
 	ModelMapping       map[string][]string `json:"modelMapping"` // 支持一对多映射
 	DefaultModel       *string             `json:"defaultModel"`
 	// 多渠道调度相关字段
-	Priority             *int       `json:"priority"`
-	Status               *string    `json:"status"`
-	PromotionUntil       *time.Time `json:"promotionUntil"`
-	PromotionCount       *int       `json:"promotionCount"`
-	LowQuality           *bool      `json:"lowQuality"`
-	VisionCapable        *bool      `json:"visionCapable"`
-	VisionLayerEnabled   *bool      `json:"visionLayerEnabled"`
-	VisionLayerChannelID *string    `json:"visionLayerChannelId"`
-	VisionLayerModel     *string    `json:"visionLayerModel"`
-	Temporary            *bool      `json:"temporary"`
-	TemporaryUntil       *time.Time `json:"temporaryUntil"`
-	DeprecatedAt         *time.Time `json:"deprecatedAt"`
+	Priority                *int       `json:"priority"`
+	Status                  *string    `json:"status"`
+	PromotionUntil          *time.Time `json:"promotionUntil"`
+	PromotionCount          *int       `json:"promotionCount"`
+	LowQuality              *bool      `json:"lowQuality"`
+	VisionCapable           *bool      `json:"visionCapable"`
+	ExcludeFromConversation *bool      `json:"excludeFromConversation"`
+	VisionLayerEnabled      *bool      `json:"visionLayerEnabled"`
+	VisionLayerChannelID    *string    `json:"visionLayerChannelId"`
+	VisionLayerModel        *string    `json:"visionLayerModel"`
+	Temporary               *bool      `json:"temporary"`
+	TemporaryUntil          *time.Time `json:"temporaryUntil"`
+	DeprecatedAt            *time.Time `json:"deprecatedAt"`
 	// Gemini 特定配置
 	InjectDummyThoughtSignature *bool `json:"injectDummyThoughtSignature"`
 	StripThoughtSignature       *bool `json:"stripThoughtSignature"`
@@ -202,24 +206,29 @@ func decodeModelMapping(raw json.RawMessage) (map[string][]string, error) {
 // Config 配置结构
 type Config struct {
 	Upstream        []UpstreamConfig `json:"upstream"`
+	MessagePools    []ChannelPool    `json:"messagePools,omitempty"`
 	CurrentUpstream int              `json:"currentUpstream,omitempty"` // 已废弃：旧格式兼容用
 	LoadBalance     string           `json:"loadBalance"`               // 当前仅支持 failover
 
 	// Responses 接口专用配置（独立于 /v1/messages）
 	ResponsesUpstream        []UpstreamConfig `json:"responsesUpstream"`
+	ResponsesPools           []ChannelPool    `json:"responsesPools,omitempty"`
 	CurrentResponsesUpstream int              `json:"currentResponsesUpstream,omitempty"` // 已废弃：旧格式兼容用
 	ResponsesLoadBalance     string           `json:"responsesLoadBalance"`
 
 	// Gemini 接口专用配置（独立于 /v1/messages 和 /v1/responses）
 	GeminiUpstream    []UpstreamConfig `json:"geminiUpstream"`
+	GeminiPools       []ChannelPool    `json:"geminiPools,omitempty"`
 	GeminiLoadBalance string           `json:"geminiLoadBalance"`
 
 	// Chat Completions 接口专用配置（独立于 Claude/Responses/Gemini）
 	ChatUpstream    []UpstreamConfig `json:"chatUpstream"`
+	ChatPools       []ChannelPool    `json:"chatPools,omitempty"`
 	ChatLoadBalance string           `json:"chatLoadBalance"`
 
 	// Images 接口专用配置（OpenAI Images API，独立渠道池）
 	ImagesUpstream    []UpstreamConfig `json:"imagesUpstream"`
+	ImagesPools       []ChannelPool    `json:"imagesPools,omitempty"`
 	ImagesLoadBalance string           `json:"imagesLoadBalance"`
 
 	// Fuzzy 模式：启用时模糊处理错误，所有非 2xx 错误都尝试 failover
@@ -296,6 +305,11 @@ func (cm *ConfigManager) GetConfig() Config {
 			cloned.ImagesUpstream[i] = *cm.config.ImagesUpstream[i].Clone()
 		}
 	}
+	cloned.MessagePools = append([]ChannelPool(nil), cm.config.MessagePools...)
+	cloned.ResponsesPools = append([]ChannelPool(nil), cm.config.ResponsesPools...)
+	cloned.GeminiPools = append([]ChannelPool(nil), cm.config.GeminiPools...)
+	cloned.ChatPools = append([]ChannelPool(nil), cm.config.ChatPools...)
+	cloned.ImagesPools = append([]ChannelPool(nil), cm.config.ImagesPools...)
 
 	return cloned
 }
