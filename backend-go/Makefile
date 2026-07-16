@@ -61,13 +61,13 @@ dev-with-env:
 	@ENV_MODE=development air
 
 # 构建生产版本
-build:
+build: copy-frontend
 	@echo "$(GREEN)📦 构建生产版本...$(NC)"
 	@CGO_ENABLED=0 go build -ldflags="$(LDFLAGS) -s -w" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
 	@echo "$(GREEN)✅ 构建完成: $(BUILD_DIR)/$(BINARY_NAME)$(NC)"
 
 # 构建当前平台版本
-build-local:
+build-local: copy-frontend
 	@echo "$(GREEN)📦 构建本地版本...$(NC)"
 	@go build -o $(BINARY_NAME) $(MAIN_PATH)
 	@echo "$(GREEN)✅ 构建完成: ./$(BINARY_NAME)$(NC)"

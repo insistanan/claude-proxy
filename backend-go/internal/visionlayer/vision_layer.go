@@ -160,12 +160,12 @@ func PrepareRequest(
 	if visionChannelID == "" {
 		return fmt.Errorf("渠道 %q 已启用图片理解层，但未选择图片理解渠道", targetUpstream.Name)
 	}
-	visionModel := strings.TrimSpace(targetUpstream.VisionLayerModel)
-	if visionModel == "" {
-		visionModel = strings.TrimSpace(requestedModel)
+	visionModelInput := strings.TrimSpace(targetUpstream.VisionLayerModel)
+	if visionModelInput == "" {
+		visionModelInput = strings.TrimSpace(requestedModel)
 	}
-	if visionModel == "" {
-		return fmt.Errorf("渠道 %q 未提供可透传给图片理解渠道的模型名", targetUpstream.Name)
+	if visionModelInput == "" {
+		return fmt.Errorf("渠道 %q 未提供可供图片理解渠道解析的模型名", targetUpstream.Name)
 	}
 
 	conversationID = strings.TrimSpace(conversationID)
@@ -188,7 +188,7 @@ func PrepareRequest(
 			continue
 		}
 
-		cacheKey := buildImageCacheKey(fingerprint, kind, visionChannelID, visionModel)
+		cacheKey := buildImageCacheKey(fingerprint, kind, visionChannelID, visionModelInput)
 		result, ok, err := loadCache(channelScheduler, conversationID, cacheKey)
 		if err != nil {
 			return wrapRequestError(http.StatusInternalServerError, "VISION_LAYER_CACHE_ERROR", fmt.Errorf("读取图片理解缓存失败: %w", err))
@@ -225,7 +225,7 @@ func PrepareRequest(
 			end = len(pendingImages)
 		}
 		batch := pendingImages[start:end]
-		batchResult, err := describeImages(c, envCfg, cfgManager, channelScheduler, kind, targetUpstream.PoolID, visionChannelID, visionModel, batch)
+		batchResult, err := describeImages(c, envCfg, cfgManager, channelScheduler, kind, targetUpstream.PoolID, visionChannelID, visionModelInput, batch)
 		if err != nil {
 			err = wrapRequestError(http.StatusBadGateway, "VISION_LAYER_UPSTREAM_ERROR", err)
 			failPendingAnalyses(pendingImages, err)
@@ -282,7 +282,7 @@ func describeImages(
 	kind scheduler.ChannelKind,
 	targetPoolID string,
 	visionChannelID string,
-	visionModel string,
+	visionModelInput string,
 	images []visionImage,
 ) (map[string]string, error) {
 	selection, err := channelScheduler.SelectVisionChannel(c.Request.Context(), kind, visionChannelID, targetPoolID)
@@ -300,6 +300,15 @@ func describeImages(
 	if provider == nil {
 		return nil, fmt.Errorf("图片理解渠道 %q 的服务类型 %q 不受支持", upstream.Name, upstream.ServiceType)
 	}
+	// 图片理解模型必须按图片理解渠道自身的配置解析。文字渠道的协议、模型映射
+	// 和默认模型不应影响这里；解析后清空映射，防止 Provider 再次重定向模型。
+	visionModel := config.ResolveUpstreamModel(visionModelInput, upstream)
+	if visionModel == "" {
+		return nil, fmt.Errorf("图片理解渠道 %q 未能解析可用模型", upstream.Name)
+	}
+	visionUpstream := upstream.Clone()
+	visionUpstream.DefaultModel = visionModel
+	visionUpstream.ModelMapping = nil
 
 	visionBody, err := buildVisionRequest(visionModel, images)
 	if err != nil {
@@ -325,7 +334,7 @@ func describeImages(
 			}
 
 			attemptStart := time.Now()
-			upstreamCopy := upstream.Clone()
+			upstreamCopy := visionUpstream.Clone()
 			upstreamCopy.BaseURL = baseURL
 			request, requestErr := buildProviderRequest(c, provider, upstreamCopy, apiKey, visionBody, images)
 			if requestErr != nil {
@@ -367,7 +376,8 @@ func describeImages(
 				channelScheduler.RecordRequestFinalizeFailure(baseURL, apiKey, metricsRequestID, kind)
 				channelScheduler.RecordRequestEnd(baseURL, apiKey, kind)
 				channelScheduler.MarkURLFailure(kind, selection.ChannelIndex, baseURL)
-				lastErr = fmt.Errorf("图片理解渠道 %q 返回 HTTP %d: %s", upstream.Name, response.StatusCode, truncateErrorBody(body))
+				lastErr = fmt.Errorf("图片理解渠道 %q 返回 HTTP %d（协议=%s，模型=%s，URL=%s）: %s",
+					upstream.Name, response.StatusCode, upstream.ServiceType, visionModel, baseURL, truncateErrorBody(body))
 				retry := shouldRetryVisionAttempt(response.StatusCode)
 				if retry {
 					cfgManager.MarkKeyAsFailed(apiKey, "VisionLayer")

@@ -358,6 +358,24 @@ func cleanJsonSchema(schema interface{}) interface{} {
 
 // ConvertToClaudeResponse 转换为 Claude 响应
 func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderResponse) (*types.ClaudeResponse, error) {
+	// 少数 OpenAI 兼容网关会接受 Chat Completions 请求却返回 Responses
+	// 结构。先识别这类成功响应，避免图片理解层因没有 choices 而丢失结果。
+	var responseShape struct {
+		Choices json.RawMessage `json:"choices"`
+		Output  json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(providerResp.Body, &responseShape); err != nil {
+		return nil, err
+	}
+	if len(responseShape.Output) > 0 && string(responseShape.Output) != "null" &&
+		(len(responseShape.Choices) == 0 || string(responseShape.Choices) == "null" || string(responseShape.Choices) == "[]") {
+		var responsesResp types.ResponsesResponse
+		if err := json.Unmarshal(providerResp.Body, &responsesResp); err != nil {
+			return nil, err
+		}
+		return responsesResponseToClaude(&responsesResp), nil
+	}
+
 	var openaiResp types.OpenAIResponse
 	if err := json.Unmarshal(providerResp.Body, &openaiResp); err != nil {
 		return nil, err
