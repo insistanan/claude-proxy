@@ -27,12 +27,34 @@ func ObserveConversationPrompts(
 	imageFingerprints []string,
 	stream bool,
 ) string {
+	return ObserveConversationRequest(
+		channelScheduler,
+		kind,
+		conversation.Identity{ExplicitID: conversationID, Source: "legacy_explicit"},
+		conversation.Transcript{},
+		model,
+		prompts,
+		imageFingerprints,
+		stream,
+	)
+}
+
+func ObserveConversationRequest(
+	channelScheduler *scheduler.ChannelScheduler,
+	kind scheduler.ChannelKind,
+	identity conversation.Identity,
+	transcript conversation.Transcript,
+	model string,
+	prompts []string,
+	imageFingerprints []string,
+	stream bool,
+) string {
 	if channelScheduler == nil {
-		return conversationID
+		return identity.ExplicitID
 	}
 	registry := channelScheduler.GetConversationRegistry()
 	if registry == nil {
-		return conversationID
+		return identity.ExplicitID
 	}
 
 	firstPrompt := ""
@@ -43,13 +65,15 @@ func ObserveConversationPrompts(
 		APIKind:           string(kind),
 		Model:             model,
 		Stream:            stream,
-		ConversationID:    conversationID,
+		ConversationID:    identity.ExplicitID,
+		Identity:          identity,
+		Transcript:        transcript,
 		FirstPrompt:       firstPrompt,
 		Prompts:           prompts,
 		ImageFingerprints: imageFingerprints,
 	})
 	if record == nil {
-		return conversationID
+		return identity.ExplicitID
 	}
 	return record.ID
 }

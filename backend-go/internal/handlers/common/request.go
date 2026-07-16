@@ -239,86 +239,7 @@ func removeEmptySignaturesInMessages(data map[string]interface{}) (bool, int) {
 // ExtractConversationID 从请求中提取明确的对话标识。
 // 无明确标识时返回空，调用方会创建独立会话，避免错误合并不同 agent 的对话。
 func ExtractConversationID(c *gin.Context, bodyBytes []byte) string {
-	if c != nil {
-		for _, header := range []string{"X-Conversation-Id", "Conversation_id", "Conversation-Id", "X-Claude-Code-Session-Id"} {
-			if value := strings.TrimSpace(c.GetHeader(header)); value != "" {
-				return value
-			}
-		}
-		if value := strings.TrimSpace(c.Query("conversation_id")); value != "" {
-			return value
-		}
-		if metadataID := extractCodexThreadID(c.GetHeader("X-Codex-Turn-Metadata")); metadataID != "" {
-			return metadataID
-		}
-		for _, header := range []string{"Session_id", "Session-Id", "X-Session-Id"} {
-			if value := strings.TrimSpace(c.GetHeader(header)); value != "" {
-				return value
-			}
-		}
-	}
-	var req struct {
-		PreviousResponseID string                 `json:"previous_response_id"`
-		ConversationID     string                 `json:"conversation_id"`
-		SessionID          string                 `json:"session_id"`
-		ThreadID           string                 `json:"thread_id"`
-		Metadata           map[string]interface{} `json:"metadata"`
-	}
-	if err := json.Unmarshal(bodyBytes, &req); err == nil {
-		for _, value := range []string{req.ConversationID, req.SessionID, req.ThreadID} {
-			if value = strings.TrimSpace(value); value != "" {
-				return value
-			}
-		}
-		if metadataID := extractMetadataConversationID(req.Metadata); metadataID != "" {
-			return metadataID
-		}
-		if strings.TrimSpace(req.PreviousResponseID) != "" {
-			return strings.TrimSpace(req.PreviousResponseID)
-		}
-	}
-
-	return ""
-}
-
-func extractMetadataConversationID(metadata map[string]interface{}) string {
-	for _, key := range []string{"conversation_id", "conversationId", "session_id", "sessionId", "thread_id", "threadId"} {
-		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-
-	// Claude Code 的 metadata.user_id 是 JSON 时，内部的 session_id 才是会话标识。
-	// 普通 user_id 仍是用户身份，不能用于会话合并。
-	userID, _ := metadata["user_id"].(string)
-	if !strings.HasPrefix(strings.TrimSpace(userID), "{") {
-		return ""
-	}
-	var payload struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal([]byte(userID), &payload); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(payload.SessionID)
-}
-
-func extractCodexThreadID(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	var metadata struct {
-		ThreadID  string `json:"thread_id"`
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal([]byte(value), &metadata); err != nil {
-		return ""
-	}
-	if threadID := strings.TrimSpace(metadata.ThreadID); threadID != "" {
-		return threadID
-	}
-	return strings.TrimSpace(metadata.SessionID)
+	return ResolveConversationIdentity(c, bodyBytes).ExplicitID
 }
 
 // ExtractRequestedChannelIndex 从请求体 metadata.channel_index 中提取显式指定的渠道索引。
@@ -680,7 +601,8 @@ func isAutoInjectedAgentPrompt(prompt string) bool {
 	}
 	// 环境上下文注入
 	if strings.HasPrefix(lower, "<environment_context>") ||
-		strings.HasPrefix(lower, "<user_instructions>") {
+		strings.HasPrefix(lower, "<user_instructions>") ||
+		strings.HasPrefix(lower, "<agent_transcripts>") {
 		return true
 	}
 	// 续聊压缩摘要（codex）

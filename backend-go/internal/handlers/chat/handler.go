@@ -56,9 +56,17 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		}
 
 		hasImage := utils.DetectImageContent(bodyBytes)
-		userID := common.ExtractConversationID(c, bodyBytes)
 		prompts := common.ExtractPromptsFromOpenAI(chatReq.Messages)
-		userID = common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindChat, userID, chatReq.Model, prompts, utils.ExtractImageFingerprints(bodyBytes), chatReq.Stream)
+		userID := common.ObserveConversationRequest(
+			channelScheduler,
+			scheduler.ChannelKindChat,
+			common.ResolveConversationIdentity(c, bodyBytes),
+			common.BuildConversationTranscript(string(scheduler.ChannelKindChat), bodyBytes),
+			chatReq.Model,
+			prompts,
+			utils.ExtractImageFingerprints(bodyBytes),
+			chatReq.Stream,
+		)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindChat)
 
 		common.LogOriginalRequest(c, bodyBytes, envCfg, "Chat")

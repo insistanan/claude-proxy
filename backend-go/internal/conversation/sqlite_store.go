@@ -46,6 +46,27 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS conversation_lineages (
+		conversation_id TEXT PRIMARY KEY,
+		client_family TEXT NOT NULL DEFAULT 'unknown',
+		identity_source TEXT NOT NULL DEFAULT '',
+		scope_hash TEXT NOT NULL DEFAULT '',
+		lane_hash TEXT NOT NULL DEFAULT '',
+		frontier_hash TEXT NOT NULL DEFAULT '',
+		frontier_depth INTEGER NOT NULL DEFAULT 0,
+		parent_conversation_id TEXT NOT NULL DEFAULT '',
+		updated_at INTEGER NOT NULL DEFAULT 0,
+		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+	)`)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversation_lineages_frontier
+		ON conversation_lineages(client_family, frontier_depth, frontier_hash)`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	// 旧版全局图片缓存不绑定对话，无法满足删除对话即失效的语义。
 	if _, err = db.Exec(`DROP TABLE IF EXISTS image_understandings`); err != nil {
 		_ = db.Close()
@@ -108,7 +129,12 @@ func (s *SQLiteStore) Upsert(rec *Record) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO conversations (id, identity_key, api_kind, name, last_model, last_resolved_model, first_prompt, prompts_json, stream,
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(`INSERT INTO conversations (id, identity_key, api_kind, name, last_model, last_resolved_model, first_prompt, prompts_json, stream,
 		first_seen_at, last_seen_at, last_request_at, last_completed_at, request_count, error_count, last_error, route_override_json, last_resolved_json, image_fingerprints_json)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET name=excluded.name, last_model=excluded.last_model, last_resolved_model=excluded.last_resolved_model,
@@ -119,6 +145,64 @@ func (s *SQLiteStore) Upsert(rec *Record) error {
 		rec.ID, rec.identityKey, rec.APIKind, rec.Name, rec.LastModel, rec.LastResolvedModel, rec.FirstPrompt, string(prompts), boolToInt(rec.Stream),
 		rec.FirstSeenAt.Unix(), rec.LastSeenAt.Unix(), rec.LastRequestAt.Unix(), rec.LastCompletedAt.Unix(), rec.RequestCount, rec.ErrorCount,
 		rec.LastError, route, resolved, string(fingerprints))
+	if err != nil {
+		return err
+	}
+	if err := upsertLineage(tx, rec.ID, rec.lineage); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) LoadLineages() (map[string]lineageState, error) {
+	rows, err := s.db.Query(`SELECT conversation_id, client_family, identity_source, scope_hash, lane_hash,
+		frontier_hash, frontier_depth, parent_conversation_id, updated_at FROM conversation_lineages`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]lineageState)
+	for rows.Next() {
+		var conversationID string
+		var lineage lineageState
+		var updatedAt int64
+		if err := rows.Scan(&conversationID, &lineage.ClientFamily, &lineage.IdentitySource, &lineage.ScopeHash,
+			&lineage.LaneHash, &lineage.FrontierHash, &lineage.FrontierDepth, &lineage.ParentConversationID, &updatedAt); err != nil {
+			return nil, err
+		}
+		lineage.UpdatedAt = unixTime(updatedAt)
+		result[conversationID] = lineage
+	}
+	return result, rows.Err()
+}
+
+func (s *SQLiteStore) UpsertLineage(conversationID string, lineage lineageState) error {
+	return upsertLineage(s.db, conversationID, lineage)
+}
+
+type sqlExecer interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+func upsertLineage(execer sqlExecer, conversationID string, lineage lineageState) error {
+	if strings.TrimSpace(conversationID) == "" {
+		return nil
+	}
+	_, err := execer.Exec(`INSERT INTO conversation_lineages (
+		conversation_id, client_family, identity_source, scope_hash, lane_hash, frontier_hash,
+		frontier_depth, parent_conversation_id, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(conversation_id) DO UPDATE SET
+		client_family=excluded.client_family,
+		identity_source=excluded.identity_source,
+		scope_hash=excluded.scope_hash,
+		lane_hash=excluded.lane_hash,
+		frontier_hash=excluded.frontier_hash,
+		frontier_depth=excluded.frontier_depth,
+		parent_conversation_id=excluded.parent_conversation_id,
+		updated_at=excluded.updated_at`,
+		conversationID, normalizeClientFamily(lineage.ClientFamily), lineage.IdentitySource, lineage.ScopeHash,
+		lineage.LaneHash, lineage.FrontierHash, lineage.FrontierDepth, lineage.ParentConversationID, lineage.UpdatedAt.Unix())
 	return err
 }
 
@@ -128,10 +212,16 @@ func (s *SQLiteStore) Delete(id string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.Exec("DELETE FROM conversation_lineages WHERE conversation_id = ?", id); err != nil {
+		return err
+	}
 	if _, err = tx.Exec("DELETE FROM conversation_image_understandings WHERE conversation_id = ?", id); err != nil {
 		return err
 	}
 	if _, err = tx.Exec("DELETE FROM conversation_aliases WHERE conversation_id = ?", id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("UPDATE conversation_lineages SET parent_conversation_id = '' WHERE parent_conversation_id = ?", id); err != nil {
 		return err
 	}
 	if _, err = tx.Exec("DELETE FROM conversations WHERE id = ?", id); err != nil {
@@ -147,6 +237,7 @@ func (s *SQLiteStore) DeleteAll() error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, table := range []string{
+		"conversation_lineages",
 		"conversation_image_understandings",
 		"conversation_aliases",
 		"conversations",

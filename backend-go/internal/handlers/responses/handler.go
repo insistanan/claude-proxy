@@ -66,7 +66,16 @@ func Handler(
 
 		// 提取对话标识
 		prompts := common.ExtractPromptsFromResponsesInput(responsesReq.Input)
-		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindResponses, common.ExtractConversationID(c, bodyBytes), responsesReq.Model, prompts, utils.ExtractImageFingerprints(bodyBytes), responsesReq.Stream)
+		userID := common.ObserveConversationRequest(
+			channelScheduler,
+			scheduler.ChannelKindResponses,
+			common.ResolveConversationIdentity(c, bodyBytes),
+			common.BuildConversationTranscript(string(scheduler.ChannelKindResponses), bodyBytes),
+			responsesReq.Model,
+			prompts,
+			utils.ExtractImageFingerprints(bodyBytes),
+			responsesReq.Stream,
+		)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindResponses)
 
 		// 记录原始请求信息（仅在入口处记录一次）

@@ -21,6 +21,8 @@ type Observation struct {
 	Model             string
 	Stream            bool
 	ConversationID    string
+	Identity          Identity
+	Transcript        Transcript
 	FirstPrompt       string
 	Prompts           []string
 	ImageFingerprints []string
@@ -41,28 +43,32 @@ type ChannelRef struct {
 }
 
 type Record struct {
-	ID                string         `json:"id"`
-	Name              string         `json:"name,omitempty"`
-	APIKind           string         `json:"apiKind"`
-	LastModel         string         `json:"lastModel,omitempty"`
-	LastResolvedModel string         `json:"lastResolvedModel,omitempty"`
-	FirstPrompt       string         `json:"firstPrompt,omitempty"`
-	Prompts           []string       `json:"prompts,omitempty"`
-	Stream            bool           `json:"stream"`
-	IsSending         bool           `json:"isSending"`
-	ActiveRequests    int64          `json:"activeRequests,omitempty"`
-	FirstSeenAt       time.Time      `json:"firstSeenAt"`
-	LastSeenAt        time.Time      `json:"lastSeenAt"`
-	LastRequestAt     time.Time      `json:"lastRequestAt"`
-	LastCompletedAt   time.Time      `json:"lastCompletedAt,omitempty"`
-	RequestCount      int64          `json:"requestCount"`
-	ErrorCount        int64          `json:"errorCount"`
-	LastError         string         `json:"lastError,omitempty"`
-	RouteOverride     *RouteOverride `json:"routeOverride,omitempty"`
-	LastResolved      *ChannelRef    `json:"lastResolved,omitempty"`
-	ImageFingerprints []string       `json:"imageFingerprints,omitempty"`
+	ID                   string         `json:"id"`
+	Name                 string         `json:"name,omitempty"`
+	APIKind              string         `json:"apiKind"`
+	LastModel            string         `json:"lastModel,omitempty"`
+	LastResolvedModel    string         `json:"lastResolvedModel,omitempty"`
+	FirstPrompt          string         `json:"firstPrompt,omitempty"`
+	Prompts              []string       `json:"prompts,omitempty"`
+	Stream               bool           `json:"stream"`
+	IsSending            bool           `json:"isSending"`
+	ActiveRequests       int64          `json:"activeRequests,omitempty"`
+	FirstSeenAt          time.Time      `json:"firstSeenAt"`
+	LastSeenAt           time.Time      `json:"lastSeenAt"`
+	LastRequestAt        time.Time      `json:"lastRequestAt"`
+	LastCompletedAt      time.Time      `json:"lastCompletedAt,omitempty"`
+	RequestCount         int64          `json:"requestCount"`
+	ErrorCount           int64          `json:"errorCount"`
+	LastError            string         `json:"lastError,omitempty"`
+	RouteOverride        *RouteOverride `json:"routeOverride,omitempty"`
+	LastResolved         *ChannelRef    `json:"lastResolved,omitempty"`
+	ImageFingerprints    []string       `json:"imageFingerprints,omitempty"`
+	ClientFamily         string         `json:"clientFamily,omitempty"`
+	IdentitySource       string         `json:"identitySource,omitempty"`
+	ParentConversationID string         `json:"parentConversationId,omitempty"`
 
 	identityKey string
+	lineage     lineageState
 }
 
 func (r *Record) RouteOverrideString() string {
@@ -80,6 +86,7 @@ type Registry struct {
 	mu            sync.RWMutex
 	records       map[string]*Record
 	identityIndex map[string]string
+	frontierIndex map[string]map[string]struct{}
 	maxIdle       time.Duration
 	stopCh        chan struct{}
 	doneCh        chan struct{}
@@ -121,6 +128,22 @@ func NewPersistentRegistry(dbPath string) (*Registry, error) {
 			r.identityIndex[alias] = recordID
 		}
 	}
+	lineages, err := store.LoadLineages()
+	if err != nil {
+		r.Stop()
+		return nil, err
+	}
+	for recordID, lineage := range lineages {
+		rec := r.records[recordID]
+		if rec == nil {
+			continue
+		}
+		rec.lineage = lineage
+		rec.ClientFamily = lineage.ClientFamily
+		rec.IdentitySource = lineage.IdentitySource
+		rec.ParentConversationID = lineage.ParentConversationID
+		r.indexLineageLocked(rec)
+	}
 	r.cleanup()
 	return r, nil
 }
@@ -129,6 +152,7 @@ func newRegistry(store *SQLiteStore) *Registry {
 	r := &Registry{
 		records:       make(map[string]*Record),
 		identityIndex: make(map[string]string),
+		frontierIndex: make(map[string]map[string]struct{}),
 		maxIdle:       defaultMaxIdle,
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
@@ -152,17 +176,15 @@ func (r *Registry) Stop() {
 
 func (r *Registry) ObserveRequest(obs Observation) *Record {
 	now := time.Now()
-	identityKey := buildIdentityKey(obs)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	recordID, ok := r.identityIndex[identityKey]
-	var rec *Record
-	if ok {
-		rec = r.records[recordID]
-	}
+	rec, identityKey, parentID, resolution := r.resolveObservationLocked(obs)
 	if rec == nil {
+		if identityKey == "" {
+			identityKey = buildAnonymousIdentityKey(obs.APIKind)
+		}
 		rec = &Record{
 			ID:            generateID("conv"),
 			APIKind:       firstNonEmpty(obs.APIKind, "unknown"),
@@ -175,10 +197,13 @@ func (r *Registry) ObserveRequest(obs Observation) *Record {
 			LastRequestAt: now,
 			identityKey:   identityKey,
 		}
+		rec.ParentConversationID = parentID
 		appendPrompts(rec, promptsFromObservation(obs)...)
 		r.records[rec.ID] = rec
 		r.identityIndex[identityKey] = rec.ID
 	}
+	r.unindexLineageLocked(rec)
+	r.applyObservationLineageLocked(rec, obs, resolution, parentID, now)
 
 	rec.APIKind = firstNonEmpty(obs.APIKind, rec.APIKind)
 	rec.LastModel = firstNonEmpty(obs.Model, rec.LastModel)
@@ -394,7 +419,9 @@ func (r *Registry) Delete(recordID string) error {
 			return err
 		}
 	}
+	r.clearParentReferencesLocked(recordID)
 	delete(r.records, recordID)
+	r.unindexLineageLocked(rec)
 	r.removeIdentityKeysLocked(recordID)
 	return nil
 }
@@ -410,6 +437,7 @@ func (r *Registry) DeleteAll() error {
 	}
 	r.records = make(map[string]*Record)
 	r.identityIndex = make(map[string]string)
+	r.frontierIndex = make(map[string]map[string]struct{})
 	return nil
 }
 
@@ -510,11 +538,22 @@ func (r *Registry) cleanup() {
 			continue
 		}
 		delete(r.records, id)
+		r.unindexLineageLocked(rec)
 		r.removeIdentityKeysLocked(id)
 		if r.store != nil {
 			if err := r.store.Delete(id); err != nil {
 				log.Printf("[Conversation] 清理过期对话失败: %v", err)
 			}
+		}
+		r.clearParentReferencesLocked(id)
+	}
+}
+
+func (r *Registry) clearParentReferencesLocked(parentID string) {
+	for _, child := range r.records {
+		if child != nil && child.lineage.ParentConversationID == parentID {
+			child.lineage.ParentConversationID = ""
+			child.ParentConversationID = ""
 		}
 	}
 }
@@ -528,16 +567,32 @@ func (r *Registry) removeIdentityKeysLocked(recordID string) {
 }
 
 func buildIdentityKey(obs Observation) string {
-	convID := strings.TrimSpace(obs.ConversationID)
-	if convID != "" {
-		return explicitIdentityKey(obs.APIKind, convID)
+	if key := buildExplicitIdentityKey(obs); key != "" {
+		return key
 	}
+	return buildAnonymousIdentityKey(obs.APIKind)
+}
 
-	// 无可靠会话标识时不能依据用户、模型或首条提示词猜测，
-	// 否则不同 agent 对话会被错误合并。
-	token := generateID("anon")
-	kind := firstNonEmpty(strings.TrimSpace(obs.APIKind), "unknown")
-	return strings.ToLower(strings.Join([]string{kind, token}, "|"))
+func buildExplicitIdentityKey(obs Observation) string {
+	value := strings.TrimSpace(obs.Identity.ExplicitID)
+	if value == "" {
+		value = strings.TrimSpace(obs.ConversationID)
+	}
+	agentID := strings.TrimSpace(obs.Identity.AgentID)
+	if value == "" && agentID != "" {
+		value = "agent:" + agentID
+	} else if value != "" && agentID != "" {
+		value += "|agent:" + agentID
+	}
+	if value == "" {
+		return ""
+	}
+	return explicitIdentityKey(obs.APIKind, value)
+}
+
+func buildAnonymousIdentityKey(apiKind string) string {
+	kind := firstNonEmpty(strings.TrimSpace(apiKind), "unknown")
+	return strings.ToLower(strings.Join([]string{kind, generateID("anon")}, "|"))
 }
 
 func explicitIdentityKey(apiKind string, value string) string {

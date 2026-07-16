@@ -84,7 +84,16 @@ func Handler(
 
 		// 提取对话标识
 		prompts := common.ExtractPromptsFromGemini(geminiReq.Contents)
-		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindGemini, common.ExtractConversationID(c, bodyBytes), model, prompts, utils.ExtractImageFingerprints(bodyBytes), isStream)
+		userID := common.ObserveConversationRequest(
+			channelScheduler,
+			scheduler.ChannelKindGemini,
+			common.ResolveConversationIdentity(c, bodyBytes),
+			common.BuildConversationTranscript(string(scheduler.ChannelKindGemini), bodyBytes),
+			model,
+			prompts,
+			utils.ExtractImageFingerprints(bodyBytes),
+			isStream,
+		)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindGemini)
 
 		// 记录原始请求信息

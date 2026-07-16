@@ -55,7 +55,16 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 
 		// 提取对话标识
 		prompts := common.ExtractPromptsFromClaude(claudeReq.Messages)
-		userID := common.ObserveConversationPrompts(channelScheduler, scheduler.ChannelKindMessages, common.ExtractConversationID(c, bodyBytes), claudeReq.Model, prompts, utils.ExtractImageFingerprints(bodyBytes), claudeReq.Stream)
+		userID := common.ObserveConversationRequest(
+			channelScheduler,
+			scheduler.ChannelKindMessages,
+			common.ResolveConversationIdentity(c, bodyBytes),
+			common.BuildConversationTranscript(string(scheduler.ChannelKindMessages), bodyBytes),
+			claudeReq.Model,
+			prompts,
+			utils.ExtractImageFingerprints(bodyBytes),
+			claudeReq.Stream,
+		)
 		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindMessages)
 
 		// 记录原始请求信息（仅在入口处记录一次）

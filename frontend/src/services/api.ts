@@ -292,6 +292,9 @@ export interface ConversationEntry {
   routeOverride?: ConversationRouteOverride
   lastResolved?: ConversationResolvedChannel
   imageFingerprints?: string[]
+  clientFamily?: string
+  identitySource?: string
+  parentConversationId?: string
 }
 
 export interface ConversationsResponse {

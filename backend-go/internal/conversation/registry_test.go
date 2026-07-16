@@ -79,6 +79,117 @@ func TestBuildIdentityKey_WithoutExplicitIDDoesNotMerge(t *testing.T) {
 	}
 }
 
+func TestRegistryContinuesUniqueCursorHistory(t *testing.T) {
+	registry := NewRegistry()
+	defer registry.Stop()
+
+	first := registry.ObserveRequest(Observation{
+		APIKind:    "messages",
+		Identity:   Identity{ClientFamily: "cursor", ScopeID: "workspace-a", LaneHash: "lane-main"},
+		Transcript: Transcript{PrefixHashes: []string{"h1"}},
+		Prompts:    []string{"第一轮"},
+	})
+	registry.MarkComplete(first.ID, "messages")
+
+	continued := registry.ObserveRequest(Observation{
+		APIKind:    "messages",
+		Identity:   Identity{ClientFamily: "cursor", ScopeID: "workspace-a", LaneHash: "lane-main"},
+		Transcript: Transcript{PrefixHashes: []string{"h1", "h2", "h3"}},
+		Prompts:    []string{"第二轮"},
+	})
+	if continued.ID != first.ID {
+		t.Fatalf("strict history extension created a new conversation: got %s want %s", continued.ID, first.ID)
+	}
+	if continued.IdentitySource != "unique_history_extension" {
+		t.Fatalf("identity source = %q", continued.IdentitySource)
+	}
+}
+
+func TestRegistryDoesNotMergeIdenticalRequestsOrAmbiguousHistory(t *testing.T) {
+	registry := NewRegistry()
+	defer registry.Stop()
+	identity := Identity{ClientFamily: "cursor", LaneHash: "lane-main"}
+
+	first := registry.ObserveRequest(Observation{APIKind: "messages", Identity: identity, Transcript: Transcript{PrefixHashes: []string{"h1"}}})
+	registry.MarkComplete(first.ID, "messages")
+	duplicate := registry.ObserveRequest(Observation{APIKind: "messages", Identity: identity, Transcript: Transcript{PrefixHashes: []string{"h1"}}})
+	registry.MarkComplete(duplicate.ID, "messages")
+	if duplicate.ID == first.ID {
+		t.Fatal("identical requests without an explicit ID were merged")
+	}
+
+	ambiguous := registry.ObserveRequest(Observation{APIKind: "messages", Identity: identity, Transcript: Transcript{PrefixHashes: []string{"h1", "h2"}}})
+	if ambiguous.ID == first.ID || ambiguous.ID == duplicate.ID {
+		t.Fatal("ambiguous history was merged into an existing conversation")
+	}
+	if ambiguous.IdentitySource != "ambiguous_history" {
+		t.Fatalf("identity source = %q", ambiguous.IdentitySource)
+	}
+}
+
+func TestRegistrySeparatesCursorAgentLanesWithSameRootID(t *testing.T) {
+	registry := NewRegistry()
+	defer registry.Stop()
+
+	mainConversation := registry.ObserveRequest(Observation{
+		APIKind:    "messages",
+		Identity:   Identity{ClientFamily: "cursor", ExplicitID: "composer-1", LaneHash: "lane-main", Source: "request_conversation"},
+		Transcript: Transcript{PrefixHashes: []string{"main-h1"}},
+	})
+	registry.MarkComplete(mainConversation.ID, "messages")
+
+	subagent := registry.ObserveRequest(Observation{
+		APIKind:    "messages",
+		Identity:   Identity{ClientFamily: "cursor", ExplicitID: "composer-1", LaneHash: "lane-sub", Source: "request_conversation"},
+		Transcript: Transcript{PrefixHashes: []string{"sub-h1"}},
+	})
+	registry.MarkComplete(subagent.ID, "messages")
+	if subagent.ID == mainConversation.ID {
+		t.Fatal("different Cursor agent lanes were merged")
+	}
+	if subagent.ParentConversationID != mainConversation.ID {
+		t.Fatalf("parent conversation = %q, want %q", subagent.ParentConversationID, mainConversation.ID)
+	}
+
+	continuedSubagent := registry.ObserveRequest(Observation{
+		APIKind:    "messages",
+		Identity:   Identity{ClientFamily: "cursor", ExplicitID: "composer-1", LaneHash: "lane-sub", Source: "request_conversation"},
+		Transcript: Transcript{PrefixHashes: []string{"sub-h1", "sub-h2"}},
+	})
+	if continuedSubagent.ID != subagent.ID {
+		t.Fatalf("subagent lane did not remain stable: got %s want %s", continuedSubagent.ID, subagent.ID)
+	}
+}
+
+func TestPersistentRegistryRestoresCursorHistoryFrontier(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "conversations.db")
+	registry, err := NewPersistentRegistry(dbPath)
+	if err != nil {
+		t.Fatalf("NewPersistentRegistry() error = %v", err)
+	}
+	first := registry.ObserveRequest(Observation{
+		APIKind:    "messages",
+		Identity:   Identity{ClientFamily: "cursor", LaneHash: "lane-main"},
+		Transcript: Transcript{PrefixHashes: []string{"h1"}},
+	})
+	registry.MarkComplete(first.ID, "messages")
+	registry.Stop()
+
+	restored, err := NewPersistentRegistry(dbPath)
+	if err != nil {
+		t.Fatalf("restore registry error = %v", err)
+	}
+	defer restored.Stop()
+	continued := restored.ObserveRequest(Observation{
+		APIKind:    "messages",
+		Identity:   Identity{ClientFamily: "cursor", LaneHash: "lane-main"},
+		Transcript: Transcript{PrefixHashes: []string{"h1", "h2"}},
+	})
+	if continued.ID != first.ID {
+		t.Fatalf("persisted frontier did not continue: got %s want %s", continued.ID, first.ID)
+	}
+}
+
 func TestPersistentRegistryRestoresNameImageFingerprintsAndResponseAlias(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "conversations.db")
 	registry, err := NewPersistentRegistry(dbPath)
@@ -192,7 +303,7 @@ func TestPersistentRegistryDeleteAllClearsRecordsAliasesAndImageResults(t *testi
 	if got := len(registry.List()); got != 0 {
 		t.Fatalf("records after DeleteAll() = %d", got)
 	}
-	for _, table := range []string{"conversations", "conversation_aliases", "conversation_image_understandings"} {
+	for _, table := range []string{"conversations", "conversation_aliases", "conversation_lineages", "conversation_image_understandings"} {
 		var count int
 		if err := registry.store.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
 			t.Fatalf("count %s error = %v", table, err)
