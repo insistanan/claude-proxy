@@ -55,3 +55,20 @@ func DeleteChannelPool(cfgManager *config.ConfigManager, kind string) gin.Handle
 		c.Status(http.StatusNoContent)
 	}
 }
+
+func SaveChannelPoolLayout(cfgManager *config.ConfigManager, kind string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var request struct {
+			Pools []config.ChannelPoolLayout `json:"pools"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的子池布局"})
+			return
+		}
+		if err := cfgManager.SaveChannelPoolLayout(kind, request.Pools); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	}
+}

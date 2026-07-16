@@ -345,7 +345,7 @@ func handleSingleChannel(
 	upstream, channelIndex, err := cfgManager.GetCurrentChatUpstreamWithIndexForModel(chatReq.Model)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": "未配置任何 Chat 渠道，请先在管理界面添加渠道",
+			"error": err.Error(),
 			"code":  "NO_CHAT_UPSTREAM",
 		})
 		return

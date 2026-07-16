@@ -657,6 +657,10 @@ class ApiService {
     await this.request(`/${type}/pools/${encodeURIComponent(id)}`, { method: 'DELETE' })
   }
 
+  async saveChannelPoolLayout(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', pools: Array<{ poolId: string; channelIds: string[] }>): Promise<void> {
+    await this.request(`/${type}/pools/layout`, { method: 'PUT', body: JSON.stringify({ pools }) })
+  }
+
   async addChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
     return this.request('/messages/channels', {
       method: 'POST',

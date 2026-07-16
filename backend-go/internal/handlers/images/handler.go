@@ -197,7 +197,7 @@ func handleImagesSingleChannel(
 ) {
 	upstream, channelIndex, err := cfgManager.GetCurrentImagesUpstreamWithIndexForModel(model)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "未配置任何 Images 渠道，请先在管理界面添加渠道", "code": "NO_IMAGES_UPSTREAM"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error(), "code": "NO_IMAGES_UPSTREAM"})
 		return
 	}
 	handleImagesSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, isStream, upstream, channelIndex, startTime)

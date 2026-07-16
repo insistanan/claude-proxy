@@ -237,7 +237,7 @@ func handleSingleChannel(
 	upstream, channelIndex, err := cfgManager.GetCurrentResponsesUpstreamWithIndexForModel(responsesReq.Model)
 	if err != nil {
 		c.JSON(503, gin.H{
-			"error": "未配置任何 Responses 渠道，请先在管理界面添加渠道",
+			"error": err.Error(),
 			"code":  "NO_RESPONSES_UPSTREAM",
 		})
 		return

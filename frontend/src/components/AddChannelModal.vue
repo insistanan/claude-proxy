@@ -168,6 +168,21 @@
               />
             </v-col>
 
+            <!-- 模型路由子池 -->
+            <v-col cols="12">
+              <v-select
+                v-model="form.poolId"
+                label="模型路由子池"
+                :items="poolOptions"
+                :loading="poolsLoading"
+                :error-messages="poolLoadError"
+                hint="该渠道将在所选子池内参与故障转移"
+                persistent-hint
+                variant="outlined"
+                density="comfortable"
+              />
+            </v-col>
+
             <!-- 基础URL -->
             <v-col cols="12">
               <v-textarea
@@ -622,16 +637,6 @@
                   <span class="text-body-1 font-weight-bold">图片理解</span>
                 </v-card-title>
                 <v-card-text class="pt-2">
-                  <v-select
-                    v-model="form.poolId"
-                    label="故障转移子池"
-                    :items="poolOptions"
-                    :loading="poolsLoading"
-                    :error-messages="poolLoadError"
-                    variant="outlined"
-                    density="comfortable"
-                  />
-                  <v-divider class="my-4" />
                   <div class="d-flex align-center justify-space-between">
                     <div>
                       <div class="text-body-1 font-weight-medium">本渠道支持图片理解</div>

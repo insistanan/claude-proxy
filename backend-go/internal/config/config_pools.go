@@ -11,7 +11,7 @@ import (
 const DefaultChannelPoolID = "default"
 
 // ChannelPool 是同一 API 类型内独立执行故障转移的渠道子池。
-// ModelMatcher 为单个大小写无关的 contains 规则；* 为默认兜底池。
+// ModelMatcher 为单个大小写无关的 contains 规则；* 为可选的最低优先级兜底规则。
 type ChannelPool struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -22,6 +22,11 @@ type ChannelPool struct {
 type ChannelPoolUpdate struct {
 	Name         *string `json:"name"`
 	ModelMatcher *string `json:"modelMatcher"`
+}
+
+type ChannelPoolLayout struct {
+	PoolID     string   `json:"poolId"`
+	ChannelIDs []string `json:"channelIds"`
 }
 
 func defaultChannelPool() ChannelPool {
@@ -38,6 +43,7 @@ func normalizeChannelPools(pools []ChannelPool) ([]ChannelPool, error) {
 	seenNames := make(map[string]struct{}, len(pools)+1)
 	seenMatchers := make(map[string]struct{}, len(pools)+1)
 	hasDefault := false
+	hasWildcard := false
 
 	for _, pool := range pools {
 		pool.ID = strings.TrimSpace(pool.ID)
@@ -56,11 +62,14 @@ func normalizeChannelPools(pools []ChannelPool) ([]ChannelPool, error) {
 		if _, exists := seenMatchers[pool.ModelMatcher]; exists {
 			return nil, fmt.Errorf("子池捕获规则重复: %s", pool.ModelMatcher)
 		}
-		if pool.ModelMatcher == "*" {
-			if pool.ID != DefaultChannelPoolID || hasDefault {
-				return nil, fmt.Errorf("捕获规则 * 仅允许用于默认子池")
-			}
+		if pool.ID == DefaultChannelPoolID {
 			hasDefault = true
+		}
+		if pool.ModelMatcher == "*" {
+			if hasWildcard {
+				return nil, fmt.Errorf("捕获规则 * 在同一协议中只能配置一次")
+			}
+			hasWildcard = true
 		}
 		seenIDs[pool.ID] = struct{}{}
 		seenNames[nameKey] = struct{}{}
@@ -69,8 +78,8 @@ func normalizeChannelPools(pools []ChannelPool) ([]ChannelPool, error) {
 	}
 
 	if !hasDefault {
-		if _, exists := seenIDs[DefaultChannelPoolID]; exists {
-			return nil, fmt.Errorf("默认子池 ID 被占用")
+		if hasWildcard {
+			return nil, fmt.Errorf("配置缺少默认子池，且捕获规则 * 已被其他子池占用")
 		}
 		result = append(result, defaultChannelPool())
 	}
@@ -120,7 +129,7 @@ func SelectChannelPool(pools []ChannelPool, model string) (*ChannelPool, error) 
 			return &copy, nil
 		}
 	}
-	return nil, fmt.Errorf("未找到默认子池")
+	return nil, fmt.Errorf("没有匹配模型 %q 的路由子池，且未配置 * 兜底规则", model)
 }
 
 func newChannelPoolID() string {
@@ -210,9 +219,6 @@ func (cm *ConfigManager) UpdateChannelPool(kind string, id string, update Channe
 			pools[index].Name = *update.Name
 		}
 		if update.ModelMatcher != nil {
-			if id == DefaultChannelPoolID {
-				return fmt.Errorf("默认子池的捕获规则固定为 *")
-			}
 			pools[index].ModelMatcher = *update.ModelMatcher
 		}
 		normalized, err := normalizeChannelPools(pools)
@@ -229,6 +235,134 @@ func (cm *ConfigManager) UpdateChannelPool(kind string, id string, update Channe
 		return nil
 	}
 	return fmt.Errorf("子池不存在")
+}
+
+// SaveChannelPoolLayout 原子更新渠道归属与各子池内部的故障转移顺序。
+func (cm *ConfigManager) SaveChannelPoolLayout(kind string, layout []ChannelPoolLayout) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	pools := cm.channelPoolsLocked(kind)
+	upstreams := cloneUpstreamList(cm.channelUpstreamsLocked(kind))
+	if pools == nil || upstreams == nil {
+		return fmt.Errorf("不支持的渠道类型: %s", kind)
+	}
+
+	poolLayouts := make(map[string][]string, len(layout))
+	seenChannels := make(map[string]struct{})
+	for _, item := range layout {
+		poolID := strings.TrimSpace(item.PoolID)
+		if !poolExists(pools, poolID) {
+			return fmt.Errorf("指定的子池不存在: %s", poolID)
+		}
+		if _, exists := poolLayouts[poolID]; exists {
+			return fmt.Errorf("子池布局重复: %s", poolID)
+		}
+		poolLayouts[poolID] = append([]string(nil), item.ChannelIDs...)
+		for _, rawID := range item.ChannelIDs {
+			channelID := strings.TrimSpace(rawID)
+			if channelID == "" {
+				return fmt.Errorf("渠道 ID 不能为空")
+			}
+			if _, exists := seenChannels[channelID]; exists {
+				return fmt.Errorf("渠道在布局中重复: %s", channelID)
+			}
+			seenChannels[channelID] = struct{}{}
+		}
+	}
+	if len(poolLayouts) != len(pools) {
+		return fmt.Errorf("子池布局不完整: 收到 %d 个子池，实际需要 %d 个", len(poolLayouts), len(pools))
+	}
+	for _, pool := range pools {
+		if _, exists := poolLayouts[pool.ID]; !exists {
+			return fmt.Errorf("子池布局缺少: %s", pool.Name)
+		}
+	}
+
+	channelIndexes := make(map[string]int, len(upstreams))
+	for index := range upstreams {
+		channelIndexes[upstreams[index].ID] = index
+		status := GetChannelStatus(&upstreams[index])
+		if !upstreams[index].ExcludeFromConversation && (status == ChannelStatusActive || status == ChannelStatusSuspended) {
+			if _, exists := seenChannels[upstreams[index].ID]; !exists {
+				return fmt.Errorf("子池布局缺少渠道: %s", upstreams[index].Name)
+			}
+		}
+	}
+	for poolID, channelIDs := range poolLayouts {
+		for _, channelID := range channelIDs {
+			index, exists := channelIndexes[strings.TrimSpace(channelID)]
+			if !exists {
+				return fmt.Errorf("渠道不存在: %s", channelID)
+			}
+			if upstreams[index].ExcludeFromConversation {
+				return fmt.Errorf("公用图片理解渠道不能加入模型路由子池: %s", upstreams[index].Name)
+			}
+			upstreams[index].PoolID = poolID
+		}
+	}
+
+	for poolID, channelIDs := range poolLayouts {
+		priority := 1
+		for _, channelID := range channelIDs {
+			index := channelIndexes[strings.TrimSpace(channelID)]
+			upstreams[index].Priority = priority
+			priority++
+		}
+		remaining := make([]int, 0)
+		for index := range upstreams {
+			if upstreams[index].PoolID != poolID || upstreams[index].ExcludeFromConversation {
+				continue
+			}
+			if _, explicitlyOrdered := seenChannels[upstreams[index].ID]; !explicitlyOrdered {
+				remaining = append(remaining, index)
+			}
+		}
+		sort.SliceStable(remaining, func(i, j int) bool {
+			left, right := remaining[i], remaining[j]
+			leftPriority := GetChannelPriority(&upstreams[left], left)
+			rightPriority := GetChannelPriority(&upstreams[right], right)
+			if leftPriority != rightPriority {
+				return leftPriority < rightPriority
+			}
+			return left < right
+		})
+		for _, index := range remaining {
+			upstreams[index].Priority = priority
+			priority++
+		}
+	}
+
+	if err := validateAllVisionLayerConfigs(upstreams); err != nil {
+		return err
+	}
+	previous := cm.channelUpstreamsLocked(kind)
+	if err := cm.setChannelUpstreamsLocked(kind, upstreams); err != nil {
+		return err
+	}
+	if err := cm.saveConfigLocked(cm.config); err != nil {
+		_ = cm.setChannelUpstreamsLocked(kind, previous)
+		return err
+	}
+	return nil
+}
+
+func (cm *ConfigManager) setChannelUpstreamsLocked(kind string, upstreams []UpstreamConfig) error {
+	switch kind {
+	case "messages":
+		cm.config.Upstream = upstreams
+	case "responses":
+		cm.config.ResponsesUpstream = upstreams
+	case "gemini":
+		cm.config.GeminiUpstream = upstreams
+	case "chat":
+		cm.config.ChatUpstream = upstreams
+	case "images":
+		cm.config.ImagesUpstream = upstreams
+	default:
+		return fmt.Errorf("不支持的渠道类型: %s", kind)
+	}
+	return nil
 }
 
 func (cm *ConfigManager) DeleteChannelPool(kind string, id string) error {

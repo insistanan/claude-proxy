@@ -131,8 +131,18 @@ func newUpstreamID() string {
 	return fmt.Sprintf("ch_%d", time.Now().UnixNano())
 }
 
-// normalizeUpstreamPriorities 为整个渠道池建立连续且唯一的优先级。
-// 优先级不能只覆盖可调度子集，否则禁用渠道恢复后会与现有渠道发生冲突。
+func upstreamPriorityScope(upstream *UpstreamConfig) string {
+	if upstream.ExcludeFromConversation {
+		return "\x00public-vision"
+	}
+	poolID := strings.TrimSpace(upstream.PoolID)
+	if poolID == "" {
+		return DefaultChannelPoolID
+	}
+	return poolID
+}
+
+// normalizeUpstreamPriorities 为每个模型路由子池分别建立连续优先级。
 func normalizeUpstreamPriorities(upstreams []UpstreamConfig) bool {
 	if len(upstreams) == 0 {
 		return false
@@ -159,8 +169,11 @@ func normalizeUpstreamPriorities(upstreams []UpstreamConfig) bool {
 	})
 
 	changed := false
-	for priority, index := range order {
-		wanted := priority + 1
+	poolPriorities := make(map[string]int)
+	for _, index := range order {
+		scope := upstreamPriorityScope(&upstreams[index])
+		poolPriorities[scope]++
+		wanted := poolPriorities[scope]
 		if upstreams[index].Priority != wanted {
 			upstreams[index].Priority = wanted
 			changed = true
@@ -194,7 +207,9 @@ func addUpstreamOp(upstreams []UpstreamConfig, upstream UpstreamConfig) ([]Upstr
 	prepareNewUpstream(&upstream)
 	normalizeUpstreamPriorities(upstreams)
 	for i := range upstreams {
-		upstreams[i].Priority++
+		if upstreamPriorityScope(&upstreams[i]) == upstreamPriorityScope(&upstream) {
+			upstreams[i].Priority++
+		}
 	}
 	upstream.Priority = 1
 	upstreams = append(upstreams, upstream)
@@ -617,8 +632,11 @@ func reorderOp(upstreams []UpstreamConfig, order []int, label string) error {
 		return left < right
 	})
 	allOrder = append(allOrder, remaining...)
-	for i, idx := range allOrder {
-		upstreams[idx].Priority = i + 1
+	poolPriorities := make(map[string]int)
+	for _, idx := range allOrder {
+		scope := upstreamPriorityScope(&upstreams[idx])
+		poolPriorities[scope]++
+		upstreams[idx].Priority = poolPriorities[scope]
 	}
 	log.Printf("[Config-Reorder] 已更新 %s 渠道优先级顺序 (%d 个显式渠道，%d 个总渠道)", label, len(order), len(allOrder))
 	return nil
@@ -627,7 +645,7 @@ func reorderOp(upstreams []UpstreamConfig, order []int, label string) error {
 func moveChannelToStatusPoolTail(upstreams []UpstreamConfig, targetIndex int) {
 	ordered := make([]int, 0, len(upstreams)-1)
 	for index := range upstreams {
-		if index != targetIndex {
+		if index != targetIndex && upstreamPriorityScope(&upstreams[index]) == upstreamPriorityScope(&upstreams[targetIndex]) {
 			ordered = append(ordered, index)
 		}
 	}

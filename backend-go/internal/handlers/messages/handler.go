@@ -229,7 +229,7 @@ func handleSingleChannel(
 	upstream, channelIndex, err := cfgManager.GetCurrentUpstreamWithIndexForModel(claudeReq.Model)
 	if err != nil {
 		c.JSON(503, gin.H{
-			"error": "未配置任何渠道，请先在管理界面添加渠道",
+			"error": err.Error(),
 			"code":  "NO_UPSTREAM",
 		})
 		return

@@ -24,39 +24,9 @@
       @delete="$emit('delete', $event)"
       @error="$emit('error', $event)"
       @success="$emit('success', $event)"
-    />
-
-    <!-- 故障转移序列 (active + suspended) -->
-    <div class="pt-3 pb-2">
-      <div class="d-flex align-center justify-space-between mb-2">
-        <div class="text-subtitle-2 text-medium-emphasis d-flex align-center">
-          <v-icon size="small" class="mr-1" color="success">mdi-play-circle</v-icon>
-          故障转移序列
-          <v-chip size="x-small" class="ml-2">{{ activeChannels.length }}</v-chip>
-        </div>
-        <div class="d-flex align-center ga-2">
-          <v-btn size="x-small" variant="tonal" prepend-icon="mdi-sort" :loading="isTidying" @click="tidyProblemChannels">
-            一键整理
-          </v-btn>
-          <span class="text-caption text-medium-emphasis">拖拽调整优先级，自动保存</span>
-          <v-progress-circular v-if="isSavingOrder" indeterminate size="16" width="2" color="primary" />
-        </div>
-      </div>
-
-      <!-- 拖拽列表 -->
-      <draggable
-        v-model="activeChannels"
-        item-key="index"
-        handle=".drag-handle"
-        ghost-class="ghost"
-        class="channel-list"
-        :scroll="true"
-        :scroll-sensitivity="90"
-        :scroll-speed="18"
-        :force-fallback="true"
-        @change="onDragChange"
-      >
-        <template #item="{ element, index }">
+      @refresh="$emit('refresh')"
+    >
+      <template #channel="{ channel: element, index, pool, move_to_top, move_to_bottom }">
           <div class="channel-item-wrapper">
             <div
               class="channel-row"
@@ -391,13 +361,13 @@
                     </template>
                     <v-list-item-title>抢优先级</v-list-item-title>
                   </v-list-item>
-                  <v-list-item v-if="index > 0" :disabled="isSavingOrder" @click="moveChannelToTop(element.index)">
+                  <v-list-item v-if="index > 0" @click="move_to_top()">
                     <template #prepend>
                       <v-icon size="small" color="primary">mdi-arrow-collapse-up</v-icon>
                     </template>
                     <v-list-item-title>置顶</v-list-item-title>
                   </v-list-item>
-                  <v-list-item v-if="index < activeChannels.length - 1" :disabled="isSavingOrder" @click="moveChannelToBottom(element.index)">
+                  <v-list-item v-if="index < pool.channels.length - 1" @click="move_to_bottom()">
                     <template #prepend>
                       <v-icon size="small" color="primary">mdi-arrow-collapse-down</v-icon>
                     </template>
@@ -460,16 +430,8 @@
             </div>
           </v-expand-transition>
           </div>
-        </template>
-      </draggable>
-
-      <!-- 空状态 -->
-      <div v-if="activeChannels.length === 0" class="text-center py-6 text-medium-emphasis">
-        <v-icon size="48" color="grey-lighten-1">mdi-playlist-remove</v-icon>
-        <div class="mt-2">暂无活跃渠道</div>
-        <div class="text-caption">从下方备用池启用渠道</div>
-      </div>
-    </div>
+      </template>
+    </ChannelPoolGrid>
 
     <v-divider class="my-2" />
 
@@ -834,7 +796,6 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import draggable from 'vuedraggable'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
 import { api, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
@@ -892,14 +853,12 @@ const schedulerStats = ref<{
   windowSize: number
 } | null>(null)
 const isLoadingMetrics = ref(false)
-const isSavingOrder = ref(false)
 
 const showLogsDialog = ref(false)
 const logsChannel = ref<Channel | null>(null)
 const channelLogs = ref<ChannelLogEntry[]>([])
 const isLoadingLogs = ref(false)
 const logsError = ref('')
-const isTidying = ref(false)
 
 type LogTrendBucket = {
   x: number
@@ -1052,9 +1011,6 @@ URL: ${channel.baseUrl}
   }
 }
 
-// 活跃渠道（可拖拽排序）- 包含 active 和 suspended 状态
-const activeChannels = ref<Channel[]>([])
-
 // 计算属性：非活跃渠道 - 仅 disabled 状态
 const inactiveChannels = computed(() => {
 	return props.channels.filter(ch => !ch.excludeFromConversation && ch.status === 'disabled')
@@ -1063,10 +1019,6 @@ const inactiveChannels = computed(() => {
 const deprecatedChannels = computed(() => {
 	return props.channels.filter(ch => !ch.excludeFromConversation && ch.status === 'deprecated')
 })
-
-const isChannelInFailoverSequence = (channel: Channel) => {
-	return !channel.excludeFromConversation && channel.status !== 'disabled' && channel.status !== 'deprecated' && channel.status !== 'deleted'
-}
 
 // 计算属性：是否为多渠道模式
 // 多渠道模式判断逻辑：
@@ -1079,34 +1031,6 @@ const isMultiChannelMode = computed(() => {
 	).length
   return activeCount > 1
 })
-
-// 初始化活跃渠道列表 - active + suspended 都参与故障转移序列
-// 优化：只在结构变化时更新，避免频繁重建导致子组件销毁
-const initActiveChannels = () => {
-  const newActive = props.channels
-    .filter(isChannelInFailoverSequence)
-    .sort((a, b) => {
-      const priorityDifference = (a.priority ?? a.index + 1) - (b.priority ?? b.index + 1)
-      return priorityDifference || a.index - b.index
-    })
-
-  // 检查是否需要更新：比较 index 列表是否变化
-  const currentIndexes = activeChannels.value.map(ch => ch.index).join(',')
-  const newIndexes = newActive.map(ch => ch.index).join(',')
-
-  if (currentIndexes !== newIndexes) {
-    // 结构变化（新增/删除/重排），需要重建数组
-    activeChannels.value = [...newActive]
-  } else {
-    // 结构未变，只更新现有对象的属性（保持引用不变）
-    activeChannels.value.forEach((ch, i) => {
-      Object.assign(ch, newActive[i])
-    })
-  }
-}
-
-// 监听 channels 变化
-watch(() => props.channels, initActiveChannels, { immediate: true, deep: true })
 
 // 监听 dashboard props 变化（从父组件传入的合并数据）
 watch(() => props.dashboardMetrics, (newMetrics) => {
@@ -1607,40 +1531,6 @@ const refreshMetrics = async () => {
   }
 }
 
-// 拖拽变更事件 - 自动保存顺序
-const onDragChange = () => {
-  // 拖拽后自动保存顺序到后端
-  saveOrder()
-}
-
-// 保存顺序
-const saveOrder = async () => {
-  isSavingOrder.value = true
-  try {
-    const order = activeChannels.value.map(ch => ch.index)
-    if (props.channelType === 'gemini') {
-      await api.reorderGeminiChannels(order)
-    } else if (props.channelType === 'images') {
-      await api.reorderImagesChannels(order)
-    } else if (props.channelType === 'chat') {
-      await api.reorderChatChannels(order)
-    } else if (props.channelType === 'responses') {
-      await api.reorderResponsesChannels(order)
-    } else {
-      await api.reorderChannels(order)
-    }
-    // 不调用 emit('refresh')，避免触发父组件刷新导致列表闪烁
-  } catch (error) {
-    console.error('Failed to save order:', error)
-    const errorMessage = error instanceof Error ? error.message : '未知错误'
-    emit('error', `保存渠道顺序失败: ${errorMessage}`)
-    // 保存失败时重新初始化列表，恢复原始顺序
-    initActiveChannels()
-  } finally {
-    isSavingOrder.value = false
-  }
-}
-
 const duplicateChannel = async (channelIndex: number) => {
   try {
     await api.duplicateChannel(props.channelType, channelIndex)
@@ -1650,43 +1540,6 @@ const duplicateChannel = async (channelIndex: number) => {
     const errorMessage = error instanceof Error ? error.message : '未知错误'
     emit('error', `复制渠道失败: ${errorMessage}`)
   }
-}
-
-const tidyProblemChannels = async () => {
-  if (isTidying.value) return
-  isTidying.value = true
-  try {
-    await api.tidyProblemChannels(props.channelType)
-    emit('refresh')
-  } catch (error) {
-    console.error('Failed to tidy channels:', error)
-    const errorMessage = error instanceof Error ? error.message : '未知错误'
-    emit('error', `整理渠道失败: ${errorMessage}`)
-  } finally {
-    isTidying.value = false
-  }
-}
-
-// 置顶渠道
-const moveChannelToTop = async (channelIndex: number) => {
-  if (isSavingOrder.value) return
-  const idx = activeChannels.value.findIndex(ch => ch.index === channelIndex)
-  if (idx <= 0) return
-
-  const [channel] = activeChannels.value.splice(idx, 1)
-  activeChannels.value.unshift(channel)
-  await saveOrder()
-}
-
-// 置底渠道
-const moveChannelToBottom = async (channelIndex: number) => {
-  if (isSavingOrder.value) return
-  const idx = activeChannels.value.findIndex(ch => ch.index === channelIndex)
-  if (idx < 0 || idx >= activeChannels.value.length - 1) return
-
-  const [channel] = activeChannels.value.splice(idx, 1)
-  activeChannels.value.push(channel)
-  await saveOrder()
 }
 
 // 设置渠道状态
@@ -1969,11 +1822,13 @@ const confirmPromotion = async () => {
 }
 
 // 判断渠道是否可以删除
-// 规则：故障转移序列中至少要保留一个 active 状态的渠道
+// 规则：当前模型路由子池中至少要保留一个 active 状态的渠道
 const canDeleteChannel = (channel: Channel): boolean => {
   // 统计当前 active 状态的渠道数量
-  const activeCount = activeChannels.value.filter(
-    ch => ch.status === 'active' || ch.status === undefined || ch.status === ''
+  const poolID = channel.poolId || 'default'
+  const activeCount = props.channels.filter(
+    ch => !ch.excludeFromConversation && (ch.poolId || 'default') === poolID &&
+      (ch.status === 'active' || ch.status === undefined || ch.status === '')
   ).length
 
   // 如果要删除的是 active 渠道，且只剩一个 active，则不允许删除
@@ -1988,7 +1843,7 @@ const canDeleteChannel = (channel: Channel): boolean => {
 // 处理删除渠道
 const handleDeleteChannel = (channel: Channel) => {
   if (!canDeleteChannel(channel)) {
-    emit('error', '无法删除：故障转移序列中至少需要保留一个活跃渠道')
+    emit('error', '无法删除：当前模型路由子池中至少需要保留一个活跃渠道')
     return
   }
   emit('delete', channel.index)

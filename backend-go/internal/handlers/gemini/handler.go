@@ -274,7 +274,7 @@ func handleSingleChannel(
 		c.JSON(503, types.GeminiError{
 			Error: types.GeminiErrorDetail{
 				Code:    503,
-				Message: "No Gemini upstream configured",
+				Message: err.Error(),
 				Status:  "UNAVAILABLE",
 			},
 		})

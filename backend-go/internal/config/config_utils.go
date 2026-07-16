@@ -304,6 +304,11 @@ func reorderProblemChannelsStable(upstreams []UpstreamConfig) bool {
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		left, right := ordered[i], ordered[j]
+		leftScope := upstreamPriorityScope(&upstreams[left])
+		rightScope := upstreamPriorityScope(&upstreams[right])
+		if leftScope != rightScope {
+			return leftScope < rightScope
+		}
 		leftPool := channelStatusPool(&upstreams[left])
 		rightPool := channelStatusPool(&upstreams[right])
 		if leftPool != rightPool {
@@ -317,8 +322,11 @@ func reorderProblemChannelsStable(upstreams []UpstreamConfig) bool {
 		return left < right
 	})
 	changed := false
-	for priority, index := range ordered {
-		wanted := priority + 1
+	poolPriorities := make(map[string]int)
+	for _, index := range ordered {
+		scope := upstreamPriorityScope(&upstreams[index])
+		poolPriorities[scope]++
+		wanted := poolPriorities[scope]
 		if upstreams[index].Priority != wanted {
 			changed = true
 			upstreams[index].Priority = wanted
@@ -347,7 +355,7 @@ func insertClonedUpstream(upstreams []UpstreamConfig, index int, now time.Time) 
 	clone.Priority = targetPriority + 1
 	next := append([]UpstreamConfig(nil), upstreams...)
 	for i := range next {
-		if next[i].Priority > targetPriority {
+		if upstreamPriorityScope(&next[i]) == upstreamPriorityScope(&clone) && next[i].Priority > targetPriority {
 			next[i].Priority++
 		}
 	}
