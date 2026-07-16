@@ -9,13 +9,13 @@ import (
 // 注意：OpenAI 官方文档明确 previous_response_id 链上的历史 input 仍会计费；
 // 本能力主要用于减少重复传输与提升上游缓存亲和，不是“免费上下文”。
 type ResponseChainState struct {
-	ResponseID      string
-	MessageCount    int
+	ResponseID        string
+	MessageCount      int
 	SystemFingerprint string
 	ToolsFingerprint  string
-	BaseURL         string
-	Model           string
-	UpdatedAt       time.Time
+	BaseURL           string
+	Model             string
+	UpdatedAt         time.Time
 }
 
 // ResponseChainManager 按 conversationID 保存最近一次成功的 Responses 链状态。
@@ -79,5 +79,15 @@ func (manager *ResponseChainManager) Clear(conversationID string) {
 	}
 	manager.mu.Lock()
 	delete(manager.items, conversationID)
+	manager.mu.Unlock()
+}
+
+// ClearAll 清除全部进程内 Responses 链状态。
+func (manager *ResponseChainManager) ClearAll() {
+	if manager == nil {
+		return
+	}
+	manager.mu.Lock()
+	manager.items = make(map[string]*ResponseChainState)
 	manager.mu.Unlock()
 }

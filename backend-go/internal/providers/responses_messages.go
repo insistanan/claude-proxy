@@ -34,18 +34,18 @@ type MessagesResponsesProvider struct {
 }
 
 type claudeResponsesRequest struct {
-	Model                string                 `json:"model"`
-	Instructions         string                 `json:"instructions,omitempty"`
-	Input                []interface{}          `json:"input"`
-	Stream               bool                   `json:"stream"`
-	MaxOutputTokens      int                    `json:"max_output_tokens,omitempty"`
-	Temperature          float64                `json:"temperature,omitempty"`
-	Tools                []interface{}          `json:"tools,omitempty"`
-	ToolChoice           interface{}            `json:"tool_choice,omitempty"`
-	Reasoning            interface{}            `json:"reasoning,omitempty"`
-	PromptCacheKey       string                 `json:"prompt_cache_key,omitempty"`
-	PromptCacheRetention string                 `json:"prompt_cache_retention,omitempty"`
-	PreviousResponseID   string                 `json:"previous_response_id,omitempty"`
+	Model                string        `json:"model"`
+	Instructions         string        `json:"instructions,omitempty"`
+	Input                []interface{} `json:"input"`
+	Stream               bool          `json:"stream"`
+	MaxOutputTokens      int           `json:"max_output_tokens,omitempty"`
+	Temperature          float64       `json:"temperature,omitempty"`
+	Tools                []interface{} `json:"tools,omitempty"`
+	ToolChoice           interface{}   `json:"tool_choice,omitempty"`
+	Reasoning            interface{}   `json:"reasoning,omitempty"`
+	PromptCacheKey       string        `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string        `json:"prompt_cache_retention,omitempty"`
+	PreviousResponseID   string        `json:"previous_response_id,omitempty"`
 }
 
 func (p *MessagesResponsesProvider) ConvertToProviderRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string) (*http.Request, []byte, error) {
@@ -145,11 +145,9 @@ func (p *MessagesResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-
 
 func claudeRequestToResponsesRequest(claudeReq *types.ClaudeRequest, upstream *config.UpstreamConfig, conversationID string) (*claudeResponsesRequest, error) {
 	model := config.ResolveUpstreamModel(claudeReq.Model, upstream)
-	// 仅压缩发给上游的历史，原始 body 已在 ConvertToProviderRequest 中保留用于日志
-	compactedMessages := compactClaudeMessagesForUpstream(claudeReq.Messages)
 	req := &claudeResponsesRequest{
 		Model:  model,
-		Input:  claudeMessagesToResponsesInput(compactedMessages, upstream != nil && upstream.IncludeHistoryThinking),
+		Input:  claudeMessagesToResponsesInput(claudeReq.Messages, upstream != nil && upstream.IncludeHistoryThinking),
 		Stream: claudeReq.Stream,
 	}
 	if systemText := extractSystemText(claudeReq.System); systemText != "" {
@@ -1083,7 +1081,9 @@ func (s *responsesToClaudeStreamState) emitMessageDelta() []string {
 
 // captureResponsesUsage extracts usage/cache fields from Responses SSE payloads.
 // OpenAI Responses commonly places usage under response.usage on response.completed:
-//   input_tokens, output_tokens, input_tokens_details.cached_tokens
+//
+//	input_tokens, output_tokens, input_tokens_details.cached_tokens
+//
 // Some gateways also emit top-level usage or cache_read_input_tokens.
 func (s *responsesToClaudeStreamState) captureResponsesUsage(root gjson.Result) {
 	usageNode := root.Get("response.usage")
@@ -1143,7 +1143,6 @@ func buildClaudeSSE(event string, data map[string]interface{}) string {
 	dataJSON, _ := json.Marshal(data)
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", event, dataJSON)
 }
-
 
 // extractMessagesConversationID 从请求中提取会话 ID，用于 BaseURL 粘滞与 previous_response_id 链。
 func extractMessagesConversationID(c *gin.Context, claudeReq *types.ClaudeRequest) string {
@@ -1213,7 +1212,7 @@ func applyPreviousResponseIDChain(
 		}
 	}
 
-	// Model change: clear chain, full compacted resend.
+	// Model change: clear chain and resend the complete client history.
 	if state.Model != "" && model != "" && state.Model != model {
 		session.DefaultResponseChainManager().Clear(conversationID)
 		return
@@ -1235,7 +1234,7 @@ func applyPreviousResponseIDChain(
 		return
 	}
 	if len(claudeReq.Messages) <= state.MessageCount {
-		// No new messages or history shortened: full compacted payload without chain.
+		// No new messages or history shortened: send the complete current payload without chain.
 		if len(claudeReq.Messages) < state.MessageCount {
 			session.DefaultResponseChainManager().Clear(conversationID)
 		}
@@ -1246,8 +1245,7 @@ func applyPreviousResponseIDChain(
 		return
 	}
 	includeThinking := upstream != nil && upstream.IncludeHistoryThinking
-	compactedSuffix := compactClaudeMessagesForUpstream(suffix)
-	req.Input = claudeMessagesToResponsesInput(compactedSuffix, includeThinking)
+	req.Input = claudeMessagesToResponsesInput(suffix, includeThinking)
 	req.PreviousResponseID = state.ResponseID
 }
 

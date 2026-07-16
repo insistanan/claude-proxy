@@ -3,6 +3,7 @@ package common
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -58,7 +59,6 @@ var attemptLogCounter uint64
 var profileRequestCounter uint64
 
 const requestLogFirstTokenAtKey = "__request_log_first_token_at"
-const preparedRequestBodyKey = "__prepared_request_body"
 
 // nextProfileRequestID 生成唯一请求 ID 用于性能画像追踪
 func nextProfileRequestID() uint64 {
@@ -108,28 +108,6 @@ func TryUpstreamWithModelMappingFailover(
 	handleSuccess HandleSuccessFunc,
 	logCtx AttemptLogContext,
 ) (handled bool, successKey string, successBaseURLIdx int, failoverErr *FailoverError, usage *types.Usage, lastError error) {
-	preparedBody, err := visionlayer.Prepare(
-		c,
-		envCfg,
-		cfgManager,
-		channelScheduler,
-		kind,
-		upstream,
-		requestedModel,
-		requestBody,
-		utils.DetectImageContent(requestBody),
-	)
-	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": err.Error(),
-			"code":  "VISION_LAYER_UNAVAILABLE",
-		})
-		return true, "", 0, nil, nil, err
-	}
-	requestBody = preparedBody
-	RestoreRequestBody(c, requestBody)
-	SetPreparedRequestBody(c, requestBody)
-
 	// 获取该模型的映射列表
 	targetModels := config.ResolveUpstreamModelList(requestedModel, upstream)
 
@@ -371,6 +349,31 @@ func TryUpstreamWithAllKeys(
 				channelScheduler.RecordFailure(currentBaseURL, apiKey, kind)
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "build_request", err.Error(), true, isStream, nil)
 				continue
+			}
+			if err := visionlayer.PrepareRequest(
+				c,
+				envCfg,
+				cfgManager,
+				channelScheduler,
+				kind,
+				upstreamCopy,
+				logCtx.Model,
+				logCtx.ConversationID,
+				req,
+			); err != nil {
+				_ = req.Body.Close()
+				status, code := visionlayer.ErrorResponse(err)
+				payload := gin.H{
+					"error": err.Error(),
+					"code":  code,
+				}
+				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", status, false, attemptStart, "vision_layer", err.Error(), true, isStream, nil)
+				if channelScheduler.GetActiveChannelCountForModel(kind, logCtx.Model) > 1 {
+					body, _ := json.Marshal(payload)
+					return false, "", 0, &FailoverError{Status: status, Body: body}, nil, err
+				}
+				c.JSON(status, payload)
+				return true, "", 0, nil, nil, err
 			}
 
 			// 记录请求开始

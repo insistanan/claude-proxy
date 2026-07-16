@@ -118,7 +118,7 @@ func Handler(
 		}
 
 		// 检查是否为多渠道模式
-		isMultiChannel := channelScheduler.IsMultiChannelMode(scheduler.ChannelKindGemini)
+		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindGemini, model)
 
 		if isMultiChannel {
 			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, startTime)
@@ -260,7 +260,7 @@ func handleSingleChannel(
 	userID string,
 	startTime time.Time,
 ) {
-	upstream, channelIndex, err := cfgManager.GetCurrentGeminiUpstreamWithIndex()
+	upstream, channelIndex, err := cfgManager.GetCurrentGeminiUpstreamWithIndexForModel(model)
 	if err != nil {
 		c.JSON(503, types.GeminiError{
 			Error: types.GeminiErrorDetail{
@@ -422,14 +422,6 @@ func buildProviderRequest(
 	model string,
 	isStream bool,
 ) (*http.Request, error) {
-	if preparedBody := common.PreparedRequestBody(c, nil); len(preparedBody) > 0 {
-		var preparedRequest types.GeminiRequest
-		if err := json.Unmarshal(preparedBody, &preparedRequest); err != nil {
-			return nil, fmt.Errorf("解析图片理解层后的 Gemini 请求失败: %w", err)
-		}
-		geminiReq = &preparedRequest
-	}
-
 	// 应用模型映射
 	mappedModel := config.ResolveUpstreamModel(model, upstream)
 

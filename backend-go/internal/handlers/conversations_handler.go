@@ -8,6 +8,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/session"
+	"github.com/BenedictKing/claude-proxy/internal/visionlayer"
 	"github.com/gin-gonic/gin"
 )
 
@@ -127,6 +128,33 @@ func DeleteConversation(channelScheduler *scheduler.ChannelScheduler, sessionMan
 			return
 		}
 		session.DefaultResponseChainManager().Clear(conversationID)
+		visionlayer.ClearConversationCache(conversationID)
+		c.Status(http.StatusNoContent)
+	}
+}
+
+// DeleteAllConversations 删除全部对话、图片理解结果和 Responses 会话链。
+func DeleteAllConversations(channelScheduler *scheduler.ChannelScheduler, sessionManager *session.SessionManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		registry := getConversationRegistry(channelScheduler)
+		if registry == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "conversation registry is not initialized"})
+			return
+		}
+		if sessionManager == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "response session manager is not initialized"})
+			return
+		}
+		if err := sessionManager.DeleteAll(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if err := registry.DeleteAll(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		session.DefaultResponseChainManager().ClearAll()
+		visionlayer.ClearCache()
 		c.Status(http.StatusNoContent)
 	}
 }
@@ -161,7 +189,7 @@ func SetConversationRouteOverride(channelScheduler *scheduler.ChannelScheduler, 
 			c.JSON(http.StatusConflict, gin.H{"error": "route override kind must match conversation kind"})
 			return
 		}
-		channelName, ok := lookupChannelName(cfgManager, scheduler.ChannelKind(req.Kind), req.ChannelIndex)
+		channelName, ok := lookupChannelName(cfgManager, scheduler.ChannelKind(req.Kind), req.ChannelIndex, item.LastModel)
 		if !ok {
 			c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
 			return
@@ -219,7 +247,7 @@ func buildRouteOptionGroup(cfgManager *config.ConfigManager, kind scheduler.Chan
 	upstreams := getConfigUpstreams(cfg, kind)
 	channels := make([]routeOptionChannel, 0, len(upstreams))
 	for index, upstream := range upstreams {
-		if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted {
+		if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted || upstream.ExcludeFromConversation {
 			continue
 		}
 		channels = append(channels, routeOptionChannel{
@@ -239,13 +267,28 @@ func buildRouteOptionGroup(cfgManager *config.ConfigManager, kind scheduler.Chan
 	}
 }
 
-func lookupChannelName(cfgManager *config.ConfigManager, kind scheduler.ChannelKind, channelIndex int) (string, bool) {
+func lookupChannelName(cfgManager *config.ConfigManager, kind scheduler.ChannelKind, channelIndex int, model string) (string, bool) {
 	cfg := cfgManager.GetConfig()
 	upstreams := getConfigUpstreams(cfg, kind)
 	if channelIndex < 0 || channelIndex >= len(upstreams) {
 		return "", false
 	}
-	return upstreams[channelIndex].Name, true
+	upstream := &upstreams[channelIndex]
+	if upstream.ExcludeFromConversation || config.GetChannelStatus(upstream) == config.ChannelStatusDeleted {
+		return "", false
+	}
+	pool, err := config.SelectChannelPool(getConfigPools(cfg, kind), model)
+	if err != nil {
+		return "", false
+	}
+	poolID := strings.TrimSpace(upstream.PoolID)
+	if poolID == "" {
+		poolID = config.DefaultChannelPoolID
+	}
+	if poolID != pool.ID {
+		return "", false
+	}
+	return upstream.Name, true
 }
 
 func getConfigUpstreams(cfg config.Config, kind scheduler.ChannelKind) []config.UpstreamConfig {
@@ -260,6 +303,23 @@ func getConfigUpstreams(cfg config.Config, kind scheduler.ChannelKind) []config.
 		return cfg.ChatUpstream
 	case scheduler.ChannelKindImages:
 		return cfg.ImagesUpstream
+	default:
+		return nil
+	}
+}
+
+func getConfigPools(cfg config.Config, kind scheduler.ChannelKind) []config.ChannelPool {
+	switch kind {
+	case scheduler.ChannelKindMessages:
+		return cfg.MessagePools
+	case scheduler.ChannelKindResponses:
+		return cfg.ResponsesPools
+	case scheduler.ChannelKindGemini:
+		return cfg.GeminiPools
+	case scheduler.ChannelKindChat:
+		return cfg.ChatPools
+	case scheduler.ChannelKindImages:
+		return cfg.ImagesPools
 	default:
 		return nil
 	}

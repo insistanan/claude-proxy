@@ -115,7 +115,7 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	// 使用统一的头部处理逻辑（透明代理）
 	// 保留客户端的大部分 headers，只移除/替换必要的认证和代理相关 headers
 	req.Header = utils.PrepareUpstreamHeaders(c, req.URL.Host)
-	
+
 	// 删除演练台模拟的客户端请求头（避免上游严格验证报错）
 	req.Header.Del("X-Codex-Window-Id")
 	req.Header.Del("X-Codex-Installation-Id")
@@ -131,7 +131,7 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	req.Header.Del("X-Stainless-Retry-Count")
 	req.Header.Del("X-Stainless-Timeout")
 	req.Header.Del("X-App")
-	
+
 	utils.SetAuthenticationHeader(req.Header, apiKey)
 
 	return req, originalBodyBytes, nil
@@ -152,9 +152,7 @@ func (p *OpenAIProvider) convertMessages(claudeReq *types.ClaudeRequest) []types
 		}
 	}
 
-	// 压缩过旧/过大 tool_result 后再转换，控制多轮上下文膨胀
-	compactedMessages := compactClaudeMessagesForUpstream(claudeReq.Messages)
-	for _, msg := range compactedMessages {
+	for _, msg := range claudeReq.Messages {
 		openaiMsg := p.convertMessage(msg)
 		messages = append(messages, openaiMsg...)
 	}
@@ -225,7 +223,7 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 
 		switch contentType {
 		case "thinking", "redacted_thinking":
-			// 历史 thinking 不转发到 Chat：减上下文膨胀，并保持多轮前缀稳定以利缓存
+			// Chat Completions 没有可透传的 Claude thinking 内容块；是否转成可见文本由渠道配置决定。
 		case "text":
 			if text, ok := content["text"].(string); ok {
 				textContents = append(textContents, text)
@@ -913,9 +911,10 @@ func normalizeOpenAIUsage(base *types.Usage, details *openAIUsageDetails) types.
 // for post-compact context meter (~true prompt size without double-counting cache).
 //
 // Gateways may report either:
-//  A) total-style: input already includes cache (input >= cache_read) -> use input as-is
-//  B) split-style: input is uncached-only (input < cache_read) -> keep uncached input only
-//     (cache_read stays in cache_read_input_tokens for admin; do not sum into input)
+//
+//	A) total-style: input already includes cache (input >= cache_read) -> use input as-is
+//	B) split-style: input is uncached-only (input < cache_read) -> keep uncached input only
+//	   (cache_read stays in cache_read_input_tokens for admin; do not sum into input)
 func normalizeClaudeClientInputTokens(inputTokens int, cacheReadTokens int) int {
 	if inputTokens <= 0 {
 		return inputTokens
@@ -1239,7 +1238,6 @@ func generateID() string {
 	return fmt.Sprintf("msg_%d", time.Now().UnixNano())
 }
 
-
 // materializeClaudeThinkingAsText 将历史 thinking 块转为 text 块，供 Chat 上游在开启 IncludeHistoryThinking 时使用。
 func materializeClaudeThinkingAsText(messages []types.ClaudeMessage) []types.ClaudeMessage {
 	if len(messages) == 0 {
@@ -1284,4 +1282,3 @@ func materializeClaudeThinkingAsText(messages []types.ClaudeMessage) []types.Cla
 	}
 	return out
 }
-

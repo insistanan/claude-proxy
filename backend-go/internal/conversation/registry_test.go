@@ -102,8 +102,8 @@ func TestPersistentRegistryRestoresNameImageFingerprintsAndResponseAlias(t *test
 	if err := registry.AssociateExternalID(created.ID, "responses", "resp_123"); err != nil {
 		t.Fatalf("AssociateExternalID() error = %v", err)
 	}
-	if err := registry.SaveImageUnderstanding("image-cache-key", "第一张图片的描述"); err != nil {
-		t.Fatalf("SaveImageUnderstanding() error = %v", err)
+	if err := registry.SaveConversationImageUnderstanding(created.ID, "image-cache-key", "第一张图片的描述"); err != nil {
+		t.Fatalf("SaveConversationImageUnderstanding() error = %v", err)
 	}
 	registry.Stop()
 	legacyStore, err := NewSQLiteStore(dbPath)
@@ -145,13 +145,60 @@ func TestPersistentRegistryRestoresNameImageFingerprintsAndResponseAlias(t *test
 	if len(continued.ImageFingerprints) != 1 || continued.ImageFingerprints[0] != "sha256:image-a" {
 		t.Fatalf("image fingerprints = %#v", continued.ImageFingerprints)
 	}
-	if result, ok, err := restored.LoadImageUnderstanding("image-cache-key"); err != nil || !ok || result != "第一张图片的描述" {
-		t.Fatalf("LoadImageUnderstanding() = (%q, %v, %v)", result, ok, err)
+	if result, ok, err := restored.LoadConversationImageUnderstanding(created.ID, "image-cache-key"); err != nil || !ok || result != "第一张图片的描述" {
+		t.Fatalf("LoadConversationImageUnderstanding() = (%q, %v, %v)", result, ok, err)
 	}
 	if err := restored.Delete(created.ID); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 	if _, ok := restored.Get(created.ID); ok {
 		t.Fatal("deleted conversation is still available")
+	}
+	if err := restored.SaveConversationImageUnderstanding(created.ID, "image-cache-key", "不应写回"); err == nil {
+		t.Fatal("saving image result after delete should fail")
+	}
+	var imageRows int
+	if err := restored.store.db.QueryRow("SELECT COUNT(*) FROM conversation_image_understandings WHERE conversation_id = ?", created.ID).Scan(&imageRows); err != nil {
+		t.Fatalf("count image rows error = %v", err)
+	}
+	if imageRows != 0 {
+		t.Fatalf("image rows after delete = %d", imageRows)
+	}
+}
+
+func TestPersistentRegistryDeleteAllClearsRecordsAliasesAndImageResults(t *testing.T) {
+	registry, err := NewPersistentRegistry(filepath.Join(t.TempDir(), "conversations.db"))
+	if err != nil {
+		t.Fatalf("NewPersistentRegistry() error = %v", err)
+	}
+	defer registry.Stop()
+
+	for index, externalID := range []string{"resp_a", "resp_b"} {
+		record := registry.ObserveRequest(Observation{APIKind: "responses", ConversationID: externalID, FirstPrompt: externalID})
+		if record == nil {
+			t.Fatalf("record %d is nil", index)
+		}
+		if err := registry.AssociateExternalID(record.ID, "responses", externalID+"_alias"); err != nil {
+			t.Fatalf("AssociateExternalID() error = %v", err)
+		}
+		if err := registry.SaveConversationImageUnderstanding(record.ID, "cache", "result"); err != nil {
+			t.Fatalf("SaveConversationImageUnderstanding() error = %v", err)
+		}
+	}
+
+	if err := registry.DeleteAll(); err != nil {
+		t.Fatalf("DeleteAll() error = %v", err)
+	}
+	if got := len(registry.List()); got != 0 {
+		t.Fatalf("records after DeleteAll() = %d", got)
+	}
+	for _, table := range []string{"conversations", "conversation_aliases", "conversation_image_understandings"} {
+		var count int
+		if err := registry.store.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+			t.Fatalf("count %s error = %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows after DeleteAll() = %d", table, count)
+		}
 	}
 }

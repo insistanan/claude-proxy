@@ -1,9 +1,11 @@
 package visionlayer
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
@@ -22,22 +24,25 @@ func TestReplaceImagesUsesEachImageOwnDescription(t *testing.T) {
 			"data": "d29ybGQ=",
 		},
 	}
-	payload := map[string]interface{}{"messages": []interface{}{first, second}}
+	payload := map[string]interface{}{
+		"messages": []interface{}{map[string]interface{}{
+			"role":    "user",
+			"content": []interface{}{first, second},
+		}},
+	}
 	descriptions := map[string]string{
 		utils.ImageFingerprintForBlock(first):  "第一张图片：你好",
 		utils.ImageFingerprintForBlock(second): "第二张图片：世界",
 	}
 
-	transformed, replaced, err := replaceImages(payload, descriptions)
+	transformed, err := transformImagesForUpstream(payload, "claude", descriptions)
 	if err != nil {
-		t.Fatalf("replaceImages() error = %v", err)
-	}
-	if replaced != 2 {
-		t.Fatalf("replaced = %d, want 2", replaced)
+		t.Fatalf("transformImagesForUpstream() error = %v", err)
 	}
 
 	result := transformed.(map[string]interface{})
-	items := result["messages"].([]interface{})
+	message := result["messages"].([]interface{})[0].(map[string]interface{})
+	items := message["content"].([]interface{})
 	firstText := items[0].(map[string]interface{})["text"].(string)
 	secondText := items[1].(map[string]interface{})["text"].(string)
 	if !strings.Contains(firstText, "第一张图片：你好") || strings.Contains(firstText, "第二张图片：世界") {
@@ -48,10 +53,103 @@ func TestReplaceImagesUsesEachImageOwnDescription(t *testing.T) {
 	}
 }
 
-func TestImageCacheKeyDoesNotChangeWithVisionModel(t *testing.T) {
+func TestImageCacheKeyIncludesVisionProfile(t *testing.T) {
 	fingerprint := "sha256:example"
-	if first, second := buildImageCacheKey(fingerprint), buildImageCacheKey(fingerprint); first != second || first != fingerprint {
-		t.Fatalf("image cache key should only depend on fingerprint: %q %q", first, second)
+	first := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-a")
+	second := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-a")
+	changedModel := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-b")
+	if first != second {
+		t.Fatalf("same vision profile should have stable cache key: %q %q", first, second)
+	}
+	if first == changedModel {
+		t.Fatalf("different vision models should not share cache key: %q", first)
+	}
+}
+
+func TestTransformImagesForTargetProtocols(t *testing.T) {
+	tests := []struct {
+		name        string
+		serviceType string
+		image       map[string]interface{}
+		payload     func(map[string]interface{}) map[string]interface{}
+	}{
+		{
+			name:        "Claude Messages",
+			serviceType: "claude",
+			image: map[string]interface{}{
+				"type": "image",
+				"source": map[string]interface{}{
+					"type": "base64",
+					"data": "aGVsbG8=",
+				},
+			},
+			payload: func(image map[string]interface{}) map[string]interface{} {
+				return map[string]interface{}{"messages": []interface{}{map[string]interface{}{
+					"role": "user", "content": []interface{}{image},
+				}}}
+			},
+		},
+		{
+			name:        "OpenAI Chat",
+			serviceType: "openai",
+			image: map[string]interface{}{
+				"type":      "image_url",
+				"image_url": map[string]interface{}{"url": "https://example.com/image.png"},
+			},
+			payload: func(image map[string]interface{}) map[string]interface{} {
+				return map[string]interface{}{"messages": []interface{}{map[string]interface{}{
+					"role": "user", "content": []interface{}{image},
+				}}}
+			},
+		},
+		{
+			name:        "OpenAI Responses",
+			serviceType: "responses",
+			image: map[string]interface{}{
+				"type":      "input_image",
+				"image_url": "https://example.com/image.png",
+			},
+			payload: func(image map[string]interface{}) map[string]interface{} {
+				return map[string]interface{}{"input": []interface{}{map[string]interface{}{
+					"type": "message", "role": "user", "content": []interface{}{image},
+				}}}
+			},
+		},
+		{
+			name:        "Gemini",
+			serviceType: "gemini",
+			image: map[string]interface{}{
+				"inlineData": map[string]interface{}{"mimeType": "image/png", "data": "aGVsbG8="},
+			},
+			payload: func(image map[string]interface{}) map[string]interface{} {
+				return map[string]interface{}{"contents": []interface{}{map[string]interface{}{
+					"role": "user", "parts": []interface{}{image},
+				}}}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := tt.payload(tt.image)
+			fingerprint := utils.ImageFingerprintForBlock(tt.image)
+			transformed, err := transformImagesForUpstream(payload, tt.serviceType, map[string]string{
+				fingerprint: "稳定的图片描述",
+			})
+			if err != nil {
+				t.Fatalf("transformImagesForUpstream() error = %v", err)
+			}
+			images, err := collectImagesForUpstream(transformed, tt.serviceType)
+			if err != nil {
+				t.Fatalf("collectImagesForUpstream() error = %v", err)
+			}
+			if len(images) != 0 {
+				t.Fatalf("transformed payload still contains %d image blocks", len(images))
+			}
+			if text := extractUserText(transformed); !strings.Contains(text, "稳定的图片描述") {
+				t.Fatalf("transformed payload text = %q", text)
+			}
+		})
 	}
 }
 
@@ -125,5 +223,64 @@ func TestParseVisionBatchResponseRejectsInvalidResults(t *testing.T) {
 				t.Fatal("parseVisionBatchResponse() error = nil")
 			}
 		})
+	}
+}
+
+func TestVisionMemoryCacheHasHardLimit(t *testing.T) {
+	ClearCache()
+	for index := 0; index < 600; index++ {
+		storeMemoryCache(fmt.Sprintf("key-%d", index), "result")
+	}
+	visionCache.Lock()
+	count := len(visionCache.items)
+	visionCache.Unlock()
+	if count != 512 {
+		t.Fatalf("memory cache size = %d, want 512", count)
+	}
+	ClearCache()
+}
+
+func TestClaimAnalysisDeduplicatesConcurrentImage(t *testing.T) {
+	key := "conversation\x00image"
+	ClearCache()
+	visionCache.Lock()
+	visionCache.inflight = make(map[string]*visionInflightCall)
+	visionCache.Unlock()
+
+	_, cached, ownerCall, owner := claimAnalysis(key)
+	if cached || !owner || ownerCall == nil {
+		t.Fatalf("first claim = cached:%v owner:%v call:%v", cached, owner, ownerCall)
+	}
+	_, cached, waiterCall, owner := claimAnalysis(key)
+	if cached || owner || waiterCall != ownerCall {
+		t.Fatalf("second claim = cached:%v owner:%v sameCall:%v", cached, owner, waiterCall == ownerCall)
+	}
+
+	storeMemoryCache(key, "shared result")
+	finishAnalysis(key, ownerCall, "shared result", nil)
+	<-waiterCall.done
+	if waiterCall.err != nil || waiterCall.result != "shared result" {
+		t.Fatalf("waiter result = (%q, %v)", waiterCall.result, waiterCall.err)
+	}
+	result, cached, _, owner := claimAnalysis(key)
+	if !cached || owner || result != "shared result" {
+		t.Fatalf("completed claim = (%q, cached:%v, owner:%v)", result, cached, owner)
+	}
+	ClearCache()
+}
+
+func TestToClaudeImageBlockSupportsGeminiFileData(t *testing.T) {
+	block, ok := toClaudeImageBlock(map[string]interface{}{
+		"fileData": map[string]interface{}{
+			"mimeType": "image/png",
+			"fileUri":  "https://example.com/image.png",
+		},
+	})
+	if !ok {
+		t.Fatal("toClaudeImageBlock() ok = false")
+	}
+	source := block["source"].(map[string]interface{})
+	if source["type"] != "url" || source["url"] != "https://example.com/image.png" {
+		t.Fatalf("source = %#v", source)
 	}
 }

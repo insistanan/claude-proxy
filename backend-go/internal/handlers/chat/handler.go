@@ -89,7 +89,7 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 			return
 		}
 
-		if channelScheduler.IsMultiChannelMode(scheduler.ChannelKindChat) {
+		if channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindChat, chatReq.Model) {
 			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, hasImage, startTime)
 			return
 		}
@@ -334,7 +334,7 @@ func handleSingleChannel(
 	userID string,
 	startTime time.Time,
 ) {
-	upstream, channelIndex, err := cfgManager.GetCurrentChatUpstreamWithIndex()
+	upstream, channelIndex, err := cfgManager.GetCurrentChatUpstreamWithIndexForModel(chatReq.Model)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error": "未配置任何 Chat 渠道，请先在管理界面添加渠道",
@@ -428,7 +428,6 @@ func handleSingleChannelWithUpstream(
 }
 
 func buildChatUpstreamRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string, originalBody []byte) (*http.Request, error) {
-	originalBody = common.PreparedRequestBody(c, originalBody)
 	bodyBytes, err := applyChatModelMapping(originalBody, upstream)
 	if err != nil {
 		return nil, err
@@ -463,6 +462,10 @@ func applyChatModelMapping(bodyBytes []byte, upstream *config.UpstreamConfig) ([
 	}
 	if err := sanitizeOpenAIChatPayloadForUpstream(payload); err != nil {
 		return nil, err
+	}
+	if upstream != nil && upstream.DisablePromptCacheKey {
+		delete(payload, "prompt_cache_key")
+		delete(payload, "prompt_cache_retention")
 	}
 	ensureChatStreamUsageOptions(payload)
 
@@ -592,7 +595,11 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 }
 
 func buildChatDirectRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string, bodyBytes []byte) (*http.Request, error) {
-	bodyBytes = common.PreparedRequestBody(c, bodyBytes)
+	var err error
+	bodyBytes, err = stripChatPromptCacheFields(bodyBytes, upstream)
+	if err != nil {
+		return nil, err
+	}
 	url := buildChatCompletionsURL(upstream.GetEffectiveBaseURL())
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -602,6 +609,21 @@ func buildChatDirectRequest(c *gin.Context, upstream *config.UpstreamConfig, api
 	req.Header = utils.PrepareUpstreamHeaders(c, req.URL.Host)
 	utils.SetAuthenticationHeader(req.Header, apiKey)
 	return req, nil
+}
+
+func stripChatPromptCacheFields(bodyBytes []byte, upstream *config.UpstreamConfig) ([]byte, error) {
+	if upstream == nil || !upstream.DisablePromptCacheKey {
+		return bodyBytes, nil
+	}
+	var payload map[string]interface{}
+	decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析 Chat 请求体失败: %w", err)
+	}
+	delete(payload, "prompt_cache_key")
+	delete(payload, "prompt_cache_retention")
+	return utils.MarshalJSONNoEscape(payload)
 }
 
 func replaceChatModel(bodyBytes []byte, model string) ([]byte, error) {

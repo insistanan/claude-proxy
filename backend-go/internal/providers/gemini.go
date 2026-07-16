@@ -78,7 +78,7 @@ func (p *GeminiProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	// 使用统一的头部处理逻辑（透明代理）
 	// 保留客户端的大部分 headers，只移除/替换必要的认证和代理相关 headers
 	req.Header = utils.PrepareUpstreamHeaders(c, req.URL.Host)
-	
+
 	// 删除演练台模拟的客户端请求头（避免上游严格验证报错）
 	req.Header.Del("X-Codex-Window-Id")
 	req.Header.Del("X-Codex-Installation-Id")
@@ -94,7 +94,7 @@ func (p *GeminiProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	req.Header.Del("X-Stainless-Retry-Count")
 	req.Header.Del("X-Stainless-Timeout")
 	req.Header.Del("X-App")
-	
+
 	utils.SetGeminiAuthenticationHeader(req.Header, apiKey)
 
 	return req, originalBodyBytes, nil
@@ -549,7 +549,7 @@ func (p *GeminiProvider) convertMessage(msg types.ClaudeMessage, toolNameByID ma
 
 		switch contentType {
 		case "thinking":
-			// thinking 块不转发到 Gemini（Gemini 不支持历史 thinking），跳过
+			// Gemini contents 没有可透传的 Claude thinking 内容块。
 
 		case "text":
 			if text, ok := content["text"].(string); ok {

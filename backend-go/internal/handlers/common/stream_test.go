@@ -18,20 +18,20 @@ func TestPatchUsageFieldsWithLog_NilInputTokens(t *testing.T) {
 		wantValue      int
 	}{
 		{
-			name:           "nil input_tokens without cache - should patch",
+			name:           "large estimate without cache should stay unset",
 			usage:          map[string]interface{}{"input_tokens": nil, "output_tokens": float64(100)},
 			estimatedInput: 10920,
 			hasCacheTokens: false,
-			wantPatched:    true,
-			wantValue:      10920,
+			wantPatched:    false,
+			wantValue:      0,
 		},
 		{
-			name:           "nil input_tokens with cache - should also patch",
+			name:           "large estimate with cache should stay unset",
 			usage:          map[string]interface{}{"input_tokens": nil, "output_tokens": float64(100)},
 			estimatedInput: 10920,
 			hasCacheTokens: true,
-			wantPatched:    true,
-			wantValue:      10920,
+			wantPatched:    false,
+			wantValue:      0,
 		},
 		{
 			name:           "valid input_tokens - should not patch",
@@ -95,7 +95,7 @@ func TestPatchMessageStartInputTokensIfNeeded(t *testing.T) {
 		return 0
 	}
 
-	t.Run("input_tokens=0 should patch in message_start", func(t *testing.T) {
+	t.Run("input_tokens=0 should remain unchanged in message_start", func(t *testing.T) {
 		event := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n"
 		hasUsage, needInputPatch, _, usageData := CheckEventUsageStatus(event, false)
 		if !hasUsage {
@@ -107,12 +107,12 @@ func TestPatchMessageStartInputTokensIfNeeded(t *testing.T) {
 
 		patched := PatchMessageStartInputTokensIfNeeded(event, requestBody, needInputPatch, usageData, true, false, false)
 		got := extractInputTokens(t, patched)
-		if got != float64(estimated) {
-			t.Fatalf("expected input_tokens=%d, got %v", estimated, got)
+		if got != 0 {
+			t.Fatalf("expected input_tokens=0, got %v", got)
 		}
 	})
 
-	t.Run("input_tokens<10 should patch in message_start", func(t *testing.T) {
+	t.Run("input_tokens<10 should remain unchanged in message_start", func(t *testing.T) {
 		event := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":0}}}\n\n"
 		hasUsage, needInputPatch, _, usageData := CheckEventUsageStatus(event, false)
 		if !hasUsage {
@@ -124,8 +124,8 @@ func TestPatchMessageStartInputTokensIfNeeded(t *testing.T) {
 
 		patched := PatchMessageStartInputTokensIfNeeded(event, requestBody, needInputPatch, usageData, true, false, false)
 		got := extractInputTokens(t, patched)
-		if got != float64(estimated) {
-			t.Fatalf("expected input_tokens=%d, got %v", estimated, got)
+		if got != 5 {
+			t.Fatalf("expected input_tokens=5, got %v", got)
 		}
 	})
 
@@ -293,12 +293,12 @@ func TestPatchTokensInEventWithCache(t *testing.T) {
 		return 0
 	}
 
-	t.Run("should write inferred cache_read when not present", func(t *testing.T) {
+	t.Run("should not expose inferred cache_read when not present", func(t *testing.T) {
 		event := "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":20000,\"output_tokens\":100}}\n\n"
 		patched := PatchTokensInEventWithCache(event, 20000, 100, 80000, true, false, false)
 		got := extractCacheRead(t, patched)
-		if got != 80000 {
-			t.Errorf("expected cache_read_input_tokens=80000, got %v", got)
+		if got != 0 {
+			t.Errorf("expected cache_read_input_tokens=0, got %v", got)
 		}
 	})
 

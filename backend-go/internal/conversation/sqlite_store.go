@@ -21,7 +21,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, err
 	}
@@ -46,13 +46,26 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS image_understandings (
-		cache_key TEXT PRIMARY KEY,
+	// 旧版全局图片缓存不绑定对话，无法满足删除对话即失效的语义。
+	if _, err = db.Exec(`DROP TABLE IF EXISTS image_understandings`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS conversation_image_understandings (
+		conversation_id TEXT NOT NULL,
+		cache_key TEXT NOT NULL,
 		result TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
-		last_used_at INTEGER NOT NULL
+		last_used_at INTEGER NOT NULL,
+		PRIMARY KEY (conversation_id, cache_key),
+		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 	)`)
 	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversation_image_understandings_conversation_id
+		ON conversation_image_understandings(conversation_id)`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -115,11 +128,32 @@ func (s *SQLiteStore) Delete(id string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.Exec("DELETE FROM conversation_image_understandings WHERE conversation_id = ?", id); err != nil {
+		return err
+	}
 	if _, err = tx.Exec("DELETE FROM conversation_aliases WHERE conversation_id = ?", id); err != nil {
 		return err
 	}
 	if _, err = tx.Exec("DELETE FROM conversations WHERE id = ?", id); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) DeleteAll() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, table := range []string{
+		"conversation_image_understandings",
+		"conversation_aliases",
+		"conversations",
+	} {
+		if _, err = tx.Exec("DELETE FROM " + table); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -145,27 +179,41 @@ func (s *SQLiteStore) UpsertAlias(alias string, conversationID string) error {
 	return err
 }
 
-func (s *SQLiteStore) LoadImageUnderstanding(cacheKey string) (string, bool, error) {
+func (s *SQLiteStore) LoadConversationImageUnderstanding(conversationID string, cacheKey string) (string, bool, error) {
 	var result string
-	err := s.db.QueryRow("SELECT result FROM image_understandings WHERE cache_key = ?", cacheKey).Scan(&result)
+	err := s.db.QueryRow(`SELECT result FROM conversation_image_understandings
+		WHERE conversation_id = ? AND cache_key = ?`, conversationID, cacheKey).Scan(&result)
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
 	}
-	if _, err := s.db.Exec("UPDATE image_understandings SET last_used_at = ? WHERE cache_key = ?", time.Now().Unix(), cacheKey); err != nil {
+	if _, err := s.db.Exec(`UPDATE conversation_image_understandings SET last_used_at = ?
+		WHERE conversation_id = ? AND cache_key = ?`, time.Now().Unix(), conversationID, cacheKey); err != nil {
 		return "", false, err
 	}
 	return result, true, nil
 }
 
-func (s *SQLiteStore) UpsertImageUnderstanding(cacheKey string, result string) error {
+func (s *SQLiteStore) UpsertConversationImageUnderstanding(conversationID string, cacheKey string, result string) error {
 	now := time.Now().Unix()
-	_, err := s.db.Exec(`INSERT INTO image_understandings (cache_key, result, created_at, last_used_at)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(cache_key) DO UPDATE SET result = excluded.result, last_used_at = excluded.last_used_at`, cacheKey, result, now, now)
-	return err
+	resultSet, err := s.db.Exec(`INSERT INTO conversation_image_understandings (
+		conversation_id, cache_key, result, created_at, last_used_at
+	) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM conversations WHERE id = ?)
+	ON CONFLICT(conversation_id, cache_key) DO UPDATE SET
+		result = excluded.result, last_used_at = excluded.last_used_at`, conversationID, cacheKey, result, now, now, conversationID)
+	if err != nil {
+		return err
+	}
+	rows, err := resultSet.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("conversation not found")
+	}
+	return nil
 }
 func (s *SQLiteStore) Close() error {
 	if s == nil || s.db == nil {

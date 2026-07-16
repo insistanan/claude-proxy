@@ -2,12 +2,12 @@ package converters
 
 import (
 	"context"
-	"encoding/json"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
-	"fmt"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/session"
@@ -24,11 +24,11 @@ const (
 )
 
 // ConvertResponsesRequestToUpstream converts a Responses entry request to the target upstream protocol.
-// upstream may be nil (tests); when set it drives compact / history-thinking / prompt_cache_key options.
+// upstream may be nil (tests); when set it drives history-thinking and prompt_cache_key options.
 func ConvertResponsesRequestToUpstream(serviceType string, model string, bodyBytes []byte, stream bool, sess *session.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
 	switch serviceType {
 	case ResponsesUpstreamResponses:
-		return convertResponsesPassthroughRequest(model, bodyBytes)
+		return convertResponsesPassthroughRequest(model, bodyBytes, upstream)
 	case ResponsesUpstreamOpenAI:
 		return convertResponsesRequestToOpenAIChat(model, bodyBytes, stream, sess, req, upstream)
 	case ResponsesUpstreamClaude:
@@ -90,13 +90,17 @@ func ConvertUpstreamStreamLineToResponses(ctx context.Context, serviceType strin
 	}
 }
 
-func convertResponsesPassthroughRequest(model string, bodyBytes []byte) ([]byte, error) {
+func convertResponsesPassthroughRequest(model string, bodyBytes []byte, upstream *config.UpstreamConfig) ([]byte, error) {
 	var reqMap map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &reqMap); err != nil {
 		return nil, fmt.Errorf("透传模式下解析请求失败: %w", err)
 	}
 	if model != "" {
 		reqMap["model"] = model
+	}
+	if upstream != nil && upstream.DisablePromptCacheKey {
+		delete(reqMap, "prompt_cache_key")
+		delete(reqMap, "prompt_cache_retention")
 	}
 	return utils.MarshalJSONNoEscape(reqMap)
 }
@@ -149,11 +153,6 @@ func convertResponsesRequestToOpenAIChat(model string, bodyBytes []byte, stream 
 	if _, hasTools := chatReq["tools"]; !hasTools {
 		delete(chatReq, "tool_choice")
 		delete(chatReq, "parallel_tool_calls")
-	}
-
-	// Context compact: truncate long tool-role contents (same policy as Messages entry).
-	if messages, ok := chatReq["messages"].([]interface{}); ok && len(messages) > 0 {
-		chatReq["messages"] = utils.CompactOpenAIChatMessagesForUpstream(messages)
 	}
 
 	// prompt_cache_key: stable model+instructions+tools fingerprint; respect DisablePromptCacheKey.

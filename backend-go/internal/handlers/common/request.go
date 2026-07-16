@@ -48,26 +48,6 @@ func RestoreRequestBody(c *gin.Context, bodyBytes []byte) {
 	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 }
 
-// PreparedRequestBody 返回当前上游尝试实际应发送的请求体。
-// 图片理解层会在不改变客户端原始请求记录的前提下，写入这一份仅供上游使用的请求体。
-func PreparedRequestBody(c *gin.Context, fallback []byte) []byte {
-	if c == nil {
-		return fallback
-	}
-	if value, ok := c.Get(preparedRequestBodyKey); ok {
-		if body, ok := value.([]byte); ok {
-			return body
-		}
-	}
-	return fallback
-}
-
-func SetPreparedRequestBody(c *gin.Context, bodyBytes []byte) {
-	if c != nil {
-		c.Set(preparedRequestBodyKey, bodyBytes)
-	}
-}
-
 // SendRequest 发送 HTTP 请求到上游
 // isStream: 是否为流式请求（流式请求使用无超时客户端）
 // apiType: 接口类型（Messages/Responses/Gemini），用于日志标签前缀
@@ -425,6 +405,9 @@ func ResolveRequestedUpstream(
 	}
 	if config.GetChannelStatus(upstream) == config.ChannelStatusDeleted {
 		return nil, -1, fmt.Errorf("%s 渠道 [%d] 已删除", kind, channelIndex)
+	}
+	if kind != scheduler.ChannelKindImages && upstream.ExcludeFromConversation {
+		return nil, -1, fmt.Errorf("%s 渠道 [%d] 已设置为不参与对话", kind, channelIndex)
 	}
 	if strings.TrimSpace(upstream.GetEffectiveBaseURL()) == "" {
 		return nil, -1, fmt.Errorf("%s 渠道 [%d] 未配置 BaseURL", kind, channelIndex)

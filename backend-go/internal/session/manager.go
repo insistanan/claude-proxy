@@ -369,6 +369,23 @@ func (sm *SessionManager) DeleteConversation(conversationID string) error {
 	return nil
 }
 
+// DeleteAll 删除全部 Responses 会话及 response ID 映射。
+func (sm *SessionManager) DeleteAll() error {
+	if sm == nil {
+		return nil
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if sm.store != nil {
+		if err := sm.store.deleteAllSessions(); err != nil {
+			return fmt.Errorf("删除全部 Responses 持久化会话失败: %w", err)
+		}
+	}
+	sm.sessions = make(map[string]*Session)
+	sm.responseMapping = make(map[string]string)
+	return nil
+}
+
 // cleanupLoop 定期清理过期会话
 func (sm *SessionManager) cleanupLoop() {
 	defer close(sm.doneCh)

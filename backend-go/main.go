@@ -194,6 +194,10 @@ func main() {
 
 		// Messages 渠道管理
 		apiGroup.GET("/messages/channels", messages.GetUpstreams(cfgManager))
+		apiGroup.GET("/messages/pools", handlers.GetChannelPools(cfgManager, "messages"))
+		apiGroup.POST("/messages/pools", handlers.CreateChannelPool(cfgManager, "messages"))
+		apiGroup.PUT("/messages/pools/:id", handlers.UpdateChannelPool(cfgManager, "messages"))
+		apiGroup.DELETE("/messages/pools/:id", handlers.DeleteChannelPool(cfgManager, "messages"))
 		apiGroup.POST("/messages/channels", messages.AddUpstream(cfgManager))
 		apiGroup.PUT("/messages/channels/:id", messages.UpdateUpstream(cfgManager, channelScheduler))
 		apiGroup.DELETE("/messages/channels/:id", messages.DeleteUpstream(cfgManager, channelScheduler))
@@ -230,6 +234,10 @@ func main() {
 
 		// Responses 渠道管理
 		apiGroup.GET("/responses/channels", responses.GetUpstreams(cfgManager))
+		apiGroup.GET("/responses/pools", handlers.GetChannelPools(cfgManager, "responses"))
+		apiGroup.POST("/responses/pools", handlers.CreateChannelPool(cfgManager, "responses"))
+		apiGroup.PUT("/responses/pools/:id", handlers.UpdateChannelPool(cfgManager, "responses"))
+		apiGroup.DELETE("/responses/pools/:id", handlers.DeleteChannelPool(cfgManager, "responses"))
 		apiGroup.POST("/responses/channels", responses.AddUpstream(cfgManager))
 		apiGroup.PUT("/responses/channels/:id", responses.UpdateUpstream(cfgManager, channelScheduler))
 		apiGroup.DELETE("/responses/channels/:id", responses.DeleteUpstream(cfgManager, channelScheduler))
@@ -255,6 +263,10 @@ func main() {
 
 		// Gemini 渠道管理
 		apiGroup.GET("/gemini/channels", gemini.GetUpstreams(cfgManager))
+		apiGroup.GET("/gemini/pools", handlers.GetChannelPools(cfgManager, "gemini"))
+		apiGroup.POST("/gemini/pools", handlers.CreateChannelPool(cfgManager, "gemini"))
+		apiGroup.PUT("/gemini/pools/:id", handlers.UpdateChannelPool(cfgManager, "gemini"))
+		apiGroup.DELETE("/gemini/pools/:id", handlers.DeleteChannelPool(cfgManager, "gemini"))
 		apiGroup.POST("/gemini/channels", gemini.AddUpstream(cfgManager))
 		apiGroup.PUT("/gemini/channels/:id", gemini.UpdateUpstream(cfgManager, channelScheduler))
 		apiGroup.DELETE("/gemini/channels/:id", gemini.DeleteUpstream(cfgManager, channelScheduler))
@@ -281,6 +293,10 @@ func main() {
 
 		// Chat 渠道管理
 		apiGroup.GET("/chat/channels", chat.GetUpstreams(cfgManager))
+		apiGroup.GET("/chat/pools", handlers.GetChannelPools(cfgManager, "chat"))
+		apiGroup.POST("/chat/pools", handlers.CreateChannelPool(cfgManager, "chat"))
+		apiGroup.PUT("/chat/pools/:id", handlers.UpdateChannelPool(cfgManager, "chat"))
+		apiGroup.DELETE("/chat/pools/:id", handlers.DeleteChannelPool(cfgManager, "chat"))
 		apiGroup.POST("/chat/channels", chat.AddUpstream(cfgManager))
 		apiGroup.PUT("/chat/channels/:id", chat.UpdateUpstream(cfgManager, channelScheduler))
 		apiGroup.DELETE("/chat/channels/:id", chat.DeleteUpstream(cfgManager, channelScheduler))
@@ -308,6 +324,10 @@ func main() {
 
 		// Images 渠道管理
 		apiGroup.GET("/images/channels", images.GetUpstreams(cfgManager))
+		apiGroup.GET("/images/pools", handlers.GetChannelPools(cfgManager, "images"))
+		apiGroup.POST("/images/pools", handlers.CreateChannelPool(cfgManager, "images"))
+		apiGroup.PUT("/images/pools/:id", handlers.UpdateChannelPool(cfgManager, "images"))
+		apiGroup.DELETE("/images/pools/:id", handlers.DeleteChannelPool(cfgManager, "images"))
 		apiGroup.POST("/images/channels", images.AddUpstream(cfgManager))
 		apiGroup.PUT("/images/channels/:id", images.UpdateUpstream(cfgManager, channelScheduler))
 		apiGroup.DELETE("/images/channels/:id", images.DeleteUpstream(cfgManager, channelScheduler))
@@ -336,6 +356,7 @@ func main() {
 		// 对话与路由覆盖
 		apiGroup.GET("/conversations/route-options", handlers.GetConversationRouteOptions(cfgManager))
 		apiGroup.GET("/conversations", handlers.ListConversations(channelScheduler))
+		apiGroup.DELETE("/conversations", handlers.DeleteAllConversations(channelScheduler, sessionManager))
 		apiGroup.GET("/conversations/:id", handlers.GetConversation(channelScheduler))
 		apiGroup.PUT("/conversations/:id/name", handlers.SetConversationName(channelScheduler))
 		apiGroup.DELETE("/conversations/:id", handlers.DeleteConversation(channelScheduler, sessionManager))

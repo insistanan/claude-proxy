@@ -399,6 +399,20 @@ func (r *Registry) Delete(recordID string) error {
 	return nil
 }
 
+// DeleteAll 删除全部持久化对话及其专属图片理解结果。
+func (r *Registry) DeleteAll() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.store != nil {
+		if err := r.store.DeleteAll(); err != nil {
+			return err
+		}
+	}
+	r.records = make(map[string]*Record)
+	r.identityIndex = make(map[string]string)
+	return nil
+}
+
 // AssociateExternalID 将客户端后续会携带的外部响应 ID 关联到已有对话。
 // 目前主要用于 Responses API 的 previous_response_id 链。
 func (r *Registry) AssociateExternalID(recordID string, apiKind string, externalID string) error {
@@ -436,20 +450,38 @@ func (r *Registry) GetRouteOverride(recordID string) (*RouteOverride, bool) {
 	return &override, true
 }
 
-// LoadImageUnderstanding 读取单张图片已持久化的理解结果。
-func (r *Registry) LoadImageUnderstanding(cacheKey string) (string, bool, error) {
-	if r == nil || r.store == nil {
+// LoadConversationImageUnderstanding 读取当前对话内的图片理解结果。
+func (r *Registry) LoadConversationImageUnderstanding(conversationID string, cacheKey string) (string, bool, error) {
+	if r == nil {
 		return "", false, nil
 	}
-	return r.store.LoadImageUnderstanding(cacheKey)
+	r.mu.RLock()
+	exists := r.records[conversationID] != nil
+	store := r.store
+	r.mu.RUnlock()
+	if !exists {
+		return "", false, fmt.Errorf("conversation not found")
+	}
+	if store == nil {
+		return "", false, nil
+	}
+	return store.LoadConversationImageUnderstanding(conversationID, cacheKey)
 }
 
-// SaveImageUnderstanding 持久化单张图片的理解结果。
-func (r *Registry) SaveImageUnderstanding(cacheKey string, result string) error {
-	if r == nil || r.store == nil {
+// SaveConversationImageUnderstanding 保存当前对话内的图片理解结果。
+func (r *Registry) SaveConversationImageUnderstanding(conversationID string, cacheKey string, result string) error {
+	if r == nil {
 		return nil
 	}
-	return r.store.UpsertImageUnderstanding(cacheKey, result)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.records[conversationID] == nil {
+		return fmt.Errorf("conversation not found")
+	}
+	if r.store == nil {
+		return nil
+	}
+	return r.store.UpsertConversationImageUnderstanding(conversationID, cacheKey, result)
 }
 
 func (r *Registry) cleanupLoop() {
