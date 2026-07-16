@@ -168,8 +168,19 @@
               />
             </v-col>
 
+            <!-- 渠道状态（仅编辑时显示） -->
+            <v-col v-if="isEditing" cols="12" md="6">
+              <v-select
+                v-model="form.status"
+                label="渠道状态"
+                :items="channelStatusOptions"
+                variant="outlined"
+                density="comfortable"
+              />
+            </v-col>
+
             <!-- 模型路由子池 -->
-            <v-col cols="12">
+            <v-col cols="12" :md="isEditing ? 6 : 12">
               <v-select
                 v-model="form.poolId"
                 label="模型路由子池"
@@ -808,7 +819,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTheme } from 'vuetify'
-import type { Channel, ChannelPool } from '../services/api'
+import type { Channel, ChannelPool, ChannelStatus } from '../services/api'
 import { api, fetchUpstreamModels, ApiError } from '../services/api'
 import {
   isValidApiKey as _isValidApiKey,
@@ -828,7 +839,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   'update:show': [value: boolean]
-  save: [channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>, options?: { isQuickAdd?: boolean }]
+  save: [channel: Omit<Channel, 'id' | 'index' | 'latency'>, options?: { isQuickAdd?: boolean }]
 }>()
 
 // 主题
@@ -1292,6 +1303,7 @@ const targetModelPlaceholder = computed(() => {
 const form = reactive({
   name: '',
   serviceType: '' as 'openai' | 'gemini' | 'claude' | 'responses' | 'chat' | '',
+  status: 'active' as ChannelStatus,
   baseUrl: '',
   baseUrls: [] as string[],
   website: '',
@@ -1312,6 +1324,12 @@ const form = reactive({
   modelMapping: {} as Record<string, string[]>,  // 支持一对多映射
   defaultModel: '' as string | { title: string; value: string } | null
 })
+
+const channelStatusOptions = [
+  { title: '活跃', value: 'active' },
+  { title: '熔断', value: 'suspended' },
+  { title: '禁用', value: 'disabled' }
+] satisfies Array<{ title: string; value: ChannelStatus }>
 
 // 多 BaseURL 文本输入（独立变量，保留用户输入的换行）
 const baseUrlsText = ref('')
@@ -1591,6 +1609,7 @@ const maskApiKey = (key: string): string => {
 const resetForm = () => {
   form.name = ''
   form.serviceType = ''
+  form.status = 'active'
   form.baseUrl = ''
   form.baseUrls = []
   form.website = ''
@@ -1650,6 +1669,7 @@ const resetForm = () => {
 const loadChannelData = (channel: Channel) => {
   form.name = channel.name
   form.serviceType = channel.serviceType
+  form.status = channel.status || 'active'
   form.baseUrl = channel.baseUrl
   form.baseUrls = [...(channel.baseUrls || [])]
   form.website = channel.website || ''
@@ -1973,7 +1993,7 @@ const handleSubmit = async () => {
       : [form.baseUrl.trim().replace(/[#/]+$/, '')].filter(Boolean)
 
   // 构建渠道数据
-  const channelData: Omit<Channel, 'id' | 'index' | 'latency' | 'status'> = {
+  const channelData: Omit<Channel, 'id' | 'index' | 'latency'> = {
     name: form.name.trim(),
     serviceType: form.serviceType as 'openai' | 'gemini' | 'claude' | 'responses' | 'chat',
     baseUrl: deduplicatedUrls[0] || '',
@@ -1999,6 +2019,10 @@ const handleSubmit = async () => {
   // 多 BaseURL 支持
   if (deduplicatedUrls.length > 1) {
     channelData.baseUrls = deduplicatedUrls
+  }
+
+  if (isEditing.value) {
+    channelData.status = form.status
   }
 
   emit('save', channelData)

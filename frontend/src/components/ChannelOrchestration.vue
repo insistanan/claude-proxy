@@ -25,6 +25,7 @@
       @error="$emit('error', $event)"
       @success="$emit('success', $event)"
       @refresh="$emit('refresh')"
+      @toggle-vision-status="toggleChannelPrimaryStatus"
     >
       <template #channel="{ channel: element, index, pool, move_to_top, move_to_bottom }">
           <div class="channel-item-wrapper">

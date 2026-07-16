@@ -267,7 +267,7 @@ export const useChannelStore = defineStore('channel', () => {
    * 保存渠道（添加或更新）
    */
   async function saveChannel(
-    channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>,
+    channel: Omit<Channel, 'id' | 'index' | 'latency'>,
     editingChannelIndex: number | null,
     options?: { isQuickAdd?: boolean }
   ) {

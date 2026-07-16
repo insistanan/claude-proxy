@@ -101,7 +101,17 @@
     <div class="vision-channel-list">
       <div v-for="channel in visionChannels" :key="channel.index" class="vision-channel-row" @click="emit('edit', channel)">
         <v-icon size="small" color="primary">mdi-image-search-outline</v-icon>
-        <ChannelStatusBadge :status="channel.status || 'active'" />
+        <button
+          v-if="canToggleVisionStatus(channel)"
+          type="button"
+          class="vision-status-toggle"
+          :title="channel.status === 'suspended' ? '点击恢复为活跃' : '点击切换为熔断'"
+          :aria-label="channel.status === 'suspended' ? `将 ${channel.name} 恢复为活跃` : `将 ${channel.name} 切换为熔断`"
+          @click.stop="emit('toggleVisionStatus', channel)"
+        >
+          <ChannelStatusBadge :status="channel.status || 'active'" />
+        </button>
+        <ChannelStatusBadge v-else :status="channel.status || 'active'" />
         <span class="font-weight-medium text-truncate">{{ channel.name }}</span>
         <span class="text-caption text-medium-emphasis">{{ channel.serviceType }}</span>
         <v-spacer />
@@ -169,6 +179,7 @@ const emit = defineEmits<{
   error: [message: string]
   success: [message: string]
   refresh: []
+  toggleVisionStatus: [channel: Channel]
 }>()
 
 const pools = ref<ChannelPool[]>([])
@@ -227,6 +238,7 @@ const poolColumns = computed(() => {
   ]
 })
 const visionChannels = computed(() => props.channels.filter(channel => channel.excludeFromConversation && channel.status !== 'deleted'))
+const canToggleVisionStatus = (channel: Channel) => ['active', 'suspended'].includes(channel.status || 'active')
 const hasAssignedChannels = (poolId: string) => props.channels.some(channel => channel.status !== 'deleted' && (channel.poolId || 'default') === poolId)
 
 const matcherOptions = computed(() => {
@@ -372,6 +384,9 @@ const deletePool = async () => {
 .pool-empty { display: grid; place-items: center; min-height: 48px; color: rgba(var(--v-theme-on-surface), .55); font-size: 13px; }
 .vision-pool-section { margin-top: 18px; padding-bottom: 14px; border-bottom: 1px solid rgba(var(--v-theme-on-surface), .22); }
 .vision-channel-list { display: flex; flex-direction: column; gap: 7px; padding: 8px; border: 1px dashed rgba(var(--v-theme-on-surface), .48); }
+.vision-status-toggle { display: inline-flex; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.vision-status-toggle:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
+.vision-status-toggle :deep(.badge-content) { cursor: pointer; }
 .min-width-0 { min-width: 0; }
 @media (max-width: 1400px) {
   .pool-grid { display: flex; flex-direction: column; }
