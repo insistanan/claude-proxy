@@ -280,6 +280,7 @@ func mergeOpenCodeProviders(existing map[string]interface{}, providers []saveOpe
 			if oldModel == nil {
 				oldModel = make(map[string]interface{})
 			}
+			applyOpenCodeImageDefaults(oldModel)
 			setOptionalString(oldModel, "id", model.APIModelID)
 			setOptionalString(oldModel, "name", model.Name)
 			limits := make(map[string]interface{})
@@ -312,6 +313,19 @@ func mergeOpenCodeProviders(existing map[string]interface{}, providers []saveOpe
 		result[provider.ID] = oldProvider
 	}
 	return result
+}
+
+// applyOpenCodeImageDefaults declares image attachment support without replacing configured capabilities.
+func applyOpenCodeImageDefaults(model map[string]interface{}) {
+	if _, configured := model["attachment"]; !configured {
+		model["attachment"] = true
+	}
+	if _, configured := model["modalities"]; !configured {
+		model["modalities"] = map[string]interface{}{
+			"input":  []string{"text", "image"},
+			"output": []string{"text"},
+		}
+	}
 }
 
 func npmForOpenCodeProtocol(protocol, configuredNPM string) string {
