@@ -123,6 +123,7 @@ func handleMultiChannel(
 		userID,
 		claudeReq.Model,
 		hasImage,
+		cfgManager.GetFuzzyModeEnabled(),
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			channelIndex := selection.ChannelIndex
@@ -150,6 +151,7 @@ func handleMultiChannel(
 				metricsManager,
 				upstream,
 				claudeReq.Model, // 传入客户端请求的原始模型
+				cfgManager.GetFuzzyModeEnabled(),
 				sortedURLResults,
 				bodyBytes,
 				claudeReq.Stream,
@@ -285,6 +287,7 @@ func handleSingleChannelWithUpstream(
 		metricsManager,
 		upstream,
 		claudeReq.Model,
+		cfgManager.GetFuzzyModeEnabled(),
 		urlResults,
 		bodyBytes,
 		claudeReq.Stream,

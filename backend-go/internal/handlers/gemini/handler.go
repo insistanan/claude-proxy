@@ -174,6 +174,7 @@ func handleMultiChannel(
 		userID,
 		model,
 		false,
+		cfgManager.GetFuzzyModeEnabled(),
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			channelIndex := selection.ChannelIndex
@@ -195,6 +196,7 @@ func handleMultiChannel(
 				metricsManager,
 				upstream,
 				model,
+				cfgManager.GetFuzzyModeEnabled(),
 				sortedURLResults,
 				bodyBytes,
 				isStream,
@@ -335,6 +337,7 @@ func handleSingleChannelWithUpstream(
 		metricsManager,
 		upstream,
 		model,
+		cfgManager.GetFuzzyModeEnabled(),
 		urlResults,
 		bodyBytes,
 		isStream,

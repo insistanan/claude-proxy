@@ -84,8 +84,8 @@ func MarkRequestLogFirstToken(c *gin.Context) {
 	c.Set(requestLogFirstTokenAtKey, time.Now())
 }
 
-// TryUpstreamWithModelMappingFailover 在模型映射级别进行 failover
-// 如果配置了模型重定向（一对多），会依次尝试所有映射的模型
+// TryUpstreamWithModelMappingFailover 在模型映射级别进行 failover。
+// 非 Fuzzy 模式下仅尝试首个映射模型，避免跨模型故障转移。
 // 返回值与 TryUpstreamWithAllKeys 相同
 func TryUpstreamWithModelMappingFailover(
 	c *gin.Context,
@@ -97,6 +97,7 @@ func TryUpstreamWithModelMappingFailover(
 	metricsManager *metrics.MetricsManager,
 	upstream *config.UpstreamConfig,
 	requestedModel string, // 客户端请求的原始模型
+	allowModelFailover bool,
 	urlResults []urlhealth.URLLatencyResult,
 	requestBody []byte,
 	isStream bool,
@@ -115,7 +116,11 @@ func TryUpstreamWithModelMappingFailover(
 		// 没有映射，直接使用原始模型
 		targetModels = []string{requestedModel}
 	}
-	targetModels = rankTargetModelsForChannel(channelScheduler, upstream, targetModels, urlResults, logCtx.ChannelIndex)
+	if !allowModelFailover && len(targetModels) > 1 {
+		targetModels = targetModels[:1]
+	} else {
+		targetModels = rankTargetModelsForChannel(channelScheduler, upstream, targetModels, urlResults, logCtx.ChannelIndex)
+	}
 
 	// 如果只有一个目标模型，直接调用原有逻辑
 	if len(targetModels) == 1 {

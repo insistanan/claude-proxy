@@ -35,7 +35,7 @@ type HandleAllFailedFunc func(c *gin.Context, failoverErr *FailoverError, lastEr
 //
 // 选渠成功后会占用 in-flight 预留：
 // - 若该渠道最终 Handled（成功/客户端取消等已写回响应），请求结束后释放预留
-// - 若该渠道失败并继续 failover，立即释放预留再选下一个
+// - Fuzzy 模式下若该渠道失败并继续 failover，立即释放预留再选下一个
 // 这样并发新对话在选渠瞬间就能看到彼此的占用，避免都打到同一供应商。
 func HandleMultiChannelFailover(
 	c *gin.Context,
@@ -46,6 +46,7 @@ func HandleMultiChannelFailover(
 	userID string,
 	requestedModel string,
 	hasImage bool,
+	fuzzyMode bool,
 	trySelectedChannel TrySelectedChannelFunc,
 	onHandled OnMultiChannelHandledFunc,
 	handleAllFailed HandleAllFailedFunc,
@@ -64,6 +65,10 @@ func HandleMultiChannelFailover(
 	var lastFailoverError *FailoverError
 
 	maxChannelAttempts := channelScheduler.GetActiveChannelCountForModel(kind, requestedModel)
+	if !fuzzyMode && maxChannelAttempts > 1 {
+		// 非 Fuzzy 模式固定首次选中的渠道，只允许其内部 Key/BaseURL 重试。
+		maxChannelAttempts = 1
+	}
 
 	for channelAttempt := 0; channelAttempt < maxChannelAttempts; channelAttempt++ {
 		// 检查客户端是否已断开连接

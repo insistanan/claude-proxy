@@ -169,6 +169,44 @@ func TestSchedulerScopesChannelCountAndSelectionToModelPool(t *testing.T) {
 	}
 }
 
+func TestDefaultPoolPromotionPrecedesMatchedPoolAndFallsBackAfterFailure(t *testing.T) {
+	promotionUntil := time.Now().Add(5 * time.Minute)
+	cfg := config.Config{
+		MessagePools: []config.ChannelPool{
+			{ID: "deepseek", Name: "DeepSeek", ModelMatcher: "deepseek", Priority: 1},
+			{ID: config.DefaultChannelPoolID, Name: "默认子池", ModelMatcher: "*", Priority: 2},
+		},
+		Upstream: []config.UpstreamConfig{
+			{ID: "default-promoted", Name: "default-promoted", PoolID: config.DefaultChannelPoolID, BaseURL: "https://default.example.com", APIKeys: []string{"sk-default"}, Status: "active", Priority: 2, PromotionUntil: &promotionUntil},
+			{ID: "deepseek-promoted", Name: "deepseek-promoted", PoolID: "deepseek", BaseURL: "https://deepseek.example.com", APIKeys: []string{"sk-deepseek"}, Status: "active", Priority: 1, PromotionUntil: &promotionUntil},
+		},
+	}
+	scheduler, cleanup := createTestScheduler(t, cfg)
+	defer cleanup()
+
+	if got := scheduler.GetActiveChannelCountForModel(ChannelKindMessages, "deepseek-chat"); got != 2 {
+		t.Fatalf("deepseek 可尝试渠道数 = %d, want 2", got)
+	}
+
+	first, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{}, ChannelKindMessages, "deepseek-chat", false)
+	if err != nil {
+		t.Fatalf("首次选择渠道失败: %v", err)
+	}
+	if first.ChannelIndex != 0 || first.Reason != "default_pool_promotion_priority" {
+		t.Fatalf("首次应选择默认子池抢优渠道，got index=%d reason=%s", first.ChannelIndex, first.Reason)
+	}
+	scheduler.ReleaseChannelReservation(first.Kind, first.ChannelIndex)
+
+	second, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{first.ChannelIndex: true}, ChannelKindMessages, "deepseek-chat", false)
+	if err != nil {
+		t.Fatalf("默认子池抢优渠道失败后的选择失败: %v", err)
+	}
+	defer scheduler.ReleaseChannelReservation(second.Kind, second.ChannelIndex)
+	if second.ChannelIndex != 1 || second.Reason != "promotion_priority" {
+		t.Fatalf("应回落到命中子池的抢优渠道，got index=%d reason=%s", second.ChannelIndex, second.Reason)
+	}
+}
+
 // TestPromotedChannelSkippedAfterFailure 测试促销渠道在本次请求失败后被跳过
 func TestPromotedChannelSkippedAfterFailure(t *testing.T) {
 	promotionUntil := time.Now().Add(5 * time.Minute)

@@ -128,6 +128,7 @@ func handleMultiChannel(
 		userID,
 		chatReq.Model,
 		hasImage,
+		cfgManager.GetFuzzyModeEnabled(),
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
 			channelIndex := selection.ChannelIndex
@@ -148,6 +149,7 @@ func handleMultiChannel(
 				metricsManager,
 				upstream,
 				chatReq.Model, // 传入客户端请求的原始模型
+				cfgManager.GetFuzzyModeEnabled(),
 				sortedURLResults,
 				bodyBytes,
 				chatReq.Stream,
@@ -257,6 +259,7 @@ func handleRoutedChat(
 		metricsManager,
 		upstream,
 		chatReq.Model, // 添加 requestedModel 参数
+		cfgManager.GetFuzzyModeEnabled(),
 		urlResults,
 		routedBody,
 		chatReq.Stream,
@@ -393,6 +396,7 @@ func handleSingleChannelWithUpstream(
 		metricsManager,
 		upstream,
 		chatReq.Model,
+		cfgManager.GetFuzzyModeEnabled(),
 		urlResults,
 		bodyBytes,
 		chatReq.Stream,

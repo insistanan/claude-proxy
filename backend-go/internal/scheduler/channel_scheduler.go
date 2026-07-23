@@ -298,22 +298,8 @@ func (s *ChannelScheduler) SelectChannel(
 	if err != nil {
 		return nil, fmt.Errorf("选择 %s 子池失败: %w", kind, err)
 	}
-	// 先按模型路由到子池，再在该子池内执行完整的故障转移流程。
+	// 常规情况下先按模型路由到子池；默认子池中的促销渠道会在此路由前全局抢优。
 	activeChannels := s.getActiveChannels(kind, pool.ID)
-	if len(activeChannels) == 0 {
-		switch kind {
-		case ChannelKindGemini:
-			return nil, fmt.Errorf("没有可用的活跃 Gemini 渠道")
-		case ChannelKindResponses:
-			return nil, fmt.Errorf("没有可用的活跃 Responses 渠道")
-		case ChannelKindChat:
-			return nil, fmt.Errorf("没有可用的活跃 Chat 渠道")
-		case ChannelKindImages:
-			return nil, fmt.Errorf("没有可用的活跃 Images 渠道")
-		default:
-			return nil, fmt.Errorf("不支持的渠道类型: %s", kind)
-		}
-	}
 
 	// 图片不再改变最终回答渠道的选择。是否直接处理图片或启用图片理解层，
 	// 由选中的渠道配置在请求发送前决定。
@@ -353,38 +339,36 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 1. 检查促销期渠道（促销期优先，忽略 Trace 亲和性；同优先级内按在途负载分摊）
-	promotedChannels := s.findPromotedChannels(activeChannels, kind)
-	var promotedCandidates []ChannelInfo
-	for _, promotedCh := range promotedChannels {
-		if failedChannels[promotedCh.Index] {
-			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 已在本次请求中失败，跳过", prefix, promotedCh.Index, promotedCh.Name)
-			continue
+	// 1. 默认子池的促销渠道具有全局最高优先级。它们不受模型子池匹配限制，
+	// 失败后再回落到本次请求命中的子池继续故障转移。
+	if pool.ID != config.DefaultChannelPoolID {
+		defaultChannels := s.getActiveChannels(kind, config.DefaultChannelPoolID)
+		if selected := s.selectPromotedChannel(defaultChannels, failedChannels, kind, "default_pool_promotion_priority"); selected != nil {
+			return s.reserveAndReturn(selected, kind), nil
 		}
-		upstream := s.getUpstreamByIndex(promotedCh.Index, kind)
-		if upstream == nil || len(upstream.APIKeys) == 0 {
-			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 无可用密钥，跳过", prefix, promotedCh.Index, promotedCh.Name)
-			continue
-		}
-		promotedCandidates = append(promotedCandidates, promotedCh)
-	}
-	if len(promotedCandidates) > 0 {
-		selected := s.pickLeastLoadedChannel(promotedCandidates, kind)
-		upstream := s.getUpstreamByIndex(selected.Index, kind)
-		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
-		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%, inFlight: %d, candidates: %d)",
-			prefix, selected.Index, upstream.Name, failureRate*100, s.GetChannelInFlight(kind, selected.Index), len(promotedCandidates))
-		return s.reserveAndReturn(&SelectionResult{
-			Upstream:     upstream,
-			ChannelIndex: selected.Index,
-			Reason:       "promotion_priority",
-		}, kind), nil
 	}
 
-	// 2. 检查 Trace 亲和性（仅在无促销渠道时生效，保证同一会话连续性）
+	// 2. 检查请求命中子池的促销渠道（促销期优先，忽略 Trace 亲和性；同优先级内按在途负载分摊）
+	if selected := s.selectPromotedChannel(activeChannels, failedChannels, kind, "promotion_priority"); selected != nil {
+		return s.reserveAndReturn(selected, kind), nil
+	}
+
+	if len(activeChannels) == 0 {
+		switch kind {
+		case ChannelKindGemini:
+			return nil, fmt.Errorf("没有可用的活跃 Gemini 渠道")
+		case ChannelKindResponses:
+			return nil, fmt.Errorf("没有可用的活跃 Responses 渠道")
+		case ChannelKindChat:
+			return nil, fmt.Errorf("没有可用的活跃 Chat 渠道")
+		case ChannelKindImages:
+			return nil, fmt.Errorf("没有可用的活跃 Images 渠道")
+		default:
+			return nil, fmt.Errorf("不支持的渠道类型: %s", kind)
+		}
+	}
+
+	// 3. 检查 Trace 亲和性（仅在无促销渠道时生效，保证同一会话连续性）
 	if userID != "" {
 		if preferredIdx, ok := s.traceAffinity.GetPreferredChannelForKind(string(kind), userID); ok {
 			foundPreferredChannel := false
@@ -437,7 +421,7 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 3. 尝试使用自适应调度器（基于性能画像 + 在途预留）
+	// 4. 尝试使用自适应调度器（基于性能画像 + 在途预留）
 	s.mu.RLock()
 	adaptiveScheduler := s.adaptiveScheduler
 	s.mu.RUnlock()
@@ -462,7 +446,7 @@ func (s *ChannelScheduler) SelectChannel(
 		log.Printf("[%s-Adaptive] 自适应调度未找到可用渠道，降级到优先级调度", prefix)
 	}
 
-	// 4. 按优先级遍历活跃渠道（降级方案）
+	// 5. 按优先级遍历活跃渠道（降级方案）
 	// 同优先级内收集候选，再按 in-flight 选负载最低者，避免并发新对话全打到第一家供应商。
 	type priorityCandidate struct {
 		channel  ChannelInfo
@@ -534,12 +518,51 @@ func (s *ChannelScheduler) SelectChannel(
 		}, kind), nil
 	}
 
-	// 5. 所有健康渠道都失败，选择失败率最低的作为降级
+	// 6. 所有健康渠道都失败，选择失败率最低的作为降级
 	fallback, err := s.selectFallbackChannel(activeChannels, failedChannels, kind)
 	if err != nil {
 		return nil, err
 	}
 	return s.reserveAndReturn(fallback, kind), nil
+}
+
+func (s *ChannelScheduler) selectPromotedChannel(
+	activeChannels []ChannelInfo,
+	failedChannels map[int]bool,
+	kind ChannelKind,
+	reason string,
+) *SelectionResult {
+	promotedChannels := s.findPromotedChannels(activeChannels, kind)
+	var promotedCandidates []ChannelInfo
+	for _, promotedCh := range promotedChannels {
+		if failedChannels[promotedCh.Index] {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 已在本次请求中失败，跳过", prefix, promotedCh.Index, promotedCh.Name)
+			continue
+		}
+		upstream := s.getUpstreamByIndex(promotedCh.Index, kind)
+		if upstream == nil || len(upstream.APIKeys) == 0 {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Promotion] 警告: 促销渠道 [%d] %s 无可用密钥，跳过", prefix, promotedCh.Index, promotedCh.Name)
+			continue
+		}
+		promotedCandidates = append(promotedCandidates, promotedCh)
+	}
+	if len(promotedCandidates) > 0 {
+		selected := s.pickLeastLoadedChannel(promotedCandidates, kind)
+		upstream := s.getUpstreamByIndex(selected.Index, kind)
+		metricsManager := s.getMetricsManager(kind)
+		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+		prefix := kindSchedulerLogPrefix(kind)
+		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%, inFlight: %d, candidates: %d)",
+			prefix, selected.Index, upstream.Name, failureRate*100, s.GetChannelInFlight(kind, selected.Index), len(promotedCandidates))
+		return &SelectionResult{
+			Upstream:     upstream,
+			ChannelIndex: selected.Index,
+			Reason:       reason,
+		}
+	}
+	return nil
 }
 
 // pickLeastLoadedChannel 在候选渠道中选择 in-flight 最低者（用于促销等多候选场景）
@@ -1126,13 +1149,18 @@ func (s *ChannelScheduler) GetActiveChannelCount(kind ChannelKind) int {
 	return len(s.getActiveChannels(kind))
 }
 
-// GetActiveChannelCountForModel 返回指定模型命中子池内可参与故障转移的渠道数。
+// GetActiveChannelCountForModel 返回指定模型可参与故障转移的渠道数。
+// 当模型命中非默认子池时，还包括默认子池中全局抢优的促销渠道。
 func (s *ChannelScheduler) GetActiveChannelCountForModel(kind ChannelKind, model string) int {
 	pool, err := config.SelectChannelPool(s.getChannelPools(kind), model)
 	if err != nil {
 		return 0
 	}
-	return len(s.getActiveChannels(kind, pool.ID))
+	count := len(s.getActiveChannels(kind, pool.ID))
+	if pool.ID == config.DefaultChannelPoolID {
+		return count
+	}
+	return count + len(s.findPromotedChannels(s.getActiveChannels(kind, config.DefaultChannelPoolID), kind))
 }
 
 // IsMultiChannelMode 判断是否为多渠道模式
@@ -1141,7 +1169,14 @@ func (s *ChannelScheduler) IsMultiChannelMode(kind ChannelKind) bool {
 }
 
 func (s *ChannelScheduler) IsMultiChannelModeForModel(kind ChannelKind, model string) bool {
-	return s.GetActiveChannelCountForModel(kind, model) > 1
+	pool, err := config.SelectChannelPool(s.getChannelPools(kind), model)
+	if err != nil {
+		return false
+	}
+	if pool.ID != config.DefaultChannelPoolID && len(s.findPromotedChannels(s.getActiveChannels(kind, config.DefaultChannelPoolID), kind)) > 0 {
+		return true
+	}
+	return len(s.getActiveChannels(kind, pool.ID)) > 1
 }
 
 // maskUserID 掩码 user_id（保护隐私）
