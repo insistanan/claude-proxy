@@ -119,6 +119,69 @@ export interface Channel {
   stripThoughtSignature?: boolean        // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
 }
 
+export type OpenCodeProtocol = 'chat' | 'responses' | 'messages' | 'custom'
+
+export interface OpenCodeModel {
+  key: string
+  apiModelId: string
+  name: string
+  contextLimit: number
+  inputLimit: number
+  outputLimit: number
+  options: Record<string, unknown>
+}
+
+export interface OpenCodeProvider {
+  id: string
+  name: string
+  protocol: OpenCodeProtocol
+  npm: string
+  baseUrl: string
+  apiKeyMasked: string
+  apiKeyPresent: boolean
+  headers: Record<string, string>
+  options: Record<string, unknown>
+  models: OpenCodeModel[]
+}
+
+export interface OpenCodeConfig {
+  path: string
+  exists: boolean
+  jsonc: boolean
+  model: string
+  smallModel: string
+  providers: OpenCodeProvider[]
+}
+
+export interface SaveOpenCodeProvider extends Omit<OpenCodeProvider, 'apiKeyMasked' | 'apiKeyPresent'> {
+  apiKeyAction: 'keep' | 'replace' | 'remove'
+  apiKey?: string
+}
+
+export interface ClaudeCodeModelDefault {
+  family: string
+  model: string
+  name: string
+}
+
+export interface ClaudeCodeSettings {
+  path: string
+  exists: boolean
+  jsonc: boolean
+  baseUrl: string
+  credentialKind: 'authToken' | 'apiKey'
+  credentialMasked: string
+  credentialPresent: boolean
+  model: string
+  reasoningModel: string
+  modelDefaults: ClaudeCodeModelDefault[]
+}
+
+export interface SaveClaudeCodeSettings extends Pick<ClaudeCodeSettings, 'baseUrl' | 'credentialKind' | 'model' | 'reasoningModel' | 'modelDefaults'> {
+  credentialAction: 'keep' | 'replace' | 'remove'
+  credential?: string
+}
+
 export interface ChannelPool {
   id: string
   name: string
@@ -1095,6 +1158,32 @@ class ApiService {
     await this.request('/settings/client-disguise', {
       method: 'PUT',
       body: JSON.stringify({ protocol, enabled })
+    })
+  }
+
+  // ============== OpenCode 配置 API ==============
+
+  async getOpenCodeConfig(): Promise<OpenCodeConfig> {
+    return this.request('/settings/opencode')
+  }
+
+  async saveOpenCodeConfig(config: { providers: SaveOpenCodeProvider[] }): Promise<{ success: boolean; path: string }> {
+    return this.request('/settings/opencode', {
+      method: 'PUT',
+      body: JSON.stringify(config)
+    })
+  }
+
+  // ============== Claude Code 配置 API ==============
+
+  async getClaudeCodeSettings(): Promise<ClaudeCodeSettings> {
+    return this.request('/settings/claude-code')
+  }
+
+  async saveClaudeCodeSettings(settings: SaveClaudeCodeSettings): Promise<{ success: boolean; path: string }> {
+    return this.request('/settings/claude-code', {
+      method: 'PUT',
+      body: JSON.stringify(settings)
     })
   }
 

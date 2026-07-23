@@ -102,6 +102,14 @@
           <router-link to="/playground" class="api-type-text" :class="{ active: topNavActive === 'playground' }">
             演练台
           </router-link>
+          <span class="api-type-text separator">/</span>
+          <router-link to="/opencode" class="api-type-text" :class="{ active: topNavActive === 'opencode' }">
+            OpenCode
+          </router-link>
+          <span class="api-type-text separator">/</span>
+          <router-link to="/claude-code" class="api-type-text" :class="{ active: topNavActive === 'claude-code' }">
+            Claude Code
+          </router-link>
           <span class="brand-text d-none d-sm-inline">API Proxy</span>
         </div>
       </div>
@@ -313,7 +321,7 @@
                   Fuzzy
                 </v-btn>
               </template>
-              <span>{{ systemStore.fuzzyModeLoadError ? '加载失败，请刷新页面' : (preferencesStore.fuzzyModeEnabled ? 'Fuzzy 模式已启用：模糊处理错误，自动尝试所有渠道' : 'Fuzzy 模式已关闭：精确处理错误，透传上游响应') }}</span>
+              <span>{{ systemStore.fuzzyModeLoadError ? '加载失败，请刷新页面' : (preferencesStore.fuzzyModeEnabled ? 'Fuzzy 模式已启用：模糊处理错误，自动尝试所有渠道' : 'Fuzzy 模式已关闭：固定首个渠道，仅重试其 Key 与地址') }}</span>
             </v-tooltip>
           </div>
         </div>
@@ -418,7 +426,9 @@ const route = useRoute()
 const router = useRouter()
 const isConversationPage = computed(() => route.name === 'conversations')
 const isLogsPage = computed(() => route.name === 'request-logs')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value)
+const isOpenCodePage = computed(() => route.name === 'opencode')
+const isClaudeCodePage = computed(() => route.name === 'claude-code')
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isOpenCodePage.value || isClaudeCodePage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -444,6 +454,12 @@ const topNavActive = computed(() => {
   }
   if (route.path === '/playground') {
     return 'playground'
+  }
+  if (isOpenCodePage.value) {
+    return 'opencode'
+  }
+  if (isClaudeCodePage.value) {
+    return 'claude-code'
   }
   const type = route.params.type
   return typeof type === 'string' ? type : 'messages'
@@ -1132,7 +1148,19 @@ onUnmounted(() => {
 .header-title {
   display: flex;
   align-items: center;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.header-title::-webkit-scrollbar {
+  display: none;
+}
+
+.header-title > div {
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .api-type-text {

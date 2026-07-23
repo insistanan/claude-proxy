@@ -25,6 +25,18 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/opencode',
+    name: 'opencode',
+    component: () => import('@/views/OpenCodeView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/claude-code',
+    name: 'claude-code',
+    component: () => import('@/views/ClaudeCodeView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/channels/:type',  // 动态参数匹配 messages/responses/gemini/chat
     name: 'channels',
     component: () => import('@/views/ChannelsView.vue'),  // 懒加载

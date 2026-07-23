@@ -373,6 +373,10 @@ func main() {
 		apiGroup.PUT("/settings/fuzzy-mode", handlers.SetFuzzyMode(cfgManager))
 		apiGroup.GET("/settings/client-disguise", handlers.GetClientDisguise(cfgManager))
 		apiGroup.PUT("/settings/client-disguise", handlers.SetClientDisguise(cfgManager))
+		apiGroup.GET("/settings/opencode", handlers.GetOpenCodeConfig())
+		apiGroup.PUT("/settings/opencode", handlers.SaveOpenCodeConfig())
+		apiGroup.GET("/settings/claude-code", handlers.GetClaudeCodeSettings())
+		apiGroup.PUT("/settings/claude-code", handlers.SaveClaudeCodeSettings())
 	}
 
 	// 代理端点 - Messages API
