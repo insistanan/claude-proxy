@@ -137,7 +137,13 @@ const loadModels = async () => {
     const result = await fetchUpstreamModels(
       props.channel.baseUrl,
       props.channel.apiKeys[0],
-      props.channel.serviceType  // 传递 serviceType 以便选择正确的发现方法
+      props.channel.serviceType,
+      {
+        baseUrls: props.channel.baseUrls,
+        insecureSkipVerify: props.channel.insecureSkipVerify,
+        proxyMode: props.channel.proxyMode,
+        proxyUrl: props.channel.proxyUrl
+      }
     )
     
     if (result.data && result.data.length > 0) {

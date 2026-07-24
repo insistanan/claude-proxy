@@ -233,6 +233,36 @@
               />
             </v-col>
 
+            <!-- 出站代理策略 -->
+            <v-col cols="12" md="6">
+              <v-select
+                v-model="form.proxyMode"
+                label="出站代理"
+                :items="proxyModeOptions"
+                prepend-inner-icon="mdi-web"
+                variant="outlined"
+                density="comfortable"
+                :hint="proxyModeHint"
+                persistent-hint
+              />
+            </v-col>
+
+            <v-col v-if="form.proxyMode === 'custom'" cols="12" md="6">
+              <v-text-field
+                v-model="form.proxyUrl"
+                label="独立代理地址 *"
+                placeholder="http://127.0.0.1:7897"
+                prepend-inner-icon="mdi-web"
+                variant="outlined"
+                density="comfortable"
+                autocomplete="off"
+                spellcheck="false"
+                :rules="[rules.proxyUrl]"
+                hint="支持 http、https、socks5 和 socks5h"
+                persistent-hint
+              />
+            </v-col>
+
             <!-- Chat 默认模型 -->
             <v-col v-if="props.channelType === 'chat' && form.serviceType" cols="12">
               <v-card variant="outlined" rounded="lg">
@@ -1176,15 +1206,17 @@ const handleQuickSubmit = () => {
     serviceType: detectedServiceType.value || getDefaultServiceTypeValue(),
     baseUrl: detectedBaseUrl.value,
     baseUrls: detectedBaseUrls.value,
-	apiKeys: detectedApiKeys.value,
-	modelMapping: {},
-	defaultModel: '',
-	poolId: 'default',
-	visionCapable: props.channelType === 'responses',
-	excludeFromConversation: false,
-	visionLayerEnabled: false,
-	disablePromptCacheKey: false
-	}
+    apiKeys: detectedApiKeys.value,
+    modelMapping: {},
+    defaultModel: '',
+    poolId: 'default',
+    visionCapable: props.channelType === 'responses',
+    excludeFromConversation: false,
+    visionLayerEnabled: false,
+    disablePromptCacheKey: false,
+    proxyMode: 'inherit' as const,
+    proxyUrl: ''
+  }
 
   // 传递 isQuickAdd 标志，让 App.vue 知道需要进行后续处理
   emit('save', channelData, { isQuickAdd: true })
@@ -1308,6 +1340,8 @@ const form = reactive({
   baseUrls: [] as string[],
   website: '',
   insecureSkipVerify: false,
+  proxyMode: 'inherit' as 'inherit' | 'direct' | 'custom',
+  proxyUrl: '',
   lowQuality: false,
   visionCapable: false,
   poolId: 'default',
@@ -1330,6 +1364,18 @@ const channelStatusOptions = [
   { title: '熔断', value: 'suspended' },
   { title: '禁用', value: 'disabled' }
 ] satisfies Array<{ title: string; value: ChannelStatus }>
+
+const proxyModeOptions = [
+  { title: '继承全局设置', value: 'inherit' },
+  { title: '强制直连', value: 'direct' },
+  { title: '使用独立代理', value: 'custom' }
+]
+
+const proxyModeHint = computed(() => {
+  if (form.proxyMode === 'direct') return '忽略全局代理，该渠道始终直接连接上游'
+  if (form.proxyMode === 'custom') return '仅该渠道使用下方填写的代理地址'
+  return '跟随设置页面中的全局上游代理；全局未启用时直接连接'
+})
 
 // 多 BaseURL 文本输入（独立变量，保留用户输入的换行）
 const baseUrlsText = ref('')
@@ -1468,6 +1514,24 @@ const rules = {
       }
     }
     return true
+  },
+  proxyUrl: (value: string) => {
+    if (form.proxyMode !== 'custom') return true
+    const raw = value?.trim()
+    if (!raw) return '使用独立代理时必须填写代理地址'
+    try {
+      const parsed = new URL(raw)
+      if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol)) {
+        return '仅支持 http、https、socks5 和 socks5h 协议'
+      }
+      if (!parsed.hostname) return '代理地址必须包含主机'
+      if ((parsed.pathname && parsed.pathname !== '/') || parsed.search || parsed.hash) {
+        return '代理地址不能包含路径、查询参数或片段'
+      }
+      return true
+    } catch {
+      return '请输入有效的代理地址'
+    }
   }
 }
 
@@ -1497,7 +1561,8 @@ const subtitleClasses = computed(() => {
 const isFormValid = computed(() => {
   return (
     form.name.trim() && form.serviceType && form.baseUrl.trim() && isValidUrl(form.baseUrl) && form.apiKeys.length > 0 &&
-    (!form.visionLayerEnabled || form.visionLayerChannelId)
+    (!form.visionLayerEnabled || form.visionLayerChannelId) &&
+    (form.proxyMode !== 'custom' || rules.proxyUrl(form.proxyUrl) === true)
   )
 })
 
@@ -1614,6 +1679,8 @@ const resetForm = () => {
   form.baseUrls = []
   form.website = ''
   form.insecureSkipVerify = false
+  form.proxyMode = 'inherit'
+  form.proxyUrl = ''
   form.lowQuality = false
   form.visionCapable = props.channelType === 'responses'
   form.poolId = 'default'
@@ -1674,6 +1741,8 @@ const loadChannelData = (channel: Channel) => {
   form.baseUrls = [...(channel.baseUrls || [])]
   form.website = channel.website || ''
   form.insecureSkipVerify = !!channel.insecureSkipVerify
+  form.proxyMode = channel.proxyMode || 'inherit'
+  form.proxyUrl = channel.proxyUrl || ''
   form.lowQuality = !!channel.lowQuality
   form.visionCapable = !!channel.visionCapable
   form.poolId = channel.poolId || 'default'
@@ -1909,7 +1978,12 @@ const fetchTargetModels = async () => {
     keyModelsStatus.value.set(apiKey, { loading: true, success: false })
 
     try {
-      const response = await fetchUpstreamModels(form.baseUrl, apiKey)
+      const response = await fetchUpstreamModels(form.baseUrl, apiKey, form.serviceType, {
+        baseUrls: form.baseUrls,
+        insecureSkipVerify: form.insecureSkipVerify,
+        proxyMode: form.proxyMode,
+        proxyUrl: form.proxyMode === 'custom' ? form.proxyUrl.trim() : ''
+      })
 
       keyModelsStatus.value.set(apiKey, {
         loading: false,
@@ -1999,6 +2073,8 @@ const handleSubmit = async () => {
     baseUrl: deduplicatedUrls[0] || '',
     website: form.website.trim(), // 空字符串也需要传递，以便清除已有值
     insecureSkipVerify: form.insecureSkipVerify,
+    proxyMode: form.proxyMode,
+    proxyUrl: form.proxyMode === 'custom' ? form.proxyUrl.trim() : '',
     lowQuality: form.lowQuality,
     visionCapable: form.visionCapable,
     poolId: form.poolId,

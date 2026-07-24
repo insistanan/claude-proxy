@@ -81,6 +81,7 @@ func prepareNewUpstream(upstream *UpstreamConfig) {
 	upstream.APIKeys = deduplicateStrings(upstream.APIKeys)
 	upstream.BaseURLs = deduplicateBaseURLs(upstream.BaseURLs)
 	upstream.ModelMapping = normalizeModelMapping(upstream.ModelMapping)
+	normalizeUpstreamProxyConfig(upstream)
 }
 
 func normalizeModelMapping(mapping map[string][]string) map[string][]string {
@@ -222,6 +223,9 @@ func addValidatedUpstreamOp(upstreams []UpstreamConfig, pools []ChannelPool, ups
 	if err := ValidateChannelPoolAssignment(pools, candidate[result.Index].PoolID); err != nil {
 		return nil, AddedUpstream{}, err
 	}
+	if err := validateUpstreamProxyConfig(&candidate[result.Index]); err != nil {
+		return nil, AddedUpstream{}, err
+	}
 	if err := validateAllVisionLayerConfigs(candidate); err != nil {
 		return nil, AddedUpstream{}, err
 	}
@@ -280,6 +284,16 @@ func applyCommonUpdates(upstream *UpstreamConfig, index int, updates UpstreamUpd
 	}
 	if updates.InsecureSkipVerify != nil {
 		upstream.InsecureSkipVerify = *updates.InsecureSkipVerify
+	}
+	if updates.ProxyMode != nil {
+		upstream.ProxyMode = *updates.ProxyMode
+	}
+	if updates.ProxyURL != nil {
+		upstream.ProxyURL = *updates.ProxyURL
+	}
+	normalizeUpstreamProxyConfig(upstream)
+	if err := validateUpstreamProxyConfig(upstream); err != nil {
+		return false, err
 	}
 	if updates.Priority != nil {
 		upstream.Priority = *updates.Priority

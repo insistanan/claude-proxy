@@ -300,7 +300,11 @@ func tryCompactWithKey(
 	utils.SetAuthenticationHeader(req.Header, apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := common.SendRequest(req, upstream, envCfg, false, "Responses")
+	proxyURL, err := cfgManager.ResolveUpstreamProxyURL(upstream)
+	if err != nil {
+		return false, &compactError{status: 500, body: []byte(`{"error":"上游代理配置无效"}`), shouldFailover: false}
+	}
+	resp, err := common.SendRequest(req, upstream, envCfg, false, "Responses", proxyURL)
 	if err != nil {
 		return false, &compactError{status: 502, body: []byte(`{"error":"上游请求失败"}`), shouldFailover: true}
 	}

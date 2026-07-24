@@ -51,15 +51,22 @@ func RestoreRequestBody(c *gin.Context, bodyBytes []byte) {
 // SendRequest 发送 HTTP 请求到上游
 // isStream: 是否为流式请求（流式请求使用无超时客户端）
 // apiType: 接口类型（Messages/Responses/Gemini），用于日志标签前缀
-func SendRequest(req *http.Request, upstream *config.UpstreamConfig, envCfg *config.EnvConfig, isStream bool, apiType string) (*http.Response, error) {
+func SendRequest(req *http.Request, upstream *config.UpstreamConfig, envCfg *config.EnvConfig, isStream bool, apiType string, proxyURL string) (*http.Response, error) {
 	clientManager := httpclient.GetManager()
 
 	var client *http.Client
+	var err error
 	if isStream {
-		client = clientManager.GetStreamClient(upstream.InsecureSkipVerify)
+		client, err = clientManager.GetStreamClient(upstream.InsecureSkipVerify, proxyURL)
 	} else {
 		timeout := time.Duration(envCfg.RequestTimeout) * time.Millisecond
-		client = clientManager.GetStandardClient(timeout, upstream.InsecureSkipVerify)
+		client, err = clientManager.GetStandardClient(timeout, upstream.InsecureSkipVerify, proxyURL)
+	}
+	if err != nil {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, fmt.Errorf("创建上游 HTTP 客户端失败: %w", err)
 	}
 
 	if upstream.InsecureSkipVerify && envCfg.EnableRequestLogs {

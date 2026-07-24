@@ -152,6 +152,24 @@
         </template>
       </div>
 
+      <!-- 设置 -->
+      <v-tooltip text="设置" location="bottom">
+        <template #activator="{ props }">
+          <v-btn
+            v-bind="props"
+            icon
+            variant="text"
+            size="small"
+            class="header-btn"
+            :color="isSettingsPage ? 'primary' : undefined"
+            aria-label="设置"
+            @click="router.push('/settings')"
+          >
+            <v-icon size="20">mdi-cog</v-icon>
+          </v-btn>
+        </template>
+      </v-tooltip>
+
       <!-- 暗色模式切换 -->
       <v-btn icon variant="text" size="small" class="header-btn" @click="toggleDarkMode">
         <v-icon size="20">{{
@@ -428,7 +446,8 @@ const isConversationPage = computed(() => route.name === 'conversations')
 const isLogsPage = computed(() => route.name === 'request-logs')
 const isOpenCodePage = computed(() => route.name === 'opencode')
 const isClaudeCodePage = computed(() => route.name === 'claude-code')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isOpenCodePage.value || isClaudeCodePage.value)
+const isSettingsPage = computed(() => route.name === 'settings')
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isSettingsPage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -460,6 +479,9 @@ const topNavActive = computed(() => {
   }
   if (isClaudeCodePage.value) {
     return 'claude-code'
+  }
+  if (isSettingsPage.value) {
+    return 'settings'
   }
   const type = route.params.type
   return typeof type === 'string' ? type : 'messages'

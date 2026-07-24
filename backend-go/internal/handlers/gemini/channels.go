@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/httpclient"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/gin-gonic/gin"
 )
@@ -38,6 +39,8 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"description":                 up.Description,
 				"website":                     up.Website,
 				"insecureSkipVerify":          up.InsecureSkipVerify,
+				"proxyMode":                   up.ProxyMode,
+				"proxyUrl":                    up.ProxyURL,
 				"modelMapping":                up.ModelMapping,
 				"latency":                     nil,
 				"status":                      status,
@@ -74,7 +77,11 @@ func AddUpstream(cfgManager *config.ConfigManager) gin.HandlerFunc {
 
 		created, err := cfgManager.AddGeminiUpstreamWithResult(upstream)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			status := http.StatusInternalServerError
+			if config.IsConfigError(err) {
+				status = http.StatusBadRequest
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
 			return
 		}
 
@@ -103,7 +110,11 @@ func UpdateUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelSche
 
 		shouldResetMetrics, err := cfgManager.UpdateGeminiUpstream(id, updates)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			status := http.StatusInternalServerError
+			if config.IsConfigError(err) {
+				status = http.StatusBadRequest
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
 			return
 		}
 
@@ -369,7 +380,11 @@ func PingChannel(cfgManager *config.ConfigManager) gin.HandlerFunc {
 		}
 
 		// 简单的连通性测试
-		client := &http.Client{Timeout: 10 * time.Second}
+		client, err := httpclient.GetManager().GetStandardClientForUpstream(10*time.Second, cfgManager, &upstream)
+		if err != nil {
+			c.JSON(200, gin.H{"success": false, "error": err.Error(), "latency": 0})
+			return
+		}
 		testURL := fmt.Sprintf("%s/v1beta/models", strings.TrimRight(baseURL, "/"))
 
 		req, _ := http.NewRequest("GET", testURL, nil)
@@ -405,8 +420,6 @@ func PingAllChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
 		cfg := cfgManager.GetConfig()
 		results := make([]gin.H, 0, len(cfg.GeminiUpstream))
 
-		client := &http.Client{Timeout: 10 * time.Second}
-
 		for i, upstream := range cfg.GeminiUpstream {
 			if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted {
 				continue
@@ -418,6 +431,13 @@ func PingAllChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
 					"name":    upstream.Name,
 					"success": false,
 					"error":   "No base URL configured",
+				})
+				continue
+			}
+			client, err := httpclient.GetManager().GetStandardClientForUpstream(10*time.Second, cfgManager, &upstream)
+			if err != nil {
+				results = append(results, gin.H{
+					"index": i, "name": upstream.Name, "success": false, "error": err.Error(), "latency": 0,
 				})
 				continue
 			}

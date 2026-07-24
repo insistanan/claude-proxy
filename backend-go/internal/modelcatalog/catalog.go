@@ -250,7 +250,7 @@ func discoverChatModels(ctx context.Context, cfgManager *config.ConfigManager) (
 				)
 			}
 
-			foundModels, baseURL, method, err := discoverModelsForKey(ctx, &upstream, apiKey, baseURLs)
+			foundModels, baseURL, method, err := discoverModelsForKey(ctx, cfgManager, &upstream, apiKey, baseURLs)
 			if err != nil {
 				errors = append(errors, fmt.Sprintf("[%d]%s/%s: %v", channelIndex, upstream.Name, keyID, err))
 				continue
@@ -350,13 +350,13 @@ func appendChatRoute(
 	})
 }
 
-func discoverModelsForKey(ctx context.Context, upstream *config.UpstreamConfig, apiKey string, baseURLs []string) ([]string, string, string, error) {
+func discoverModelsForKey(ctx context.Context, cfgManager *config.ConfigManager, upstream *config.UpstreamConfig, apiKey string, baseURLs []string) ([]string, string, string, error) {
 	methods := orderedDiscoveryMethods(upstream.ServiceType)
 	var lastErr error
 
 	for _, baseURL := range baseURLs {
 		for _, method := range methods {
-			models, err := fetchModelsByMethod(ctx, upstream, apiKey, baseURL, method)
+			models, err := fetchModelsByMethod(ctx, cfgManager, upstream, apiKey, baseURL, method)
 			if err != nil {
 				lastErr = err
 				continue
@@ -375,6 +375,39 @@ func discoverModelsForKey(ctx context.Context, upstream *config.UpstreamConfig, 
 	return nil, "", "", lastErr
 }
 
+// DiscoverUpstreamModels 为管理界面的渠道模型发现提供统一的后端出站路径。
+func DiscoverUpstreamModels(ctx context.Context, cfgManager *config.ConfigManager, upstream *config.UpstreamConfig, apiKey string) (ModelsResponse, error) {
+	if cfgManager == nil || upstream == nil {
+		return ModelsResponse{}, fmt.Errorf("缺少模型发现配置")
+	}
+	baseURLs := upstream.GetAllBaseURLs()
+	if len(baseURLs) == 0 {
+		return ModelsResponse{}, fmt.Errorf("缺少上游地址")
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		return ModelsResponse{}, fmt.Errorf("缺少 API Key")
+	}
+
+	discoveryCtx, cancel := context.WithTimeout(ctx, modelsRequestTimeout)
+	defer cancel()
+	models, _, method, err := discoverModelsForKey(discoveryCtx, cfgManager, upstream, apiKey, baseURLs)
+	if err != nil {
+		return ModelsResponse{}, err
+	}
+
+	sort.Strings(models)
+	entries := make([]ModelEntry, 0, len(models))
+	for _, model := range models {
+		entries = append(entries, ModelEntry{
+			ID:      model,
+			Object:  "model",
+			Created: modelCreatedFallback,
+			OwnedBy: method,
+		})
+	}
+	return ModelsResponse{Object: "list", Data: entries}, nil
+}
+
 func orderedDiscoveryMethods(serviceType string) []string {
 	all := []string{"openai-v1", "openai-root", "anthropic", "gemini", "ollama"}
 	switch strings.ToLower(strings.TrimSpace(serviceType)) {
@@ -387,7 +420,7 @@ func orderedDiscoveryMethods(serviceType string) []string {
 	}
 }
 
-func fetchModelsByMethod(ctx context.Context, upstream *config.UpstreamConfig, apiKey, baseURL, method string) ([]string, error) {
+func fetchModelsByMethod(ctx context.Context, cfgManager *config.ConfigManager, upstream *config.UpstreamConfig, apiKey, baseURL, method string) ([]string, error) {
 	reqURL := ""
 	switch method {
 	case "openai-v1":
@@ -410,7 +443,10 @@ func fetchModelsByMethod(ctx context.Context, upstream *config.UpstreamConfig, a
 	}
 	applyModelsHeaders(req, apiKey, method)
 
-	client := httpclient.GetManager().GetStandardClient(modelsRequestTimeout, upstream.InsecureSkipVerify)
+	client, err := httpclient.GetManager().GetStandardClientForUpstream(modelsRequestTimeout, cfgManager, upstream)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

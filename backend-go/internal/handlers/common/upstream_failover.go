@@ -292,6 +292,10 @@ func TryUpstreamWithAllKeys(
 	if len(urlResults) == 0 {
 		return false, "", 0, nil, nil, nil
 	}
+	proxyURL, err := cfgManager.ResolveUpstreamProxyURL(upstream)
+	if err != nil {
+		return false, "", 0, nil, nil, err
+	}
 
 	// 同会话优先最近成功的 BaseURL，尽量保持 prompt cache 亲和
 	if channelScheduler != nil && logCtx.ConversationID != "" {
@@ -394,7 +398,7 @@ func TryUpstreamWithAllKeys(
 			// TCP 建连开始即计数：将活跃度统计提前到发起上游请求之前
 			requestID := metricsManager.RecordRequestConnected(currentBaseURL, apiKey, logCtx.Model)
 
-			resp, err := SendRequest(req, upstream, envCfg, isStream, apiType)
+			resp, err := SendRequest(req, upstream, envCfg, isStream, apiType, proxyURL)
 			if err != nil {
 				lastError = err
 				// 区分客户端取消和真实渠道故障（统一口径）

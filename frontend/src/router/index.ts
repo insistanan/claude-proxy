@@ -37,6 +37,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/settings',
+    name: 'settings',
+    component: () => import('@/views/SettingsView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/channels/:type',  // 动态参数匹配 messages/responses/gemini/chat
     name: 'channels',
     component: () => import('@/views/ChannelsView.vue'),  // 懒加载

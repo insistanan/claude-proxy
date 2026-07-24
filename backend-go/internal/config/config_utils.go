@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -71,6 +72,12 @@ type ConfigError struct {
 
 func (e *ConfigError) Error() string {
 	return e.Message
+}
+
+// IsConfigError 判断错误链中是否包含配置校验错误。
+func IsConfigError(err error) bool {
+	var target *ConfigError
+	return errors.As(err, &target)
 }
 
 // ============== 模型重定向 ==============

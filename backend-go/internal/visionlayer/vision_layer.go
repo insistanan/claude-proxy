@@ -344,10 +344,15 @@ func describeImages(
 				continue
 			}
 
+			timeout := time.Duration(envCfg.RequestTimeout) * time.Millisecond
+			client, clientErr := httpclient.GetManager().GetStandardClientForUpstream(timeout, cfgManager, upstream)
+			if clientErr != nil {
+				_ = request.Body.Close()
+				return nil, clientErr
+			}
 			channelScheduler.RecordRequestStart(baseURL, apiKey, kind)
 			metricsRequestID := channelScheduler.RecordRequestConnected(baseURL, apiKey, visionModel, kind)
-			timeout := time.Duration(envCfg.RequestTimeout) * time.Millisecond
-			response, requestErr := httpclient.GetManager().GetStandardClient(timeout, upstream.InsecureSkipVerify).Do(request)
+			response, requestErr := client.Do(request)
 			if requestErr != nil {
 				channelScheduler.RecordRequestFinalizeFailure(baseURL, apiKey, metricsRequestID, kind)
 				channelScheduler.RecordRequestEnd(baseURL, apiKey, kind)

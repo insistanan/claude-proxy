@@ -214,7 +214,14 @@ const loadModels = async () => {
   try {
     const result = await fetchUpstreamModels(
       channel.baseUrl,
-      channel.apiKeys[0]
+      channel.apiKeys[0],
+      channel.serviceType,
+      {
+        baseUrls: channel.baseUrls,
+        insecureSkipVerify: channel.insecureSkipVerify,
+        proxyMode: channel.proxyMode,
+        proxyUrl: channel.proxyUrl
+      }
     )
     
     if (result.data && result.data.length > 0) {

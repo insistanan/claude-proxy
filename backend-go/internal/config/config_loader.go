@@ -74,6 +74,10 @@ func (cm *ConfigManager) loadConfig() error {
 	// 为旧配置补齐稳定标识并归一化优先级，避免新增、删除和恢复渠道后出现错绑或重复排序。
 	needNormalization := cm.normalizeChannelLists()
 
+	if err := cm.validateProxyConfig(); err != nil {
+		return err
+	}
+
 	// 如果有默认值迁移或格式迁移，保存配置
 	if needSaveDefaults || needMigration || needNormalization {
 		if err := cm.saveConfigLocked(cm.config); err != nil {

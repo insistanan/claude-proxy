@@ -40,6 +40,8 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"description":             up.Description,
 				"website":                 up.Website,
 				"insecureSkipVerify":      up.InsecureSkipVerify,
+				"proxyMode":               up.ProxyMode,
+				"proxyUrl":                up.ProxyURL,
 				"modelMapping":            up.ModelMapping,
 				"latency":                 nil,
 				"status":                  status,
@@ -74,7 +76,11 @@ func AddUpstream(cfgManager *config.ConfigManager) gin.HandlerFunc {
 
 		created, err := cfgManager.AddUpstreamWithResult(upstream)
 		if err != nil {
-			c.JSON(500, gin.H{"error": "Failed to save config"})
+			if config.IsConfigError(err) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save config"})
+			}
 			return
 		}
 		cfg := cfgManager.GetConfig()
@@ -107,6 +113,8 @@ func UpdateUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelSche
 		if err != nil {
 			if strings.Contains(err.Error(), "无效的上游索引") {
 				c.JSON(404, gin.H{"error": "Upstream not found"})
+			} else if config.IsConfigError(err) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			} else {
 				c.JSON(500, gin.H{"error": "Failed to save config"})
 			}
@@ -414,13 +422,13 @@ func PingChannel(cfgManager *config.ConfigManager) gin.HandlerFunc {
 		}
 
 		channel := cfg.Upstream[id]
-		result := pingChannelWithAPIKey(&channel)
+		result := pingChannelWithAPIKey(cfgManager, &channel)
 		c.JSON(http.StatusOK, result)
 	}
 }
 
 // pingChannelWithAPIKey 使用真实 API 请求测试渠道（验证 URL + API Key）
-func pingChannelWithAPIKey(ch *config.UpstreamConfig) gin.H {
+func pingChannelWithAPIKey(cfgManager *config.ConfigManager, ch *config.UpstreamConfig) gin.H {
 	urls := ch.GetAllBaseURLs()
 	if len(urls) == 0 {
 		return gin.H{"success": false, "latency": 0, "status": "error", "error": "no_base_url"}
@@ -428,7 +436,7 @@ func pingChannelWithAPIKey(ch *config.UpstreamConfig) gin.H {
 
 	// 如果没有 API Key，回退到简单的连通性测试
 	if len(ch.APIKeys) == 0 {
-		return pingChannelURLs(ch)
+		return pingChannelURLs(cfgManager, ch)
 	}
 
 	// 使用第一个 API Key 测试（多 URL 并发，选最快的）
@@ -459,7 +467,11 @@ func pingChannelWithAPIKey(ch *config.UpstreamConfig) gin.H {
 				endpoint = testURL + "/v1/models"
 			}
 
-			client := httpclient.GetManager().GetStandardClient(10*time.Second, ch.InsecureSkipVerify)
+			client, err := httpclient.GetManager().GetStandardClientForUpstream(10*time.Second, cfgManager, ch)
+			if err != nil {
+				results <- pingResult{url: testURL, latency: 0, success: false, err: err.Error()}
+				return
+			}
 			req, err := http.NewRequest("GET", endpoint, nil)
 			if err != nil {
 				results <- pingResult{url: testURL, latency: 0, success: false, err: "req_creation_failed"}
@@ -516,7 +528,7 @@ func pingChannelWithAPIKey(ch *config.UpstreamConfig) gin.H {
 }
 
 // pingChannelURLs 简单的 URL 连通性测试（不验证 API Key）
-func pingChannelURLs(ch *config.UpstreamConfig) gin.H {
+func pingChannelURLs(cfgManager *config.ConfigManager, ch *config.UpstreamConfig) gin.H {
 	urls := ch.GetAllBaseURLs()
 	if len(urls) == 0 {
 		return gin.H{"success": false, "latency": 0, "status": "error", "error": "no_base_url"}
@@ -534,7 +546,11 @@ func pingChannelURLs(ch *config.UpstreamConfig) gin.H {
 		go func(testURL string) {
 			startTime := time.Now()
 			testURL = strings.TrimSuffix(testURL, "/")
-			client := httpclient.GetManager().GetStandardClient(5*time.Second, ch.InsecureSkipVerify)
+			client, err := httpclient.GetManager().GetStandardClientForUpstream(5*time.Second, cfgManager, ch)
+			if err != nil {
+				results <- pingResult{url: testURL, latency: 0, success: false, err: err.Error()}
+				return
+			}
 			req, err := http.NewRequest("HEAD", testURL, nil)
 			if err != nil {
 				results <- pingResult{url: testURL, latency: 0, success: false, err: "req_creation_failed"}
@@ -584,7 +600,7 @@ func PingAllChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			wg.Add(1)
 			go func(id int, ch config.UpstreamConfig) {
 				defer wg.Done()
-				result := pingChannelWithAPIKey(&ch)
+				result := pingChannelWithAPIKey(cfgManager, &ch)
 				result["id"] = id
 				result["name"] = ch.Name
 				results <- result

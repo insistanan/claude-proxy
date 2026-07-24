@@ -38,6 +38,8 @@ func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				"description":             up.Description,
 				"website":                 up.Website,
 				"insecureSkipVerify":      up.InsecureSkipVerify,
+				"proxyMode":               up.ProxyMode,
+				"proxyUrl":                up.ProxyURL,
 				"modelMapping":            up.ModelMapping,
 				"defaultModel":            up.DefaultModel,
 				"latency":                 nil,
@@ -72,7 +74,11 @@ func AddUpstream(cfgManager *config.ConfigManager) gin.HandlerFunc {
 
 		created, err := cfgManager.AddImagesUpstreamWithResult(upstream)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			status := http.StatusInternalServerError
+			if config.IsConfigError(err) {
+				status = http.StatusBadRequest
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
 			return
 		}
 
@@ -99,7 +105,11 @@ func UpdateUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelSche
 
 		shouldResetMetrics, err := cfgManager.UpdateImagesUpstream(id, updates)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			status := http.StatusInternalServerError
+			if config.IsConfigError(err) {
+				status = http.StatusBadRequest
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
 			return
 		}
 
@@ -339,19 +349,19 @@ func PingChannel(cfgManager *config.ConfigManager) gin.HandlerFunc {
 		}
 
 		channel := cfg.ImagesUpstream[id]
-		result := pingChannelWithAPIKey(&channel)
+		result := pingChannelWithAPIKey(cfgManager, &channel)
 		c.JSON(http.StatusOK, result)
 	}
 }
 
-func pingChannelWithAPIKey(ch *config.UpstreamConfig) gin.H {
+func pingChannelWithAPIKey(cfgManager *config.ConfigManager, ch *config.UpstreamConfig) gin.H {
 	urls := ch.GetAllBaseURLs()
 	if len(urls) == 0 {
 		return gin.H{"success": false, "latency": 0, "status": "error", "error": "no_base_url"}
 	}
 
 	if len(ch.APIKeys) == 0 {
-		return pingChannelURLs(ch)
+		return pingChannelURLs(cfgManager, ch)
 	}
 
 	apiKey := ch.APIKeys[0]
@@ -379,7 +389,11 @@ func pingChannelWithAPIKey(ch *config.UpstreamConfig) gin.H {
 				endpoint = testURL + "/v1/models"
 			}
 
-			client := httpclient.GetManager().GetStandardClient(10*time.Second, ch.InsecureSkipVerify)
+			client, err := httpclient.GetManager().GetStandardClientForUpstream(10*time.Second, cfgManager, ch)
+			if err != nil {
+				results <- pingResult{url: testURL, latency: 0, success: false, err: err.Error()}
+				return
+			}
 			req, err := http.NewRequest("GET", endpoint, nil)
 			if err != nil {
 				results <- pingResult{url: testURL, latency: 0, success: false, err: "req_creation_failed"}
@@ -432,7 +446,7 @@ func pingChannelWithAPIKey(ch *config.UpstreamConfig) gin.H {
 	return gin.H{"success": false, "latency": bestResult.latency, "status": "error", "error": bestResult.err}
 }
 
-func pingChannelURLs(ch *config.UpstreamConfig) gin.H {
+func pingChannelURLs(cfgManager *config.ConfigManager, ch *config.UpstreamConfig) gin.H {
 	urls := ch.GetAllBaseURLs()
 	if len(urls) == 0 {
 		return gin.H{"success": false, "latency": 0, "status": "error", "error": "no_base_url"}
@@ -449,7 +463,11 @@ func pingChannelURLs(ch *config.UpstreamConfig) gin.H {
 		go func(testURL string) {
 			start := time.Now()
 			testURL = strings.TrimSuffix(testURL, "/")
-			client := httpclient.GetManager().GetStandardClient(5*time.Second, ch.InsecureSkipVerify)
+			client, err := httpclient.GetManager().GetStandardClientForUpstream(5*time.Second, cfgManager, ch)
+			if err != nil {
+				results <- pingResult{latency: 0, success: false, err: err.Error()}
+				return
+			}
 			req, err := http.NewRequest("HEAD", testURL, nil)
 			if err != nil {
 				results <- pingResult{latency: 0, success: false, err: "req_creation_failed"}
@@ -497,7 +515,7 @@ func PingAllChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
 			wg.Add(1)
 			go func(id int, ch config.UpstreamConfig) {
 				defer wg.Done()
-				result := pingChannelWithAPIKey(&ch)
+				result := pingChannelWithAPIKey(cfgManager, &ch)
 				result["id"] = id
 				result["name"] = ch.Name
 				results <- result

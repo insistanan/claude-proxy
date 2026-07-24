@@ -28,6 +28,8 @@ type UpstreamConfig struct {
 	Description        string              `json:"description,omitempty"`
 	Website            string              `json:"website,omitempty"`
 	InsecureSkipVerify bool                `json:"insecureSkipVerify,omitempty"`
+	ProxyMode          string              `json:"proxyMode,omitempty"` // inherit（继承全局）、direct（直连）、custom（独立代理）
+	ProxyURL           string              `json:"proxyUrl,omitempty"`
 	ModelMapping       map[string][]string `json:"modelMapping,omitempty"` // 模型重定向：源模型 -> 目标模型列表（支持多个备选）
 	DefaultModel       string              `json:"defaultModel,omitempty"`
 	// 多渠道调度相关字段
@@ -105,6 +107,8 @@ type UpstreamUpdate struct {
 	Description        *string             `json:"description"`
 	Website            *string             `json:"website"`
 	InsecureSkipVerify *bool               `json:"insecureSkipVerify"`
+	ProxyMode          *string             `json:"proxyMode"`
+	ProxyURL           *string             `json:"proxyUrl"`
 	ModelMapping       map[string][]string `json:"modelMapping"` // 支持一对多映射
 	DefaultModel       *string             `json:"defaultModel"`
 	// 多渠道调度相关字段
@@ -203,8 +207,20 @@ func decodeModelMapping(raw json.RawMessage) (map[string][]string, error) {
 	return normalizeModelMapping(modelMapping), nil
 }
 
+// SettingsConfig 集中承载可由管理界面维护的全局设置，便于后续扩展其他设置分类。
+type SettingsConfig struct {
+	Network NetworkSettings `json:"network"`
+}
+
+// NetworkSettings 网络相关设置。
+type NetworkSettings struct {
+	UpstreamProxyURL string `json:"upstreamProxyUrl"`
+}
+
 // Config 配置结构
 type Config struct {
+	Settings SettingsConfig `json:"settings"`
+
 	Upstream        []UpstreamConfig `json:"upstream"`
 	MessagePools    []ChannelPool    `json:"messagePools,omitempty"`
 	CurrentUpstream int              `json:"currentUpstream,omitempty"` // 已废弃：旧格式兼容用

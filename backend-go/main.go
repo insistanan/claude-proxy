@@ -368,9 +368,12 @@ func main() {
 		apiGroup.PUT("/conversations/:id/route", handlers.SetConversationRouteOverride(channelScheduler, cfgManager))
 		apiGroup.DELETE("/conversations/:id/route", handlers.ClearConversationRouteOverride(channelScheduler))
 
-		// Fuzzy 模式设置
+		// 管理界面设置
 		apiGroup.GET("/settings/fuzzy-mode", handlers.GetFuzzyMode(cfgManager))
 		apiGroup.PUT("/settings/fuzzy-mode", handlers.SetFuzzyMode(cfgManager))
+		apiGroup.GET("/settings", handlers.GetSettings(cfgManager))
+		apiGroup.PUT("/settings", handlers.UpdateSettings(cfgManager))
+		apiGroup.POST("/upstream/models", handlers.DiscoverUpstreamModels(cfgManager))
 		apiGroup.GET("/settings/client-disguise", handlers.GetClientDisguise(cfgManager))
 		apiGroup.PUT("/settings/client-disguise", handlers.SetClientDisguise(cfgManager))
 		apiGroup.GET("/settings/opencode", handlers.GetOpenCodeConfig())
