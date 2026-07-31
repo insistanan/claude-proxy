@@ -48,6 +48,7 @@ import {
   mdiArrowDownBold,
   mdiCheck,
   mdiContentCopy,
+	mdiContentSave,
   mdiAlert,
   mdiWeatherNight,
   mdiWhiteBalanceSunny,
@@ -175,6 +176,7 @@ const iconMap: Record<string, string> = {
   'logout': mdiLogout,
   'archive-outline': mdiArchiveOutline,
   'archive-clock-outline': mdiArchiveClockOutline,
+	'content-save': mdiContentSave,
   'menu-down': mdiMenuDown,
   'menu-up': mdiMenuUp,
 

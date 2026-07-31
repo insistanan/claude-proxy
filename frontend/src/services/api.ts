@@ -149,6 +149,15 @@ export interface SkillsResponse {
   skills: ManagedSkill[]
 }
 
+export interface SkillBackup {
+  found: boolean
+  translated?: string
+  path?: string
+  createdAt?: string
+  model?: string
+  channelName?: string
+}
+
 export interface SkillSearchResult {
   id: string
   skillId: string
@@ -1124,6 +1133,10 @@ class ApiService {
 
   async getSkillContent(locationKey: string, name: string): Promise<{ content: string; path: string }> {
     return this.request('/skills/content', { method: 'POST', body: JSON.stringify({ locationKey, name }) })
+  }
+
+  async getLatestSkillBackup(locationKey: string, name: string): Promise<SkillBackup> {
+    return this.request('/skills/backup/latest', { method: 'POST', body: JSON.stringify({ locationKey, name }) })
   }
 
   async importSkill(fileName: string, contentBase64: string, targets: string[]): Promise<{ success: boolean; name: string }> {

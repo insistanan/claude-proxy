@@ -3,6 +3,7 @@ package handlers
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -70,6 +71,16 @@ type skillBackupRequest struct {
 	ChannelName string `json:"channelName"`
 }
 
+type skillBackupMetadata struct {
+	Name         string `json:"name"`
+	SourcePath   string `json:"sourcePath"`
+	SourceSHA256 string `json:"sourceSha256,omitempty"`
+	Agent        string `json:"agent"`
+	Model        string `json:"model"`
+	ChannelName  string `json:"channelName"`
+	CreatedAt    string `json:"createdAt"`
+}
+
 type skillCopyRequest struct {
 	LocationKey string   `json:"locationKey"`
 	Name        string   `json:"name"`
@@ -119,6 +130,35 @@ func GetSkillContent() gin.HandlerFunc {
 			return
 		}
 		c.JSON(200, gin.H{"content": string(content), "path": filepath.Join(ref.Path, "SKILL.md")})
+	}
+}
+
+// GetLatestSkillBackup 返回与当前 Skill 来源及内容匹配的最近一份译文。
+// 原文内容发生变化时不恢复旧译文，以避免展示与当前版本不对应的翻译。
+func GetLatestSkillBackup() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ref, ok := bindSkillReference(c)
+		if !ok {
+			return
+		}
+		original, err := os.ReadFile(filepath.Join(ref.Path, "SKILL.md"))
+		if err != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("读取原 Skill 失败: %v", err)})
+			return
+		}
+		backup, found, err := latestSkillBackup(ref, original)
+		if err != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("读取翻译备份失败: %v", err)})
+			return
+		}
+		if !found {
+			c.JSON(200, gin.H{"found": false})
+			return
+		}
+		c.JSON(200, gin.H{
+			"found": true, "translated": backup.Translated, "path": backup.Path,
+			"createdAt": backup.Metadata.CreatedAt, "model": backup.Metadata.Model, "channelName": backup.Metadata.ChannelName,
+		})
 	}
 }
 
@@ -300,10 +340,9 @@ func BackupSkill() gin.HandlerFunc {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("创建备份目录失败: %v", err)})
 			return
 		}
-		metadata, err := json.MarshalIndent(gin.H{
-			"name": req.Name, "sourcePath": filepath.Join(ref.Path, "SKILL.md"), "agent": ref.Agent,
-			"model": strings.TrimSpace(req.Model), "channelName": strings.TrimSpace(req.ChannelName),
-			"createdAt": time.Now().Format(time.RFC3339),
+		metadata, err := json.MarshalIndent(skillBackupMetadata{
+			Name: req.Name, SourcePath: filepath.Join(ref.Path, "SKILL.md"), SourceSHA256: skillContentSHA256(original), Agent: ref.Agent,
+			Model: strings.TrimSpace(req.Model), ChannelName: strings.TrimSpace(req.ChannelName), CreatedAt: time.Now().Format(time.RFC3339),
 		}, "", "  ")
 		if err != nil {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("序列化备份元数据失败: %v", err)})
@@ -695,6 +734,15 @@ func writeSkillFiles(destination string, files map[string][]byte) error {
 }
 
 func projectSkillsBackupDir(name string) (string, error) {
+	root, err := projectSkillsBackupRoot(name)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, time.Now().Format("20060102-150405.000000000"))
+	return dir, os.MkdirAll(dir, 0700)
+}
+
+func projectSkillsBackupRoot(name string) (string, error) {
 	if !skillNamePattern.MatchString(name) {
 		return "", errors.New("Skill 名称无效")
 	}
@@ -705,6 +753,56 @@ func projectSkillsBackupDir(name string) (string, error) {
 	if filepath.Base(workingDir) == "backend-go" {
 		workingDir = filepath.Dir(workingDir)
 	}
-	dir := filepath.Join(workingDir, "skills", name, time.Now().Format("20060102-150405"))
-	return dir, os.MkdirAll(dir, 0700)
+	return filepath.Join(workingDir, "skills", name), nil
+}
+
+type skillBackup struct {
+	Translated string
+	Path       string
+	Metadata   skillBackupMetadata
+}
+
+func latestSkillBackup(ref skillItem, original []byte) (skillBackup, bool, error) {
+	root, err := projectSkillsBackupRoot(ref.Name)
+	if err != nil {
+		return skillBackup{}, false, err
+	}
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return skillBackup{}, false, nil
+	}
+	if err != nil {
+		return skillBackup{}, false, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
+	expectedPath := filepath.Clean(filepath.Join(ref.Path, "SKILL.md"))
+	expectedHash := skillContentSHA256(original)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		backupPath := filepath.Join(root, entry.Name())
+		metadataBytes, err := os.ReadFile(filepath.Join(backupPath, "metadata.json"))
+		if err != nil {
+			continue
+		}
+		var metadata skillBackupMetadata
+		if err := json.Unmarshal(metadataBytes, &metadata); err != nil || filepath.Clean(metadata.SourcePath) != expectedPath {
+			continue
+		}
+		if metadata.SourceSHA256 != "" && metadata.SourceSHA256 != expectedHash {
+			continue
+		}
+		translated, err := os.ReadFile(filepath.Join(backupPath, "translated.zh-CN.md"))
+		if err != nil || strings.TrimSpace(string(translated)) == "" {
+			continue
+		}
+		return skillBackup{Translated: string(translated), Path: backupPath, Metadata: metadata}, true, nil
+	}
+	return skillBackup{}, false, nil
+}
+
+func skillContentSHA256(content []byte) string {
+	sum := sha256.Sum256(content)
+	return fmt.Sprintf("%x", sum)
 }

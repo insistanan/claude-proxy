@@ -382,6 +382,7 @@ func main() {
 		apiGroup.PUT("/settings/claude-code", handlers.SaveClaudeCodeSettings())
 		apiGroup.GET("/skills", handlers.ListSkills())
 		apiGroup.POST("/skills/content", handlers.GetSkillContent())
+		apiGroup.POST("/skills/backup/latest", handlers.GetLatestSkillBackup())
 		apiGroup.POST("/skills/import", handlers.ImportSkill())
 		apiGroup.GET("/skills/search", handlers.SearchSkills())
 		apiGroup.POST("/skills/remote/inspect", handlers.InspectRemoteSkill())

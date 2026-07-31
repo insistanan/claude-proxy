@@ -147,7 +147,7 @@
           <v-row align="center">
             <v-col cols="12" md="5"><v-select v-model="translationChannel" :items="chatChannels" item-title="name" item-value="index" label="Chat 渠道（可选）" variant="outlined" clearable hint="留空按正常调度选择渠道" persistent-hint /></v-col>
             <v-col cols="12" md="5"><v-combobox v-model="translationModel" :items="translationModelOptions" item-title="title" item-value="value" label="模型 ID（可选）" variant="outlined" clearable :loading="translationModelsLoading" :error-messages="translationModelsError || undefined" hint="选择渠道后自动获取模型；也可手动输入，留空使用 translate-skill" persistent-hint /></v-col>
-            <v-col cols="12" md="2" class="d-flex ga-2 pt-md-8"><v-btn icon="mdi-translate" color="primary" :loading="translating" title="翻译" @click="translateSkill" /><v-btn icon="mdi-content-copy" :disabled="!translatedContent" title="保存备份" @click="saveBackup" /></v-col>
+            <v-col cols="12" md="2" class="d-flex ga-2 pt-md-8"><v-btn icon="mdi-translate" color="primary" :loading="translating" title="翻译并自动保存" @click="translateSkill" /><v-btn icon="mdi-content-save" :disabled="!translatedContent || savingBackup" :loading="savingBackup" title="保存当前译文" @click="() => saveBackup()" /></v-col>
           </v-row>
         </div>
       </v-card>
@@ -168,7 +168,12 @@
     <v-dialog v-model="deleteDialog" max-width="500" persistent>
       <v-card><v-card-title>删除 Skill</v-card-title><v-card-text>确认删除 <strong>{{ selectedSkill?.name }}</strong> 吗？将移除 <code>{{ selectedSkill?.path }}</code> 下的整个 Skill 目录。</v-card-text><v-card-actions><v-spacer /><v-btn variant="text" @click="deleteDialog = false">取消</v-btn><v-btn color="error" :loading="deleting" @click="deleteSelected">删除</v-btn></v-card-actions></v-card>
     </v-dialog>
-    <v-snackbar v-model="notice.visible" :color="notice.type" location="top right">{{ notice.message }}</v-snackbar>
+    <v-snackbar v-model="notice.visible" :color="notice.type" location="bottom right" :timeout="3000" variant="elevated">
+      <div class="d-flex align-center ga-3">
+        <span>{{ notice.message }}</span>
+        <v-btn icon="mdi-close" variant="text" size="small" aria-label="关闭通知" @click="notice.visible = false" />
+      </div>
+    </v-snackbar>
   </div>
 </template>
 
@@ -188,6 +193,7 @@ const remoteSearching = ref(false)
 const remoteInstalling = ref(false)
 const remoteInspectingId = ref('')
 const translating = ref(false)
+const savingBackup = ref(false)
 const deleting = ref(false)
 const error = ref('')
 const detailError = ref('')
@@ -374,7 +380,17 @@ const importSelected = async () => {
 
 const openSkill = async (skill: ManagedSkill) => {
   selectedSkill.value = skill; originalContent.value = ''; translatedContent.value = ''; detailError.value = ''; detailDialog.value = true
-  try { originalContent.value = (await api.getSkillContent(skill.locationKey, skill.name)).content }
+  try {
+    const [contentResult, backupResult] = await Promise.all([
+      api.getSkillContent(skill.locationKey, skill.name),
+      api.getLatestSkillBackup(skill.locationKey, skill.name)
+    ])
+    originalContent.value = contentResult.content
+    if (backupResult.found && backupResult.translated) {
+      translatedContent.value = backupResult.translated
+      notice.value = { visible: true, type: 'success', message: '已恢复最近保存的译文' }
+    }
+  }
   catch (loadError) { detailError.value = loadError instanceof Error ? loadError.message : '读取 Skill 失败' }
 }
 
@@ -398,37 +414,165 @@ const copySelected = async () => {
   } finally { copying.value = false }
 }
 
+const normalizeTranslationModel = (value: unknown): string => {
+  if (typeof value === 'string') return value.trim()
+  if (!value || typeof value !== 'object') return ''
+
+  const record = value as Record<string, unknown>
+  for (const key of ['value', 'id', 'title']) {
+    const candidate = record[key]
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
+  }
+  return ''
+}
+
+const normalizeTranslationChannelIndex = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = typeof value === 'number' ? value : Number(String(value).trim())
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
 const translateSkill = async () => {
   if (!selectedSkill.value || !originalContent.value) return
   const accessKey = useAuthStore().apiKey
   if (!accessKey) { detailError.value = '未找到管理界面访问密钥'; return }
   translating.value = true; detailError.value = ''
   try {
+    const model = normalizeTranslationModel(translationModel.value)
+    const channelIndex = normalizeTranslationChannelIndex(translationChannel.value)
     const body: Record<string, unknown> = {
-      model: translationModel.value || 'translate-skill', stream: false,
+      model: model || 'translate-skill', stream: true,
       messages: [
         { role: 'system', content: '你是专业技术翻译。将用户提供的 Agent Skill 英文内容完整翻译为简体中文。保留 YAML frontmatter 的字段名、name 值、代码块、文件路径、命令、URL 和 Markdown 结构；只翻译可读的自然语言。仅输出翻译后的完整 Markdown，不要解释。' },
         { role: 'user', content: originalContent.value }
       ]
     }
-    if (translationChannel.value !== null) body.metadata = { channel_index: translationChannel.value }
-    const response = await fetch(`${PROXY_BASE}/v1/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': accessKey }, body: JSON.stringify(body) })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : `翻译请求失败 (${response.status})`)
-    const content = payload?.choices?.[0]?.message?.content
-    if (typeof content !== 'string' || !content.trim()) throw new Error('翻译渠道未返回文本内容')
-    translatedContent.value = content.trim()
-  } catch (translationError) { detailError.value = translationError instanceof Error ? translationError.message : '翻译失败' }
+    if (channelIndex !== null) body.metadata = { channel_index: channelIndex }
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 10 * 60 * 1000)
+    try {
+      const response = await fetch(`${PROXY_BASE}/v1/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': accessKey }, body: JSON.stringify(body), signal: controller.signal })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        const errorValue = payload?.error
+        const errorMessage = typeof errorValue === 'string'
+          ? errorValue
+          : errorValue && typeof errorValue === 'object' && typeof errorValue.message === 'string'
+            ? errorValue.message
+            : ''
+        throw new Error(errorMessage || `翻译请求失败 (${response.status})`)
+      }
+      const translated = await readTranslationStream(response)
+      if (!translated.trim()) throw new Error('翻译渠道未返回可用文本内容，请检查所选模型是否支持 Chat Completions 输出')
+      translatedContent.value = translated.trim()
+    } finally {
+      window.clearTimeout(timeout)
+    }
+    await saveBackup({ automatic: true, notify: true })
+  } catch (translationError) {
+    detailError.value = translationError instanceof DOMException && translationError.name === 'AbortError'
+      ? '翻译超过 10 分钟未完成，已停止请求；已接收的译文仍保留在右侧，可手动保存'
+      : translationError instanceof Error ? translationError.message : '翻译失败'
+  }
   finally { translating.value = false }
 }
 
-const saveBackup = async () => {
-  if (!selectedSkill.value || !translatedContent.value.trim()) return
+const readTranslationStream = async (response: Response): Promise<string> => {
+  if (!response.body) throw new Error('翻译渠道未建立可读取的流式响应')
+  if (response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
+    const payload = await response.json().catch(() => null)
+    const translated = extractTranslationText(payload)
+    if (translated) translatedContent.value = translated
+    return translated
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let pending = ''
+  let translated = ''
+  const appendDelta = (payload: unknown) => {
+    const delta = extractTranslationText(payload)
+    if (delta) {
+      translated += delta
+      translatedContent.value = translated
+    }
+  }
+  const appendJSON = (data: string) => {
+    try { appendDelta(JSON.parse(data)) } catch { /* 仅处理符合 Chat Completions 结构的 JSON */ }
+  }
+  while (true) {
+    const { done, value } = await reader.read()
+    pending += decoder.decode(value || new Uint8Array(), { stream: !done })
+    const lines = pending.split(/\r?\n/)
+    pending = lines.pop() || ''
+    for (const line of lines) {
+      if (line.startsWith('data:')) {
+        const data = line.slice(5).trim()
+        if (data && data !== '[DONE]') appendJSON(data)
+      } else if (line.trim()) {
+        appendJSON(line.trim())
+      }
+    }
+    if (done) break
+  }
+  if (pending.startsWith('data:')) {
+    const data = pending.slice(5).trim()
+    if (data && data !== '[DONE]') {
+      appendJSON(data)
+    }
+  } else if (pending.trim()) {
+    appendJSON(pending.trim())
+  }
+  if (!translated) {
+    const fallback = extractTranslationTextFromResponse(pending)
+    if (fallback) {
+      translated = fallback
+      translatedContent.value = translated
+    }
+  }
+  return translated
+}
+
+const extractTranslationText = (payload: unknown): string => {
+  if (!payload || typeof payload !== 'object') return ''
+  const record = payload as Record<string, unknown>
+  const choice = Array.isArray(record.choices) ? record.choices[0] : undefined
+  if (!choice || typeof choice !== 'object') return extractContent(record.output_text ?? record.content)
+  const choiceRecord = choice as Record<string, unknown>
+  const delta = choiceRecord.delta ?? choiceRecord.message
+  if (!delta || typeof delta !== 'object') return ''
+  return extractContent((delta as Record<string, unknown>).content)
+}
+
+const extractContent = (content: unknown): string => {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.map(part => {
+    if (typeof part === 'string') return part
+    if (!part || typeof part !== 'object') return ''
+    const partRecord = part as Record<string, unknown>
+    return typeof partRecord.text === 'string' ? partRecord.text : typeof partRecord.content === 'string' ? partRecord.content : ''
+  }).join('')
+}
+
+const extractTranslationTextFromResponse = (data: string): string => {
+  try { return extractTranslationText(JSON.parse(data)) } catch { return '' }
+}
+
+const saveBackup = async ({ automatic = false, notify = true }: { automatic?: boolean; notify?: boolean } = {}) => {
+  if (!selectedSkill.value || !translatedContent.value.trim()) {
+    if (automatic) throw new Error('翻译完成，但没有可保存的译文内容')
+    return
+  }
+  savingBackup.value = true
   try {
     const channel = chatChannels.value.find(item => item.index === translationChannel.value)
     const result = await api.backupSkill({ locationKey: selectedSkill.value.locationKey, name: selectedSkill.value.name, translated: translatedContent.value, model: translationModel.value, channelName: channel?.name })
-    notice.value = { visible: true, type: 'success', message: `翻译备份已保存到 ${result.path}` }
-  } catch (saveError) { detailError.value = saveError instanceof Error ? saveError.message : '保存备份失败' }
+    if (notify) notice.value = { visible: true, type: 'success', message: automatic ? '翻译完成，已自动保存' : `翻译备份已保存到 ${result.path}` }
+  } catch (saveError) {
+    const message = saveError instanceof Error ? `译文已生成，但保存失败：${saveError.message}` : '译文已生成，但保存备份失败'
+    if (automatic) throw new Error(message)
+    detailError.value = message
+  } finally { savingBackup.value = false }
 }
 
 const confirmDelete = (skill: ManagedSkill) => { selectedSkill.value = skill; deleteDialog.value = true }

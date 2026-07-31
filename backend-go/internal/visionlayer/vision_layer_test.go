@@ -55,14 +55,25 @@ func TestReplaceImagesUsesEachImageOwnDescription(t *testing.T) {
 
 func TestImageCacheKeyIncludesVisionProfile(t *testing.T) {
 	fingerprint := "sha256:example"
-	first := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-a")
-	second := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-a")
-	changedModel := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-b")
+	first := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-a", "intent-a")
+	second := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-a", "intent-a")
+	changedModel := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-b", "intent-a")
 	if first != second {
 		t.Fatalf("same vision profile should have stable cache key: %q %q", first, second)
 	}
 	if first == changedModel {
 		t.Fatalf("different vision models should not share cache key: %q", first)
+	}
+	changedIntent := buildImageCacheKey(fingerprint, scheduler.ChannelKindMessages, "vision-channel", "vision-model-a", "intent-b")
+	if first == changedIntent {
+		t.Fatalf("different user intents should not share cache key")
+	}
+}
+
+func TestResolveVisionAnalysisProfileUsesUserQuestion(t *testing.T) {
+	profile := resolveVisionAnalysisProfile("请分析这张截图中的错误和修复线索")
+	if profile.userIntent == "" || profile.intentFingerprint == "" {
+		t.Fatal("user question and its fingerprint must be preserved")
 	}
 }
 
