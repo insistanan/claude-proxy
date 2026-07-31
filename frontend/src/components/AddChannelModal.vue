@@ -1365,6 +1365,20 @@ const channelStatusOptions = [
   { title: '禁用', value: 'disabled' }
 ] satisfies Array<{ title: string; value: ChannelStatus }>
 
+// Channel.status 还可能包含健康检查结果（healthy/error/unknown），这些值不属于可持久化的渠道状态。
+const normalizeFormStatus = (status: Channel['status']): ChannelStatus => {
+  switch (status) {
+    case 'active':
+    case 'suspended':
+    case 'disabled':
+    case 'deprecated':
+    case 'deleted':
+      return status
+    default:
+      return 'active'
+  }
+}
+
 const proxyModeOptions = [
   { title: '继承全局设置', value: 'inherit' },
   { title: '强制直连', value: 'direct' },
@@ -1736,7 +1750,7 @@ const resetForm = () => {
 const loadChannelData = (channel: Channel) => {
   form.name = channel.name
   form.serviceType = channel.serviceType
-  form.status = channel.status || 'active'
+  form.status = normalizeFormStatus(channel.status)
   form.baseUrl = channel.baseUrl
   form.baseUrls = [...(channel.baseUrls || [])]
   form.website = channel.website || ''
