@@ -380,6 +380,15 @@ func main() {
 		apiGroup.PUT("/settings/opencode", handlers.SaveOpenCodeConfig())
 		apiGroup.GET("/settings/claude-code", handlers.GetClaudeCodeSettings())
 		apiGroup.PUT("/settings/claude-code", handlers.SaveClaudeCodeSettings())
+		apiGroup.GET("/skills", handlers.ListSkills())
+		apiGroup.POST("/skills/content", handlers.GetSkillContent())
+		apiGroup.POST("/skills/import", handlers.ImportSkill())
+		apiGroup.GET("/skills/search", handlers.SearchSkills())
+		apiGroup.POST("/skills/remote/inspect", handlers.InspectRemoteSkill())
+		apiGroup.POST("/skills/remote/install", handlers.InstallRemoteSkill())
+		apiGroup.POST("/skills/copy", handlers.CopySkill())
+		apiGroup.DELETE("/skills", handlers.DeleteSkill())
+		apiGroup.POST("/skills/backup", handlers.BackupSkill())
 	}
 
 	// 代理端点 - Messages API

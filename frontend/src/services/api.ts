@@ -121,6 +121,67 @@ export interface Channel {
   stripThoughtSignature?: boolean        // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
 }
 
+export interface SkillLocation {
+  key: string
+  agent: string
+  path: string
+  sourceType: string
+  readOnly: boolean
+  exists: boolean
+}
+
+export interface ManagedSkill {
+  locationKey: string
+  agent: string
+  name: string
+  description: string
+  path: string
+  size: number
+  modifiedAt: string
+  valid: boolean
+  issue?: string
+  sourceType: string
+  readOnly: boolean
+}
+
+export interface SkillsResponse {
+  locations: SkillLocation[]
+  skills: ManagedSkill[]
+}
+
+export interface SkillSearchResult {
+  id: string
+  skillId: string
+  name: string
+  source: string
+  installs: number
+  repositoryUrl?: string
+  skillsUrl?: string
+}
+
+export interface SkillSearchResponse {
+  query: string
+  searchType: string
+  skills: SkillSearchResult[]
+}
+
+export interface RemoteSkillFile {
+  path: string
+  size: number
+}
+
+export interface RemoteSkillPreview {
+  id: string
+  name: string
+  description: string
+  source: string
+  repositoryUrl: string
+  skillUrl: string
+  license?: string
+  files: RemoteSkillFile[]
+  containsScripts: boolean
+}
+
 export interface AppSettings {
   network: {
     upstreamProxyUrl: string
@@ -1053,6 +1114,44 @@ class ApiService {
       method: 'PUT',
       body: JSON.stringify(settings)
     })
+  }
+
+  // ============== 本机 Skills 管理 API ==============
+
+  async getSkills(): Promise<SkillsResponse> {
+    return this.request('/skills')
+  }
+
+  async getSkillContent(locationKey: string, name: string): Promise<{ content: string; path: string }> {
+    return this.request('/skills/content', { method: 'POST', body: JSON.stringify({ locationKey, name }) })
+  }
+
+  async importSkill(fileName: string, contentBase64: string, targets: string[]): Promise<{ success: boolean; name: string }> {
+    return this.request('/skills/import', { method: 'POST', body: JSON.stringify({ fileName, contentBase64, targets }) })
+  }
+
+  async searchSkills(query: string): Promise<SkillSearchResponse> {
+    return this.request(`/skills/search?q=${encodeURIComponent(query)}`)
+  }
+
+  async inspectRemoteSkill(id: string): Promise<RemoteSkillPreview> {
+    return this.request('/skills/remote/inspect', { method: 'POST', body: JSON.stringify({ id }) })
+  }
+
+  async installRemoteSkill(id: string, targets: string[]): Promise<{ success: boolean; name: string; source: string; repositoryUrl: string }> {
+    return this.request('/skills/remote/install', { method: 'POST', body: JSON.stringify({ id, targets }) })
+  }
+
+  async copySkill(locationKey: string, name: string, targets: string[]): Promise<{ success: boolean; name: string; targets: string[] }> {
+    return this.request('/skills/copy', { method: 'POST', body: JSON.stringify({ locationKey, name, targets }) })
+  }
+
+  async deleteSkill(locationKey: string, name: string): Promise<void> {
+    await this.request('/skills', { method: 'DELETE', body: JSON.stringify({ locationKey, name }) })
+  }
+
+  async backupSkill(payload: { locationKey: string; name: string; translated: string; model?: string; channelName?: string }): Promise<{ success: boolean; path: string }> {
+    return this.request('/skills/backup', { method: 'POST', body: JSON.stringify(payload) })
   }
 
   // ============== 历史指标 API ==============

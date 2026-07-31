@@ -99,6 +99,10 @@
             日志
           </router-link>
           <span class="api-type-text separator">/</span>
+          <router-link to="/skills" class="api-type-text" :class="{ active: topNavActive === 'skills' }">
+            Skills
+          </router-link>
+          <span class="api-type-text separator">/</span>
           <router-link to="/playground" class="api-type-text" :class="{ active: topNavActive === 'playground' }">
             演练台
           </router-link>
@@ -444,10 +448,11 @@ const route = useRoute()
 const router = useRouter()
 const isConversationPage = computed(() => route.name === 'conversations')
 const isLogsPage = computed(() => route.name === 'request-logs')
+const isSkillsPage = computed(() => route.name === 'skills')
 const isOpenCodePage = computed(() => route.name === 'opencode')
 const isClaudeCodePage = computed(() => route.name === 'claude-code')
 const isSettingsPage = computed(() => route.name === 'settings')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isSettingsPage.value)
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isSettingsPage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -470,6 +475,9 @@ const topNavActive = computed(() => {
   }
   if (isLogsPage.value) {
     return 'logs'
+  }
+  if (isSkillsPage.value) {
+    return 'skills'
   }
   if (route.path === '/playground') {
     return 'playground'

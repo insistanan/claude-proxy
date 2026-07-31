@@ -117,6 +117,7 @@ import {
   mdiTimerSand,
   mdiTestTube,
   mdiImage,
+  mdiTranslate,
 } from '@mdi/js'
 
 // 图标名称到 SVG path 的映射 (使用 kebab-case)
@@ -245,6 +246,7 @@ const iconMap: Record<string, string> = {
   'diamond-stone': mdiDiamondStone,
   'api': mdiApi,
   'image': mdiImage,
+  'translate': mdiTranslate,
 
   // 复选框和单选框
   'checkbox-marked': mdiCheckboxMarked,

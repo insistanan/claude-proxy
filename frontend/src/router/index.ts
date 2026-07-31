@@ -19,6 +19,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/skills',
+    name: 'skills',
+    component: () => import('@/views/SkillsView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/playground',
     name: 'playground',
     component: () => import('@/views/PlaygroundView.vue'),
