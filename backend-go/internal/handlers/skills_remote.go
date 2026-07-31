@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	pathpkg "path"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -192,7 +191,8 @@ func InstallRemoteSkill() gin.HandlerFunc {
 		for _, location := range locations {
 			locationByKey[location.Key] = location
 		}
-		for _, target := range req.Targets {
+		targets := ensureProjectSkillTarget(req.Targets)
+		for _, target := range targets {
 			location, exists := locationByKey[target]
 			if !exists {
 				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("未知安装目标: %s", target)})
@@ -203,9 +203,9 @@ func InstallRemoteSkill() gin.HandlerFunc {
 				return
 			}
 		}
-		for _, target := range req.Targets {
+		for _, target := range targets {
 			location := locationByKey[target]
-			if err := writeSkillFiles(filepath.Join(location.Path, pkg.Name), pkg.Files); err != nil {
+			if err := writeSkillFilesForLocation(location, pkg.Name, pkg.Files); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("安装到 %s 失败: %v", location.Agent, err)})
 				return
 			}

@@ -134,6 +134,8 @@ export interface ManagedSkill {
   locationKey: string
   agent: string
   name: string
+  translatedName?: string
+  note?: string
   description: string
   path: string
   size: number
@@ -1139,6 +1141,14 @@ class ApiService {
     return this.request('/skills/backup/latest', { method: 'POST', body: JSON.stringify({ locationKey, name }) })
   }
 
+  async updateSkillNote(name: string, note: string): Promise<{ success: boolean; note: string }> {
+    return this.request('/skills/note', { method: 'POST', body: JSON.stringify({ name, note }) })
+  }
+
+  async consolidateSkills(): Promise<{ success: boolean; total: number; imported: number; duplicates: number }> {
+    return this.request('/skills/consolidate', { method: 'POST' })
+  }
+
   async importSkill(fileName: string, contentBase64: string, targets: string[]): Promise<{ success: boolean; name: string }> {
     return this.request('/skills/import', { method: 'POST', body: JSON.stringify({ fileName, contentBase64, targets }) })
   }
@@ -1163,7 +1173,7 @@ class ApiService {
     await this.request('/skills', { method: 'DELETE', body: JSON.stringify({ locationKey, name }) })
   }
 
-  async backupSkill(payload: { locationKey: string; name: string; translated: string; model?: string; channelName?: string }): Promise<{ success: boolean; path: string }> {
+  async backupSkill(payload: { locationKey: string; name: string; original: string; translated: string; model?: string; channelName?: string }): Promise<{ success: boolean; path: string }> {
     return this.request('/skills/backup', { method: 'POST', body: JSON.stringify(payload) })
   }
 

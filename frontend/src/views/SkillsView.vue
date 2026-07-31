@@ -7,6 +7,8 @@
       </div>
       <div class="d-flex flex-wrap ga-2">
         <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="loadSkills">刷新</v-btn>
+        <v-btn variant="text" prepend-icon="mdi-archive-outline" :loading="consolidating" @click="consolidateInstalledSkills">导入现有</v-btn>
+        <v-btn variant="text" prepend-icon="mdi-swap-horizontal" @click="showTranslatedNames = !showTranslatedNames">{{ showTranslatedNames ? '显示原名称' : '显示译名' }}</v-btn>
         <v-btn variant="tonal" prepend-icon="mdi-magnify" @click="openDiscover">发现 Skill</v-btn>
         <v-btn color="primary" prepend-icon="mdi-plus" @click="openImport">本地安装</v-btn>
       </div>
@@ -15,7 +17,7 @@
     <v-alert v-if="error" type="error" variant="tonal" class="mb-5" closable @click:close="error = ''">{{ error }}</v-alert>
 
     <v-alert type="info" variant="tonal" density="compact" class="mb-5">
-      翻译不会修改原 Skill，保存后会在项目根目录 <code>skills/&lt;名称&gt;/&lt;时间&gt;/</code> 保留原文、中文译文和元数据。插件缓存与 Codex 内置 Skill 仅供查看，删除请回到原 Agent 的插件管理。
+      项目 <code>skills/</code> 目录是统一可恢复来源：导入、远程安装和翻译保存都会同步保留 Skill；翻译备份位于 <code>skills/&lt;名称&gt;/.backups/&lt;时间&gt;/</code>。插件缓存与 Codex 内置 Skill 仅供查看，删除请回到原 Agent 的插件管理。
     </v-alert>
 
     <div class="locations-strip mb-5">
@@ -47,7 +49,7 @@
           <tr v-if="!loading && filteredSkills.length === 0"><td colspan="5" class="text-center text-medium-emphasis py-10">未发现符合条件的 Skill</td></tr>
           <tr v-for="skill in filteredSkills" :key="`${skill.locationKey}:${skill.name}`">
             <td>
-              <div class="font-weight-medium">{{ skill.name }}</div>
+              <v-tooltip :text="skill.note || ''" :disabled="!skill.note" location="top" theme="dark"><template #activator="{ props }"><button v-bind="props" type="button" class="skill-name-button font-weight-medium" @click="openSkill(skill)">{{ displaySkillName(skill) }}</button></template></v-tooltip>
               <div class="text-caption text-medium-emphasis skill-description">{{ skill.description || '未读取到说明' }}</div>
             </td>
             <td>
@@ -55,7 +57,7 @@
               <div v-if="skill.readOnly" class="text-caption text-medium-emphasis mt-1">只读来源</div>
             </td>
             <td><v-chip size="small" :color="skill.valid ? 'success' : 'warning'" label>{{ skill.valid ? '有效' : skill.issue || '需检查' }}</v-chip></td>
-            <td><code class="skill-path">{{ skill.path }}</code></td>
+            <td><div class="skill-path-cell"><code class="skill-path">{{ skill.path }}</code><v-tooltip text="复制路径" location="top" theme="dark"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-content-copy" variant="text" size="x-small" :aria-label="`复制 ${skill.name} 的路径`" @click="copySkillPath(skill.path)" /></template></v-tooltip></div></td>
             <td class="text-right text-no-wrap">
               <v-tooltip text="查看与翻译" location="top" theme="dark"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-text-box-search-outline" variant="text" size="small" @click="openSkill(skill)" /></template></v-tooltip>
               <v-tooltip :text="skill.readOnly ? '只读来源不可复制' : '复制到其他 Agent'" location="top" theme="dark"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-content-copy" :disabled="skill.readOnly" variant="text" size="small" @click="openCopy(skill)" /></template></v-tooltip>
@@ -72,7 +74,7 @@
         <v-card-text>
           <v-file-input v-model="importFile" accept=".zip,.md,text/markdown,application/zip" label="ZIP 压缩包或 SKILL.md" variant="outlined" prepend-icon="mdi-paperclip" show-size />
           <v-select v-model="importTargets" :items="writableLocations" item-title="agent" item-value="key" label="安装目标" variant="outlined" multiple chips />
-          <v-alert type="warning" density="compact" variant="tonal">同名 Skill 会覆盖目标目录中同名文件。ZIP 只接受单一 Skill 目录，且必须包含有效的 <code>SKILL.md</code>。</v-alert>
+          <v-alert type="warning" density="compact" variant="tonal">项目 Skills 目录会始终同步保留一份。其他同名目标会被覆盖；ZIP 只接受单一 Skill 目录，且必须包含有效的 <code>SKILL.md</code>。</v-alert>
         </v-card-text>
         <v-card-actions><v-spacer /><v-btn variant="text" @click="importDialog = false">取消</v-btn><v-btn color="primary" :disabled="!importFile || importTargets.length === 0" :loading="importing" @click="importSelected">安装</v-btn></v-card-actions>
       </v-card>
@@ -124,7 +126,7 @@
             <v-btn v-if="remotePreview.repositoryUrl" :href="remotePreview.repositoryUrl" target="_blank" rel="noreferrer" size="small" variant="text" prepend-icon="mdi-open-in-new">GitHub 仓库</v-btn>
           </div>
           <v-select v-model="remoteTargets" :items="writableLocations" item-title="agent" item-value="key" label="安装目标" variant="outlined" multiple chips :disabled="remoteInstalling" />
-          <v-alert type="warning" density="compact" variant="tonal" class="mb-4">安装会覆盖目标目录中的同名 Skill。远程内容只会写入文件，不会在服务端执行脚本。</v-alert>
+          <v-alert type="warning" density="compact" variant="tonal" class="mb-4">项目 Skills 目录会始终同步保留一份；其他目标中的同名 Skill 会被覆盖。远程内容只会写入文件，不会在服务端执行脚本。</v-alert>
           <div v-if="remotePreview" class="file-list"><div class="text-caption text-medium-emphasis mb-2">将安装的文件</div><div v-for="file in remotePreview.files" :key="file.path" class="d-flex justify-space-between text-body-2"><code>{{ file.path }}</code><span class="text-medium-emphasis">{{ formatBytes(file.size) }}</span></div></div>
         </v-card-text>
         <v-card-actions><v-spacer /><v-btn variant="text" @click="remotePreviewDialog = false">取消</v-btn><v-btn color="primary" :disabled="!remotePreview || remoteTargets.length === 0" :loading="remoteInstalling" @click="installRemote">安装</v-btn></v-card-actions>
@@ -133,7 +135,7 @@
 
     <v-dialog v-model="detailDialog" max-width="1280" persistent>
       <v-card class="detail-card">
-        <div class="detail-header d-flex align-center justify-space-between px-5 py-4"><div><div class="text-h6">{{ selectedSkill?.name }}</div><div class="text-caption text-medium-emphasis">{{ selectedSkill?.path }}</div></div><v-btn icon="mdi-close" variant="text" @click="detailDialog = false" /></div>
+        <div class="detail-header d-flex align-center justify-space-between px-5 py-4"><div><div class="text-h6">{{ selectedDisplayName }}</div><div class="text-caption text-medium-emphasis">{{ selectedSkill?.path }}</div></div><v-btn icon="mdi-close" variant="text" @click="detailDialog = false" /></div>
         <v-divider />
         <v-card-text class="detail-body pa-5">
           <v-alert v-if="detailError" type="error" variant="tonal" class="mb-4">{{ detailError }}</v-alert>
@@ -144,10 +146,11 @@
         </v-card-text>
         <v-divider />
         <div class="detail-footer px-5 py-4">
-          <v-row align="center">
-            <v-col cols="12" md="5"><v-select v-model="translationChannel" :items="chatChannels" item-title="name" item-value="index" label="Chat 渠道（可选）" variant="outlined" clearable hint="留空按正常调度选择渠道" persistent-hint /></v-col>
-            <v-col cols="12" md="5"><v-combobox v-model="translationModel" :items="translationModelOptions" item-title="title" item-value="value" label="模型 ID（可选）" variant="outlined" clearable :loading="translationModelsLoading" :error-messages="translationModelsError || undefined" hint="选择渠道后自动获取模型；也可手动输入，留空使用 translate-skill" persistent-hint /></v-col>
-            <v-col cols="12" md="2" class="d-flex ga-2 pt-md-8"><v-btn icon="mdi-translate" color="primary" :loading="translating" title="翻译并自动保存" @click="translateSkill" /><v-btn icon="mdi-content-save" :disabled="!translatedContent || savingBackup" :loading="savingBackup" title="保存当前译文" @click="() => saveBackup()" /></v-col>
+          <v-row align="end" class="detail-controls">
+            <v-col cols="12" md="6" lg="3"><v-text-field v-model="skillNote" label="全局备注" variant="outlined" clearable hide-details="auto" hint="所有同名 Skill 共享此备注" persistent-hint @keyup.enter="saveSkillNote"><template #append-inner><v-tooltip text="保存备注" location="top" theme="dark"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-content-save" variant="text" size="small" :loading="savingNote" :disabled="savingNote" @click="saveSkillNote" /></template></v-tooltip></template></v-text-field></v-col>
+            <v-col cols="12" md="6" lg="3"><v-select v-model="translationChannel" :items="chatChannels" item-title="name" item-value="index" label="Chat 渠道（可选）" variant="outlined" clearable hint="留空按正常调度选择渠道" persistent-hint /></v-col>
+            <v-col cols="12" md="6" lg="4"><v-combobox v-model="translationModel" :items="translationModelOptions" item-title="title" item-value="value" label="模型 ID（可选）" variant="outlined" clearable :loading="translationModelsLoading" :error-messages="translationModelsError || undefined" hint="选择渠道后自动获取模型；也可手动输入，留空使用 translate-skill" persistent-hint /></v-col>
+            <v-col cols="12" md="6" lg="2"><div class="detail-actions"><v-tooltip :text="selectedSkill?.readOnly ? '只读来源不可复制' : '复制到其他 Agent'" location="top" theme="dark"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-content-copy" :disabled="!selectedSkill || selectedSkill.readOnly" variant="tonal" @click="openSelectedCopy" /></template></v-tooltip><v-tooltip text="翻译并自动保存" location="top" theme="dark"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-translate" color="primary" :loading="translating" @click="translateSkill" /></template></v-tooltip><v-tooltip text="保存当前译文" location="top" theme="dark"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-content-save" :disabled="!translatedContent || savingBackup" :loading="savingBackup" @click="() => saveBackup()" /></template></v-tooltip></div></v-col>
           </v-row>
         </div>
       </v-card>
@@ -178,7 +181,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api, fetchUpstreamModels, type Channel, type ManagedSkill, type RemoteSkillPreview, type SkillLocation, type SkillSearchResult } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 
@@ -187,16 +190,14 @@ const PROXY_BASE = import.meta.env.PROD
   : import.meta.env.VITE_BACKEND_URL || ''
 
 const loading = ref(false)
+const consolidating = ref(false)
 const importing = ref(false)
 const copying = ref(false)
 const remoteSearching = ref(false)
 const remoteInstalling = ref(false)
 const remoteInspectingId = ref('')
-const translating = ref(false)
-const savingBackup = ref(false)
 const deleting = ref(false)
 const error = ref('')
-const detailError = ref('')
 const query = ref('')
 const agentFilter = ref('')
 const locations = ref<SkillLocation[]>([])
@@ -219,15 +220,54 @@ const remoteError = ref('')
 const detailDialog = ref(false)
 const deleteDialog = ref(false)
 const selectedSkill = ref<ManagedSkill | null>(null)
-const originalContent = ref('')
-const translatedContent = ref('')
-const translationChannel = ref<number | null>(null)
-const translationModel = ref('')
-const translationModelOptions = ref<Array<{ title: string; value: string }>>([])
-const translationModelsLoading = ref(false)
-const translationModelsError = ref('')
 const notice = ref({ visible: false, type: 'success', message: '' })
-let translationModelRequestId = 0
+const savingNote = ref(false)
+
+type TranslationState = {
+  original: string
+  translated: string
+  error: string
+  translating: boolean
+  translationRequestId: number
+  saving: boolean
+  channel: number | null
+  model: string
+  modelOptions: Array<{ title: string; value: string }>
+  modelsLoading: boolean
+  modelsError: string
+}
+
+const translationStates = reactive<Record<string, TranslationState>>({})
+const inactiveTranslationState: TranslationState = {
+  original: '', translated: '', error: '', translating: false, translationRequestId: 0, saving: false,
+  channel: null, model: '', modelOptions: [], modelsLoading: false, modelsError: ''
+}
+const translationModelRequestIds = new Map<string, number>()
+const showTranslatedNames = ref(false)
+
+const skillStateKey = (skill: ManagedSkill) => `${skill.locationKey}:${skill.name}`
+const ensureTranslationState = (skill: ManagedSkill): TranslationState => {
+  const key = skillStateKey(skill)
+  if (!translationStates[key]) {
+    translationStates[key] = {
+      original: '', translated: '', error: '', translating: false, translationRequestId: 0, saving: false,
+      channel: null, model: '', modelOptions: [], modelsLoading: false, modelsError: ''
+    }
+  }
+  return translationStates[key]
+}
+const selectedSkillKey = computed(() => selectedSkill.value ? skillStateKey(selectedSkill.value) : '')
+const activeTranslationState = computed(() => selectedSkill.value ? ensureTranslationState(selectedSkill.value) : inactiveTranslationState)
+const originalContent = computed({ get: () => activeTranslationState.value.original, set: value => { activeTranslationState.value.original = value } })
+const translatedContent = computed({ get: () => activeTranslationState.value.translated, set: value => { activeTranslationState.value.translated = value } })
+const detailError = computed({ get: () => activeTranslationState.value.error, set: value => { activeTranslationState.value.error = value } })
+const translating = computed(() => activeTranslationState.value.translating)
+const savingBackup = computed(() => activeTranslationState.value.saving)
+const translationChannel = computed({ get: () => activeTranslationState.value.channel, set: value => { activeTranslationState.value.channel = value } })
+const translationModel = computed({ get: () => activeTranslationState.value.model, set: value => { activeTranslationState.value.model = value } })
+const translationModelOptions = computed(() => activeTranslationState.value.modelOptions)
+const translationModelsLoading = computed(() => activeTranslationState.value.modelsLoading)
+const translationModelsError = computed(() => activeTranslationState.value.modelsError)
 
 const agentOptions = computed(() => [{ title: '全部来源', value: '' }, ...locations.value.map(location => ({ title: location.agent, value: location.key }))])
 const writableLocations = computed(() => locations.value.filter(location => !location.readOnly))
@@ -236,6 +276,18 @@ const filteredSkills = computed(() => {
   const keyword = query.value.toLowerCase()
   return skills.value.filter(skill => (!agentFilter.value || skill.locationKey === agentFilter.value) && (!keyword || `${skill.name} ${skill.description} ${skill.agent} ${skill.path}`.toLowerCase().includes(keyword)))
 })
+const displaySkillName = (skill: ManagedSkill) => showTranslatedNames.value && skill.translatedName ? skill.translatedName : skill.name
+const translatedNameFromContent = (content: string) => {
+  const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  const name = frontmatter?.[1].match(/^display_name:\s*["']?([^\r\n"']+)["']?\s*$/m)?.[1]?.trim()
+  return name || ''
+}
+const selectedDisplayName = computed(() => {
+  if (!selectedSkill.value) return ''
+  if (!showTranslatedNames.value) return selectedSkill.value.name
+  return translatedNameFromContent(activeTranslationState.value.translated) || selectedSkill.value.translatedName || selectedSkill.value.name
+})
+const skillNote = computed({ get: () => selectedSkill.value?.note || '', set: value => { if (selectedSkill.value) selectedSkill.value.note = value } })
 
 const loadSkills = async () => {
   loading.value = true
@@ -256,25 +308,41 @@ const loadSkills = async () => {
   } finally { loading.value = false }
 }
 
-const openImport = () => { importFile.value = null; importTargets.value = []; importDialog.value = true }
+const defaultInstallTargets = () => writableLocations.value.filter(location => location.key === 'project' || location.exists).map(location => location.key)
+const openImport = () => { importFile.value = null; importTargets.value = defaultInstallTargets(); importDialog.value = true }
 
-const loadTranslationModels = async (channelIndex: number) => {
-  const requestId = ++translationModelRequestId
+const consolidateInstalledSkills = async () => {
+  consolidating.value = true
+  try {
+    const result = await api.consolidateSkills()
+    const conflictText = result.duplicates > 0 ? `，${result.duplicates} 个重复名称保留项目副本` : ''
+    notice.value = { visible: true, type: 'success', message: `已统一归档 ${result.total} 个 Skill，新导入 ${result.imported} 个${conflictText}` }
+    await loadSkills()
+  } catch (consolidateError) {
+    notice.value = { visible: true, type: 'error', message: consolidateError instanceof Error ? consolidateError.message : '导入现有 Skill 失败' }
+  } finally { consolidating.value = false }
+}
+
+const loadTranslationModels = async (channelIndex: number, skill: ManagedSkill) => {
+  const key = skillStateKey(skill)
+  const requestId = (translationModelRequestIds.get(key) || 0) + 1
+  translationModelRequestIds.set(key, requestId)
+  const state = ensureTranslationState(skill)
   const channel = chatChannels.value.find(item => item.index === channelIndex)
-  translationModelOptions.value = []
-  translationModelsError.value = ''
+  state.modelOptions = []
+  state.modelsError = ''
 
   if (!channel) {
-    translationModelsError.value = '未找到所选 Chat 渠道'
+    state.modelsError = '未找到所选 Chat 渠道'
     return
   }
   const apiKey = channel.apiKeys.find(key => key.trim())
   if (!apiKey) {
-    translationModelsError.value = '所选渠道未配置 API Key'
+    state.modelsError = '所选渠道未配置 API Key'
     return
   }
 
-  translationModelsLoading.value = true
+  state.modelsLoading = true
   try {
     const result = await fetchUpstreamModels(channel.baseUrl, apiKey, channel.serviceType, {
       baseUrls: channel.baseUrls,
@@ -282,31 +350,34 @@ const loadTranslationModels = async (channelIndex: number) => {
       proxyMode: channel.proxyMode,
       proxyUrl: channel.proxyMode === 'custom' ? channel.proxyUrl?.trim() : ''
     })
-    if (requestId !== translationModelRequestId) return
+    if (translationModelRequestIds.get(key) !== requestId) return
 
     const options = (result.data || [])
       .map(model => model.id.trim())
       .filter(Boolean)
       .map(id => ({ title: id, value: id }))
-    translationModelOptions.value = options
+    state.modelOptions = options
     const configuredModel = channel.defaultModel?.trim()
-    translationModel.value = configuredModel || options[0]?.value || ''
-    if (options.length === 0) translationModelsError.value = '未找到可用模型，可手动输入模型 ID'
+    state.model = configuredModel || options[0]?.value || ''
+    if (options.length === 0) state.modelsError = '未找到可用模型，可手动输入模型 ID'
   } catch (modelError) {
-    if (requestId !== translationModelRequestId) return
-    translationModelsError.value = modelError instanceof Error ? modelError.message : '获取模型列表失败，可手动输入模型 ID'
+    if (translationModelRequestIds.get(key) !== requestId) return
+    state.modelsError = modelError instanceof Error ? modelError.message : '获取模型列表失败，可手动输入模型 ID'
   } finally {
-    if (requestId === translationModelRequestId) translationModelsLoading.value = false
+    if (translationModelRequestIds.get(key) === requestId) state.modelsLoading = false
   }
 }
 
-watch(translationChannel, channelIndex => {
-  translationModelRequestId++
-  translationModel.value = ''
-  translationModelOptions.value = []
-  translationModelsError.value = ''
-  translationModelsLoading.value = false
-  if (typeof channelIndex === 'number') void loadTranslationModels(channelIndex)
+watch([selectedSkillKey, translationChannel], ([key, channelIndex], [previousKey, previousChannel]) => {
+  if (!selectedSkill.value || !key || key !== previousKey || channelIndex === previousChannel) return
+  const state = ensureTranslationState(selectedSkill.value)
+  const requestId = (translationModelRequestIds.get(key) || 0) + 1
+  translationModelRequestIds.set(key, requestId)
+  state.model = ''
+  state.modelOptions = []
+  state.modelsError = ''
+  state.modelsLoading = false
+  if (typeof channelIndex === 'number') void loadTranslationModels(channelIndex, selectedSkill.value)
 })
 
 const filterByAgent = (locationKey: string) => {
@@ -342,7 +413,7 @@ const inspectRemote = async (id: string) => {
   remoteError.value = ''
   try {
     remotePreview.value = await api.inspectRemoteSkill(id)
-    remoteTargets.value = writableLocations.value.filter(location => location.exists && !location.readOnly).map(location => location.key)
+    remoteTargets.value = defaultInstallTargets()
     remotePreviewDialog.value = true
   } catch (inspectError) {
     discoverError.value = inspectError instanceof Error ? inspectError.message : '读取远程 Skill 失败'
@@ -379,19 +450,30 @@ const importSelected = async () => {
 }
 
 const openSkill = async (skill: ManagedSkill) => {
-  selectedSkill.value = skill; originalContent.value = ''; translatedContent.value = ''; detailError.value = ''; detailDialog.value = true
+  selectedSkill.value = skill
+  const state = ensureTranslationState(skill)
+  state.error = ''
+  detailDialog.value = true
   try {
     const [contentResult, backupResult] = await Promise.all([
       api.getSkillContent(skill.locationKey, skill.name),
       api.getLatestSkillBackup(skill.locationKey, skill.name)
     ])
-    originalContent.value = contentResult.content
+    const originalChanged = Boolean(state.original && state.original !== contentResult.content)
+    if (originalChanged) {
+      state.translationRequestId++
+      state.translating = false
+      state.translated = ''
+    }
+    state.original = contentResult.content
     if (backupResult.found && backupResult.translated) {
-      translatedContent.value = backupResult.translated
-      notice.value = { visible: true, type: 'success', message: '已恢复最近保存的译文' }
+      state.translated = backupResult.translated
+      if (selectedSkillKey.value === skillStateKey(skill)) notice.value = { visible: true, type: 'success', message: '已恢复最近保存的译文' }
+    } else if (originalChanged) {
+      state.error = '原 Skill 已更新，旧译文已清除'
     }
   }
-  catch (loadError) { detailError.value = loadError instanceof Error ? loadError.message : '读取 Skill 失败' }
+  catch (loadError) { state.error = loadError instanceof Error ? loadError.message : '读取 Skill 失败' }
 }
 
 const openCopy = (skill: ManagedSkill) => {
@@ -399,6 +481,22 @@ const openCopy = (skill: ManagedSkill) => {
   selectedSkill.value = skill
   copyTargets.value = []
   copyDialog.value = true
+}
+const openSelectedCopy = () => {
+  if (selectedSkill.value) openCopy(selectedSkill.value)
+}
+
+const saveSkillNote = async () => {
+  const skill = selectedSkill.value
+  if (!skill) return
+  savingNote.value = true
+  try {
+    const result = await api.updateSkillNote(skill.name, skill.note || '')
+    skills.value.forEach(item => { if (item.name === skill.name) item.note = result.note })
+    notice.value = { visible: true, type: 'success', message: result.note ? '全局备注已保存' : '全局备注已清空' }
+  } catch (noteError) {
+    notice.value = { visible: true, type: 'error', message: noteError instanceof Error ? noteError.message : '保存备注失败' }
+  } finally { savingNote.value = false }
 }
 
 const copySelected = async () => {
@@ -433,18 +531,24 @@ const normalizeTranslationChannelIndex = (value: unknown): number | null => {
 }
 
 const translateSkill = async () => {
-  if (!selectedSkill.value || !originalContent.value) return
+  const skill = selectedSkill.value
+  if (!skill) return
+  const state = ensureTranslationState(skill)
+  if (!state.original) return
+  const original = state.original
+  const requestId = ++state.translationRequestId
   const accessKey = useAuthStore().apiKey
-  if (!accessKey) { detailError.value = '未找到管理界面访问密钥'; return }
-  translating.value = true; detailError.value = ''
+  if (!accessKey) { state.error = '未找到管理界面访问密钥'; return }
+  state.translating = true
+  state.error = ''
   try {
-    const model = normalizeTranslationModel(translationModel.value)
-    const channelIndex = normalizeTranslationChannelIndex(translationChannel.value)
+    const model = normalizeTranslationModel(state.model)
+    const channelIndex = normalizeTranslationChannelIndex(state.channel)
     const body: Record<string, unknown> = {
       model: model || 'translate-skill', stream: true,
       messages: [
-        { role: 'system', content: '你是专业技术翻译。将用户提供的 Agent Skill 英文内容完整翻译为简体中文。保留 YAML frontmatter 的字段名、name 值、代码块、文件路径、命令、URL 和 Markdown 结构；只翻译可读的自然语言。仅输出翻译后的完整 Markdown，不要解释。' },
-        { role: 'user', content: originalContent.value }
+        { role: 'system', content: '你是专业技术翻译。将用户提供的 Agent Skill 英文内容完整翻译为简体中文。保留 YAML frontmatter 的原有字段名、name 值、代码块、文件路径、命令、URL 和 Markdown 结构；在 YAML frontmatter 中新增 display_name 字段，值为该 Skill 的简体中文名称。只翻译可读的自然语言。仅输出翻译后的完整 Markdown，不要解释。' },
+        { role: 'user', content: original }
       ]
     }
     if (channelIndex !== null) body.metadata = { channel_index: channelIndex }
@@ -462,27 +566,29 @@ const translateSkill = async () => {
             : ''
         throw new Error(errorMessage || `翻译请求失败 (${response.status})`)
       }
-      const translated = await readTranslationStream(response)
+      const translated = await readTranslationStream(response, value => { if (state.translationRequestId === requestId) state.translated = value })
       if (!translated.trim()) throw new Error('翻译渠道未返回可用文本内容，请检查所选模型是否支持 Chat Completions 输出')
-      translatedContent.value = translated.trim()
+      if (state.translationRequestId !== requestId) return
+      state.translated = translated.trim()
     } finally {
       window.clearTimeout(timeout)
     }
-    await saveBackup({ automatic: true, notify: true })
+    await saveBackup({ automatic: true, notify: true, skill, state, original })
   } catch (translationError) {
-    detailError.value = translationError instanceof DOMException && translationError.name === 'AbortError'
+    if (state.translationRequestId !== requestId) return
+    state.error = translationError instanceof DOMException && translationError.name === 'AbortError'
       ? '翻译超过 10 分钟未完成，已停止请求；已接收的译文仍保留在右侧，可手动保存'
       : translationError instanceof Error ? translationError.message : '翻译失败'
   }
-  finally { translating.value = false }
+  finally { if (state.translationRequestId === requestId) state.translating = false }
 }
 
-const readTranslationStream = async (response: Response): Promise<string> => {
+const readTranslationStream = async (response: Response, onUpdate: (translated: string) => void): Promise<string> => {
   if (!response.body) throw new Error('翻译渠道未建立可读取的流式响应')
   if (response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
     const payload = await response.json().catch(() => null)
     const translated = extractTranslationText(payload)
-    if (translated) translatedContent.value = translated
+    if (translated) onUpdate(translated)
     return translated
   }
   const reader = response.body.getReader()
@@ -493,7 +599,7 @@ const readTranslationStream = async (response: Response): Promise<string> => {
     const delta = extractTranslationText(payload)
     if (delta) {
       translated += delta
-      translatedContent.value = translated
+      onUpdate(translated)
     }
   }
   const appendJSON = (data: string) => {
@@ -526,7 +632,7 @@ const readTranslationStream = async (response: Response): Promise<string> => {
     const fallback = extractTranslationTextFromResponse(pending)
     if (fallback) {
       translated = fallback
-      translatedContent.value = translated
+      onUpdate(translated)
     }
   }
   return translated
@@ -558,21 +664,23 @@ const extractTranslationTextFromResponse = (data: string): string => {
   try { return extractTranslationText(JSON.parse(data)) } catch { return '' }
 }
 
-const saveBackup = async ({ automatic = false, notify = true }: { automatic?: boolean; notify?: boolean } = {}) => {
-  if (!selectedSkill.value || !translatedContent.value.trim()) {
+const saveBackup = async ({ automatic = false, notify = true, skill = selectedSkill.value, state = skill ? ensureTranslationState(skill) : undefined, original = state?.original || '' }: { automatic?: boolean; notify?: boolean; skill?: ManagedSkill | null; state?: TranslationState; original?: string } = {}) => {
+  if (!skill || !state?.translated.trim() || !original) {
     if (automatic) throw new Error('翻译完成，但没有可保存的译文内容')
     return
   }
-  savingBackup.value = true
+  state.saving = true
   try {
-    const channel = chatChannels.value.find(item => item.index === translationChannel.value)
-    const result = await api.backupSkill({ locationKey: selectedSkill.value.locationKey, name: selectedSkill.value.name, translated: translatedContent.value, model: translationModel.value, channelName: channel?.name })
+    const channel = chatChannels.value.find(item => item.index === state.channel)
+    const result = await api.backupSkill({ locationKey: skill.locationKey, name: skill.name, original, translated: state.translated, model: state.model, channelName: channel?.name })
+    const translatedName = translatedNameFromContent(state.translated)
+    if (translatedName && translatedName !== skill.name) skill.translatedName = translatedName
     if (notify) notice.value = { visible: true, type: 'success', message: automatic ? '翻译完成，已自动保存' : `翻译备份已保存到 ${result.path}` }
   } catch (saveError) {
     const message = saveError instanceof Error ? `译文已生成，但保存失败：${saveError.message}` : '译文已生成，但保存备份失败'
     if (automatic) throw new Error(message)
-    detailError.value = message
-  } finally { savingBackup.value = false }
+    state.error = message
+  } finally { state.saving = false }
 }
 
 const confirmDelete = (skill: ManagedSkill) => { selectedSkill.value = skill; deleteDialog.value = true }
@@ -585,6 +693,14 @@ const deleteSelected = async () => {
 }
 
 const fileToBase64 = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(new Error('读取文件失败')); reader.onload = () => { const value = String(reader.result || ''); resolve(value.substring(value.indexOf(',') + 1)) }; reader.readAsDataURL(file) })
+const copySkillPath = async (path: string) => {
+  try {
+    await navigator.clipboard.writeText(path)
+    notice.value = { visible: true, type: 'success', message: '路径已复制' }
+  } catch {
+    notice.value = { visible: true, type: 'error', message: '复制路径失败，请检查浏览器权限' }
+  }
+}
 const formatInstalls = (value: number) => new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value || 0).replace(/\s+/g, '')
 const formatBytes = (value: number) => value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`
 onMounted(loadSkills)
@@ -598,12 +714,16 @@ onMounted(loadSkills)
 .location-chip:hover, .source-chip:hover { filter: brightness(0.96); }
 .location-chip--active, .source-chip--active { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 1px; }
 .skills-list-card { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); overflow-x: auto; }
+.skill-name-button { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; padding: 0; text-align: left; text-decoration: none; }
+.skill-name-button:hover { color: rgb(var(--v-theme-primary)); text-decoration: underline; }
 .skill-description { max-width: 440px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.skill-path { display: block; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-path-cell { align-items: center; display: flex; gap: 2px; min-width: 0; }
+.skill-path { display: block; max-width: 310px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-card { height: min(900px, calc(100vh - 48px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; overflow: hidden; }
 .detail-header, .detail-footer { flex: 0 0 auto; }
 .detail-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .detail-footer { background: rgb(var(--v-theme-surface)); }
+.detail-actions { align-items: center; display: flex; gap: 8px; justify-content: flex-end; min-height: 56px; }
 .skill-editor :deep(.v-field__input) { overflow-y: auto; }
 .discover-card { max-height: calc(100vh - 48px); overflow-y: auto; }
 .remote-results-table { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); }
@@ -611,5 +731,5 @@ onMounted(loadSkills)
 .source-link { color: rgb(var(--v-theme-primary)); text-decoration: none; }
 .source-link:hover { text-decoration: underline; }
 .file-list { max-height: 220px; overflow-y: auto; border: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-radius: 6px; padding: 12px; }
-@media (max-width: 600px) { .page-heading { align-items: flex-start; flex-direction: column; } .skill-description, .skill-path { max-width: 180px; } .detail-card { height: calc(100vh - 24px); max-height: calc(100vh - 24px); } }
+@media (max-width: 600px) { .page-heading { align-items: flex-start; flex-direction: column; } .skill-description, .skill-path { max-width: 180px; } .detail-card { height: calc(100vh - 24px); max-height: calc(100vh - 24px); } .detail-actions { justify-content: flex-start; } }
 </style>

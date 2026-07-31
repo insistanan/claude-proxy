@@ -25,8 +25,9 @@ import (
 const maxSkillImportBytes = 20 << 20
 
 var (
-	skillsMu         sync.Mutex
-	skillNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	skillsMu                    sync.Mutex
+	skillNamePattern            = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	skillBackupDirectoryPattern = regexp.MustCompile(`^\d{8}-\d{6}\.\d+$`)
 )
 
 type skillLocation struct {
@@ -39,17 +40,19 @@ type skillLocation struct {
 }
 
 type skillItem struct {
-	LocationKey string `json:"locationKey"`
-	Agent       string `json:"agent"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Path        string `json:"path"`
-	Size        int64  `json:"size"`
-	ModifiedAt  string `json:"modifiedAt"`
-	Valid       bool   `json:"valid"`
-	Issue       string `json:"issue,omitempty"`
-	SourceType  string `json:"sourceType"`
-	ReadOnly    bool   `json:"readOnly"`
+	LocationKey    string `json:"locationKey"`
+	Agent          string `json:"agent"`
+	Name           string `json:"name"`
+	TranslatedName string `json:"translatedName,omitempty"`
+	Note           string `json:"note,omitempty"`
+	Description    string `json:"description"`
+	Path           string `json:"path"`
+	Size           int64  `json:"size"`
+	ModifiedAt     string `json:"modifiedAt"`
+	Valid          bool   `json:"valid"`
+	Issue          string `json:"issue,omitempty"`
+	SourceType     string `json:"sourceType"`
+	ReadOnly       bool   `json:"readOnly"`
 }
 
 type skillImportRequest struct {
@@ -66,6 +69,7 @@ type skillReferenceRequest struct {
 type skillBackupRequest struct {
 	LocationKey string `json:"locationKey"`
 	Name        string `json:"name"`
+	Original    string `json:"original"`
 	Translated  string `json:"translated"`
 	Model       string `json:"model"`
 	ChannelName string `json:"channelName"`
@@ -79,6 +83,16 @@ type skillBackupMetadata struct {
 	Model        string `json:"model"`
 	ChannelName  string `json:"channelName"`
 	CreatedAt    string `json:"createdAt"`
+}
+
+type skillNoteRequest struct {
+	Name string `json:"name"`
+	Note string `json:"note"`
+}
+
+type skillGlobalMetadata struct {
+	Note      string `json:"note"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 type skillCopyRequest struct {
@@ -101,6 +115,12 @@ func ListSkills() gin.HandlerFunc {
 
 		items := make([]skillItem, 0)
 		for _, location := range locations {
+			if location.Key == "project" {
+				if err := restoreProjectBackupSkills(location.Path); err != nil {
+					c.JSON(500, gin.H{"error": fmt.Sprintf("整理项目 Skills 备份失败: %v", err)})
+					return
+				}
+			}
 			found, err := scanSkillLocation(location)
 			if err != nil {
 				c.JSON(500, gin.H{"error": fmt.Sprintf("扫描 %s 失败: %v", location.Path, err)})
@@ -133,8 +153,8 @@ func GetSkillContent() gin.HandlerFunc {
 	}
 }
 
-// GetLatestSkillBackup 返回与当前 Skill 来源及内容匹配的最近一份译文。
-// 原文内容发生变化时不恢复旧译文，以避免展示与当前版本不对应的翻译。
+// GetLatestSkillBackup 返回与当前内容匹配的最近一份译文。
+// 相同原文的不同 Agent 副本共享译文；原文内容变化时不恢复旧译文。
 func GetLatestSkillBackup() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ref, ok := bindSkillReference(c)
@@ -159,6 +179,109 @@ func GetLatestSkillBackup() gin.HandlerFunc {
 			"found": true, "translated": backup.Translated, "path": backup.Path,
 			"createdAt": backup.Metadata.CreatedAt, "model": backup.Metadata.Model, "channelName": backup.Metadata.ChannelName,
 		})
+	}
+}
+
+// UpdateSkillNote 保存项目级备注。同名 Skill 无论位于哪个 Agent 目录都会读取这份备注。
+func UpdateSkillNote() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req skillNoteRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": "Skill 备注请求无效"})
+			return
+		}
+		if !skillNamePattern.MatchString(req.Name) {
+			c.JSON(400, gin.H{"error": "Skill 名称必须为小写字母、数字和连字符"})
+			return
+		}
+		note := strings.TrimSpace(req.Note)
+		if len([]rune(note)) > 500 {
+			c.JSON(400, gin.H{"error": "备注不能超过 500 个字符"})
+			return
+		}
+		skillsMu.Lock()
+		defer skillsMu.Unlock()
+		if err := writeSkillGlobalMetadata(req.Name, skillGlobalMetadata{Note: note, UpdatedAt: time.Now().Format(time.RFC3339)}); err != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("保存 Skill 备注失败: %v", err)})
+			return
+		}
+		c.JSON(200, gin.H{"success": true, "note": note})
+	}
+}
+
+// ConsolidateSkills 将已安装在各 Agent 目录中的有效 Skill 去重后归档到项目目录。
+// 已存在的项目副本优先保留，避免其他来源的同名版本覆盖项目中的统一版本。
+func ConsolidateSkills() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		skillsMu.Lock()
+		defer skillsMu.Unlock()
+
+		locations, err := managedSkillLocations()
+		if err != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("解析 Skills 目录失败: %v", err)})
+			return
+		}
+		var projectLocation *skillLocation
+		for index := range locations {
+			if locations[index].Key == "project" {
+				projectLocation = &locations[index]
+				break
+			}
+		}
+		if projectLocation == nil {
+			c.JSON(500, gin.H{"error": "未找到项目 Skills 目录"})
+			return
+		}
+		if err := restoreProjectBackupSkills(projectLocation.Path); err != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("整理项目 Skills 备份失败: %v", err)})
+			return
+		}
+
+		selected := make(map[string]skillItem)
+		duplicates := make(map[string]struct{})
+		for _, location := range locations {
+			items, err := scanSkillLocation(location)
+			if err != nil {
+				c.JSON(500, gin.H{"error": fmt.Sprintf("扫描 %s 失败: %v", location.Path, err)})
+				return
+			}
+			for _, item := range items {
+				if !item.Valid {
+					continue
+				}
+				if existing, found := selected[item.Name]; found {
+					if existing.LocationKey != item.LocationKey {
+						duplicates[item.Name] = struct{}{}
+					}
+					continue
+				}
+				selected[item.Name] = item
+			}
+		}
+
+		names := make([]string, 0, len(selected))
+		for name := range selected {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		imported := 0
+		for _, name := range names {
+			item := selected[name]
+			if item.LocationKey == "project" {
+				continue
+			}
+			files, err := readSkillFiles(item.Path)
+			if err != nil {
+				c.JSON(500, gin.H{"error": fmt.Sprintf("读取 %s 失败: %v", item.Name, err)})
+				return
+			}
+			if err := writeSkillFilesPreserving(filepath.Join(projectLocation.Path, item.Name), files); err != nil {
+				c.JSON(500, gin.H{"error": fmt.Sprintf("归档 %s 失败: %v", item.Name, err)})
+				return
+			}
+			imported++
+		}
+		c.JSON(200, gin.H{"success": true, "total": len(selected), "imported": imported, "duplicates": len(duplicates)})
 	}
 }
 
@@ -200,7 +323,8 @@ func ImportSkill() gin.HandlerFunc {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		for _, target := range req.Targets {
+		targets := ensureProjectSkillTarget(req.Targets)
+		for _, target := range targets {
 			location, exists := locationByKey[target]
 			if !exists {
 				c.JSON(400, gin.H{"error": fmt.Sprintf("未知安装目标: %s", target)})
@@ -210,7 +334,7 @@ func ImportSkill() gin.HandlerFunc {
 				c.JSON(400, gin.H{"error": fmt.Sprintf("安装目标 %s 为只读目录，请选择用户 Skill 目录", location.Agent)})
 				return
 			}
-			if err := writeSkillFiles(filepath.Join(location.Path, skillName), files); err != nil {
+			if err := writeSkillFilesForLocation(location, skillName, files); err != nil {
 				c.JSON(500, gin.H{"error": fmt.Sprintf("安装到 %s 失败: %v", location.Agent, err)})
 				return
 			}
@@ -304,7 +428,7 @@ func CopySkill() gin.HandlerFunc {
 		}
 		for _, target := range req.Targets {
 			location := locationByKey[target]
-			if err := writeSkillFiles(filepath.Join(location.Path, req.Name), files); err != nil {
+			if err := writeSkillFilesForLocation(location, req.Name, files); err != nil {
 				c.JSON(500, gin.H{"error": fmt.Sprintf("复制到 %s 失败: %v", location.Agent, err)})
 				return
 			}
@@ -313,7 +437,7 @@ func CopySkill() gin.HandlerFunc {
 	}
 }
 
-// BackupSkill 将原文和翻译文本并列保存，绝不回写安装目录中的 SKILL.md。
+// BackupSkill 将原文和翻译文本并列保存，并同步项目目录副本，不回写来源 Agent 的 SKILL.md。
 func BackupSkill() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req skillBackupRequest
@@ -325,6 +449,8 @@ func BackupSkill() gin.HandlerFunc {
 			c.JSON(400, gin.H{"error": "翻译文本不能为空"})
 			return
 		}
+		skillsMu.Lock()
+		defer skillsMu.Unlock()
 		ref, err := resolveSkillReference(req.LocationKey, req.Name)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
@@ -333,6 +459,10 @@ func BackupSkill() gin.HandlerFunc {
 		original, err := os.ReadFile(filepath.Join(ref.Path, "SKILL.md"))
 		if err != nil {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("读取原 Skill 失败: %v", err)})
+			return
+		}
+		if req.Original == "" || skillContentSHA256([]byte(req.Original)) != skillContentSHA256(original) {
+			c.JSON(409, gin.H{"error": "原 Skill 已变更，请重新打开后再保存译文"})
 			return
 		}
 		backupDir, err := projectSkillsBackupDir(req.Name)
@@ -358,6 +488,17 @@ func BackupSkill() gin.HandlerFunc {
 		}
 		if err := os.WriteFile(filepath.Join(backupDir, "metadata.json"), append(metadata, '\n'), 0600); err != nil {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("保存备份元数据失败: %v", err)})
+			return
+		}
+		// 项目目录是可恢复的统一 Skill 来源。保存翻译时同步保留完整原 Skill，
+		// 即使原 Agent 目录之后被删除，也可以从项目目录复制回来。
+		if files, readErr := readSkillFiles(ref.Path); readErr == nil {
+			if writeErr := writeSkillFilesPreserving(projectSkillRootForName(req.Name), files); writeErr != nil {
+				c.JSON(500, gin.H{"error": fmt.Sprintf("保存项目 Skill 副本失败: %v", writeErr)})
+				return
+			}
+		} else if writeErr := writeSkillFilesPreserving(projectSkillRootForName(req.Name), map[string][]byte{"SKILL.md": original}); writeErr != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("保存项目 Skill 副本失败: %v", writeErr)})
 			return
 		}
 		c.JSON(200, gin.H{"success": true, "path": backupDir})
@@ -406,7 +547,7 @@ func managedSkillLocations() ([]skillLocation, error) {
 	if err != nil {
 		return nil, err
 	}
-	claudeHome := home
+	claudeHome := filepath.Join(home, ".claude")
 	if configured := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); configured != "" {
 		claudeHome = absolutePath(configured)
 	}
@@ -415,7 +556,12 @@ func managedSkillLocations() ([]skillLocation, error) {
 		codexHome = absolutePath(configured)
 	}
 	openCodeDir := filepath.Join(filepath.Dir(resolveOpenCodeConfigPath()), "skills")
+	projectDir, err := projectSkillsRoot()
+	if err != nil {
+		return nil, err
+	}
 	locations := []skillLocation{
+		{Key: "project", Agent: "项目 Skills 目录", Path: projectDir, SourceType: "project", ReadOnly: false},
 		{Key: "claude-code", Agent: "Claude Code 用户目录", Path: filepath.Join(claudeHome, "skills"), SourceType: "user", ReadOnly: false},
 		{Key: "codex", Agent: "Codex 用户目录", Path: filepath.Join(codexHome, "skills"), SourceType: "user", ReadOnly: false},
 		{Key: "opencode", Agent: "OpenCode 用户目录", Path: openCodeDir, SourceType: "user", ReadOnly: false},
@@ -437,55 +583,142 @@ func managedSkillLocations() ([]skillLocation, error) {
 }
 
 func discoverClaudePluginSkillLocations(claudeHome string) ([]skillLocation, error) {
-	type pluginRoot struct {
-		path       string
-		keyPrefix  string
-		agent      string
-		sourceType string
+	type installedPlugin struct {
+		InstallPath string `json:"installPath"`
 	}
-	roots := []pluginRoot{
-		{path: filepath.Join(claudeHome, "plugins", "cache"), keyPrefix: "claude-plugin-cache", agent: "Claude 插件缓存", sourceType: "claude-plugin-cache"},
-		{path: filepath.Join(claudeHome, "plugins", "marketplaces"), keyPrefix: "claude-plugin-marketplace", agent: "Claude 插件 Marketplace", sourceType: "claude-plugin-marketplace"},
+	type installedPluginsFile struct {
+		Plugins map[string][]installedPlugin `json:"plugins"`
 	}
+
+	content, err := os.ReadFile(filepath.Join(claudeHome, "plugins", "installed_plugins.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var installed installedPluginsFile
+	if err := json.Unmarshal(content, &installed); err != nil {
+		return nil, fmt.Errorf("解析 Claude Code 已安装插件清单失败: %w", err)
+	}
+
 	locations := make([]skillLocation, 0)
 	seen := make(map[string]struct{})
-	for _, root := range roots {
-		if _, err := os.Stat(root.path); errors.Is(err, fs.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return nil, err
-		}
-		err := filepath.WalkDir(root.path, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
+	for pluginID, versions := range installed.Plugins {
+		pluginName := strings.SplitN(pluginID, "@", 2)[0]
+		for _, plugin := range versions {
+			root := filepath.Clean(plugin.InstallPath)
+			if root == "." || root == "" {
+				continue
 			}
-			if !entry.IsDir() {
-				return nil
+			if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
+				continue
+			} else if err != nil {
+				return nil, err
 			}
-			name := strings.ToLower(entry.Name())
-			if name == ".git" || name == "node_modules" {
+			err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if !entry.IsDir() {
+					return nil
+				}
+				name := strings.ToLower(entry.Name())
+				if name == ".git" || name == "node_modules" {
+					return fs.SkipDir
+				}
+				if name != "skills" || filepath.Clean(path) == root {
+					return nil
+				}
+				relative, err := filepath.Rel(root, path)
+				if err != nil {
+					return err
+				}
+				key := "claude-plugin-cache:" + filepath.ToSlash(root) + ":" + filepath.ToSlash(relative)
+				if _, exists := seen[key]; !exists {
+					seen[key] = struct{}{}
+					locations = append(locations, skillLocation{Key: key, Agent: "Claude 插件 · " + pluginName, Path: path, SourceType: "claude-plugin-cache", ReadOnly: true})
+				}
 				return fs.SkipDir
-			}
-			if name != "skills" || filepath.Clean(path) == filepath.Clean(root.path) {
-				return nil
-			}
-			relative, err := filepath.Rel(root.path, path)
+			})
 			if err != nil {
-				return err
+				return nil, err
 			}
-			key := root.keyPrefix + ":" + filepath.ToSlash(relative)
-			if _, exists := seen[key]; !exists {
-				seen[key] = struct{}{}
-				locations = append(locations, skillLocation{Key: key, Agent: root.agent, Path: path, SourceType: root.sourceType, ReadOnly: true})
-			}
-			return fs.SkipDir
-		})
-		if err != nil {
-			return nil, err
 		}
 	}
 	sort.Slice(locations, func(i, j int) bool { return locations[i].Key < locations[j].Key })
 	return locations, nil
+}
+
+// restoreProjectBackupSkills 兼容早期仅保存 original.md 的翻译备份，
+// 使其成为项目目录中可查看、可复制的标准 Skill。
+func restoreProjectBackupSkills(root string) error {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !skillNamePattern.MatchString(entry.Name()) {
+			continue
+		}
+		skillDir := filepath.Join(root, entry.Name())
+		if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
+			continue
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		backupDirs, err := projectSkillBackupDirectories(skillDir)
+		if err != nil {
+			return err
+		}
+		for _, backupDir := range backupDirs {
+			original, err := os.ReadFile(filepath.Join(backupDir, "original.md"))
+			if err != nil {
+				continue
+			}
+			name, _, err := parseSkillFrontmatter(original)
+			if err != nil || name != entry.Name() {
+				continue
+			}
+			if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), original, 0600); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
+}
+
+// projectSkillBackupDirectories 同时读取当前 .backups 目录和早期的扁平时间目录。
+func projectSkillBackupDirectories(skillDir string) ([]string, error) {
+	entries, err := os.ReadDir(skillDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	directories := make([]string, 0)
+	for _, entry := range entries {
+		if entry.IsDir() && skillBackupDirectoryPattern.MatchString(entry.Name()) {
+			directories = append(directories, filepath.Join(skillDir, entry.Name()))
+		}
+	}
+	backupRoot := filepath.Join(skillDir, skillBackupsDirName)
+	backupEntries, err := os.ReadDir(backupRoot)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	for _, entry := range backupEntries {
+		if entry.IsDir() && skillBackupDirectoryPattern.MatchString(entry.Name()) {
+			directories = append(directories, filepath.Join(backupRoot, entry.Name()))
+		}
+	}
+	sort.Slice(directories, func(i, j int) bool { return filepath.Base(directories[i]) > filepath.Base(directories[j]) })
+	return directories, nil
 }
 
 func scanSkillLocation(location skillLocation) ([]skillItem, error) {
@@ -504,6 +737,9 @@ func scanSkillLocation(location skillLocation) ([]skillItem, error) {
 		path := filepath.Join(location.Path, entry.Name())
 		content, err := os.ReadFile(filepath.Join(path, "SKILL.md"))
 		item := skillItem{LocationKey: location.Key, Agent: location.Agent, Name: entry.Name(), Path: path, SourceType: location.SourceType, ReadOnly: location.ReadOnly}
+		if metadata, metadataErr := readSkillGlobalMetadata(item.Name); metadataErr == nil {
+			item.Note = metadata.Note
+		}
 		if err != nil {
 			item.Issue = "缺少或无法读取 SKILL.md"
 		} else {
@@ -513,6 +749,9 @@ func scanSkillLocation(location skillLocation) ([]skillItem, error) {
 				item.Issue = "frontmatter 的 name 必须与目录名一致"
 			} else {
 				item.Valid = true
+				if backup, found, backupErr := latestSkillBackup(item, content); backupErr == nil && found {
+					item.TranslatedName = translatedSkillDisplayName([]byte(backup.Translated))
+				}
 			}
 		}
 		_ = filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
@@ -647,10 +886,36 @@ func parseSkillFrontmatter(content []byte) (string, string, error) {
 	return name, description, nil
 }
 
+func translatedSkillDisplayName(content []byte) string {
+	text := string(content)
+	if !strings.HasPrefix(text, "---\n") && !strings.HasPrefix(text, "---\r\n") {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	end := -1
+	for index, line := range lines[1:] {
+		if strings.TrimSpace(line) == "---" {
+			end = index + 1
+			break
+		}
+	}
+	if end == -1 {
+		return ""
+	}
+	var frontmatter struct {
+		DisplayName string `yaml:"display_name"`
+	}
+	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &frontmatter); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(frontmatter.DisplayName)
+}
+
 const (
 	maxSkillCopyFiles      = 128
 	maxSkillCopyTotalBytes = 20 << 20
 	maxSkillCopyFileBytes  = 5 << 20
+	skillBackupsDirName    = ".backups"
 )
 
 func readSkillFiles(source string) (map[string][]byte, error) {
@@ -668,6 +933,9 @@ func readSkillFiles(source string) (map[string][]byte, error) {
 			return walkErr
 		}
 		if entry.IsDir() {
+			if current != source && (entry.Name() == skillBackupsDirName || skillBackupDirectoryPattern.MatchString(entry.Name())) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
@@ -733,6 +1001,63 @@ func writeSkillFiles(destination string, files map[string][]byte) error {
 	return nil
 }
 
+func writeSkillFilesForLocation(location skillLocation, name string, files map[string][]byte) error {
+	destination := filepath.Join(location.Path, name)
+	if location.Key == "project" {
+		return writeSkillFilesPreserving(destination, files)
+	}
+	return writeSkillFiles(destination, files)
+}
+
+// writeSkillFilesPreserving 更新项目 Skill 的主体文件，并保留专用翻译备份目录。
+func writeSkillFilesPreserving(destination string, files map[string][]byte) error {
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		// 保留新旧格式的翻译备份，其余文件必须与当前 Skill 包完全一致。
+		if entry.Name() == skillBackupsDirName || skillBackupDirectoryPattern.MatchString(entry.Name()) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(destination, entry.Name())); err != nil {
+			return err
+		}
+	}
+	for name, content := range files {
+		path := filepath.Join(destination, filepath.FromSlash(name))
+		if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(destination)+string(os.PathSeparator)) {
+			return errors.New("Skill 文件路径无效")
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, content, 0600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureProjectSkillTarget(targets []string) []string {
+	result := make([]string, 0, len(targets)+1)
+	seen := make(map[string]struct{}, len(targets)+1)
+	for _, target := range targets {
+		if _, exists := seen[target]; exists {
+			continue
+		}
+		seen[target] = struct{}{}
+		result = append(result, target)
+	}
+	if _, exists := seen["project"]; !exists {
+		result = append(result, "project")
+	}
+	return result
+}
+
 func projectSkillsBackupDir(name string) (string, error) {
 	root, err := projectSkillsBackupRoot(name)
 	if err != nil {
@@ -742,10 +1067,7 @@ func projectSkillsBackupDir(name string) (string, error) {
 	return dir, os.MkdirAll(dir, 0700)
 }
 
-func projectSkillsBackupRoot(name string) (string, error) {
-	if !skillNamePattern.MatchString(name) {
-		return "", errors.New("Skill 名称无效")
-	}
+func projectSkillsRoot() (string, error) {
 	workingDir, err := os.Getwd()
 	if err != nil {
 		return "", err
@@ -753,7 +1075,71 @@ func projectSkillsBackupRoot(name string) (string, error) {
 	if filepath.Base(workingDir) == "backend-go" {
 		workingDir = filepath.Dir(workingDir)
 	}
-	return filepath.Join(workingDir, "skills", name), nil
+	return filepath.Join(workingDir, "skills"), nil
+}
+
+func projectSkillMetadataPath(name string) (string, error) {
+	if !skillNamePattern.MatchString(name) {
+		return "", errors.New("Skill 名称无效")
+	}
+	root, err := projectSkillsRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, ".metadata", name+".json"), nil
+}
+
+func readSkillGlobalMetadata(name string) (skillGlobalMetadata, error) {
+	path, err := projectSkillMetadataPath(name)
+	if err != nil {
+		return skillGlobalMetadata{}, err
+	}
+	content, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return skillGlobalMetadata{}, nil
+	}
+	if err != nil {
+		return skillGlobalMetadata{}, err
+	}
+	var metadata skillGlobalMetadata
+	if err := json.Unmarshal(content, &metadata); err != nil {
+		return skillGlobalMetadata{}, err
+	}
+	return metadata, nil
+}
+
+func writeSkillGlobalMetadata(name string, metadata skillGlobalMetadata) error {
+	path, err := projectSkillMetadataPath(name)
+	if err != nil {
+		return err
+	}
+	content, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(content, '\n'), 0600)
+}
+
+func projectSkillRootForName(name string) string {
+	root, err := projectSkillsRoot()
+	if err != nil {
+		return filepath.Join("skills", name)
+	}
+	return filepath.Join(root, name)
+}
+
+func projectSkillsBackupRoot(name string) (string, error) {
+	if !skillNamePattern.MatchString(name) {
+		return "", errors.New("Skill 名称无效")
+	}
+	root, err := projectSkillsRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, name, skillBackupsDirName), nil
 }
 
 type skillBackup struct {
@@ -763,31 +1149,30 @@ type skillBackup struct {
 }
 
 func latestSkillBackup(ref skillItem, original []byte) (skillBackup, bool, error) {
-	root, err := projectSkillsBackupRoot(ref.Name)
+	backupRoot, err := projectSkillsBackupRoot(ref.Name)
 	if err != nil {
 		return skillBackup{}, false, err
 	}
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return skillBackup{}, false, nil
-	}
+	entries, err := projectSkillBackupDirectories(filepath.Dir(backupRoot))
 	if err != nil {
 		return skillBackup{}, false, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
 	expectedPath := filepath.Clean(filepath.Join(ref.Path, "SKILL.md"))
 	expectedHash := skillContentSHA256(original)
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		backupPath := filepath.Join(root, entry.Name())
+	for _, backupPath := range entries {
 		metadataBytes, err := os.ReadFile(filepath.Join(backupPath, "metadata.json"))
 		if err != nil {
 			continue
 		}
 		var metadata skillBackupMetadata
-		if err := json.Unmarshal(metadataBytes, &metadata); err != nil || filepath.Clean(metadata.SourcePath) != expectedPath {
+		if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+			continue
+		}
+		sourceMatches := metadata.SourceSHA256 != "" && metadata.SourceSHA256 == expectedHash
+		if metadata.SourceSHA256 == "" {
+			sourceMatches = filepath.Clean(metadata.SourcePath) == expectedPath
+		}
+		if !sourceMatches {
 			continue
 		}
 		if metadata.SourceSHA256 != "" && metadata.SourceSHA256 != expectedHash {

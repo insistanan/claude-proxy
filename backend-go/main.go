@@ -383,6 +383,8 @@ func main() {
 		apiGroup.GET("/skills", handlers.ListSkills())
 		apiGroup.POST("/skills/content", handlers.GetSkillContent())
 		apiGroup.POST("/skills/backup/latest", handlers.GetLatestSkillBackup())
+		apiGroup.POST("/skills/note", handlers.UpdateSkillNote())
+		apiGroup.POST("/skills/consolidate", handlers.ConsolidateSkills())
 		apiGroup.POST("/skills/import", handlers.ImportSkill())
 		apiGroup.GET("/skills/search", handlers.SearchSkills())
 		apiGroup.POST("/skills/remote/inspect", handlers.InspectRemoteSkill())
