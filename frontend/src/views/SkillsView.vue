@@ -49,7 +49,7 @@
           <tr v-if="!loading && filteredSkills.length === 0"><td colspan="5" class="text-center text-medium-emphasis py-10">未发现符合条件的 Skill</td></tr>
           <tr v-for="skill in filteredSkills" :key="`${skill.locationKey}:${skill.name}`">
             <td>
-              <v-tooltip :text="skill.note || ''" :disabled="!skill.note" location="top" theme="dark"><template #activator="{ props }"><button v-bind="props" type="button" class="skill-name-button font-weight-medium" @click="openSkill(skill)">{{ displaySkillName(skill) }}</button></template></v-tooltip>
+              <v-tooltip :text="skill.note || ''" :disabled="!skill.note" location="top" theme="dark"><template #activator="{ props }"><button v-bind="props" type="button" class="skill-name-button font-weight-medium" @click="openSkill(skill)">{{ displaySkillName(skill) }}<v-tooltip v-if="skill.translatedName" text="已翻译" location="top" theme="dark"><template #activator="{ props: tipProps }"><v-icon v-bind="tipProps" icon="mdi-translate" size="x-small" color="primary" class="ml-1" /></template></v-tooltip></button></template></v-tooltip>
               <div class="text-caption text-medium-emphasis skill-description">{{ skill.description || '未读取到说明' }}</div>
             </td>
             <td>

@@ -5,6 +5,7 @@ import vuetify from './plugins/vuetify'
 import router from './router'
 import App from './App.vue'
 import './assets/style.css'
+import './assets/fonts.css'
 import { useAuthStore } from './stores/auth'
 
 const app = createApp(App)
