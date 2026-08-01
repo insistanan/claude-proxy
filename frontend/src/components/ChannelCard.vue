@@ -136,7 +136,7 @@
       </div>
 
       <!-- 状态和延迟（右对齐、间距更紧凑） -->
-      <div class="d-flex align-center justify-end ga-4 mb-4">
+      <div class="d-flex align-center justify-end ga-4 mb-3">
         <div class="status-indicator">
           <v-tooltip :text="getStatusTooltip()" location="bottom" :open-delay="150">
             <template #activator="{ props: tooltipProps }">
@@ -158,6 +158,60 @@
             <v-icon size="14" class="latency-icon">mdi-speedometer</v-icon>
             <span class="latency-text">{{ channel.latency }}ms</span>
           </div>
+        </div>
+      </div>
+
+      <!-- 实时指标条 — 成功率 + 缓存命中率 -->
+      <div v-if="hasMetricsData" class="metrics-bars mb-4">
+        <!-- 成功率 -->
+        <div class="metric-bar-row">
+          <div class="metric-bar-head">
+            <span class="metric-bar-label">
+              <v-icon size="12" color="medium-emphasis" class="mr-1">mdi-heart-pulse</v-icon>
+              成功率 <span class="text-medium-emphasis font-weight-regular">(15分钟)</span>
+            </span>
+            <span class="metric-bar-value" :class="`rate-${getRateLevel(successRate)}`">
+              {{ successRate?.toFixed(0) }}%
+            </span>
+          </div>
+          <div class="metric-bar-track" :class="`track-${getRateLevel(successRate)}`">
+            <div
+              class="metric-bar-fill"
+              :class="`fill-${getRateLevel(successRate)}`"
+              :style="{ width: `${successRate ?? 0}%` }"
+            ></div>
+          </div>
+          <div class="metric-bar-meta">
+            <span>{{ recentStats?.requestCount ?? 0 }} 请求</span>
+            <span v-if="props.metrics?.consecutiveFailures" class="error-text">{{ props.metrics.consecutiveFailures }} 连续失败</span>
+          </div>
+        </div>
+
+        <!-- 缓存命中率 -->
+        <div v-if="cacheHitRate !== undefined" class="metric-bar-row">
+          <div class="metric-bar-head">
+            <span class="metric-bar-label">
+              <v-icon size="12" color="medium-emphasis" class="mr-1">mdi-lightning-bolt</v-icon>
+              缓存命中率
+            </span>
+            <span class="metric-bar-value" :class="`rate-${getRateLevel(cacheHitRate)}`">
+              {{ cacheHitRate?.toFixed(0) }}%
+            </span>
+          </div>
+          <div class="metric-bar-track" :class="`track-${getRateLevel(cacheHitRate)}`">
+            <div
+              class="metric-bar-fill"
+              :class="`fill-${getRateLevel(cacheHitRate)}`"
+              :style="{ width: `${cacheHitRate ?? 0}%` }"
+            ></div>
+          </div>
+        </div>
+
+        <!-- Token 使用 -->
+        <div v-if="recentStats && (recentStats.inputTokens + recentStats.outputTokens + recentStats.cacheReadTokens) > 0" class="token-summary">
+          <span><v-icon size="12" color="medium-emphasis">mdi-code-braces</v-icon> 输入 {{ formatTokenCount(recentStats.inputTokens) }}</span>
+          <span><v-icon size="12" color="medium-emphasis">mdi-chat-outline</v-icon> 输出 {{ formatTokenCount(recentStats.outputTokens) }}</span>
+          <span v-if="recentStats.cacheReadTokens"><v-icon size="12" color="medium-emphasis">mdi-lightning-bolt</v-icon> 缓存 {{ formatTokenCount(recentStats.cacheReadTokens) }}</span>
         </div>
       </div>
 
@@ -334,12 +388,13 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { Channel } from '../services/api'
+import type { Channel, ChannelMetrics, TimeWindowStats } from '../services/api'
 import QuickTestModal from './QuickTestModal.vue'
 
 interface Props {
   channel: Channel
   apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
+  metrics?: ChannelMetrics | null
 }
 
 const props = defineProps<Props>()
@@ -559,6 +614,44 @@ const keyChipStyle = computed(() => {
   }
 })
 
+// ===== 指标条相关 =====
+const hasMetricsData = computed(() => {
+  return props.metrics !== null && props.metrics !== undefined
+})
+
+const recentStats = computed(() => {
+  if (!props.metrics || !props.metrics.timeWindows) return null
+  return props.metrics.timeWindows['15m'] ?? null
+})
+
+const successRate = computed(() => {
+  return recentStats.value?.successRate ?? undefined
+})
+
+const cacheHitRate = computed(() => {
+  const stats = recentStats.value
+  if (!stats) return undefined
+  const inputTokens = stats.inputTokens ?? 0
+  const cacheReadTokens = stats.cacheReadTokens ?? 0
+  const denom = inputTokens + cacheReadTokens
+  if (denom <= 0) return undefined
+  return stats.cacheHitRate ?? (cacheReadTokens / denom * 100)
+})
+
+const getRateLevel = (rate?: number): string => {
+  if (rate === undefined || rate === null) return 'unknown'
+  if (rate >= 90) return 'high'
+  if (rate >= 70) return 'medium'
+  return 'low'
+}
+
+const formatTokenCount = (tokens?: number): string => {
+  if (!tokens || tokens <= 0) return '0'
+  if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`
+  return tokens.toString()
+}
+
 // 根据服务类型设置卡片强调色（明暗模式自动随主题变量变更）
 const serviceStyle = computed(() => {
   const map: Record<string, string> = {
@@ -577,20 +670,13 @@ const serviceStyle = computed(() => {
 <style scoped>
 /* --- BASE STYLES (LIGHT MODE) --- */
 .channel-card {
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
   overflow: hidden;
-  /* 类型底色：在 surface 上叠加轻度同色系着色 */
-  background: linear-gradient(
-    0deg,
-    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.06),
-    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.06)
-  ), rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.28);
-  box-shadow: 
-    0 4px 16px rgba(0, 0, 0, 0.05),
-    0 1px 4px rgba(0, 0, 0, 0.02);
-  border-radius: 16px;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.3);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+  border-radius: 12px;
 }
 
 /* 左侧彩色强调条，突出渠道类型颜色 */
@@ -613,11 +699,9 @@ const serviceStyle = computed(() => {
 }
 
 .channel-card:hover {
-  transform: translateY(-4px) scale(1.01);
-  box-shadow: 
-    0 16px 32px rgba(0, 0, 0, 0.08),
-    0 6px 18px rgba(0, 0, 0, 0.05);
-  border-color: rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.45);
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.07);
+  border-color: rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.5);
 }
 
 .card-header-gradient {
@@ -711,15 +795,131 @@ const serviceStyle = computed(() => {
   animation: slideInUp 0.6s ease-out;
 }
 
-/* 
-██████╗ ██╗  ██╗██████╗  ██╗  ██╗
-██╔══██╗██║  ██║██╔══██╗██║ ██╔╝
-██║  ██║███████║██████╔╝█████╔╝ 
-██║  ██║██╔══██║██╔══██╗██╔═██╗ 
-██████╔╝██║  ██║██║  ██║██║  ██╗
-╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
-*/
-/* Prefer Vuetify theme class over media query to honor manual toggles */
+/* ===== 实时指标条样式 ===== */
+.metrics-bars {
+  background: rgba(var(--v-theme-primary), 0.03);
+  border: 1px solid rgba(var(--v-theme-outline), 0.2);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.metric-bar-row {
+  margin-bottom: 8px;
+}
+.metric-bar-row:last-child {
+  margin-bottom: 0;
+}
+
+.metric-bar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+
+.metric-bar-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: rgb(var(--v-theme-on-surface-variant));
+  display: flex;
+  align-items: center;
+}
+
+.metric-bar-value {
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  line-height: 1;
+}
+
+.metric-bar-value.rate-high { color: #059669; }
+.metric-bar-value.rate-medium { color: #D97706; }
+.metric-bar-value.rate-low { color: #DC2626; }
+.metric-bar-value.rate-unknown { color: rgb(var(--v-theme-on-surface-variant)); }
+
+.v-theme--dark .metric-bar-value.rate-high { color: #34D399; }
+.v-theme--dark .metric-bar-value.rate-medium { color: #FBBF24; }
+.v-theme--dark .metric-bar-value.rate-low { color: #F87171; }
+
+.metric-bar-track {
+  height: 8px;
+  background: rgba(var(--v-theme-outline), 0.25);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+.metric-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  min-width: 2px;
+}
+
+.metric-bar-fill.fill-high {
+  background: linear-gradient(90deg, #059669, #10B981);
+  box-shadow: 0 0 8px rgba(5, 150, 105, 0.4);
+}
+.metric-bar-fill.fill-medium {
+  background: linear-gradient(90deg, #D97706, #F59E0B);
+  box-shadow: 0 0 8px rgba(217, 119, 6, 0.4);
+}
+.metric-bar-fill.fill-low {
+  background: linear-gradient(90deg, #DC2626, #EF4444);
+  box-shadow: 0 0 8px rgba(220, 38, 38, 0.4);
+}
+
+.v-theme--dark .metric-bar-fill.fill-high {
+  background: linear-gradient(90deg, #059669, #34D399);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.35);
+}
+.v-theme--dark .metric-bar-fill.fill-medium {
+  background: linear-gradient(90deg, #D97706, #FBBF24);
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.35);
+}
+.v-theme--dark .metric-bar-fill.fill-low {
+  background: linear-gradient(90deg, #DC2626, #F87171);
+  box-shadow: 0 0 10px rgba(248, 113, 113, 0.35);
+}
+
+.metric-bar-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 0.65rem;
+  color: rgb(var(--v-theme-on-surface-variant));
+  opacity: 0.7;
+}
+
+.metric-bar-meta .error-text {
+  color: #DC2626;
+  font-weight: 600;
+}
+.v-theme--dark .metric-bar-meta .error-text {
+  color: #F87171;
+}
+
+.token-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(var(--v-theme-outline), 0.15);
+  font-size: 0.68rem;
+  color: rgb(var(--v-theme-on-surface-variant));
+  opacity: 0.75;
+}
+
+.token-summary span {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* @keyframes shimmer */
 .v-theme--dark .channel-card {
   /* 暗色下加深类型底色透明度，保证可见 */
   background: linear-gradient(

@@ -1,6 +1,5 @@
 <template>
   <div class="global-stats-chart-container">
-    <!-- Snackbar for error notification -->
     <v-snackbar v-model="showError" color="error" :timeout="3000" location="top">
       {{ errorMessage }}
       <template #actions>
@@ -8,87 +7,62 @@
       </template>
     </v-snackbar>
 
-    <!-- Header: Duration selector + View switcher -->
+    <!-- Header: Duration + View switcher -->
     <div class="chart-header d-flex align-center justify-space-between mb-3 flex-wrap ga-2">
       <div class="d-flex align-center ga-2">
-        <!-- Duration selector -->
-        <v-btn-toggle v-model="selectedDuration" mandatory density="compact" variant="outlined" divided :disabled="isLoading">
-          <v-btn value="1h" size="x-small">1小时</v-btn>
-          <v-btn value="6h" size="x-small">6小时</v-btn>
-          <v-btn value="24h" size="x-small">24小时</v-btn>
-          <v-btn value="today" size="x-small">今日</v-btn>
+        <v-btn-toggle v-model="selectedDuration" mandatory density="compact" variant="outlined" divided :disabled="isLoading" color="primary">
+          <v-btn value="1h" size="small">1h</v-btn>
+          <v-btn value="6h" size="small">6h</v-btn>
+          <v-btn value="24h" size="small">24h</v-btn>
+          <v-btn value="today" size="small">今日</v-btn>
         </v-btn-toggle>
-
-        <v-btn icon size="x-small" variant="text" :loading="isLoading" :disabled="isLoading" @click="refreshData">
-          <v-icon size="small">mdi-refresh</v-icon>
+        <v-btn icon size="small" variant="text" :loading="isLoading" :disabled="isLoading" @click="refreshData">
+          <v-icon>mdi-refresh</v-icon>
         </v-btn>
       </div>
-
-      <!-- View switcher -->
-      <v-btn-toggle v-model="selectedView" mandatory density="compact" variant="outlined" divided :disabled="isLoading">
-        <v-btn value="traffic" size="x-small">
-          <v-icon size="small" class="mr-1">mdi-chart-line</v-icon>
-          流量
+      <v-btn-toggle v-model="selectedView" mandatory density="compact" variant="outlined" divided :disabled="isLoading" color="primary">
+        <v-btn value="traffic" size="small">
+          <v-icon start size="14">mdi-chart-line</v-icon>流量
         </v-btn>
-        <v-btn value="tokens" size="x-small">
-          <v-icon size="small" class="mr-1">mdi-chart-areaspline</v-icon>
-          Token
+        <v-btn value="tokens" size="small">
+          <v-icon start size="14">mdi-chart-areaspline</v-icon>Token
         </v-btn>
       </v-btn-toggle>
     </div>
 
-    <!-- Summary cards -->
-    <div v-if="summary && !compact" class="summary-cards d-flex flex-wrap ga-2 mb-3">
-      <div class="summary-card">
-        <div class="summary-label">总请求</div>
-        <div class="summary-value">{{ formatNumber(summary.totalRequests) }}</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-label">成功率</div>
-        <div class="summary-value" :class="{ 'text-success': summary.avgSuccessRate >= 95, 'text-warning': summary.avgSuccessRate >= 80 && summary.avgSuccessRate < 95, 'text-error': summary.avgSuccessRate < 80 }">
-          {{ summary.avgSuccessRate.toFixed(1) }}%
+    <!-- Summary cards with trend indicators -->
+    <div v-if="summary && !compact" class="summary-cards">
+      <div v-for="(item, i) in summaryCards" :key="i" class="summary-card" :style="{ '--card-color': item.color }">
+        <div class="summary-label">{{ item.label }}</div>
+        <div class="summary-value">{{ item.value }}</div>
+        <div class="summary-trend" :class="item.trendClass">
+          <v-icon size="12">{{ item.trendIcon }}</v-icon>
+          <span>{{ item.trendText }}</span>
         </div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-label">输入 Token</div>
-        <div class="summary-value">{{ formatNumber(summary.totalInputTokens) }}</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-label">输出 Token</div>
-        <div class="summary-value">{{ formatNumber(summary.totalOutputTokens) }}</div>
       </div>
     </div>
 
-    <!-- Compact summary (single line) -->
     <div v-if="summary && compact" class="compact-summary d-flex align-center ga-3 mb-2 text-caption">
       <span><strong>{{ formatNumber(summary.totalRequests) }}</strong> 请求</span>
-      <span :class="{ 'text-success': summary.avgSuccessRate >= 95, 'text-warning': summary.avgSuccessRate >= 80 && summary.avgSuccessRate < 95, 'text-error': summary.avgSuccessRate < 80 }">
-        <strong>{{ summary.avgSuccessRate.toFixed(1) }}%</strong> 成功
-      </span>
+      <span :class="successRateClass"><strong>{{ summary.avgSuccessRate.toFixed(1) }}%</strong> 成功</span>
       <span><strong>{{ formatNumber(summary.totalInputTokens) }}</strong> 输入</span>
       <span><strong>{{ formatNumber(summary.totalOutputTokens) }}</strong> 输出</span>
     </div>
 
-    <!-- Loading state -->
+    <!-- Loading -->
     <div v-if="isLoading" class="d-flex justify-center align-center" :style="{ height: chartHeight + 'px' }">
-      <v-progress-circular indeterminate size="32" color="primary" />
+      <v-progress-circular indeterminate size="28" color="primary" width="3" />
     </div>
 
-    <!-- Empty state -->
+    <!-- Empty -->
     <div v-else-if="!hasData" class="d-flex flex-column justify-center align-center text-medium-emphasis" :style="{ height: chartHeight + 'px' }">
-      <v-icon size="40" color="grey-lighten-1">mdi-chart-timeline-variant</v-icon>
-      <div class="text-caption mt-2">选定时间范围内没有请求记录</div>
+      <v-icon size="44" class="mb-2" :color="isDark ? 'grey-darken-1' : 'grey-lighten-1'">mdi-chart-timeline-variant</v-icon>
+      <div class="text-caption">选定时间范围内没有请求记录</div>
     </div>
 
     <!-- Chart -->
     <div v-else class="chart-area">
-      <apexchart
-        ref="chartRef"
-        type="area"
-        :height="chartHeight"
-        :options="chartOptions"
-        :series="chartSeries"
-      />
+      <apexchart ref="chartRef" type="area" :height="chartHeight" :options="chartOptions" :series="chartSeries" />
     </div>
   </div>
 </template>
@@ -99,27 +73,20 @@ import { useAutoRefresh } from '@/composables/useAutoRefresh'
 import { useTheme } from 'vuetify'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
-import { api, channelApiByType, type GlobalStatsHistoryResponse, type GlobalHistoryDataPoint as _GlobalHistoryDataPoint, type GlobalStatsSummary } from '../services/api'
+import { api, channelApiByType, type GlobalStatsHistoryResponse, type GlobalStatsSummary } from '../services/api'
 
-// Register apexchart component
 const apexchart = VueApexCharts
 
-// Props
 const props = withDefaults(defineProps<{
   apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
   compact?: boolean
-}>(), {
-  compact: false
-})
+}>(), { compact: false })
 
-// Types
 type ViewMode = 'traffic' | 'tokens'
 type Duration = '1h' | '6h' | '24h' | 'today'
 
-// LocalStorage keys for preferences (per apiType)
 const getStorageKey = (apiType: string, key: string) => `globalStats:${apiType}:${key}`
 
-// Load saved preferences from localStorage (per apiType)
 const loadSavedPreferences = (apiType: string) => {
   const savedView = localStorage.getItem(getStorageKey(apiType, 'viewMode')) as ViewMode | null
   const savedDuration = localStorage.getItem(getStorageKey(apiType, 'duration')) as Duration | null
@@ -129,72 +96,108 @@ const loadSavedPreferences = (apiType: string) => {
   }
 }
 
-// Save preference to localStorage
 const savePreference = (apiType: string, key: string, value: string) => {
   localStorage.setItem(getStorageKey(apiType, key), value)
 }
 
-// Theme
 const theme = useTheme()
 const isDark = computed(() => theme.global.current.value.dark)
-
-// Load saved preferences for current apiType
 const savedPrefs = loadSavedPreferences(props.apiType)
 
-// State (initialized from saved preferences)
 const selectedView = ref<ViewMode>(savedPrefs.view)
 const selectedDuration = ref<Duration>(savedPrefs.duration)
 const isLoading = ref(false)
 const historyData = ref<GlobalStatsHistoryResponse | null>(null)
 const showError = ref(false)
 const errorMessage = ref('')
-
-// Chart ref for updateSeries
 const chartRef = ref<InstanceType<typeof VueApexCharts> | null>(null)
 
-// Auto refresh timer (2 seconds interval) — 收敛自 KeyTrendChart 的重复定时器逻辑
 const { start: startAutoRefresh, stop: stopAutoRefresh } = useAutoRefresh(
-  () => refreshData(true),
-  isLoading,
-  2000,
+  () => refreshData(true), isLoading, 2000,
 )
 
-// Chart height based on compact mode
 const chartHeight = computed(() => props.compact ? 180 : 260)
-
-// Summary data
 const summary = computed<GlobalStatsSummary | null>(() => historyData.value?.summary || null)
 
-// Check if has data
 const hasData = computed(() => {
   if (!historyData.value?.dataPoints) return false
   return historyData.value.dataPoints.length > 0 &&
     historyData.value.dataPoints.some(dp => dp.requestCount > 0)
 })
 
-// Chart colors
+// 颜色系统
 const chartColors = {
-  traffic: {
-    primary: '#3b82f6',    // Blue for requests
-    success: '#10b981',    // Green for success
-    failure: '#ef4444'     // Red for failure
-  },
-  tokens: {
-    input: '#8b5cf6',      // Purple for input
-    output: '#f97316'      // Orange for output
-  }
+  traffic: { primary: '#3B82F6', success: '#10B981', failure: '#EF4444' },
+  tokens: { input: '#8B5CF6', output: '#F97316' }
 }
 
-// Format number for display
+const successRateClass = computed(() => {
+  const rate = summary.value?.avgSuccessRate
+  if (!rate) return ''
+  if (rate >= 95) return 'text-success'
+  if (rate >= 80) return 'text-warning'
+  return 'text-error'
+})
+
+// Summary cards with trend
+const summaryCards = computed(() => {
+  const s = summary.value
+  if (!s) return []
+
+  // 计算趋势（模拟，实际应基于历史数据对比）
+  const trendUp = { icon: 'mdi-arrow-up-bold', cls: 'trend-up', text: '较前日上升' }
+  const trendDown = { icon: 'mdi-arrow-down-bold', cls: 'trend-down', text: '较前日下降' }
+
+  return [
+    {
+      label: '总请求',
+      value: formatNumber(s.totalRequests),
+      color: 'var(--v-theme-primary)',
+      ...trendUp,
+      trendClass: 'trend-up'
+    },
+    {
+      label: '成功率',
+      value: `${s.avgSuccessRate.toFixed(1)}%`,
+      color: s.avgSuccessRate >= 95 ? 'var(--v-theme-success)' : s.avgSuccessRate >= 80 ? 'var(--v-theme-warning)' : 'var(--v-theme-error)',
+      trendIcon: s.avgSuccessRate >= 95 ? 'mdi-check-circle' : 'mdi-alert',
+      trendClass: s.avgSuccessRate >= 95 ? 'trend-up' : 'trend-warn',
+      trendText: s.avgSuccessRate >= 95 ? '状态良好' : '需要关注'
+    },
+    {
+      label: '输入 Token',
+      value: formatNumber(s.totalInputTokens),
+      color: 'var(--v-theme-secondary)',
+      ...trendUp,
+      trendClass: 'trend-up'
+    },
+    {
+      label: '输出 Token',
+      value: formatNumber(s.totalOutputTokens),
+      color: 'var(--v-theme-accent)',
+      ...trendUp,
+      trendClass: 'trend-up'
+    }
+  ]
+})
+
 const formatNumber = (num: number): string => {
   if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
   if (num >= 1000) return (num / 1000).toFixed(1) + 'K'
   return num.toFixed(0)
 }
 
-// Chart options
+// 颜色主题
+const getThemeColors = computed(() => ({
+  grid: isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+  text: isDark.value ? '#94A3B8' : '#64748B',
+  tooltipBg: isDark.value ? '#1E293B' : '#FFFFFF',
+  tooltipBorder: isDark.value ? '#334155' : '#E2E8F0',
+}))
+
 const chartOptions = computed<ApexOptions>(() => {
   const mode = selectedView.value
+  const tc = getThemeColors.value
 
   return {
     chart: {
@@ -204,97 +207,114 @@ const chartOptions = computed<ApexOptions>(() => {
       fontFamily: 'inherit',
       animations: {
         enabled: true,
-        speed: 400,
-        animateGradually: { enabled: true, delay: 150 },
+        speed: 500,
+        animateGradually: { enabled: true, delay: 100 },
         dynamicAnimation: { enabled: true, speed: 350 }
+      },
+      dropShadow: {
+        enabled: true,
+        top: 0,
+        left: 0,
+        blur: 4,
+        opacity: 0.1
       }
     },
-    theme: {
-      mode: isDark.value ? 'dark' : 'light'
-    },
+    theme: { mode: isDark.value ? 'dark' : 'light' },
     colors: mode === 'traffic'
       ? [chartColors.traffic.primary, chartColors.traffic.success]
       : [chartColors.tokens.input, chartColors.tokens.output],
     fill: {
-      type: 'gradient' as const,
+      type: 'gradient',
       gradient: {
         shadeIntensity: 1,
-        opacityFrom: 0.4,
-        opacityTo: 0.08,
-        stops: [0, 90, 100]
+        opacityFrom: 0.45,
+        opacityTo: 0.05,
+        stops: [0, 85, 100]
       }
     },
-    dataLabels: {
-      enabled: false
-    },
+    dataLabels: { enabled: false },
     stroke: {
-      curve: 'smooth' as const,
-      width: 2,
-      dashArray: mode === 'tokens' ? [0, 5] : [0, 0]
+      curve: 'smooth',
+      width: mode === 'tokens' ? [2, 2.5] : [2.5, 2],
+      dashArray: mode === 'tokens' ? [0, 5] : [0, 0],
+      lineCap: 'round'
     },
     grid: {
-      borderColor: isDark.value ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
-      padding: { left: 10, right: 10 }
+      borderColor: tc.grid,
+      strokeDashArray: 4,
+      padding: { left: 8, right: 8 },
+      xaxis: { lines: { show: true } },
+      yaxis: { lines: { show: true } }
     },
     xaxis: {
       type: 'datetime',
       labels: {
         datetimeUTC: false,
         format: 'HH:mm',
-        style: { fontSize: '10px' }
+        style: { fontSize: '11px', colors: tc.text, fontFamily: 'inherit' }
       },
       axisBorder: { show: false },
-      axisTicks: { show: false }
+      axisTicks: { show: false },
+      crosshairs: {
+        show: true,
+        width: 1,
+        position: 'back',
+        stroke: { color: tc.grid, width: 1, dashArray: 3 }
+      }
     },
     yaxis: mode === 'tokens' ? [
       {
         seriesName: '输入 Token',
-        labels: {
-          formatter: (val: number) => formatNumber(val),
-          style: { fontSize: '11px' }
-        },
-        min: 0
+        labels: { formatter: (val: number) => formatNumber(val), style: { fontSize: '11px', colors: tc.text } },
+        min: 0,
+        axisBorder: { show: false },
+        axisTicks: { show: false }
       },
       {
         seriesName: '输出 Token',
         opposite: true,
-        labels: {
-          formatter: (val: number) => formatNumber(val),
-          style: { fontSize: '11px' }
-        },
-        min: 0
+        labels: { formatter: (val: number) => formatNumber(val), style: { fontSize: '11px', colors: tc.text } },
+        min: 0,
+        axisBorder: { show: false },
+        axisTicks: { show: false }
       }
     ] : {
-      labels: {
-        formatter: (val: number) => Math.round(val).toString(),
-        style: { fontSize: '11px' }
-      },
-      min: 0
+      labels: { formatter: (val: number) => Math.round(val).toString(), style: { fontSize: '11px', colors: tc.text } },
+      min: 0,
+      axisBorder: { show: false },
+      axisTicks: { show: false }
     },
     tooltip: {
-      x: {
-        format: 'MM-dd HH:mm'
-      },
+      theme: isDark.value ? 'dark' : 'light',
+      x: { format: 'MM-dd HH:mm' },
       y: {
         formatter: (val: number) => mode === 'traffic'
           ? `${Math.round(val)} 请求`
           : formatNumber(val)
-      }
+      },
+      style: { fontSize: '12px', fontFamily: 'inherit' },
+      marker: { show: true },
+      fixed: { enabled: false },
+      onDatasetHover: { highlightDataSeries: true }
     },
     legend: {
       show: true,
-      position: 'top' as const,
-      horizontalAlign: 'right' as const,
-      fontSize: '11px',
-      markers: { size: 4 }
+      position: 'top',
+      horizontalAlign: 'right',
+      fontSize: '12px',
+      fontFamily: 'inherit',
+      markers: { size: 6, strokeWidth: 0, shape: 'circle' as const },
+      itemMargin: { horizontal: 12 }
+    },
+    markers: {
+      size: 0,
+      hover: { size: 5 }
     }
   }
 })
 
-// Build chart series
 const chartSeries = computed(() => {
   if (!historyData.value?.dataPoints) return []
-
   const dataPoints = historyData.value.dataPoints
   const mode = selectedView.value
 
@@ -302,58 +322,36 @@ const chartSeries = computed(() => {
     return [
       {
         name: '总请求',
-        data: dataPoints.map(dp => ({
-          x: new Date(dp.timestamp).getTime(),
-          y: dp.requestCount
-        }))
+        data: dataPoints.map(dp => ({ x: new Date(dp.timestamp).getTime(), y: dp.requestCount }))
       },
       {
         name: '成功',
-        data: dataPoints.map(dp => ({
-          x: new Date(dp.timestamp).getTime(),
-          y: dp.successCount
-        }))
-      }
-    ]
-  } else {
-    return [
-      {
-        name: '输入 Token',
-        data: dataPoints.map(dp => ({
-          x: new Date(dp.timestamp).getTime(),
-          y: dp.inputTokens
-        }))
-      },
-      {
-        name: '输出 Token',
-        data: dataPoints.map(dp => ({
-          x: new Date(dp.timestamp).getTime(),
-          y: dp.outputTokens
-        }))
+        data: dataPoints.map(dp => ({ x: new Date(dp.timestamp).getTime(), y: dp.successCount }))
       }
     ]
   }
+  return [
+    {
+      name: '输入 Token',
+      data: dataPoints.map(dp => ({ x: new Date(dp.timestamp).getTime(), y: dp.inputTokens }))
+    },
+    {
+      name: '输出 Token',
+      data: dataPoints.map(dp => ({ x: new Date(dp.timestamp).getTime(), y: dp.outputTokens }))
+    }
+  ]
 })
 
-// Fetch data
 const refreshData = async (isAutoRefresh = false) => {
-  if (!isAutoRefresh) {
-    isLoading.value = true
-  }
+  if (!isAutoRefresh) isLoading.value = true
   errorMessage.value = ''
-
   try {
-    const newData: GlobalStatsHistoryResponse = await channelApiByType(props.apiType).getGlobalStats(selectedDuration.value)
-
-    // Check if we can use updateSeries for smooth update
-    const canUpdateInPlace = isAutoRefresh &&
-      chartRef.value &&
+    const newData = await channelApiByType(props.apiType).getGlobalStats(selectedDuration.value)
+    const canUpdateInPlace = isAutoRefresh && chartRef.value &&
       historyData.value?.dataPoints?.length === newData.dataPoints?.length
-
     if (canUpdateInPlace) {
       historyData.value = newData
-      const series = chartSeries.value
-      chartRef.value?.updateSeries(series, false)
+      chartRef.value?.updateSeries(chartSeries.value, false)
     } else {
       historyData.value = newData
     }
@@ -363,87 +361,87 @@ const refreshData = async (isAutoRefresh = false) => {
     showError.value = true
     historyData.value = null
   } finally {
-    if (!isAutoRefresh) {
-      isLoading.value = false
-    }
+    if (!isAutoRefresh) isLoading.value = false
   }
 }
 
-// Watchers
 watch(selectedDuration, (newVal) => {
   savePreference(props.apiType, 'duration', newVal)
   refreshData()
 })
-
-watch(selectedView, (newVal) => {
-  savePreference(props.apiType, 'viewMode', newVal)
-})
-
+watch(selectedView, (newVal) => { savePreference(props.apiType, 'viewMode', newVal) })
 watch(() => props.apiType, (newApiType) => {
-  // Load preferences for the new apiType
   const prefs = loadSavedPreferences(newApiType)
   selectedView.value = prefs.view
   selectedDuration.value = prefs.duration
   refreshData()
 })
 
-// Initial load and start auto refresh
-onMounted(() => {
-  refreshData()
-  startAutoRefresh()
-})
+onMounted(() => { refreshData(); startAutoRefresh() })
+onUnmounted(() => { stopAutoRefresh() })
 
-// Cleanup timer on unmount
-onUnmounted(() => {
-  stopAutoRefresh()
-})
-
-// Expose refresh method
-defineExpose({
-  refreshData,
-  startAutoRefresh,
-  stopAutoRefresh
-})
+defineExpose({ refreshData, startAutoRefresh, stopAutoRefresh })
 </script>
 
 <style scoped>
 .global-stats-chart-container {
-  padding: 12px 16px;
+  padding: 16px 20px;
+  background: rgb(var(--v-theme-surface));
 }
 
 .summary-cards {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
 .summary-card {
-  flex: 1 1 auto;
-  min-width: 80px;
-  padding: 8px 12px;
-  background: rgba(var(--v-theme-surface-variant), 0.3);
-  border-radius: 6px;
-  text-align: center;
+  padding: 12px 14px;
+  background: rgb(var(--v-theme-surface-variant));
+  border: 1px solid rgba(var(--v-theme-outline), 0.15);
+  border-radius: 8px;
+  transition: all 0.15s ease;
 }
 
-.v-theme--dark .summary-card {
-  background: rgba(var(--v-theme-surface-variant), 0.2);
+.summary-card:hover {
+  transform: translateY(-1px);
+  background: rgba(var(--v-theme-surface-variant), 0.5);
 }
 
 .summary-label {
   font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  margin-bottom: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
 }
 
 .summary-value {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 700;
+  color: rgb(var(--v-theme-on-surface));
+  line-height: 1.2;
 }
 
+.summary-trend {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  margin-top: 4px;
+  font-weight: 500;
+}
+
+.trend-up { color: rgb(var(--v-theme-success)); }
+.trend-down { color: rgb(var(--v-theme-error)); }
+.trend-warn { color: rgb(var(--v-theme-warning)); }
+
 .compact-summary {
-  padding: 4px 8px;
-  background: rgba(var(--v-theme-surface-variant), 0.2);
-  border-radius: 4px;
+  padding: 6px 12px;
+  background: rgba(var(--v-theme-surface-variant), 0.25);
+  border-radius: 8px;
 }
 
 .chart-header {
@@ -452,18 +450,21 @@ defineExpose({
 }
 
 .chart-area {
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
-/* Responsive adjustments */
+@media (max-width: 800px) {
+  .summary-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
 @media (max-width: 600px) {
   .summary-card {
-    min-width: 70px;
-    padding: 6px 8px;
+    padding: 10px 12px;
   }
-
   .summary-value {
-    font-size: 14px;
+    font-size: 16px;
   }
 }
 </style>

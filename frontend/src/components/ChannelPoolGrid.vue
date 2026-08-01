@@ -363,28 +363,98 @@ const deletePool = async () => {
 
 <style scoped>
 .pool-section { padding-top: 14px; }
-.section-header, .vision-pool-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
-.pool-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
-.pool-column { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.pool-card { border: 1px solid rgba(var(--v-theme-on-surface), .42); background: rgb(var(--v-theme-surface)); min-width: 0; container-type: inline-size; }
-.pool-card-header { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border-bottom: 1px solid rgba(var(--v-theme-on-surface), .42); background: rgba(var(--v-theme-primary), .06); }
-.pool-name { font-weight: 700; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pool-rule { margin-top: 3px; font-size: 12px; color: rgba(var(--v-theme-on-surface), .58); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pool-channel-list { padding: 8px; display: flex; flex-direction: column; gap: 7px; min-height: 68px; }
+.section-header, .vision-pool-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px;
+}
+.pool-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start;
+}
+.pool-column { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.pool-card {
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-outline), 0.25);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  min-width: 0;
+  overflow: hidden;
+  container-type: inline-size;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.pool-card:hover {
+  border-color: rgba(var(--v-theme-primary), 0.2);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
+}
+
+.pool-card-header {
+  min-height: 48px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.12);
+  background: linear-gradient(180deg, rgba(var(--v-theme-primary), 0.05), transparent);
+}
+.pool-name {
+  font-weight: 700; line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pool-rule {
+  margin-top: 3px; font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pool-channel-list {
+  padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 68px;
+}
 .pool-drag-item { min-width: 0; }
-.ghost { opacity: .45; background: rgba(var(--v-theme-primary), .14); }
+.ghost { opacity: .45; background: rgba(var(--v-theme-primary), .1); border-radius: 10px; }
 .chosen { cursor: grabbing; }
 .dragging { opacity: .9; }
 .drag-handle { cursor: grab; }
-.pool-channel-row, .vision-channel-row { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 7px 8px; border: 1px solid rgba(var(--v-theme-on-surface), .32); cursor: pointer; }
-.pool-channel-row:hover, .vision-channel-row:hover { background: rgba(var(--v-theme-primary), .07); }
-.pool-index { display: inline-grid; place-items: center; width: 22px; height: 22px; flex: 0 0 auto; background: rgb(var(--v-theme-primary)); color: rgb(var(--v-theme-on-primary)); font-size: 11px; font-weight: 700; }
-.pool-channel-main { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 7px; overflow: hidden; }
-.pool-channel-main span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pool-empty { display: grid; place-items: center; min-height: 48px; color: rgba(var(--v-theme-on-surface), .55); font-size: 13px; }
-.vision-pool-section { margin-top: 18px; padding-bottom: 14px; border-bottom: 1px solid rgba(var(--v-theme-on-surface), .22); }
-.vision-channel-list { display: flex; flex-direction: column; gap: 7px; padding: 8px; border: 1px dashed rgba(var(--v-theme-on-surface), .48); }
-.vision-status-toggle { display: inline-flex; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.pool-channel-row, .vision-channel-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--v-theme-outline), 0.12);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.pool-channel-row:hover, .vision-channel-row:hover {
+  background: rgba(var(--v-theme-primary), 0.04);
+  border-color: rgba(var(--v-theme-primary), 0.15);
+  transform: translateX(2px);
+}
+.pool-index {
+  display: inline-grid; place-items: center;
+  width: 22px; height: 22px; flex: 0 0 auto;
+  background: linear-gradient(135deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary-darken-1, var(--v-theme-primary))));
+  color: rgb(var(--v-theme-on-primary));
+  font-size: 11px; font-weight: 700;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(var(--v-theme-primary-rgb), 0.3);
+}
+.pool-channel-main {
+  min-width: 0; flex: 1;
+  display: flex; align-items: baseline; gap: 7px; overflow: hidden;
+}
+.pool-channel-main span:first-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pool-empty {
+  display: grid; place-items: center; min-height: 48px;
+  color: rgba(var(--v-theme-on-surface), .45); font-size: 13px;
+}
+.vision-pool-section {
+  margin-top: 18px; padding-bottom: 14px;
+  border-bottom: 1px solid rgba(var(--v-theme-outline), .1);
+}
+.vision-channel-list {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px;
+  border: 1px dashed rgba(var(--v-theme-outline), .25);
+  border-radius: 12px;
+  background: rgba(var(--v-theme-surface-variant), 0.4);
+}
+.vision-status-toggle {
+  display: inline-flex; padding: 0; border: 0; background: transparent; cursor: pointer;
+}
 .vision-status-toggle:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
 .vision-status-toggle :deep(.badge-content) { cursor: pointer; }
 .min-width-0 { min-width: 0; }

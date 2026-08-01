@@ -1,6 +1,5 @@
 <template>
   <div class="channel-chart-container">
-    <!-- Snackbar for error notification -->
     <v-snackbar v-model="showError" color="error" :timeout="3000" location="top">
       {{ errorMessage }}
       <template #actions>
@@ -8,79 +7,63 @@
       </template>
     </v-snackbar>
 
-    <!-- 时间范围选择器 -->
     <div class="chart-header d-flex align-center justify-space-between mb-3">
       <div class="d-flex align-center ga-2">
-        <v-btn-toggle v-model="selectedDuration" mandatory density="compact" variant="outlined" divided :disabled="isLoading">
-          <v-btn value="1h" size="x-small">1小时</v-btn>
-          <v-btn value="6h" size="x-small">6小时</v-btn>
-          <v-btn value="24h" size="x-small">24小时</v-btn>
+        <v-btn-toggle v-model="selectedDuration" mandatory density="compact" variant="outlined" divided :disabled="isLoading" color="primary">
+          <v-btn value="1h" size="small">1h</v-btn>
+          <v-btn value="6h" size="small">6h</v-btn>
+          <v-btn value="24h" size="small">24h</v-btn>
         </v-btn-toggle>
-        <v-btn icon size="x-small" variant="text" :loading="isLoading" :disabled="isLoading" @click="refreshData">
-          <v-icon size="small">mdi-refresh</v-icon>
+        <v-btn icon size="small" variant="text" :loading="isLoading" :disabled="isLoading" @click="refreshData">
+          <v-icon>mdi-refresh</v-icon>
         </v-btn>
       </div>
-      <v-btn icon size="x-small" variant="text" title="收起" @click="$emit('close')">
-        <v-icon size="small">mdi-chevron-up</v-icon>
+      <v-btn icon size="small" variant="text" title="收起" @click="$emit('close')">
+        <v-icon>mdi-chevron-up</v-icon>
       </v-btn>
     </div>
 
-    <!-- Loading state -->
+    <!-- Loading -->
     <div v-if="isLoading" class="d-flex justify-center align-center" style="height: 200px">
-      <v-progress-circular indeterminate size="24" color="primary" />
+      <v-progress-circular indeterminate size="24" color="primary" width="3" />
     </div>
 
-    <!-- Empty state -->
+    <!-- Empty -->
     <div v-else-if="!hasData" class="d-flex flex-column justify-center align-center text-medium-emphasis" style="height: 200px">
-      <v-icon size="32" color="grey-lighten-1">mdi-chart-line-variant</v-icon>
-      <div class="text-caption mt-1">选定时间范围内没有请求记录</div>
+      <v-icon size="36" class="mb-2" :color="isDark ? 'grey-darken-1' : 'grey-lighten-1'">mdi-chart-line-variant</v-icon>
+      <div class="text-caption">选定时间范围内没有请求记录</div>
     </div>
 
-    <!-- Charts -->
+    <!-- Charts grid -->
     <div v-else class="charts-wrapper">
-      <!-- 第一行：请求数和成功率 -->
-      <div class="chart-row">
+      <div class="chart-grid">
         <div class="chart-item">
-          <div class="text-caption text-medium-emphasis mb-1">请求数量</div>
-          <apexchart
-            type="area"
-            height="120"
-            :options="requestCountOptions"
-            :series="requestCountSeries"
-          />
+          <div class="chart-item-title">
+            <span class="title-dot" style="background: #3B82F6;"></span>
+            请求数量
+          </div>
+          <apexchart type="area" height="120" :options="requestCountOptions" :series="requestCountSeries" />
         </div>
-
         <div class="chart-item">
-          <div class="text-caption text-medium-emphasis mb-1">成功率</div>
-          <apexchart
-            type="line"
-            height="120"
-            :options="successRateOptions"
-            :series="successRateSeries"
-          />
+          <div class="chart-item-title">
+            <span class="title-dot" style="background: #10B981;"></span>
+            成功率
+          </div>
+          <apexchart type="line" height="120" :options="successRateOptions" :series="successRateSeries" />
         </div>
-      </div>
-
-      <!-- 第二行：Token 使用量 -->
-      <div class="chart-row mt-3">
         <div class="chart-item">
-          <div class="text-caption text-medium-emphasis mb-1">Token 使用量</div>
-          <apexchart
-            type="area"
-            height="120"
-            :options="tokenUsageOptions"
-            :series="tokenUsageSeries"
-          />
+          <div class="chart-item-title">
+            <span class="title-dot" style="background: #8B5CF6;"></span>
+            Token 使用量
+          </div>
+          <apexchart type="area" height="120" :options="tokenUsageOptions" :series="tokenUsageSeries" />
         </div>
-
         <div class="chart-item">
-          <div class="text-caption text-medium-emphasis mb-1">缓存统计</div>
-          <apexchart
-            type="area"
-            height="120"
-            :options="cacheStatsOptions"
-            :series="cacheStatsSeries"
-          />
+          <div class="chart-item-title">
+            <span class="title-dot" style="background: #10B981;"></span>
+            缓存统计
+          </div>
+          <apexchart type="area" height="120" :options="cacheStatsOptions" :series="cacheStatsSeries" />
         </div>
       </div>
     </div>
@@ -94,330 +77,179 @@ import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
 import { api, channelApiByType, type ChannelKeyMetricsHistoryResponse } from '../services/api'
 
-// Register apexchart component
 const apexchart = VueApexCharts
 
 const props = defineProps<{
   channelType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
-  channelIndex: number  // 单渠道模式：指定渠道索引
-  channelName: string   // 渠道名称（用于图例）
+  channelIndex: number
+  channelName: string
 }>()
 
-const _emit = defineEmits<{
-  (_e: 'close'): void
-}>()
+const _emit = defineEmits<{ (_e: 'close'): void }>()
 
 const theme = useTheme()
-
-// State
+const isDark = computed(() => theme.global.current.value.dark)
 const selectedDuration = ref<'1h' | '6h' | '24h'>('6h')
 const isLoading = ref(false)
 const keyHistoryData = ref<ChannelKeyMetricsHistoryResponse | null>(null)
 const showError = ref(false)
 const errorMessage = ref('')
 
-// Computed: check if has data
 const hasData = computed(() => {
   if (!keyHistoryData.value || !keyHistoryData.value.keys.length) return false
-  return keyHistoryData.value.keys.some(key => 
+  return keyHistoryData.value.keys.some(key =>
     key.dataPoints.length > 0 && key.dataPoints.some(dp => dp.requestCount > 0)
   )
 })
 
-// Computed: is dark mode
-const isDark = computed(() => theme.global.current.value.dark)
+const tc = computed(() => ({
+  grid: isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+  text: isDark.value ? '#94A3B8' : '#64748B',
+}))
 
-// Common chart options
 const baseChartOptions = computed<ApexOptions>(() => ({
   chart: {
-    toolbar: { show: false },
-    zoom: { enabled: false },
-    background: 'transparent',
-    fontFamily: 'inherit',
-    sparkline: { enabled: false }
+    toolbar: { show: false }, zoom: { enabled: false },
+    background: 'transparent', fontFamily: 'inherit', sparkline: { enabled: false }
   },
-  theme: {
-    mode: isDark.value ? 'dark' : 'light'
-  },
+  theme: { mode: isDark.value ? 'dark' : 'light' },
   grid: {
-    borderColor: isDark.value ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
-    strokeDashArray: 3,
-    padding: { left: 10, right: 10 }
+    borderColor: tc.value.grid, strokeDashArray: 4,
+    padding: { left: 6, right: 6 },
+    xaxis: { lines: { show: true } }, yaxis: { lines: { show: true } }
   },
   xaxis: {
     type: 'datetime',
     labels: {
-      datetimeUTC: false,
-      format: selectedDuration.value === '1h' ? 'HH:mm' : 'HH:mm',
-      style: { fontSize: '10px' }
+      datetimeUTC: false, format: 'HH:mm',
+      style: { fontSize: '10px', colors: tc.value.text }
     },
-    axisBorder: { show: false },
-    axisTicks: { show: false }
+    axisBorder: { show: false }, axisTicks: { show: false }
   },
-  yaxis: {
-    labels: {
-      style: { fontSize: '10px' }
-    }
-  },
+  yaxis: { labels: { style: { fontSize: '10px', colors: tc.value.text } } },
   tooltip: {
-    x: {
-      format: 'MM-dd HH:mm'
-    }
+    theme: isDark.value ? 'dark' : 'light',
+    x: { format: 'MM-dd HH:mm' },
+    style: { fontSize: '11px', fontFamily: 'inherit' }
   },
-  legend: {
-    show: true,
-    position: 'top',
-    horizontalAlign: 'left',
-    fontSize: '10px',
-    markers: {
-      size: 8
-    }
-  },
-  stroke: {
-    curve: 'smooth' as const,
-    width: 2
+  legend: { show: false },
+  dataLabels: { enabled: false },
+  stroke: { curve: 'smooth' as const, width: 2, lineCap: 'round' },
+  fill: {
+    type: 'gradient' as const,
+    gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05, stops: [0, 85, 100] }
   }
 }))
 
-// Request count chart options
 const requestCountOptions = computed<ApexOptions>(() => ({
   ...baseChartOptions.value,
-  legend: {
-    ...baseChartOptions.value.legend,
-    show: false
-  },
-  colors: ['#2196F3'],
-  fill: {
-    type: 'gradient' as const,
-    gradient: {
-      shadeIntensity: 1,
-      opacityFrom: 0.4,
-      opacityTo: 0.1,
-      stops: [0, 90, 100]
-    }
-  },
+  colors: ['#3B82F6'],
   yaxis: {
     min: 0,
-    labels: {
-      formatter: (val: number) => Math.round(val).toString(),
-      style: { fontSize: '10px' }
-    }
-  },
-  dataLabels: {
-    enabled: false
+    labels: { formatter: (val: number) => Math.round(val).toString(), style: { fontSize: '10px', colors: tc.value.text } }
   }
 }))
 
-// Success rate chart options
 const successRateOptions = computed<ApexOptions>(() => ({
   ...baseChartOptions.value,
-  legend: {
-    ...baseChartOptions.value.legend,
-    show: false
-  },
-  colors: ['#4CAF50'],
+  colors: ['#10B981'],
   yaxis: {
-    min: 0,
-    max: 100,
-    labels: {
-      formatter: (val: number) => `${val.toFixed(0)}%`,
-      style: { fontSize: '10px' }
-    }
+    min: 0, max: 100,
+    labels: { formatter: (val: number) => `${val.toFixed(0)}%`, style: { fontSize: '10px', colors: tc.value.text } }
   },
-  dataLabels: {
-    enabled: false
-  },
-  markers: {
-    size: 2,
-    hover: {
-      size: 4
-    }
-  }
+  markers: { size: 2, hover: { size: 4 } }
 }))
 
-// Token usage chart options
 const tokenUsageOptions = computed<ApexOptions>(() => ({
   ...baseChartOptions.value,
-  colors: ['#3b82f6', '#f97316'],
-  fill: {
-    type: 'gradient' as const,
-    gradient: {
-      shadeIntensity: 1,
-      opacityFrom: 0.3,
-      opacityTo: 0.05,
-      stops: [0, 90, 100]
-    }
-  },
+  colors: ['#8B5CF6', '#F97316'],
+  stroke: { ...baseChartOptions.value.stroke, dashArray: [0, 5] as any },
   yaxis: {
     min: 0,
-    labels: {
-      formatter: (val: number) => {
-        if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`
-        if (val >= 1000) return `${(val / 1000).toFixed(1)}K`
-        return Math.round(val).toString()
-      },
-      style: { fontSize: '10px' }
-    }
-  },
-  dataLabels: {
-    enabled: false
+    labels: { formatter: (val: number) => {
+      if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`
+      if (val >= 1000) return `${(val / 1000).toFixed(1)}K`
+      return Math.round(val).toString()
+    }, style: { fontSize: '10px', colors: tc.value.text } }
   },
   tooltip: {
     ...baseChartOptions.value.tooltip,
-    y: {
-      formatter: (val: number) => val.toLocaleString()
-    }
+    y: { formatter: (val: number) => val.toLocaleString() }
   }
 }))
 
-// Cache stats chart options
 const cacheStatsOptions = computed<ApexOptions>(() => ({
   ...baseChartOptions.value,
-  colors: ['#10b981', '#8b5cf6'],
-  fill: {
-    type: 'gradient' as const,
-    gradient: {
-      shadeIntensity: 1,
-      opacityFrom: 0.3,
-      opacityTo: 0.05,
-      stops: [0, 90, 100]
-    }
-  },
+  colors: ['#10B981', '#8B5CF6'],
+  stroke: { ...baseChartOptions.value.stroke, dashArray: [0, 5] as any },
   yaxis: {
     min: 0,
-    labels: {
-      formatter: (val: number) => {
-        if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`
-        if (val >= 1000) return `${(val / 1000).toFixed(1)}K`
-        return Math.round(val).toString()
-      },
-      style: { fontSize: '10px' }
-    }
-  },
-  dataLabels: {
-    enabled: false
+    labels: { formatter: (val: number) => {
+      if (val >= 1000000) return `${(val / 1000000).toFixed(1)}M`
+      if (val >= 1000) return `${(val / 1000).toFixed(1)}K`
+      return Math.round(val).toString()
+    }, style: { fontSize: '10px', colors: tc.value.text } }
   },
   tooltip: {
     ...baseChartOptions.value.tooltip,
-    y: {
-      formatter: (val: number) => val.toLocaleString()
-    }
+    y: { formatter: (val: number) => val.toLocaleString() }
   }
 }))
 
-// Aggregate data points from all keys
 const aggregatedData = computed(() => {
   if (!keyHistoryData.value || !keyHistoryData.value.keys.length) return []
-
   const timeMap = new Map<number, {
-    timestamp: number
-    requestCount: number
-    successCount: number
-    failureCount: number
-    inputTokens: number
-    outputTokens: number
-    cacheCreationTokens: number
-    cacheReadTokens: number
+    timestamp: number; requestCount: number; successCount: number; failureCount: number
+    inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number
   }>()
-
   keyHistoryData.value.keys.forEach(key => {
     key.dataPoints.forEach(dp => {
       const time = new Date(dp.timestamp).getTime()
       const existing = timeMap.get(time) || {
-        timestamp: time,
-        requestCount: 0,
-        successCount: 0,
-        failureCount: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0
+        timestamp: time, requestCount: 0, successCount: 0, failureCount: 0,
+        inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0
       }
-
-      existing.requestCount += dp.requestCount
-      existing.successCount += dp.successCount
-      existing.failureCount += dp.failureCount
-      existing.inputTokens += dp.inputTokens
-      existing.outputTokens += dp.outputTokens
-      existing.cacheCreationTokens += dp.cacheCreationTokens
+      existing.requestCount += dp.requestCount; existing.successCount += dp.successCount
+      existing.failureCount += dp.failureCount; existing.inputTokens += dp.inputTokens
+      existing.outputTokens += dp.outputTokens; existing.cacheCreationTokens += dp.cacheCreationTokens
       existing.cacheReadTokens += dp.cacheReadTokens
-
       timeMap.set(time, existing)
     })
   })
-
   return Array.from(timeMap.values()).sort((a, b) => a.timestamp - b.timestamp)
 })
 
-// Request count series data
 const requestCountSeries = computed(() => {
   if (!aggregatedData.value.length) return []
-  return [{
-    name: '请求数',
-    data: aggregatedData.value.map(dp => ({
-      x: dp.timestamp,
-      y: dp.requestCount
-    }))
-  }]
+  return [{ name: '请求数', data: aggregatedData.value.map(dp => ({ x: dp.timestamp, y: dp.requestCount })) }]
 })
 
-// Success rate series data
 const successRateSeries = computed(() => {
   if (!aggregatedData.value.length) return []
   return [{
     name: '成功率',
-    data: aggregatedData.value
-      .filter(dp => dp.requestCount > 0)
-      .map(dp => ({
-        x: dp.timestamp,
-        y: (dp.successCount / dp.requestCount) * 100
-      }))
+    data: aggregatedData.value.filter(dp => dp.requestCount > 0).map(dp => ({
+      x: dp.timestamp, y: (dp.successCount / dp.requestCount) * 100
+    }))
   }]
 })
 
-// Token usage series data
 const tokenUsageSeries = computed(() => {
   if (!aggregatedData.value.length) return []
   return [
-    {
-      name: '输入 Token',
-      data: aggregatedData.value.map(dp => ({
-        x: dp.timestamp,
-        y: dp.inputTokens
-      }))
-    },
-    {
-      name: '输出 Token',
-      data: aggregatedData.value.map(dp => ({
-        x: dp.timestamp,
-        y: dp.outputTokens
-      }))
-    }
+    { name: '输入 Token', data: aggregatedData.value.map(dp => ({ x: dp.timestamp, y: dp.inputTokens })) },
+    { name: '输出 Token', data: aggregatedData.value.map(dp => ({ x: dp.timestamp, y: dp.outputTokens })) }
   ]
 })
 
-// Cache stats series data
 const cacheStatsSeries = computed(() => {
   if (!aggregatedData.value.length) return []
   return [
-    {
-      name: '缓存读取',
-      data: aggregatedData.value.map(dp => ({
-        x: dp.timestamp,
-        y: dp.cacheReadTokens
-      }))
-    },
-    {
-      name: '缓存创建',
-      data: aggregatedData.value.map(dp => ({
-        x: dp.timestamp,
-        y: dp.cacheCreationTokens
-      }))
-    }
+    { name: '缓存读取', data: aggregatedData.value.map(dp => ({ x: dp.timestamp, y: dp.cacheReadTokens })) },
+    { name: '缓存创建', data: aggregatedData.value.map(dp => ({ x: dp.timestamp, y: dp.cacheCreationTokens })) }
   ]
 })
 
-// Fetch data for single channel
 const refreshData = async () => {
   isLoading.value = true
   errorMessage.value = ''
@@ -428,54 +260,25 @@ const refreshData = async () => {
     errorMessage.value = error instanceof Error ? error.message : '获取历史数据失败'
     showError.value = true
     keyHistoryData.value = null
-  } finally {
-    isLoading.value = false
-  }
+  } finally { isLoading.value = false }
 }
 
-// Watch duration change
-watch(selectedDuration, () => {
-  refreshData()
-})
+watch(selectedDuration, () => refreshData())
+watch(() => props.channelIndex, () => refreshData())
+watch(() => props.channelType, () => refreshData())
 
-// Watch channel change
-watch(() => props.channelIndex, () => {
-  refreshData()
-})
-
-// Watch channelType change
-watch(() => props.channelType, () => {
-  refreshData()
-})
-
-// Initial load
-onMounted(() => {
-  refreshData()
-})
-
-// Expose refresh method
-defineExpose({
-  refreshData
-})
+onMounted(() => refreshData())
+defineExpose({ refreshData })
 </script>
 
 <style scoped>
 .channel-chart-container {
-  padding: 12px 16px;
-  background: rgba(var(--v-theme-primary), 0.03);
-  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.2);
+  padding: 16px 20px;
+  background: rgb(var(--v-theme-surface));
+  border-top: 1px solid rgba(var(--v-theme-outline), 0.15);
 }
 
-.v-theme--dark .channel-chart-container {
-  background: rgba(var(--v-theme-primary), 0.05);
-  border-top-color: rgba(255, 255, 255, 0.15);
-}
-
-.charts-wrapper {
-  margin-top: 8px;
-}
-
-.chart-row {
+.chart-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
@@ -485,10 +288,27 @@ defineExpose({
   min-width: 0;
 }
 
+.chart-item-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  margin-bottom: 4px;
+}
+
+.title-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 @media (max-width: 800px) {
-  .chart-row {
+  .chart-grid {
     grid-template-columns: 1fr;
-    gap: 12px;
+    gap: 14px;
   }
 }
 </style>

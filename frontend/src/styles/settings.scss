@@ -1,22 +1,17 @@
-// Vuetify 样式变量配置 - 复古像素主题
+// ============================================================
+// Claude Proxy — Vuetify 设计系统变量
+// 风格: Glassmorphism + Soft UI 现代化美学
+// ============================================================
 
-// 复古像素主题：无圆角
-$border-radius-root: 0px !default;
-$btn-border-radius: 0px !default;
-$card-border-radius: 0px !default;
-$sheet-border-radius: 0px !default;
+// 只覆盖 Vuetify 支持的自定义变量
+$border-radius-root: 12px !default;
+$body-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !default;
+$heading-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !default;
+$font-size-root: 15px !default;
 
-// 自定义颜色 - 复古高对比度
-$primary: #6366F1 !default;
-$secondary: #8B5CF6 !default;
-$accent: #EC4899 !default;
-$success: #10B981 !default;
-$info: #3B82F6 !default;
-$warning: #F59E0B !default;
-$error: #EF4444 !default;
-
-// 字体配置 - 等宽字体
-$body-font-family: 'Courier New', Consolas, 'Liberation Mono', monospace !default;
-$headings-font-family: 'Courier New', Consolas, 'Liberation Mono', monospace !default;
-
-@use 'vuetify/settings';
+@use 'vuetify/settings' with (
+  $border-radius-root: $border-radius-root,
+  $body-font-family: $body-font-family,
+  $heading-font-family: $heading-font-family,
+  $font-size-root: 15px,
+);

@@ -47,8 +47,8 @@
                     x2="0%"
                     y2="100%"
                   >
-                    <stop offset="0%" :stop-color="bar.color" stop-opacity="0.8" />
-                    <stop offset="100%" :stop-color="bar.color" stop-opacity="0.3" />
+                    <stop offset="0%" :stop-color="bar.color" stop-opacity="0.9" />
+                    <stop offset="100%" :stop-color="bar.color" stop-opacity="0.4" />
                   </linearGradient>
                 </defs>
                 <!-- 波形柱状图 -->
@@ -177,33 +177,35 @@
               >{{ expandedChannelIndex === element.index ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
             </div>
 
-            <!-- 指标显示 -->
+            <!-- 指标显示 — 视觉条 -->
             <div class="channel-metrics" @click.stop>
               <template v-if="getChannelMetrics(element.index)">
                 <v-tooltip location="top" :open-delay="200">
                   <template #activator="{ props: tooltipProps }">
-                    <div v-bind="tooltipProps" class="d-flex align-center metrics-display">
-                      <!-- 15分钟有请求时显示成功率，否则显示 -- -->
+                    <div v-bind="tooltipProps" class="metrics-visual">
+                      <!-- 15分钟有请求时显示指标条，否则显示 -- -->
                       <template v-if="get15mStats(element.index)?.requestCount">
-                        <v-chip
-                          size="x-small"
-                          :color="getSuccessRateColor(get15mStats(element.index)?.successRate)"
-                          variant="tonal"
-                        >
-                          {{ get15mStats(element.index)?.successRate?.toFixed(0) }}%
-                        </v-chip>
-                        <span class="text-caption text-medium-emphasis ml-2 mr-1">
-                          {{ get15mStats(element.index)?.requestCount }} 请求
-                        </span>
-                        <v-chip
-                          v-if="shouldShowCacheHitRate(get15mStats(element.index))"
-                          size="x-small"
-                          :color="getCacheHitRateColor(getCacheHitRate(get15mStats(element.index)))"
-                          variant="tonal"
-                          class="ml-1"
-                        >
-                          缓存 {{ getCacheHitRate(get15mStats(element.index))?.toFixed(0) }}%
-                        </v-chip>
+                        <!-- 成功率条形图 -->
+                        <div class="mini-metric-bar">
+                          <div class="mmb-track">
+                            <div
+                              class="mmb-fill"
+                              :class="getRateLevel(get15mStats(element.index)?.successRate)"
+                              :style="{ width: `${get15mStats(element.index)?.successRate ?? 0}%` }"
+                            ></div>
+                          </div>
+                          <span class="mmb-value" :class="getRateLevel(get15mStats(element.index)?.successRate)">
+                            {{ get15mStats(element.index)?.successRate?.toFixed(0) }}%
+                          </span>
+                        </div>
+                        <!-- 请求数 + 缓存命中率 -->
+                        <div class="mini-metric-secondary">
+                          <span class="mm-requests">{{ get15mStats(element.index)?.requestCount }} 请求</span>
+                          <template v-if="shouldShowCacheHitRate(get15mStats(element.index))">
+                            <span class="mm-sep">|</span>
+                            <span class="mm-cache">缓存 {{ getCacheHitRate(get15mStats(element.index))?.toFixed(0) }}%</span>
+                          </template>
+                        </div>
                       </template>
                       <span v-else class="text-caption text-medium-emphasis">--</span>
                     </div>
@@ -1098,6 +1100,13 @@ const getCacheHitRateColor = (rate?: number): string => {
   return 'orange'
 }
 
+const getRateLevel = (rate?: number): string => {
+  if (rate === undefined || rate === null) return 'unknown'
+  if (rate >= 90) return 'high'
+  if (rate >= 70) return 'medium'
+  return 'low'
+}
+
 const getCacheHitRate = (stats?: TimeWindowStats): number | undefined => {
   if (!stats) return undefined
   const inputTokens = stats.inputTokens ?? 0
@@ -1277,7 +1286,7 @@ const activityBarsCache = computed(() => {
       const y = 100 - height
 
       // 根据该 6 秒段的成功率计算颜色（7 档分级：极端档位 + 整数档位）
-      let color = 'rgb(74, 222, 128)'  // 默认绿色（无请求或 100% 成功）
+      let color = 'rgb(52, 211, 153)'  // 默认绿色（无请求或 100% 成功）
 
       if (requests > 0) {
         const successCount = requests - segment.failureCount
@@ -1286,17 +1295,17 @@ const activityBarsCache = computed(() => {
         if (successRate < 5) {
           color = 'rgb(220, 38, 38)'       // 0-5%：深红色（极端故障）
         } else if (successRate < 20) {
-          color = 'rgb(239, 68, 68)'       // 5-20%：红色（严重失败）
+          color = 'rgb(248, 113, 113)'     // 5-20%：红色（严重失败）
         } else if (successRate < 40) {
-          color = 'rgb(249, 115, 22)'      // 20-40%：深橙色（高失败率）
+          color = 'rgb(251, 146, 60)'      // 20-40%：深橙色（高失败率）
         } else if (successRate < 60) {
-          color = 'rgb(251, 146, 60)'      // 40-60%：橙色（中等失败率）
+          color = 'rgb(250, 204, 21)'      // 40-60%：黄色（中等失败率）
         } else if (successRate < 80) {
-          color = 'rgb(250, 204, 21)'      // 60-80%：黄色（轻微失败）
+          color = 'rgb(163, 230, 53)'      // 60-80%：黄绿色（轻微失败）
         } else if (successRate < 95) {
-          color = 'rgb(132, 204, 22)'      // 80-95%：黄绿色（良好）
+          color = 'rgb(74, 222, 128)'      // 80-95%：亮绿色（良好）
         } else {
-          color = 'rgb(34, 197, 94)'       // 95-100%：绿色（优秀）
+          color = 'rgb(52, 211, 153)'      // 95-100%：翠绿色（优秀）
         }
       }
 
@@ -1824,675 +1833,245 @@ defineExpose({
 </script>
 
 <style scoped>
-/* =====================================================
-   🎮 渠道编排 - 复古像素主题样式
-   Neo-Brutalism: 直角、粗黑边框、硬阴影
-   ===================================================== */
+/* ============================================================
+   Claude Proxy — 渠道编排 高对比度设计
+   清晰边框 · 白色背景 · 良好可读性
+   ============================================================ */
 
-.channel-orchestration {
-  overflow: hidden;
-  background: transparent;
-  border: none;
-}
-
-.channel-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.channel-item-wrapper {
-  display: flex;
-  flex-direction: column;
-}
+.channel-orchestration { overflow: hidden; background: transparent; border: none; }
+.channel-list { display: flex; flex-direction: column; gap: 6px; }
+.channel-item-wrapper { display: flex; flex-direction: column; }
 
 .channel-row {
   position: relative;
-  padding: 10px 12px;
-  margin: 2px;
+  padding: 12px 16px;
   background: rgb(var(--v-theme-surface));
-  border: 2px solid rgb(var(--v-theme-on-surface));
-  box-shadow: 4px 4px 0 0 rgb(var(--v-theme-on-surface));
+  border: 1px solid rgba(var(--v-theme-outline), 0.4);
+  border-radius: 10px;
   min-height: 52px;
-  transition: all 0.1s ease;
+  transition: all 0.15s ease;
   cursor: pointer;
   overflow: hidden;
 }
 
-/* Grid 内容容器 */
 .channel-row-content {
   display: grid;
-  grid-template-columns: 28px 28px 90px minmax(120px, 1fr) auto 50px 50px 50px auto;
+  grid-template-columns: 28px 28px 90px minmax(140px, 1fr) auto 60px 60px 60px auto;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   position: relative;
   z-index: 1;
 }
 
-/* SVG 活跃度波形柱状图背景 */
-.activity-chart-bg {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* 柱状图无动画：避免数据更新时的缩小-增长抖动效果 */
-.activity-bar {
-  transition: none;
-}
-
-/* 图表展开区域 */
-.channel-chart-wrapper {
-  margin: 0 2px 8px 2px;
-}
-
 .channel-row:hover {
-  background: rgba(var(--v-theme-primary), 0.08);
-  transform: translate(-2px, -2px);
-  box-shadow: 6px 6px 0 0 rgb(var(--v-theme-on-surface));
-  border: 2px solid rgb(var(--v-theme-on-surface));
+  border-color: rgba(var(--v-theme-primary), 0.35);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
-.channel-row:active {
-  transform: translate(2px, 2px);
-  box-shadow: none;
-}
+.channel-row:active { transform: translateY(0); }
 
-.v-theme--dark .channel-row {
-  background: rgb(var(--v-theme-surface));
-  border-color: rgba(255, 255, 255, 0.7);
-  box-shadow: 4px 4px 0 0 rgba(255, 255, 255, 0.7);
-}
-.v-theme--dark .channel-row:hover {
-  background: rgba(var(--v-theme-primary), 0.12);
-  box-shadow: 6px 6px 0 0 rgba(255, 255, 255, 0.7);
-  border-color: rgba(255, 255, 255, 0.7);
-}
-
-/* suspended 状态的视觉区分 */
+/* suspended 状态 */
 .channel-row.is-suspended {
-  background: rgba(var(--v-theme-warning), 0.1);
-  border-color: rgb(var(--v-theme-warning));
-  box-shadow: 4px 4px 0 0 rgb(var(--v-theme-on-surface));
+  background: rgba(var(--v-theme-warning), 0.04);
+  border-color: rgba(var(--v-theme-warning), 0.25);
 }
-.channel-row.is-suspended:hover {
-  background: rgba(var(--v-theme-warning), 0.15);
-  box-shadow: 6px 6px 0 0 rgb(var(--v-theme-on-surface));
-}
-
-.v-theme--dark .channel-row.is-suspended {
-  box-shadow: 4px 4px 0 0 rgba(255, 255, 255, 0.7);
-}
-
-.v-theme--dark .channel-row.is-suspended:hover {
-  box-shadow: 6px 6px 0 0 rgba(255, 255, 255, 0.7);
-}
+.channel-row.is-suspended:hover { border-color: rgba(var(--v-theme-warning), 0.4); }
 
 .channel-row.ghost {
-  opacity: 0.6;
-  background: rgba(var(--v-theme-primary), 0.15);
-  border: 2px dashed rgb(var(--v-theme-primary));
-  box-shadow: none;
+  opacity: 0.5;
+  background: rgba(var(--v-theme-primary), 0.06);
+  border: 2px dashed rgba(var(--v-theme-primary), 0.3);
 }
+
+/* SVG 活跃度波形背景 — 更醒目的展示 */
+.activity-chart-bg {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 0; opacity: 0.4; overflow: hidden;
+  border-radius: 8px;
+}
+.activity-bar { transition: none; }
+
+.channel-chart-wrapper { margin: 4px 0 8px 0; }
 
 .drag-handle {
-  cursor: grab;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
+  cursor: grab; display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 6px;
   transition: all 0.1s ease;
 }
-
-.drag-handle:hover {
-  background: rgba(var(--v-theme-on-surface), 0.1);
-}
-
-.drag-handle:active {
-  cursor: grabbing;
-  background: rgba(var(--v-theme-primary), 0.2);
-}
+.drag-handle:hover { background: rgba(var(--v-theme-on-surface), 0.06); }
+.drag-handle:active { cursor: grabbing; background: rgba(var(--v-theme-primary), 0.1); }
 
 .priority-number {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
   background: rgb(var(--v-theme-primary));
-  color: white;
-  font-size: 12px;
-  font-weight: 700;
-  border: 2px solid rgb(var(--v-theme-on-surface));
-  text-transform: uppercase;
-}
-
-.v-theme--dark .priority-number {
-  border-color: rgba(255, 255, 255, 0.6);
+  color: white; font-size: 11px; font-weight: 700;
+  border-radius: 6px;
 }
 
 .channel-name {
-  display: flex;
-  align-items: center;
-  overflow: hidden;
+  display: flex; align-items: center; overflow: hidden; gap: 4px;
 }
+.channel-name .expand-icon { flex-shrink: 0; margin-left: auto; }
+.channel-name .font-weight-medium { font-size: 0.9rem; flex-shrink: 0; }
 
-.channel-name .expand-icon {
-  flex-shrink: 0;
-}
-
-.channel-name .font-weight-medium {
-  font-size: 0.95rem;
-  flex-shrink: 0;
-}
-
-/* 描述文本限制最多两行 */
 .channel-description {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.4;
-  max-height: calc(1.4em * 2);
-  word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis; line-height: 1.4;
+  max-height: calc(1.4em * 2); word-break: break-word;
+  font-size: 0.78rem; opacity: 0.5;
 }
 
-.channel-name-link {
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.channel-name-link:hover,
-.channel-name-link:focus {
-  color: rgb(var(--v-theme-primary));
-  text-decoration: underline;
-  outline: none;
-}
-
-.channel-name-link:focus-visible {
-  outline: 2px solid rgb(var(--v-theme-primary));
-  outline-offset: 2px;
-  border-radius: 2px;
-}
-
-.vision-default-chip {
-  flex-shrink: 0;
-}
+.channel-name-link { cursor: pointer; transition: color 0.15s ease; }
+.channel-name-link:hover, .channel-name-link:focus { color: rgb(var(--v-theme-primary)); }
+.channel-name-link:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; border-radius: 4px; }
 
 .channel-status-toggle {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 4px;
-  cursor: pointer;
+  display: inline-flex; align-items: center; border-radius: 6px; cursor: pointer;
 }
+.channel-status-toggle:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
+.channel-status-toggle :deep(.badge-content) { cursor: pointer; }
 
-.channel-status-toggle:focus-visible {
-  outline: 2px solid rgb(var(--v-theme-primary));
-  outline-offset: 2px;
-}
+.channel-metrics { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap; min-width: 140px; }
 
-.channel-status-toggle :deep(.badge-content) {
-  cursor: pointer;
-}
+/* 迷你指标条 */
+.metrics-visual { min-width: 130px; }
+.mini-metric-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 1px; }
+.mmb-track { flex: 1; height: 6px; background: rgba(var(--v-theme-outline), 0.2); border-radius: 3px; overflow: hidden; min-width: 60px; }
+.mmb-fill { height: 100%; border-radius: 3px; transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1); min-width: 2px; }
+.mmb-fill.high { background: linear-gradient(90deg, #059669, #10B981); }
+.mmb-fill.medium { background: linear-gradient(90deg, #D97706, #F59E0B); }
+.mmb-fill.low { background: linear-gradient(90deg, #DC2626, #EF4444); }
+.v-theme--dark .mmb-fill.high { background: linear-gradient(90deg, #059669, #34D399); }
+.v-theme--dark .mmb-fill.medium { background: linear-gradient(90deg, #D97706, #FBBF24); }
+.v-theme--dark .mmb-fill.low { background: linear-gradient(90deg, #DC2626, #F87171); }
 
-.channel-metrics {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-}
+.mmb-value { font-size: 11px; font-weight: 700; font-family: 'Fira Code', 'JetBrains Mono', monospace; white-space: nowrap; }
+.mmb-value.high { color: #059669; }
+.mmb-value.medium { color: #D97706; }
+.mmb-value.low { color: #DC2626; }
+.v-theme--dark .mmb-value.high { color: #34D399; }
+.v-theme--dark .mmb-value.medium { color: #FBBF24; }
+.v-theme--dark .mmb-value.low { color: #F87171; }
 
-.channel-latency {
-  display: flex;
-  align-items: center;
-  min-width: 60px;
-}
+.mini-metric-secondary { display: flex; align-items: center; gap: 4px; font-size: 10px; color: rgba(var(--v-theme-on-surface-variant), 0.65); }
+.mm-sep { opacity: 0.3; }
+.channel-latency { display: flex; align-items: center; min-width: 60px; }
 
-/* RPM/TPM 显示样式 */
-.channel-rpm-tpm {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 60px;
-  margin-left: 8px;
-}
+.channel-rpm-tpm { display: flex; flex-direction: column; align-items: center; min-width: 60px; }
+.rpm-tpm-values { display: flex; align-items: baseline; gap: 2px; font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.45); }
+.rpm-tpm-values .rpm-value.has-data, .rpm-tpm-values .tpm-value.has-data { color: rgb(var(--v-theme-primary)); }
+.rpm-tpm-separator { color: rgba(var(--v-theme-on-surface), 0.2); font-weight: 400; }
+.rpm-tpm-labels { display: flex; align-items: center; gap: 2px; font-size: 9px; color: rgba(var(--v-theme-on-surface), 0.35); text-transform: uppercase; letter-spacing: 0.5px; }
 
-.rpm-tpm-values {
-  display: flex;
-  align-items: baseline;
-  gap: 2px;
-  font-size: 13px;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-}
+.channel-keys { display: flex; align-items: center; }
+.channel-keys .keys-chip { cursor: pointer; transition: all 0.15s ease; }
+.channel-keys .keys-chip:hover { background: rgba(var(--v-theme-primary), 0.06); border-color: rgba(var(--v-theme-primary), 0.3); color: rgb(var(--v-theme-primary)); }
 
-.rpm-tpm-values .rpm-value.has-data,
-.rpm-tpm-values .tpm-value.has-data {
-  color: rgb(var(--v-theme-primary));
-}
+.channel-actions { display: flex; align-items: center; gap: 2px; justify-content: flex-end; min-width: 50px; }
 
-.rpm-tpm-separator {
-  color: rgba(var(--v-theme-on-surface), 0.3);
-  font-weight: 400;
-}
-
-.rpm-tpm-labels {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  font-size: 9px;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.channel-keys {
-  display: flex;
-  align-items: center;
-}
-
-.channel-keys .keys-chip {
-  cursor: pointer;
-  transition: all 0.1s ease;
-}
-
-.channel-keys .keys-chip:hover {
-  background: rgba(var(--v-theme-primary), 0.1);
-  border-color: rgb(var(--v-theme-primary));
-  color: rgb(var(--v-theme-primary));
-}
-
-.channel-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  justify-content: flex-end;
-  min-width: 50px;
-}
-
-/* 备用资源池样式 */
-.inactive-pool-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
+/* 备用资源池 */
+.inactive-pool-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .inactive-pool {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 10px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;
   background: rgb(var(--v-theme-surface));
-  padding: 16px;
-  border: 2px dashed rgb(var(--v-theme-on-surface));
+  padding: 16px; border: 1px dashed rgba(var(--v-theme-outline), 0.35); border-radius: 10px;
 }
-
-.v-theme--dark .inactive-pool {
-  background: rgb(var(--v-theme-surface));
-  border-color: rgba(255, 255, 255, 0.5);
-}
-
 .inactive-channel-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 14px;
   background: rgb(var(--v-theme-surface));
-  border: 2px solid rgb(var(--v-theme-on-surface));
-  box-shadow: 3px 3px 0 0 rgb(var(--v-theme-on-surface));
-  transition: all 0.1s ease;
+  border: 1px solid rgba(var(--v-theme-outline), 0.25); border-radius: 8px;
+  transition: all 0.15s ease;
 }
-
 .inactive-channel-row:hover {
-  background: rgba(var(--v-theme-primary), 0.08);
-  transform: translate(-1px, -1px);
-  box-shadow: 4px 4px 0 0 rgb(var(--v-theme-on-surface));
+  border-color: rgba(var(--v-theme-primary), 0.25);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
+.inactive-channel-row .channel-info { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
+.inactive-channel-row .channel-info-main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inactive-channel-row .channel-info-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3; max-width: 100%; font-size: 0.78rem; opacity: 0.5; }
+.inactive-channel-row .channel-actions { display: flex; align-items: center; gap: 4px; }
 
-.inactive-channel-row:active {
-  transform: translate(2px, 2px);
-  box-shadow: none;
-}
+/* tooltip */
+.metrics-tooltip { font-size: 12px; line-height: 1.5; color: rgb(var(--v-theme-on-surface)); }
+.metrics-tooltip-row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
+.metrics-tooltip-row span:first-child { color: rgba(var(--v-theme-on-surface), 0.55); }
+.metrics-tooltip-row span:last-child { font-weight: 500; color: rgb(var(--v-theme-on-surface)); }
+.model-preview-chip { max-width: 260px; overflow: hidden; }
+.model-preview-chip :deep(.v-chip__content) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.v-theme--dark .inactive-channel-row {
-  background: rgb(var(--v-theme-surface));
-  border-color: rgba(255, 255, 255, 0.6);
-  box-shadow: 3px 3px 0 0 rgba(255, 255, 255, 0.6);
-}
-
-.v-theme--dark .inactive-channel-row:hover {
-  background: rgba(var(--v-theme-primary), 0.12);
-  box-shadow: 4px 4px 0 0 rgba(255, 255, 255, 0.6);
-}
-
-.inactive-channel-row .channel-info {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.inactive-channel-row .channel-info-main {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.inactive-channel-row .channel-info-desc {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  line-height: 1.3;
-  max-width: 100%;
-}
-
-.inactive-channel-row .channel-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-/* 响应式调整 */
-@media (max-width: 1400px) {
-  .channel-row-content {
-    grid-template-columns: 28px 28px 85px minmax(100px, 1fr) auto 45px 45px 45px auto;
-    gap: 5px;
-  }
-  .channel-row {
-    padding: 10px 10px;
-  }
-}
-
-@media (max-width: 1200px) {
-  .channel-row-content {
-    grid-template-columns: 26px 26px 80px minmax(80px, 1fr) auto 40px 40px 40px auto;
-    gap: 4px;
-  }
-  .channel-row {
-    padding: 8px 8px;
-  }
-
-  .rpm-tpm-values {
-    font-size: 11px;
-  }
-
-  .rpm-tpm-labels {
-    font-size: 8px;
-  }
-}
-
-@media (max-width: 960px) {
-  .channel-row-content {
-    grid-template-columns: 26px 26px 75px minmax(60px, 1fr) auto 38px 38px 38px auto;
-    gap: 4px;
-  }
-  .channel-row {
-    padding: 8px 6px;
-  }
-}
-
-@media (max-width: 600px) {
-  .channel-row-content {
-    grid-template-columns: 28px 1fr 60px;
-    gap: 8px;
-  }
-  .channel-row {
-    padding: 10px;
-    box-shadow: 3px 3px 0 0 rgb(var(--v-theme-on-surface));
-  }
-
-  .channel-metrics,
-  .channel-latency,
-  .channel-keys,
-  .channel-rpm-tpm {
-    display: none;
-  }
-
-  .v-theme--dark .channel-row {
-    box-shadow: 3px 3px 0 0 rgba(255, 255, 255, 0.6);
-  }
-
-  .priority-number,
-  .drag-handle {
-    display: none;
-  }
-}
-
-/* 指标显示样式 */
-.metrics-display {
-  cursor: help;
-}
-
-/* 指标 tooltip 样式 */
-.metrics-tooltip {
-  font-size: 12px;
-  line-height: 1.5;
-  color: rgb(var(--v-theme-on-surface));
-}
-
-.metrics-tooltip-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 2px 0;
-}
-
-.metrics-tooltip-row span:first-child {
-  color: rgba(var(--v-theme-on-surface), 0.7);
-}
-
-.metrics-tooltip-row span:last-child {
-  font-weight: 500;
-  color: rgb(var(--v-theme-on-surface));
-}
-
-.model-preview-chip {
-  max-width: 260px;
-  overflow: hidden;
-}
-
-.model-preview-chip :deep(.v-chip__content) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.channel-logs-dialog-card {
-  max-height: calc(100vh - 48px);
-  display: flex;
-  flex-direction: column;
-}
-
-.channel-logs-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 18px;
-}
-
-.channel-logs-title-main {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.channel-logs-title-text {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 16px;
-  font-weight: 650;
-  line-height: 1.25;
-}
-
-.channel-logs-subtitle {
-  color: rgba(var(--v-theme-on-surface), 0.58);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.channel-logs-dialog-body {
-  overflow: auto;
-  padding: 16px 18px 18px;
-}
+/* 日志对话框 */
+.channel-logs-dialog-card { max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.channel-logs-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; }
+.channel-logs-title-main { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.channel-logs-title-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 16px; font-weight: 650; line-height: 1.25; }
+.channel-logs-subtitle { color: rgba(var(--v-theme-on-surface), 0.45); font-size: 12px; font-weight: 500; }
+.channel-logs-dialog-body { overflow: auto; padding: 16px 20px 20px; }
 
 .log-trend-panel {
-  border: 1px solid rgba(var(--v-theme-outline), 0.16);
-  border-radius: 8px;
-  padding: 12px 14px 4px;
-  margin-bottom: 14px;
-  background: rgba(var(--v-theme-surface-variant), 0.22);
+  border: 1px solid rgba(var(--v-theme-outline), 0.15); border-radius: 10px;
+  padding: 14px 16px 8px; margin-bottom: 16px;
+  background: rgba(var(--v-theme-surface-variant), 0.15);
 }
-
-.log-trend-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 4px;
-}
+.log-trend-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 6px; }
 
 .channel-logs-table-shell {
-  max-height: min(46vh, 520px);
-  overflow: auto;
-  border: 1px solid rgba(var(--v-theme-outline), 0.16);
-  border-radius: 8px;
+  max-height: min(46vh, 520px); overflow: auto;
+  border: 1px solid rgba(var(--v-theme-outline), 0.15); border-radius: 10px;
   background: rgb(var(--v-theme-surface));
 }
+.channel-logs-table { min-width: 1160px; }
+.channel-logs-table :deep(table) { table-layout: fixed; width: 100%; }
+.log-col-time { width: 172px; }
+.log-col-status { width: 108px; }
+.log-col-model { width: 150px; }
+.log-col-token { width: 116px; }
+.log-col-cache { width: 142px; }
+.log-col-upstream { width: 210px; }
+.log-col-key { width: 142px; }
+.log-col-duration { width: 90px; }
+.log-col-error { width: 230px; }
 
-.channel-logs-table {
-  min-width: 1160px;
-}
-
-.channel-logs-table :deep(table) {
-  table-layout: fixed;
-  width: 100%;
-}
-
-.log-col-time {
-  width: 172px;
-}
-
-.log-col-status {
-  width: 108px;
-}
-
-.log-col-model {
-  width: 150px;
-}
-
-.log-col-token {
-  width: 116px;
-}
-
-.log-col-cache {
-  width: 142px;
-}
-
-.log-col-upstream {
-  width: 210px;
-}
-
-.log-col-key {
-  width: 142px;
-}
-
-.log-col-duration {
-  width: 90px;
-}
-
-.log-col-error {
-  width: 230px;
-}
-
-.channel-logs-table th,
-.channel-logs-table td {
-  vertical-align: middle;
-  white-space: nowrap;
-}
-
+.channel-logs-table th, .channel-logs-table td { vertical-align: middle; white-space: nowrap; }
 .channel-logs-table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  position: sticky; top: 0; z-index: 1;
   background: rgb(var(--v-theme-surface));
-  color: rgba(var(--v-theme-on-surface), 0.62);
-  font-size: 12px;
-  font-weight: 700;
-  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.16);
-}
-
-.channel-logs-table td {
-  height: 48px;
-  color: rgba(var(--v-theme-on-surface), 0.86);
-  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-size: 12px; font-weight: 600;
   border-bottom: 1px solid rgba(var(--v-theme-outline), 0.1);
 }
-
-.log-time-cell,
-.log-key-cell,
-.log-duration-cell,
-.log-number-cell,
-.log-base-url {
-  font-variant-numeric: tabular-nums;
+.channel-logs-table td {
+  height: 48px; color: rgba(var(--v-theme-on-surface), 0.8);
+  font-size: 13px; border-bottom: 1px solid rgba(var(--v-theme-outline), 0.06);
 }
+.log-time-cell, .log-key-cell, .log-duration-cell, .log-number-cell, .log-base-url { font-variant-numeric: tabular-nums; }
+.log-key-cell, .log-duration-cell, .log-number-cell, .log-base-url, .log-model { font-family: 'Fira Code', 'JetBrains Mono', 'SF Mono', monospace; }
+.log-model, .log-base-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-error { min-width: 0; }
+.log-error-type { overflow: hidden; color: rgb(var(--v-theme-error)); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.log-error-message { display: -webkit-box; overflow: hidden; color: rgba(var(--v-theme-on-surface), 0.5); font-size: 12px; line-height: 1.35; white-space: normal; overflow-wrap: break-word; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.log-cell-note { color: rgba(var(--v-theme-on-surface), 0.45); font-size: 11px; line-height: 1.3; }
 
-.log-key-cell,
-.log-duration-cell,
-.log-number-cell,
-.log-base-url,
-.log-model {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+/* 响应式 */
+@media (max-width: 1400px) {
+  .channel-row-content { grid-template-columns: 28px 28px 85px minmax(100px, 1fr) auto 50px 50px 50px auto; gap: 6px; }
+  .channel-row { padding: 10px 12px; }
 }
-
-.log-model,
-.log-base-url {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+@media (max-width: 1200px) {
+  .channel-row-content { grid-template-columns: 26px 26px 80px minmax(80px, 1fr) auto 45px 45px 45px auto; gap: 5px; }
+  .channel-row { padding: 8px 10px; }
+  .rpm-tpm-values { font-size: 11px; }
+  .rpm-tpm-labels { font-size: 8px; }
 }
-
-.log-error {
-  min-width: 0;
+@media (max-width: 960px) {
+  .channel-row-content { grid-template-columns: 26px 26px 75px minmax(60px, 1fr) auto 40px 40px 40px auto; gap: 4px; }
+  .channel-row { padding: 8px 8px; }
 }
-
-.log-error-type {
-  overflow: hidden;
-  color: rgb(var(--v-theme-error));
-  font-size: 12px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.log-error-message {
-  display: -webkit-box;
-  overflow: hidden;
-  color: rgba(var(--v-theme-on-surface), 0.62);
-  font-size: 12px;
-  line-height: 1.35;
-  white-space: normal;
-  overflow-wrap: break-word;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.log-cell-note {
-  color: rgba(var(--v-theme-on-surface), 0.58);
-  font-size: 11px;
-  line-height: 1.3;
+@media (max-width: 600px) {
+  .channel-row-content { grid-template-columns: 28px 1fr 60px; gap: 8px; }
+  .channel-row { padding: 10px 12px; }
+  .channel-metrics, .channel-latency, .channel-keys, .channel-rpm-tpm { display: none; }
+  .priority-number, .drag-handle { display: none; }
 }
 </style>
