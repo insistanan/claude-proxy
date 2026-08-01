@@ -98,25 +98,24 @@ func main() {
 	}
 
 	// 初始化多渠道调度器（Messages、Responses、Gemini、Chat 和 Images 使用独立的指标管理器）
-	var messagesMetricsManager, responsesMetricsManager, geminiMetricsManager, chatMetricsManager, imagesMetricsManager *metrics.MetricsManager
-	if metricsStore != nil {
-		messagesMetricsManager = metrics.NewMetricsManagerWithPersistence(
-			envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, "messages")
-		responsesMetricsManager = metrics.NewMetricsManagerWithPersistence(
-			envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, "responses")
-		geminiMetricsManager = metrics.NewMetricsManagerWithPersistence(
-			envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, "gemini")
-		chatMetricsManager = metrics.NewMetricsManagerWithPersistence(
-			envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, "chat")
-		imagesMetricsManager = metrics.NewMetricsManagerWithPersistence(
-			envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, "images")
-	} else {
-		messagesMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
-		responsesMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
-		geminiMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
-		chatMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
-		imagesMetricsManager = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
+	// 收敛为按 ChannelKind 分组的 map，消除五组几乎相同的初始化代码
+	metricsKinds := []scheduler.ChannelKind{
+		scheduler.ChannelKindMessages,
+		scheduler.ChannelKindResponses,
+		scheduler.ChannelKindGemini,
+		scheduler.ChannelKindChat,
+		scheduler.ChannelKindImages,
 	}
+	kindMetricsManagers := make(map[scheduler.ChannelKind]*metrics.MetricsManager, len(metricsKinds))
+	for _, kind := range metricsKinds {
+		if metricsStore != nil {
+			kindMetricsManagers[kind] = metrics.NewMetricsManagerWithPersistence(
+				envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold, metricsStore, string(kind))
+		} else {
+			kindMetricsManagers[kind] = metrics.NewMetricsManagerWithConfig(envCfg.MetricsWindowSize, envCfg.MetricsFailureThreshold)
+		}
+	}
+
 	traceAffinityManager := session.NewTraceAffinityManager()
 	conversationRegistry, err := conversation.NewPersistentRegistry(".config/conversations.db")
 	if err != nil {
@@ -128,11 +127,21 @@ func main() {
 	urlManager := urlhealth.NewURLManager(30*time.Second, 3) // 30秒冷却期，连续3次失败后移到末尾
 	log.Printf("[URLManager-Init] URL管理器已初始化 (冷却期: 30秒, 最大连续失败: 3)")
 
-	channelScheduler := scheduler.NewChannelScheduler(cfgManager, messagesMetricsManager, responsesMetricsManager, geminiMetricsManager, chatMetricsManager, imagesMetricsManager, traceAffinityManager, urlManager)
+	channelScheduler := scheduler.NewChannelScheduler(
+		cfgManager,
+		kindMetricsManagers[scheduler.ChannelKindMessages],
+		kindMetricsManagers[scheduler.ChannelKindResponses],
+		kindMetricsManagers[scheduler.ChannelKindGemini],
+		kindMetricsManagers[scheduler.ChannelKindChat],
+		kindMetricsManagers[scheduler.ChannelKindImages],
+		traceAffinityManager,
+		urlManager,
+	)
 	channelScheduler.SetRequestLogStore(requestLogStore)
 	channelScheduler.SetConversationRegistry(conversationRegistry)
 	log.Printf("[Scheduler-Init] 多渠道调度器已初始化 (失败率阈值: %.0f%%, 滑动窗口: %d)",
-		messagesMetricsManager.GetFailureThreshold()*100, messagesMetricsManager.GetWindowSize())
+		kindMetricsManagers[scheduler.ChannelKindMessages].GetFailureThreshold()*100,
+		kindMetricsManagers[scheduler.ChannelKindMessages].GetWindowSize())
 
 	// 初始化自适应负载均衡
 	profileManager := metrics.NewProfileManager()
@@ -143,20 +152,20 @@ func main() {
 
 	// 从现有指标同步数据到性能画像
 	syncConfig := cfgManager.GetConfig()
-	for i, upstream := range syncConfig.Upstream {
-		syncUpstreamProfiles(messagesMetricsManager, profileManager, &upstream, i)
+	kindToUpstreams := []struct {
+		kind      scheduler.ChannelKind
+		upstreams []config.UpstreamConfig
+	}{
+		{scheduler.ChannelKindMessages, syncConfig.Upstream},
+		{scheduler.ChannelKindResponses, syncConfig.ResponsesUpstream},
+		{scheduler.ChannelKindGemini, syncConfig.GeminiUpstream},
+		{scheduler.ChannelKindChat, syncConfig.ChatUpstream},
+		{scheduler.ChannelKindImages, syncConfig.ImagesUpstream},
 	}
-	for i, upstream := range syncConfig.ResponsesUpstream {
-		syncUpstreamProfiles(responsesMetricsManager, profileManager, &upstream, i)
-	}
-	for i, upstream := range syncConfig.GeminiUpstream {
-		syncUpstreamProfiles(geminiMetricsManager, profileManager, &upstream, i)
-	}
-	for i, upstream := range syncConfig.ChatUpstream {
-		syncUpstreamProfiles(chatMetricsManager, profileManager, &upstream, i)
-	}
-	for i, upstream := range syncConfig.ImagesUpstream {
-		syncUpstreamProfiles(imagesMetricsManager, profileManager, &upstream, i)
+	for _, entry := range kindToUpstreams {
+		for i := range entry.upstreams {
+			syncUpstreamProfiles(kindMetricsManagers[entry.kind], profileManager, &entry.upstreams[i], i)
+		}
 	}
 	log.Println("[Main] 已从现有指标同步性能画像数据")
 
@@ -192,37 +201,51 @@ func main() {
 	{
 		apiGroup.GET("/request-logs", handlers.GetRequestLogs(requestLogStore))
 
-		// Messages 渠道管理
-		apiGroup.GET("/messages/channels", messages.GetUpstreams(cfgManager))
-		apiGroup.GET("/messages/pools", handlers.GetChannelPools(cfgManager, "messages"))
-		apiGroup.POST("/messages/pools", handlers.CreateChannelPool(cfgManager, "messages"))
-		apiGroup.PUT("/messages/pools/layout", handlers.SaveChannelPoolLayout(cfgManager, "messages"))
-		apiGroup.PUT("/messages/pools/:id", handlers.UpdateChannelPool(cfgManager, "messages"))
-		apiGroup.DELETE("/messages/pools/:id", handlers.DeleteChannelPool(cfgManager, "messages"))
-		apiGroup.POST("/messages/channels", messages.AddUpstream(cfgManager))
-		apiGroup.PUT("/messages/channels/:id", messages.UpdateUpstream(cfgManager, channelScheduler))
-		apiGroup.DELETE("/messages/channels/:id", messages.DeleteUpstream(cfgManager, channelScheduler))
-		apiGroup.POST("/messages/channels/:id/keys", messages.AddApiKey(cfgManager))
-		apiGroup.DELETE("/messages/channels/:id/keys/:apiKey", messages.DeleteApiKey(cfgManager))
-		apiGroup.POST("/messages/channels/:id/keys/:apiKey/top", messages.MoveApiKeyToTop(cfgManager))
-		apiGroup.POST("/messages/channels/:id/keys/:apiKey/bottom", messages.MoveApiKeyToBottom(cfgManager))
+		// 渠道管理 API 路由（messages/responses/gemini/chat/images 五组收敛为一次调用）
+		// 各渠道类型的 CRUD / key 管理 / pools / reorder / status / promotion / metrics / ping
+		// 全部由 handlers.RegisterChannelRoutes 统一注册，差异点通过 ChannelRouteOptions 表达。
+		channelDeps := handlers.ChannelRouteDeps{
+			Cfg:       cfgManager,
+			Scheduler: channelScheduler,
+			MetricsByKind: func(kind scheduler.ChannelKind) *metrics.MetricsManager {
+				return kindMetricsManagers[kind]
+			},
+		}
 
-		// Messages 多渠道调度 API
-		apiGroup.POST("/messages/channels/reorder", messages.ReorderChannels(cfgManager))
-		apiGroup.POST("/messages/channels/tidy", handlers.TidyProblemChannels(cfgManager, scheduler.ChannelKindMessages))
-		apiGroup.PATCH("/messages/channels/:id/status", messages.SetChannelStatus(cfgManager))
-		apiGroup.POST("/messages/channels/:id/duplicate", handlers.DuplicateChannel(cfgManager, scheduler.ChannelKindMessages))
-		apiGroup.POST("/messages/channels/:id/resume", handlers.ResumeChannel(channelScheduler, false))
-		apiGroup.POST("/messages/channels/:id/promotion", messages.SetChannelPromotion(cfgManager))
-		apiGroup.GET("/messages/channels/metrics", handlers.GetChannelMetricsWithConfig(messagesMetricsManager, cfgManager, false))
-		apiGroup.GET("/messages/channels/metrics/history", handlers.GetChannelMetricsHistory(messagesMetricsManager, cfgManager, false))
-		apiGroup.GET("/messages/channels/:id/keys/metrics/history", handlers.GetChannelKeyMetricsHistory(messagesMetricsManager, cfgManager, false))
-		apiGroup.GET("/messages/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindMessages))
-		apiGroup.GET("/messages/channels/scheduler/stats", handlers.GetSchedulerStats(channelScheduler))
-		apiGroup.GET("/messages/global/stats/history", handlers.GetGlobalStatsHistory(messagesMetricsManager))
-		apiGroup.GET("/messages/channels/dashboard", handlers.GetChannelDashboard(cfgManager, channelScheduler))
-		apiGroup.GET("/messages/ping/:id", messages.PingChannel(cfgManager))
-		apiGroup.GET("/messages/ping", messages.PingAllChannels(cfgManager))
+		// Messages 渠道管理
+		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindMessages, channelDeps, handlers.ChannelRouteOptions{
+			Crud:           messages.Crud(cfgManager, channelScheduler),
+			LoadBalance:    messages.UpdateLoadBalance(cfgManager),
+			Dashboard:      handlers.GetChannelDashboard(cfgManager, channelScheduler),
+			SchedulerStats: handlers.GetSchedulerStats(channelScheduler),
+		})
+
+		// Responses 渠道管理
+		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindResponses, channelDeps, handlers.ChannelRouteOptions{
+			Crud:        responses.Crud(cfgManager, channelScheduler),
+			LoadBalance: responses.UpdateLoadBalance(cfgManager),
+		})
+
+		// Gemini 渠道管理
+		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindGemini, channelDeps, handlers.ChannelRouteOptions{
+			Crud:        gemini.Crud(cfgManager, channelScheduler),
+			LoadBalance: gemini.UpdateLoadBalance(cfgManager),
+			Dashboard:   gemini.GetDashboard(cfgManager, channelScheduler),
+		})
+
+		// Chat 渠道管理
+		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindChat, channelDeps, handlers.ChannelRouteOptions{
+			Crud:        chat.Crud(cfgManager, channelScheduler),
+			LoadBalance: chat.UpdateLoadBalance(cfgManager),
+			Dashboard:   chat.GetDashboard(cfgManager, channelScheduler),
+		})
+
+		// Images 渠道管理
+		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindImages, channelDeps, handlers.ChannelRouteOptions{
+			Crud:        images.Crud(cfgManager, channelScheduler),
+			LoadBalance: images.UpdateLoadBalance(cfgManager),
+			Dashboard:   images.GetDashboard(cfgManager, channelScheduler),
+		})
 
 		// 渠道性能报告（自适应负载均衡）
 		apiGroup.GET("/performance/report", func(c *gin.Context) {
@@ -232,131 +255,6 @@ func main() {
 				"data":    reports,
 			})
 		})
-
-		// Responses 渠道管理
-		apiGroup.GET("/responses/channels", responses.GetUpstreams(cfgManager))
-		apiGroup.GET("/responses/pools", handlers.GetChannelPools(cfgManager, "responses"))
-		apiGroup.POST("/responses/pools", handlers.CreateChannelPool(cfgManager, "responses"))
-		apiGroup.PUT("/responses/pools/layout", handlers.SaveChannelPoolLayout(cfgManager, "responses"))
-		apiGroup.PUT("/responses/pools/:id", handlers.UpdateChannelPool(cfgManager, "responses"))
-		apiGroup.DELETE("/responses/pools/:id", handlers.DeleteChannelPool(cfgManager, "responses"))
-		apiGroup.POST("/responses/channels", responses.AddUpstream(cfgManager))
-		apiGroup.PUT("/responses/channels/:id", responses.UpdateUpstream(cfgManager, channelScheduler))
-		apiGroup.DELETE("/responses/channels/:id", responses.DeleteUpstream(cfgManager, channelScheduler))
-		apiGroup.POST("/responses/channels/:id/keys", responses.AddApiKey(cfgManager))
-		apiGroup.DELETE("/responses/channels/:id/keys/:apiKey", responses.DeleteApiKey(cfgManager))
-		apiGroup.POST("/responses/channels/:id/keys/:apiKey/top", responses.MoveApiKeyToTop(cfgManager))
-		apiGroup.POST("/responses/channels/:id/keys/:apiKey/bottom", responses.MoveApiKeyToBottom(cfgManager))
-
-		// Responses 多渠道调度 API
-		apiGroup.POST("/responses/channels/reorder", responses.ReorderChannels(cfgManager))
-		apiGroup.POST("/responses/channels/tidy", handlers.TidyProblemChannels(cfgManager, scheduler.ChannelKindResponses))
-		apiGroup.PATCH("/responses/channels/:id/status", responses.SetChannelStatus(cfgManager))
-		apiGroup.POST("/responses/channels/:id/duplicate", handlers.DuplicateChannel(cfgManager, scheduler.ChannelKindResponses))
-		apiGroup.POST("/responses/channels/:id/resume", handlers.ResumeChannel(channelScheduler, true))
-		apiGroup.POST("/responses/channels/:id/promotion", handlers.SetResponsesChannelPromotion(cfgManager))
-		apiGroup.GET("/responses/channels/metrics", handlers.GetChannelMetricsWithConfig(responsesMetricsManager, cfgManager, true))
-		apiGroup.GET("/responses/channels/metrics/history", handlers.GetChannelMetricsHistory(responsesMetricsManager, cfgManager, true))
-		apiGroup.GET("/responses/channels/:id/keys/metrics/history", handlers.GetChannelKeyMetricsHistory(responsesMetricsManager, cfgManager, true))
-		apiGroup.GET("/responses/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindResponses))
-		apiGroup.GET("/responses/global/stats/history", handlers.GetGlobalStatsHistory(responsesMetricsManager))
-		apiGroup.GET("/responses/ping/:id", responses.PingChannel(cfgManager))
-		apiGroup.GET("/responses/ping", responses.PingAllChannels(cfgManager))
-
-		// Gemini 渠道管理
-		apiGroup.GET("/gemini/channels", gemini.GetUpstreams(cfgManager))
-		apiGroup.GET("/gemini/pools", handlers.GetChannelPools(cfgManager, "gemini"))
-		apiGroup.POST("/gemini/pools", handlers.CreateChannelPool(cfgManager, "gemini"))
-		apiGroup.PUT("/gemini/pools/layout", handlers.SaveChannelPoolLayout(cfgManager, "gemini"))
-		apiGroup.PUT("/gemini/pools/:id", handlers.UpdateChannelPool(cfgManager, "gemini"))
-		apiGroup.DELETE("/gemini/pools/:id", handlers.DeleteChannelPool(cfgManager, "gemini"))
-		apiGroup.POST("/gemini/channels", gemini.AddUpstream(cfgManager))
-		apiGroup.PUT("/gemini/channels/:id", gemini.UpdateUpstream(cfgManager, channelScheduler))
-		apiGroup.DELETE("/gemini/channels/:id", gemini.DeleteUpstream(cfgManager, channelScheduler))
-		apiGroup.POST("/gemini/channels/:id/keys", gemini.AddApiKey(cfgManager))
-		apiGroup.DELETE("/gemini/channels/:id/keys/:apiKey", gemini.DeleteApiKey(cfgManager))
-		apiGroup.POST("/gemini/channels/:id/keys/:apiKey/top", gemini.MoveApiKeyToTop(cfgManager))
-		apiGroup.POST("/gemini/channels/:id/keys/:apiKey/bottom", gemini.MoveApiKeyToBottom(cfgManager))
-
-		// Gemini 多渠道调度 API
-		apiGroup.POST("/gemini/channels/reorder", gemini.ReorderChannels(cfgManager))
-		apiGroup.POST("/gemini/channels/tidy", handlers.TidyProblemChannels(cfgManager, scheduler.ChannelKindGemini))
-		apiGroup.PATCH("/gemini/channels/:id/status", gemini.SetChannelStatus(cfgManager))
-		apiGroup.POST("/gemini/channels/:id/duplicate", handlers.DuplicateChannel(cfgManager, scheduler.ChannelKindGemini))
-		apiGroup.POST("/gemini/channels/:id/promotion", gemini.SetChannelPromotion(cfgManager))
-		apiGroup.PUT("/gemini/loadbalance", gemini.UpdateLoadBalance(cfgManager))
-		apiGroup.GET("/gemini/channels/dashboard", gemini.GetDashboard(cfgManager, channelScheduler))
-		apiGroup.GET("/gemini/channels/metrics", handlers.GetGeminiChannelMetrics(geminiMetricsManager, cfgManager))
-		apiGroup.GET("/gemini/channels/metrics/history", handlers.GetGeminiChannelMetricsHistory(geminiMetricsManager, cfgManager))
-		apiGroup.GET("/gemini/channels/:id/keys/metrics/history", handlers.GetGeminiChannelKeyMetricsHistory(geminiMetricsManager, cfgManager))
-		apiGroup.GET("/gemini/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindGemini))
-		apiGroup.GET("/gemini/global/stats/history", handlers.GetGlobalStatsHistory(geminiMetricsManager))
-		apiGroup.GET("/gemini/ping/:id", gemini.PingChannel(cfgManager))
-		apiGroup.GET("/gemini/ping", gemini.PingAllChannels(cfgManager))
-
-		// Chat 渠道管理
-		apiGroup.GET("/chat/channels", chat.GetUpstreams(cfgManager))
-		apiGroup.GET("/chat/pools", handlers.GetChannelPools(cfgManager, "chat"))
-		apiGroup.POST("/chat/pools", handlers.CreateChannelPool(cfgManager, "chat"))
-		apiGroup.PUT("/chat/pools/layout", handlers.SaveChannelPoolLayout(cfgManager, "chat"))
-		apiGroup.PUT("/chat/pools/:id", handlers.UpdateChannelPool(cfgManager, "chat"))
-		apiGroup.DELETE("/chat/pools/:id", handlers.DeleteChannelPool(cfgManager, "chat"))
-		apiGroup.POST("/chat/channels", chat.AddUpstream(cfgManager))
-		apiGroup.PUT("/chat/channels/:id", chat.UpdateUpstream(cfgManager, channelScheduler))
-		apiGroup.DELETE("/chat/channels/:id", chat.DeleteUpstream(cfgManager, channelScheduler))
-		apiGroup.POST("/chat/channels/:id/keys", chat.AddApiKey(cfgManager))
-		apiGroup.DELETE("/chat/channels/:id/keys/:apiKey", chat.DeleteApiKey(cfgManager))
-		apiGroup.POST("/chat/channels/:id/keys/:apiKey/top", chat.MoveApiKeyToTop(cfgManager))
-		apiGroup.POST("/chat/channels/:id/keys/:apiKey/bottom", chat.MoveApiKeyToBottom(cfgManager))
-
-		// Chat 多渠道调度 API
-		apiGroup.POST("/chat/channels/reorder", chat.ReorderChannels(cfgManager))
-		apiGroup.POST("/chat/channels/tidy", handlers.TidyProblemChannels(cfgManager, scheduler.ChannelKindChat))
-		apiGroup.PATCH("/chat/channels/:id/status", chat.SetChannelStatus(cfgManager))
-		apiGroup.POST("/chat/channels/:id/duplicate", handlers.DuplicateChannel(cfgManager, scheduler.ChannelKindChat))
-		apiGroup.POST("/chat/channels/:id/resume", handlers.ResumeChannelByKind(channelScheduler, scheduler.ChannelKindChat))
-		apiGroup.POST("/chat/channels/:id/promotion", chat.SetChannelPromotion(cfgManager))
-		apiGroup.PUT("/chat/loadbalance", chat.UpdateLoadBalance(cfgManager))
-		apiGroup.GET("/chat/channels/dashboard", chat.GetDashboard(cfgManager, channelScheduler))
-		apiGroup.GET("/chat/channels/metrics", handlers.GetChannelMetricsWithKind(chatMetricsManager, cfgManager, scheduler.ChannelKindChat))
-		apiGroup.GET("/chat/channels/metrics/history", handlers.GetChannelMetricsHistoryByKind(chatMetricsManager, cfgManager, scheduler.ChannelKindChat))
-		apiGroup.GET("/chat/channels/:id/keys/metrics/history", handlers.GetChannelKeyMetricsHistoryByKind(chatMetricsManager, cfgManager, scheduler.ChannelKindChat))
-		apiGroup.GET("/chat/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindChat))
-		apiGroup.GET("/chat/global/stats/history", handlers.GetGlobalStatsHistory(chatMetricsManager))
-		apiGroup.GET("/chat/ping/:id", chat.PingChannel(cfgManager))
-		apiGroup.GET("/chat/ping", chat.PingAllChannels(cfgManager))
-
-		// Images 渠道管理
-		apiGroup.GET("/images/channels", images.GetUpstreams(cfgManager))
-		apiGroup.GET("/images/pools", handlers.GetChannelPools(cfgManager, "images"))
-		apiGroup.POST("/images/pools", handlers.CreateChannelPool(cfgManager, "images"))
-		apiGroup.PUT("/images/pools/layout", handlers.SaveChannelPoolLayout(cfgManager, "images"))
-		apiGroup.PUT("/images/pools/:id", handlers.UpdateChannelPool(cfgManager, "images"))
-		apiGroup.DELETE("/images/pools/:id", handlers.DeleteChannelPool(cfgManager, "images"))
-		apiGroup.POST("/images/channels", images.AddUpstream(cfgManager))
-		apiGroup.PUT("/images/channels/:id", images.UpdateUpstream(cfgManager, channelScheduler))
-		apiGroup.DELETE("/images/channels/:id", images.DeleteUpstream(cfgManager, channelScheduler))
-		apiGroup.POST("/images/channels/:id/keys", images.AddApiKey(cfgManager))
-		apiGroup.DELETE("/images/channels/:id/keys/:apiKey", images.DeleteApiKey(cfgManager))
-		apiGroup.POST("/images/channels/:id/keys/:apiKey/top", images.MoveApiKeyToTop(cfgManager))
-		apiGroup.POST("/images/channels/:id/keys/:apiKey/bottom", images.MoveApiKeyToBottom(cfgManager))
-
-		// Images 多渠道调度 API
-		apiGroup.POST("/images/channels/reorder", images.ReorderChannels(cfgManager))
-		apiGroup.POST("/images/channels/tidy", handlers.TidyProblemChannels(cfgManager, scheduler.ChannelKindImages))
-		apiGroup.PATCH("/images/channels/:id/status", images.SetChannelStatus(cfgManager))
-		apiGroup.POST("/images/channels/:id/duplicate", handlers.DuplicateChannel(cfgManager, scheduler.ChannelKindImages))
-		apiGroup.POST("/images/channels/:id/resume", handlers.ResumeChannelByKind(channelScheduler, scheduler.ChannelKindImages))
-		apiGroup.POST("/images/channels/:id/promotion", images.SetChannelPromotion(cfgManager))
-		apiGroup.PUT("/images/loadbalance", images.UpdateLoadBalance(cfgManager))
-		apiGroup.GET("/images/channels/dashboard", images.GetDashboard(cfgManager, channelScheduler))
-		apiGroup.GET("/images/channels/metrics", handlers.GetChannelMetricsWithKind(imagesMetricsManager, cfgManager, scheduler.ChannelKindImages))
-		apiGroup.GET("/images/channels/metrics/history", handlers.GetChannelMetricsHistoryByKind(imagesMetricsManager, cfgManager, scheduler.ChannelKindImages))
-		apiGroup.GET("/images/channels/:id/keys/metrics/history", handlers.GetChannelKeyMetricsHistoryByKind(imagesMetricsManager, cfgManager, scheduler.ChannelKindImages))
-		apiGroup.GET("/images/channels/:id/logs", handlers.GetChannelLogs(channelScheduler, cfgManager, scheduler.ChannelKindImages))
-		apiGroup.GET("/images/global/stats/history", handlers.GetGlobalStatsHistory(imagesMetricsManager))
-		apiGroup.GET("/images/ping/:id", images.PingChannel(cfgManager))
-		apiGroup.GET("/images/ping", images.PingAllChannels(cfgManager))
 
 		// 对话与路由覆盖
 		apiGroup.GET("/conversations/route-options", handlers.GetConversationRouteOptions(cfgManager))

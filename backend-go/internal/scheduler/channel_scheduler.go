@@ -18,25 +18,17 @@ import (
 
 // ChannelScheduler 多渠道调度器
 type ChannelScheduler struct {
-	mu                       sync.RWMutex
-	configManager            *config.ConfigManager
-	messagesMetricsManager   *metrics.MetricsManager // Messages 渠道指标
-	responsesMetricsManager  *metrics.MetricsManager // Responses 渠道指标
-	geminiMetricsManager     *metrics.MetricsManager // Gemini 渠道指标
-	chatMetricsManager       *metrics.MetricsManager // Chat 渠道指标
-	imagesMetricsManager     *metrics.MetricsManager // Images 渠道指标
-	messagesChannelLogStore  *metrics.ChannelLogStore
-	responsesChannelLogStore *metrics.ChannelLogStore
-	geminiChannelLogStore    *metrics.ChannelLogStore
-	chatChannelLogStore      *metrics.ChannelLogStore
-	imagesChannelLogStore    *metrics.ChannelLogStore
-	requestLogStore          *metrics.RequestLogStore
-	traceAffinity            *session.TraceAffinityManager
-	baseURLAffinity          *session.BaseURLAffinityManager
-	conversationRegistry     *conversation.Registry
-	urlManager               *urlhealth.URLManager   // URL 管理器（非阻塞，动态排序）
-	profileManager           *metrics.ProfileManager // 性能画像管理器
-	adaptiveScheduler        *AdaptiveScheduler      // 自适应调度器
+	mu                  sync.RWMutex
+	configManager       *config.ConfigManager
+	metricsManagers     map[ChannelKind]*metrics.MetricsManager // 各渠道类型对应的指标管理器
+	channelLogStores    map[ChannelKind]*metrics.ChannelLogStore
+	requestLogStore     *metrics.RequestLogStore
+	traceAffinity       *session.TraceAffinityManager
+	baseURLAffinity     *session.BaseURLAffinityManager
+	conversationRegistry *conversation.Registry
+	urlManager          *urlhealth.URLManager   // URL 管理器（非阻塞，动态排序）
+	profileManager      *metrics.ProfileManager // 性能画像管理器
+	adaptiveScheduler   *AdaptiveScheduler      // 自适应调度器
 	// inFlightByKind 记录选渠后、真正发出上游请求前的在途预留。
 	// 让并发对话在 StartRequest 之前就能看到彼此占用，从而分摊到不同供应商。
 	inFlightByKind map[ChannelKind]map[int]int64
@@ -67,53 +59,35 @@ func NewChannelScheduler(
 	urlMgr *urlhealth.URLManager,
 ) *ChannelScheduler {
 	return &ChannelScheduler{
-		configManager:            cfgManager,
-		messagesMetricsManager:   messagesMetrics,
-		responsesMetricsManager:  responsesMetrics,
-		geminiMetricsManager:     geminiMetrics,
-		chatMetricsManager:       chatMetrics,
-		imagesMetricsManager:     imagesMetrics,
-		messagesChannelLogStore:  metrics.NewChannelLogStore(),
-		responsesChannelLogStore: metrics.NewChannelLogStore(),
-		geminiChannelLogStore:    metrics.NewChannelLogStore(),
-		chatChannelLogStore:      metrics.NewChannelLogStore(),
-		imagesChannelLogStore:    metrics.NewChannelLogStore(),
-		traceAffinity:            traceAffinity,
-		baseURLAffinity:          session.NewBaseURLAffinityManager(),
-		urlManager:               urlMgr,
-		inFlightByKind:           make(map[ChannelKind]map[int]int64),
+		configManager: cfgManager,
+		metricsManagers: map[ChannelKind]*metrics.MetricsManager{
+			ChannelKindMessages:  messagesMetrics,
+			ChannelKindResponses: responsesMetrics,
+			ChannelKindGemini:    geminiMetrics,
+			ChannelKindChat:      chatMetrics,
+			ChannelKindImages:    imagesMetrics,
+		},
+		channelLogStores: map[ChannelKind]*metrics.ChannelLogStore{
+			ChannelKindMessages:  metrics.NewChannelLogStore(),
+			ChannelKindResponses: metrics.NewChannelLogStore(),
+			ChannelKindGemini:    metrics.NewChannelLogStore(),
+			ChannelKindChat:      metrics.NewChannelLogStore(),
+			ChannelKindImages:    metrics.NewChannelLogStore(),
+		},
+		traceAffinity:       traceAffinity,
+		baseURLAffinity:     session.NewBaseURLAffinityManager(),
+		urlManager:          urlMgr,
+		inFlightByKind:      make(map[ChannelKind]map[int]int64),
 	}
 }
 
 // getMetricsManager 根据类型获取对应的指标管理器
 func (s *ChannelScheduler) getMetricsManager(kind ChannelKind) *metrics.MetricsManager {
-	switch kind {
-	case ChannelKindResponses:
-		return s.responsesMetricsManager
-	case ChannelKindGemini:
-		return s.geminiMetricsManager
-	case ChannelKindChat:
-		return s.chatMetricsManager
-	case ChannelKindImages:
-		return s.imagesMetricsManager
-	default:
-		return s.messagesMetricsManager
-	}
+	return s.metricsManagers[kind]
 }
 
 func (s *ChannelScheduler) GetChannelLogStore(kind ChannelKind) *metrics.ChannelLogStore {
-	switch kind {
-	case ChannelKindResponses:
-		return s.responsesChannelLogStore
-	case ChannelKindGemini:
-		return s.geminiChannelLogStore
-	case ChannelKindChat:
-		return s.chatChannelLogStore
-	case ChannelKindImages:
-		return s.imagesChannelLogStore
-	default:
-		return s.messagesChannelLogStore
-	}
+	return s.channelLogStores[kind]
 }
 
 func (s *ChannelScheduler) SetRequestLogStore(store *metrics.RequestLogStore) {
@@ -1078,27 +1052,27 @@ func (s *ChannelScheduler) MarkConversationComplete(userID string, kind ChannelK
 
 // GetMessagesMetricsManager 获取 Messages 渠道指标管理器
 func (s *ChannelScheduler) GetMessagesMetricsManager() *metrics.MetricsManager {
-	return s.messagesMetricsManager
+	return s.getMetricsManager(ChannelKindMessages)
 }
 
 // GetResponsesMetricsManager 获取 Responses 渠道指标管理器
 func (s *ChannelScheduler) GetResponsesMetricsManager() *metrics.MetricsManager {
-	return s.responsesMetricsManager
+	return s.getMetricsManager(ChannelKindResponses)
 }
 
 // GetGeminiMetricsManager 获取 Gemini 渠道指标管理器
 func (s *ChannelScheduler) GetGeminiMetricsManager() *metrics.MetricsManager {
-	return s.geminiMetricsManager
+	return s.getMetricsManager(ChannelKindGemini)
 }
 
 // GetChatMetricsManager 获取 Chat 渠道指标管理器
 func (s *ChannelScheduler) GetChatMetricsManager() *metrics.MetricsManager {
-	return s.chatMetricsManager
+	return s.getMetricsManager(ChannelKindChat)
 }
 
 // GetImagesMetricsManager 获取 Images 渠道指标管理器
 func (s *ChannelScheduler) GetImagesMetricsManager() *metrics.MetricsManager {
-	return s.imagesMetricsManager
+	return s.getMetricsManager(ChannelKindImages)
 }
 
 // GetTraceAffinityManager 获取 Trace 亲和性管理器

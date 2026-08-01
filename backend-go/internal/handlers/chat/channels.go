@@ -1,560 +1,109 @@
-// Package chat 提供 OpenAI Chat Completions API 的渠道管理
+// Package chat 提供 Chat Completions API 的渠道管理
 package chat
 
 import (
-	"fmt"
 	"net/http"
-	"strconv"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/core/channelcrud"
 	"github.com/BenedictKing/claude-proxy/internal/httpclient"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/gin-gonic/gin"
 )
 
-// GetUpstreams 获取 Chat 上游列表
+func Crud(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) *channelcrud.Handlers {
+	return channelcrud.New(channelcrud.Ops{
+		Kind: scheduler.ChannelKindChat,
+		List: func() []config.UpstreamConfig {
+			return cfgManager.GetConfig().ChatUpstream
+		},
+		LoadBalance: func() string {
+			return cfgManager.GetConfig().ChatLoadBalance
+		},
+		GetClient: func(ch *config.UpstreamConfig, timeout time.Duration) (*http.Client, error) {
+			return httpclient.GetManager().GetStandardClientForUpstream(timeout, cfgManager, ch)
+		},
+		Add:            cfgManager.AddChatUpstreamWithResult,
+		Update:         cfgManager.UpdateChatUpstream,
+		Remove:         cfgManager.RemoveChatUpstream,
+		AddKey:         cfgManager.AddChatAPIKey,
+		RemoveKey:      cfgManager.RemoveChatAPIKey,
+		MoveKeyTop:     cfgManager.MoveChatAPIKeyToTop,
+		MoveKeyBottom:  cfgManager.MoveChatAPIKeyToBottom,
+		Reorder:        cfgManager.ReorderChatUpstreams,
+		SetStatus:      cfgManager.SetChatChannelStatus,
+		SetPromotion:   cfgManager.SetChatChannelPromotion,
+		SetLoadBalance: cfgManager.SetChatLoadBalance,
+	}, sch)
+}
+
+// GetUpstreams 获取上游列表
 func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		cfg := cfgManager.GetConfig()
-
-		upstreams := make([]gin.H, 0, len(cfg.ChatUpstream))
-		for i, up := range cfg.ChatUpstream {
-			if config.GetChannelStatus(&up) == config.ChannelStatusDeleted {
-				continue
-			}
-			status := config.GetChannelStatus(&up)
-			priority := config.GetChannelPriority(&up, i)
-
-			upstreams = append(upstreams, gin.H{
-				"id":                      up.ID,
-				"poolId":                  up.PoolID,
-				"index":                   i,
-				"name":                    up.Name,
-				"serviceType":             up.ServiceType,
-				"baseUrl":                 up.BaseURL,
-				"baseUrls":                up.BaseURLs,
-				"apiKeys":                 up.APIKeys,
-				"description":             up.Description,
-				"website":                 up.Website,
-				"insecureSkipVerify":      up.InsecureSkipVerify,
-				"proxyMode":               up.ProxyMode,
-				"proxyUrl":                up.ProxyURL,
-				"modelMapping":            up.ModelMapping,
-				"defaultModel":            up.DefaultModel,
-				"latency":                 nil,
-				"status":                  status,
-				"priority":                priority,
-				"promotionUntil":          up.PromotionUntil,
-				"promotionCount":          up.PromotionCount,
-				"lowQuality":              up.LowQuality,
-				"visionCapable":           up.VisionCapable,
-				"excludeFromConversation": up.ExcludeFromConversation,
-				"disablePromptCacheKey":   up.DisablePromptCacheKey,
-				"visionLayerEnabled":      up.VisionLayerEnabled,
-				"visionLayerChannelId":    up.VisionLayerChannelID,
-				"visionLayerModel":        up.VisionLayerModel,
-			})
-		}
-
-		c.JSON(200, gin.H{
-			"channels":    upstreams,
-			"loadBalance": cfg.ChatLoadBalance,
-		})
-	}
+	return Crud(cfgManager, nil).GetUpstreams
 }
 
-// AddUpstream 添加 Chat 上游
+// AddUpstream 添加上游
 func AddUpstream(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var upstream config.UpstreamConfig
-		if err := c.ShouldBindJSON(&upstream); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-
-		created, err := cfgManager.AddChatUpstreamWithResult(upstream)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if config.IsConfigError(err) {
-				status = http.StatusBadRequest
-			}
-			c.JSON(status, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.JSON(200, gin.H{
-			"message": "Chat upstream added successfully",
-			"channel": gin.H{"id": created.ID, "index": created.Index},
-		})
-	}
+	return Crud(cfgManager, nil).AddUpstream
 }
 
-// UpdateUpstream 更新 Chat 上游
+// UpdateUpstream 更新上游
 func UpdateUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
-		if err != nil {
-			c.JSON(400, gin.H{"error": "Invalid upstream ID"})
-			return
-		}
-
-		var updates config.UpstreamUpdate
-		if err := c.ShouldBindJSON(&updates); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-
-		shouldResetMetrics, err := cfgManager.UpdateChatUpstream(id, updates)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if config.IsConfigError(err) {
-				status = http.StatusBadRequest
-			}
-			c.JSON(status, gin.H{"error": err.Error()})
-			return
-		}
-
-		if shouldResetMetrics {
-			sch.ResetChannelMetrics(id, scheduler.ChannelKindChat)
-		}
-
-		c.JSON(200, gin.H{"message": "Chat upstream updated successfully"})
-	}
+	return Crud(cfgManager, sch).UpdateUpstream
 }
 
-// DeleteUpstream 删除 Chat 上游
+// DeleteUpstream 删除上游
 func DeleteUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
-		if err != nil {
-			c.JSON(400, gin.H{"error": "Invalid upstream ID"})
-			return
-		}
-
-		removed, err := cfgManager.RemoveChatUpstream(id)
-		if err != nil {
-			if strings.Contains(err.Error(), "无效的") {
-				c.JSON(404, gin.H{"error": "Upstream not found"})
-			} else {
-				c.JSON(500, gin.H{"error": err.Error()})
-			}
-			return
-		}
-
-		sch.DeleteChannelMetrics(removed, scheduler.ChannelKindChat)
-		sch.GetTraceAffinityManager().RemoveByChannelForKind(string(scheduler.ChannelKindChat), id)
-		c.JSON(200, gin.H{"message": "Chat upstream deleted successfully"})
-	}
+	return Crud(cfgManager, sch).DeleteUpstream
 }
 
-// AddApiKey 添加 Chat 渠道 API 密钥
+// AddApiKey 添加 API 密钥
 func AddApiKey(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
-		if err != nil {
-			c.JSON(400, gin.H{"error": "Invalid upstream ID"})
-			return
-		}
-
-		var req struct {
-			APIKey string `json:"apiKey"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid request body"})
-			return
-		}
-
-		if err := cfgManager.AddChatAPIKey(id, req.APIKey); err != nil {
-			if strings.Contains(err.Error(), "无效的上游索引") {
-				c.JSON(404, gin.H{"error": "Upstream not found"})
-			} else if strings.Contains(err.Error(), "API密钥已存在") {
-				c.JSON(400, gin.H{"error": "API密钥已存在"})
-			} else {
-				c.JSON(500, gin.H{"error": "Failed to save config"})
-			}
-			return
-		}
-
-		c.JSON(200, gin.H{"message": "API密钥已添加", "success": true})
-	}
+	return Crud(cfgManager, nil).AddApiKey
 }
 
-// DeleteApiKey 删除 Chat 渠道 API 密钥
+// DeleteApiKey 删除 API 密钥
 func DeleteApiKey(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
-		if err != nil {
-			c.JSON(400, gin.H{"error": "Invalid upstream ID"})
-			return
-		}
-
-		apiKey := c.Param("apiKey")
-		if apiKey == "" {
-			c.JSON(400, gin.H{"error": "API key is required"})
-			return
-		}
-
-		if err := cfgManager.RemoveChatAPIKey(id, apiKey); err != nil {
-			if strings.Contains(err.Error(), "无效的上游索引") {
-				c.JSON(404, gin.H{"error": "Upstream not found"})
-			} else if strings.Contains(err.Error(), "API密钥不存在") {
-				c.JSON(404, gin.H{"error": "API key not found"})
-			} else {
-				c.JSON(500, gin.H{"error": "Failed to save config"})
-			}
-			return
-		}
-
-		c.JSON(200, gin.H{"message": "API密钥已删除"})
-	}
+	return Crud(cfgManager, nil).DeleteApiKey
 }
 
-// MoveApiKeyToTop 将 Chat 渠道 API 密钥移到最前面
+// MoveApiKeyToTop 将 API 密钥移到顶部
 func MoveApiKeyToTop(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id, _ := strconv.Atoi(c.Param("id"))
-		apiKey := c.Param("apiKey")
-
-		if err := cfgManager.MoveChatAPIKeyToTop(id, apiKey); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, gin.H{"message": "API密钥已置顶"})
-	}
+	return Crud(cfgManager, nil).MoveApiKeyToTop
 }
 
-// MoveApiKeyToBottom 将 Chat 渠道 API 密钥移到最后面
+// MoveApiKeyToBottom 将 API 密钥移到底部
 func MoveApiKeyToBottom(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id, _ := strconv.Atoi(c.Param("id"))
-		apiKey := c.Param("apiKey")
-
-		if err := cfgManager.MoveChatAPIKeyToBottom(id, apiKey); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, gin.H{"message": "API密钥已置底"})
-	}
+	return Crud(cfgManager, nil).MoveApiKeyToBottom
 }
 
-// ReorderChannels 重新排序 Chat 渠道优先级
+// ReorderChannels 重新排序渠道
 func ReorderChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req struct {
-			Order []int `json:"order"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid request body"})
-			return
-		}
-
-		if err := cfgManager.ReorderChatUpstreams(req.Order); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.JSON(200, gin.H{"success": true, "message": "Chat 渠道优先级已更新"})
-	}
+	return Crud(cfgManager, nil).ReorderChannels
 }
 
-// SetChannelStatus 设置 Chat 渠道状态
+// SetChannelStatus 设置渠道状态
 func SetChannelStatus(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
-		if err != nil {
-			c.JSON(400, gin.H{"error": "Invalid channel ID"})
-			return
-		}
-
-		var req struct {
-			Status string `json:"status"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid request body"})
-			return
-		}
-
-		if err := cfgManager.SetChatChannelStatus(id, req.Status); err != nil {
-			if strings.Contains(err.Error(), "无效的上游索引") {
-				c.JSON(404, gin.H{"error": "Channel not found"})
-			} else {
-				c.JSON(400, gin.H{"error": err.Error()})
-			}
-			return
-		}
-
-		c.JSON(200, gin.H{"success": true, "message": "Chat 渠道状态已更新", "status": req.Status})
-	}
+	return Crud(cfgManager, nil).SetChannelStatus
 }
 
-// SetChannelPromotion 设置 Chat 渠道促销期
+// SetChannelPromotion 设置渠道促销期
 func SetChannelPromotion(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
-		if err != nil {
-			c.JSON(400, gin.H{"error": "Invalid channel ID"})
-			return
-		}
-
-		var req struct {
-			Duration int `json:"duration"`
-			Count    int `json:"count"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid request body"})
-			return
-		}
-
-		if req.Duration <= 0 && req.Count <= 0 {
-			if err := cfgManager.SetChatChannelPromotion(id, 0, 0); err != nil {
-				c.JSON(400, gin.H{"error": err.Error()})
-				return
-			}
-			c.JSON(200, gin.H{"success": true, "message": "Chat 渠道促销期已清除"})
-			return
-		}
-
-		duration := time.Duration(req.Duration) * time.Second
-		if err := cfgManager.SetChatChannelPromotion(id, duration, req.Count); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.JSON(200, gin.H{"success": true, "message": "Chat 渠道促销期已设置", "duration": req.Duration, "count": req.Count})
-	}
+	return Crud(cfgManager, nil).SetChannelPromotion
 }
 
-// UpdateLoadBalance 更新 Chat 负载均衡策略
+// UpdateLoadBalance 更新负载均衡策略
 func UpdateLoadBalance(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req struct {
-			Strategy string `json:"strategy"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid request body"})
-			return
-		}
-
-		if err := cfgManager.SetChatLoadBalance(req.Strategy); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.JSON(200, gin.H{"success": true, "message": "Chat 负载均衡策略已更新", "strategy": req.Strategy})
-	}
+	return Crud(cfgManager, nil).UpdateLoadBalance
 }
 
-// PingChannel 测试 Chat 渠道连通性
+// PingChannel Ping 单个渠道
 func PingChannel(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid channel ID"})
-			return
-		}
-
-		cfg := cfgManager.GetConfig()
-		if id < 0 || id >= len(cfg.ChatUpstream) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Channel not found"})
-			return
-		}
-
-		channel := cfg.ChatUpstream[id]
-		result := pingChannelWithAPIKey(cfgManager, &channel)
-		c.JSON(http.StatusOK, result)
-	}
+	return Crud(cfgManager, nil).PingChannel
 }
 
-// pingChannelWithAPIKey 使用真实 API 请求测试渠道（验证 URL + API Key）
-func pingChannelWithAPIKey(cfgManager *config.ConfigManager, ch *config.UpstreamConfig) gin.H {
-	urls := ch.GetAllBaseURLs()
-	if len(urls) == 0 {
-		return gin.H{"success": false, "latency": 0, "status": "error", "error": "no_base_url"}
-	}
-
-	// 如果没有 API Key，回退到简单的连通性测试
-	if len(ch.APIKeys) == 0 {
-		return pingChannelURLs(cfgManager, ch)
-	}
-
-	// 使用第一个 API Key 测试（多 URL 并发，选最快的）
-	apiKey := ch.APIKeys[0]
-
-	type pingResult struct {
-		url     string
-		latency int64
-		success bool
-		err     string
-	}
-
-	results := make(chan pingResult, len(urls))
-	for _, baseURL := range urls {
-		go func(testURL string) {
-			startTime := time.Now()
-			testURL = strings.TrimSuffix(testURL, "/")
-
-			// 根据 ServiceType 构建测试端点
-			var endpoint string
-			switch ch.ServiceType {
-			case "claude":
-				endpoint = testURL + "/v1/models"
-			case "openai":
-				endpoint = testURL + "/v1/models"
-			default:
-				// 其他类型使用 /v1/models
-				endpoint = testURL + "/v1/models"
-			}
-
-			client, err := httpclient.GetManager().GetStandardClientForUpstream(10*time.Second, cfgManager, ch)
-			if err != nil {
-				results <- pingResult{url: testURL, latency: 0, success: false, err: err.Error()}
-				return
-			}
-			req, err := http.NewRequest("GET", endpoint, nil)
-			if err != nil {
-				results <- pingResult{url: testURL, latency: 0, success: false, err: "req_creation_failed"}
-				return
-			}
-
-			// 设置认证头
-			if strings.HasPrefix(apiKey, "sk-ant-") {
-				req.Header.Set("x-api-key", apiKey)
-			} else {
-				req.Header.Set("Authorization", "Bearer "+apiKey)
-			}
-			req.Header.Set("User-Agent", "claude-cli/2.0.34 (external, cli)")
-
-			resp, err := client.Do(req)
-			latency := time.Since(startTime).Milliseconds()
-			if err != nil {
-				results <- pingResult{url: testURL, latency: latency, success: false, err: err.Error()}
-				return
-			}
-			defer resp.Body.Close()
-
-			// 检查状态码（2xx 或 3xx 视为成功）
-			success := resp.StatusCode >= 200 && resp.StatusCode < 400
-			if !success {
-				results <- pingResult{url: testURL, latency: latency, success: false, err: fmt.Sprintf("status_%d", resp.StatusCode)}
-				return
-			}
-			results <- pingResult{url: testURL, latency: latency, success: true}
-		}(baseURL)
-	}
-
-	// 收集结果，找最快的成功响应
-	var bestResult *pingResult
-	for i := 0; i < len(urls); i++ {
-		r := <-results
-		if r.success {
-			if bestResult == nil || !bestResult.success || r.latency < bestResult.latency {
-				bestResult = &r
-			}
-		} else if bestResult == nil || !bestResult.success {
-			bestResult = &r
-		}
-	}
-
-	if bestResult == nil {
-		return gin.H{"success": false, "latency": 0, "status": "error", "error": "all_urls_failed"}
-	}
-
-	if bestResult.success {
-		return gin.H{"success": true, "latency": bestResult.latency, "status": "healthy"}
-	}
-	return gin.H{"success": false, "latency": bestResult.latency, "status": "error", "error": bestResult.err}
-}
-
-func pingChannelURLs(cfgManager *config.ConfigManager, ch *config.UpstreamConfig) gin.H {
-	urls := ch.GetAllBaseURLs()
-	if len(urls) == 0 {
-		return gin.H{"success": false, "latency": 0, "status": "error", "error": "no_base_url"}
-	}
-
-	type pingResult struct {
-		latency int64
-		success bool
-		err     string
-	}
-
-	results := make(chan pingResult, len(urls))
-	for _, url := range urls {
-		go func(testURL string) {
-			start := time.Now()
-			testURL = strings.TrimSuffix(testURL, "/")
-			client, err := httpclient.GetManager().GetStandardClientForUpstream(5*time.Second, cfgManager, ch)
-			if err != nil {
-				results <- pingResult{latency: 0, success: false, err: err.Error()}
-				return
-			}
-			req, err := http.NewRequest("HEAD", testURL, nil)
-			if err != nil {
-				results <- pingResult{latency: 0, success: false, err: "req_creation_failed"}
-				return
-			}
-			resp, err := client.Do(req)
-			latency := time.Since(start).Milliseconds()
-			if err != nil {
-				results <- pingResult{latency: latency, success: false, err: err.Error()}
-				return
-			}
-			resp.Body.Close()
-			results <- pingResult{latency: latency, success: true}
-		}(url)
-	}
-
-	var best *pingResult
-	for i := 0; i < len(urls); i++ {
-		r := <-results
-		if r.success {
-			if best == nil || !best.success || r.latency < best.latency {
-				best = &r
-			}
-		} else if best == nil || !best.success {
-			best = &r
-		}
-	}
-
-	if best == nil {
-		return gin.H{"success": false, "latency": 0, "status": "error", "error": "all_urls_failed"}
-	}
-	if best.success {
-		return gin.H{"success": true, "latency": best.latency, "status": "healthy"}
-	}
-	return gin.H{"success": false, "latency": best.latency, "status": "error", "error": best.err}
-}
-
-// PingAllChannels 测试所有 Chat 渠道连通性
+// PingAllChannels Ping 所有渠道
 func PingAllChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		cfg := cfgManager.GetConfig()
-		results := make(chan gin.H)
-		var wg sync.WaitGroup
-
-		for i, channel := range cfg.ChatUpstream {
-			wg.Add(1)
-			go func(id int, ch config.UpstreamConfig) {
-				defer wg.Done()
-				result := pingChannelWithAPIKey(cfgManager, &ch)
-				result["id"] = id
-				result["name"] = ch.Name
-				results <- result
-			}(i, channel)
-		}
-
-		go func() {
-			wg.Wait()
-			close(results)
-		}()
-
-		finalResults := []gin.H{}
-		for res := range results {
-			finalResults = append(finalResults, res)
-		}
-
-		c.JSON(http.StatusOK, finalResults)
-	}
+	return Crud(cfgManager, nil).PingAllChannels
 }
