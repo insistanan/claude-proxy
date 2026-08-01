@@ -92,7 +92,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useTheme } from 'vuetify'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
-import { api, type ChannelKeyMetricsHistoryResponse } from '../services/api'
+import { api, channelApiByType, type ChannelKeyMetricsHistoryResponse } from '../services/api'
 
 // Register apexchart component
 const apexchart = VueApexCharts
@@ -422,17 +422,7 @@ const refreshData = async () => {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    if (props.channelType === 'messages') {
-      keyHistoryData.value = await api.getChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
-    } else if (props.channelType === 'gemini') {
-      keyHistoryData.value = await api.getGeminiChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
-    } else if (props.channelType === 'chat') {
-      keyHistoryData.value = await api.getChatChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
-    } else if (props.channelType === 'images') {
-      keyHistoryData.value = await api.getImagesChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
-    } else {
-      keyHistoryData.value = await api.getResponsesChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
-    }
+    keyHistoryData.value = await channelApiByType(props.channelType).getChannelKeyMetricsHistory(props.channelIndex, selectedDuration.value)
   } catch (error) {
     console.error('Failed to fetch key metrics history:', error)
     errorMessage.value = error instanceof Error ? error.message : '获取历史数据失败'

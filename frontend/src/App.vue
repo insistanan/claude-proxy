@@ -421,7 +421,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from 'vuetify'
-import { api, fetchHealth, ApiError, testChannel, type Channel } from './services/api'
+import { api, fetchHealth, ApiError, testChannel, channelApiByType, type Channel } from './services/api'
 import { versionService } from './services/version'
 import { useAuthStore } from './stores/auth'
 import { useChannelStore } from './stores/channel'
@@ -602,15 +602,7 @@ const addApiKey = async () => {
   if (!dialogStore.newApiKey.trim()) return
 
   try {
-    if (channelStore.activeTab === 'gemini') {
-      await api.addGeminiApiKey(dialogStore.selectedChannelForKey, dialogStore.newApiKey.trim())
-    } else if (channelStore.activeTab === 'chat') {
-      await api.addChatApiKey(dialogStore.selectedChannelForKey, dialogStore.newApiKey.trim())
-    } else if (channelStore.activeTab === 'responses') {
-      await api.addResponsesApiKey(dialogStore.selectedChannelForKey, dialogStore.newApiKey.trim())
-    } else {
-      await api.addApiKey(dialogStore.selectedChannelForKey, dialogStore.newApiKey.trim())
-    }
+    await channelApiByType(channelStore.activeTab).addKey(dialogStore.selectedChannelForKey, dialogStore.newApiKey.trim())
     showToast('API密钥添加成功', 'success')
     dialogStore.closeAddKeyModal()
     await refreshChannels()
@@ -623,15 +615,7 @@ const _removeApiKey = async (channelId: number, apiKey: string) => {
   if (!confirm('确定要删除这个API密钥吗？')) return
 
   try {
-    if (channelStore.activeTab === 'gemini') {
-      await api.removeGeminiApiKey(channelId, apiKey)
-    } else if (channelStore.activeTab === 'chat') {
-      await api.removeChatApiKey(channelId, apiKey)
-    } else if (channelStore.activeTab === 'responses') {
-      await api.removeResponsesApiKey(channelId, apiKey)
-    } else {
-      await api.removeApiKey(channelId, apiKey)
-    }
+    await channelApiByType(channelStore.activeTab).removeKey(channelId, apiKey)
     showToast('API密钥删除成功', 'success')
     await refreshChannels()
   } catch (error) {
@@ -866,7 +850,7 @@ const autoAuthenticate = async () => {
   // 有保存的密钥，尝试自动认证
   try {
     // 尝试调用API验证密钥是否有效
-    await api.getChannels()
+    await channelApiByType('messages').getChannels()
 
     // 密钥有效，认证成功
     authStore.setAuthError('')
@@ -918,7 +902,7 @@ const handleAuthSubmit = async () => {
     setAuthKey(authStore.authKeyInput.trim())
 
     // 测试API调用以验证密钥
-    await api.getChannels()
+    await channelApiByType('messages').getChannels()
 
     // 认证成功，重置计数器
     authStore.resetAuthAttempts()

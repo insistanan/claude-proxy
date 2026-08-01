@@ -182,7 +182,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { api, fetchUpstreamModels, type Channel, type ManagedSkill, type RemoteSkillPreview, type SkillLocation, type SkillSearchResult } from '@/services/api'
+import { api, fetchUpstreamModels, channelApiByType, type Channel, type ManagedSkill, type RemoteSkillPreview, type SkillLocation, type SkillSearchResult } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 
 const PROXY_BASE = import.meta.env.PROD
@@ -297,7 +297,7 @@ const loadSkills = async () => {
     locations.value = data.locations
     skills.value = data.skills
     try {
-      const channels = await api.getChatChannels()
+      const channels = await channelApiByType('chat').getChannels()
       chatChannels.value = channels.channels.filter(channel => channel.status !== 'deleted')
     } catch (channelError) {
       chatChannels.value = []

@@ -799,7 +799,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
-import { api, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
+import { api, channelApiByType, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
 import ChannelPoolGrid from './ChannelPoolGrid.vue'
 import KeyTrendChart from './KeyTrendChart.vue'
@@ -1194,17 +1194,7 @@ const toggleVisionCapability = async (channel: Channel) => {
   const nextValue = !channel.visionCapable
 
   try {
-    if (props.channelType === 'gemini') {
-      await api.updateGeminiChannel(channel.index, { visionCapable: nextValue })
-    } else if (props.channelType === 'images') {
-      await api.updateImagesChannel(channel.index, { visionCapable: nextValue })
-    } else if (props.channelType === 'chat') {
-      await api.updateChatChannel(channel.index, { visionCapable: nextValue })
-    } else if (props.channelType === 'responses') {
-      await api.updateResponsesChannel(channel.index, { visionCapable: nextValue })
-    } else {
-      await api.updateChannel(channel.index, { visionCapable: nextValue })
-    }
+    await channelApiByType(props.channelType).updateChannel(channel.index, { visionCapable: nextValue })
 
     emit('refresh')
     emit('success', nextValue
@@ -1512,15 +1502,7 @@ const refreshMetrics = async () => {
   isLoadingMetrics.value = true
   try {
     const [metricsData, statsData] = await Promise.all([
-      props.channelType === 'gemini'
-        ? api.getGeminiChannelMetrics()
-        : props.channelType === 'images'
-          ? api.getImagesChannelMetrics()
-          : props.channelType === 'chat'
-            ? api.getChatChannelMetrics()
-            : props.channelType === 'responses'
-              ? api.getResponsesChannelMetrics()
-              : api.getChannelMetrics(),
+      channelApiByType(props.channelType).getChannelMetrics(),
       api.getSchedulerStats(props.channelType)
     ])
     metrics.value = metricsData
@@ -1546,17 +1528,7 @@ const duplicateChannel = async (channelIndex: number) => {
 // 设置渠道状态
 const setChannelStatus = async (channelId: number, status: ChannelStatus) => {
   try {
-    if (props.channelType === 'gemini') {
-      await api.setGeminiChannelStatus(channelId, status)
-    } else if (props.channelType === 'images') {
-      await api.setImagesChannelStatus(channelId, status)
-    } else if (props.channelType === 'chat') {
-      await api.setChatChannelStatus(channelId, status)
-    } else if (props.channelType === 'responses') {
-      await api.setResponsesChannelStatus(channelId, status)
-    } else {
-      await api.setChannelStatus(channelId, status)
-    }
+    await channelApiByType(props.channelType).setStatus(channelId, status)
     emit('refresh')
   } catch (error) {
     console.error('Failed to set channel status:', error)
@@ -1573,17 +1545,7 @@ const enableChannel = async (channelId: number) => {
 // 恢复渠道（重置指标并设为 active）
 const resumeChannel = async (channelId: number) => {
   try {
-    if (props.channelType === 'gemini') {
-      await api.resumeGeminiChannel(channelId)
-    } else if (props.channelType === 'images') {
-      await api.resumeImagesChannel(channelId)
-    } else if (props.channelType === 'chat') {
-      await api.resumeChatChannel(channelId)
-    } else if (props.channelType === 'responses') {
-      await api.resumeResponsesChannel(channelId)
-    } else {
-      await api.resumeChannel(channelId)
-    }
+    await channelApiByType(props.channelType).resumeChannel(channelId)
     await setChannelStatus(channelId, 'active')
   } catch (error) {
     console.error('Failed to resume channel:', error)
@@ -1783,31 +1745,11 @@ const confirmPromotion = async () => {
 
   try {
     if (channel.status === 'suspended') {
-      if (props.channelType === 'gemini') {
-        await api.resumeGeminiChannel(channel.index)
-      } else if (props.channelType === 'images') {
-        await api.resumeImagesChannel(channel.index)
-      } else if (props.channelType === 'chat') {
-        await api.resumeChatChannel(channel.index)
-      } else if (props.channelType === 'responses') {
-        await api.resumeResponsesChannel(channel.index)
-      } else {
-        await api.resumeChannel(channel.index)
-      }
+      await channelApiByType(props.channelType).resumeChannel(channel.index)
       await setChannelStatus(channel.index, 'active')
     }
 
-    if (props.channelType === 'gemini') {
-      await api.setGeminiChannelPromotion(channel.index, durationSeconds, count)
-    } else if (props.channelType === 'images') {
-      await api.setImagesChannelPromotion(channel.index, durationSeconds, count)
-    } else if (props.channelType === 'chat') {
-      await api.setChatChannelPromotion(channel.index, durationSeconds, count)
-    } else if (props.channelType === 'responses') {
-      await api.setResponsesChannelPromotion(channel.index, durationSeconds, count)
-    } else {
-      await api.setChannelPromotion(channel.index, durationSeconds, count)
-    }
+    await channelApiByType(props.channelType).setPromotion(channel.index, durationSeconds, count)
     emit('refresh')
     const durationText = durationMinutes > 0 ? `${durationMinutes}分钟内` : ''
     const countText = count > 0 ? `${count}次请求内` : ''

@@ -547,6 +547,41 @@ export interface UpstreamModelsRequest {
 }
 
 class ApiService {
+  /**
+   * 返回指定渠道类型的统一 API 方法集（前端渠道管理收敛核心）。
+   * 收敛前 getChannels/getResponsesChannels/... 五组命名方法各实现一遍，仅 URL 前缀不同；
+   * 现在按 ApiTab 查表，一份实现覆盖五种渠道。
+   */
+  channelApi(type: ApiTab): ChannelApi {
+    const p = `/${type}`
+    return {
+      getChannels: () => this.request(`${p}/channels`),
+      addChannel: (channel) => this.request(`${p}/channels`, { method: 'POST', body: JSON.stringify(channel) }),
+      updateChannel: (id, channel) => this.request(`${p}/channels/${id}`, { method: 'PUT', body: JSON.stringify(channel) }),
+      deleteChannel: (id) => this.request(`${p}/channels/${id}`, { method: 'DELETE' }),
+      addKey: (channelId, apiKey) => this.request(`${p}/channels/${channelId}/keys`, { method: 'POST', body: JSON.stringify({ apiKey }) }),
+      removeKey: (channelId, apiKey) => this.request(`${p}/channels/${channelId}/keys/${encodeURIComponent(apiKey)}`, { method: 'DELETE' }),
+      moveKeyToTop: (channelId, apiKey) => this.request(`${p}/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/top`, { method: 'POST' }),
+      moveKeyToBottom: (channelId, apiKey) => this.request(`${p}/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/bottom`, { method: 'POST' }),
+      reorder: (order) => this.request(`${p}/channels/reorder`, { method: 'POST', body: JSON.stringify({ order }) }),
+      setStatus: (channelId, status) => this.request(`${p}/channels/${channelId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+      setPromotion: (channelId, durationSeconds, count) => {
+        const duration = this.normalizePromotionValue(durationSeconds)
+        const normalizedCount = this.normalizePromotionValue(count)
+        return this.request(`${p}/channels/${channelId}/promotion`, { method: 'POST', body: JSON.stringify({ duration, count: normalizedCount }) })
+      },
+      pingChannel: (id) => this.request(`${p}/ping/${id}`),
+      pingAllChannels: () => this.request(`${p}/ping`),
+      updateLoadBalance: (strategy) => this.request(`${p}/loadbalance`, { method: 'PUT', body: JSON.stringify({ strategy }) }),
+      resumeChannel: (channelId) => this.request(`${p}/channels/${channelId}/resume`, { method: 'POST' }),
+      getChannelMetrics: () => this.request(`${p}/channels/metrics`),
+      getChannelMetricsHistory: (duration = '24h') => this.request(`${p}/channels/metrics/history?duration=${duration}`),
+      getChannelKeyMetricsHistory: (channelId, duration = '6h') => this.request(`${p}/channels/${channelId}/keys/metrics/history?duration=${duration}`),
+      getGlobalStats: (duration = '24h') => this.request(`${p}/global/stats/history?duration=${duration}`),
+      getChannelDashboard: () => this.request(`${p}/channels/dashboard`),
+    }
+  }
+
   // 获取当前 API Key（从 AuthStore）
   private getApiKey(): string | null {
     const authStore = useAuthStore()
@@ -622,9 +657,6 @@ class ApiService {
     return this.parseResponseBody(response)
   }
 
-  async getChannels(): Promise<ChannelsResponse> {
-    return this.request('/messages/channels')
-  }
 
   async getChannelPools(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'): Promise<{ pools: ChannelPool[] }> {
     return this.request(`/${type}/pools`)
@@ -646,199 +678,43 @@ class ApiService {
     await this.request(`/${type}/pools/layout`, { method: 'PUT', body: JSON.stringify({ pools }) })
   }
 
-  async addChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
-    return this.request('/messages/channels', {
-      method: 'POST',
-      body: JSON.stringify(channel)
-    })
-  }
 
-  async updateChannel(id: number, channel: Partial<Channel>): Promise<void> {
-    await this.request(`/messages/channels/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(channel)
-    })
-  }
 
-  async deleteChannel(id: number): Promise<void> {
-    await this.request(`/messages/channels/${id}`, {
-      method: 'DELETE'
-    })
-  }
 
-  async addApiKey(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/messages/channels/${channelId}/keys`, {
-      method: 'POST',
-      body: JSON.stringify({ apiKey })
-    })
-  }
 
-  async removeApiKey(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/messages/channels/${channelId}/keys/${encodeURIComponent(apiKey)}`, {
-      method: 'DELETE'
-    })
-  }
 
-  async pingChannel(id: number): Promise<PingResult> {
-    return this.request(`/messages/ping/${id}`)
-  }
 
-  async pingAllChannels(): Promise<Array<{ id: number; name: string; latency: number; status: string }>> {
-    return this.request('/messages/ping')
-  }
 
-  async pingResponsesChannel(id: number): Promise<PingResult> {
-    return this.request(`/responses/ping/${id}`)
-  }
 
-  async pingAllResponsesChannels(): Promise<Array<{ id: number; name: string; latency: number; status: string }>> {
-    return this.request('/responses/ping')
-  }
 
-  async updateLoadBalance(strategy: string): Promise<void> {
-    await this.request('/loadbalance', {
-      method: 'PUT',
-      body: JSON.stringify({ strategy })
-    })
-  }
 
-  async updateResponsesLoadBalance(strategy: string): Promise<void> {
-    await this.request('/responses/loadbalance', {
-      method: 'PUT',
-      body: JSON.stringify({ strategy })
-    })
-  }
 
-  async updateChatLoadBalance(strategy: string): Promise<void> {
-    await this.request('/chat/loadbalance', {
-      method: 'PUT',
-      body: JSON.stringify({ strategy })
-    })
-  }
 
   // ============== Responses 渠道管理 API ==============
 
-  async getResponsesChannels(): Promise<ChannelsResponse> {
-    return this.request('/responses/channels')
-  }
 
-  async addResponsesChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
-    return this.request('/responses/channels', {
-      method: 'POST',
-      body: JSON.stringify(channel)
-    })
-  }
 
-  async updateResponsesChannel(id: number, channel: Partial<Channel>): Promise<void> {
-    await this.request(`/responses/channels/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(channel)
-    })
-  }
 
-  async deleteResponsesChannel(id: number): Promise<void> {
-    await this.request(`/responses/channels/${id}`, {
-      method: 'DELETE'
-    })
-  }
 
-  async addResponsesApiKey(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/responses/channels/${channelId}/keys`, {
-      method: 'POST',
-      body: JSON.stringify({ apiKey })
-    })
-  }
 
-  async removeResponsesApiKey(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/responses/channels/${channelId}/keys/${encodeURIComponent(apiKey)}`, {
-      method: 'DELETE'
-    })
-  }
 
   // ============== Chat 渠道管理 API ==============
 
-  async getChatChannels(): Promise<ChannelsResponse> {
-    return this.request('/chat/channels')
-  }
 
-  async addChatChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
-    return this.request('/chat/channels', {
-      method: 'POST',
-      body: JSON.stringify(channel)
-    })
-  }
 
-  async updateChatChannel(id: number, channel: Partial<Channel>): Promise<void> {
-    await this.request(`/chat/channels/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(channel)
-    })
-  }
 
-  async deleteChatChannel(id: number): Promise<void> {
-    await this.request(`/chat/channels/${id}`, {
-      method: 'DELETE'
-    })
-  }
 
-  async addChatApiKey(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/chat/channels/${channelId}/keys`, {
-      method: 'POST',
-      body: JSON.stringify({ apiKey })
-    })
-  }
 
-  async removeChatApiKey(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/chat/channels/${channelId}/keys/${encodeURIComponent(apiKey)}`, {
-      method: 'DELETE'
-    })
-  }
 
-  async moveApiKeyToTop(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/messages/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/top`, {
-      method: 'POST'
-    })
-  }
 
-  async moveApiKeyToBottom(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/messages/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/bottom`, {
-      method: 'POST'
-    })
-  }
 
-  async moveResponsesApiKeyToTop(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/responses/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/top`, {
-      method: 'POST'
-    })
-  }
 
-  async moveResponsesApiKeyToBottom(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/responses/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/bottom`, {
-      method: 'POST'
-    })
-  }
 
-  async moveChatApiKeyToTop(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/chat/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/top`, {
-      method: 'POST'
-    })
-  }
 
-  async moveChatApiKeyToBottom(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/chat/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/bottom`, {
-      method: 'POST'
-    })
-  }
 
   // ============== 多渠道调度 API ==============
 
   // 重新排序渠道优先级
-  async reorderChannels(order: number[]): Promise<void> {
-    await this.request('/messages/channels/reorder', {
-      method: 'POST',
-      body: JSON.stringify({ order })
-    })
-  }
 
   async duplicateChannel(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', channelId: number): Promise<void> {
     await this.request(`/${type}/channels/${channelId}/duplicate`, {
@@ -853,19 +729,8 @@ class ApiService {
   }
 
   // 设置渠道状态
-  async setChannelStatus(channelId: number, status: ChannelStatus): Promise<void> {
-    await this.request(`/messages/channels/${channelId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status })
-    })
-  }
 
   // 恢复熔断渠道（重置错误计数）
-  async resumeChannel(channelId: number): Promise<void> {
-    await this.request(`/messages/channels/${channelId}/resume`, {
-      method: 'POST'
-    })
-  }
 
   // 获取渠道指标
   async getChannelMetrics(): Promise<ChannelMetrics[]> {
@@ -887,75 +752,24 @@ class ApiService {
 
   // 获取渠道仪表盘数据（合并 channels + metrics + stats）
   async getChannelDashboard(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images' = 'messages'): Promise<ChannelDashboardResponse> {
-    // Gemini 使用降级实现：组合 getChannels + getMetrics
-    if (type === 'gemini') {
-      return this.getGeminiChannelDashboard()
-    }
-    if (type === 'chat') {
-      return this.getChatChannelDashboard()
-    }
-    if (type === 'images') {
-      return this.getImagesChannelDashboard()
-    }
-    const query = type === 'responses' ? '?type=responses' : ''
-    return this.request(`/messages/channels/dashboard${query}`)
+    return this.request(`/${type}/channels/dashboard`)
   }
 
   // ============== Responses 多渠道调度 API ==============
 
   // 重新排序 Responses 渠道优先级
-  async reorderResponsesChannels(order: number[]): Promise<void> {
-    await this.request('/responses/channels/reorder', {
-      method: 'POST',
-      body: JSON.stringify({ order })
-    })
-  }
 
   // 设置 Responses 渠道状态
-  async setResponsesChannelStatus(channelId: number, status: ChannelStatus): Promise<void> {
-    await this.request(`/responses/channels/${channelId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status })
-    })
-  }
 
   // 恢复 Responses 熔断渠道
-  async resumeResponsesChannel(channelId: number): Promise<void> {
-    await this.request(`/responses/channels/${channelId}/resume`, {
-      method: 'POST'
-    })
-  }
 
   // 获取 Responses 渠道指标
-  async getResponsesChannelMetrics(): Promise<ChannelMetrics[]> {
-    return this.request('/responses/channels/metrics')
-  }
 
   // ============== Chat 多渠道调度 API ==============
 
-  async reorderChatChannels(order: number[]): Promise<void> {
-    await this.request('/chat/channels/reorder', {
-      method: 'POST',
-      body: JSON.stringify({ order })
-    })
-  }
 
-  async setChatChannelStatus(channelId: number, status: ChannelStatus): Promise<void> {
-    await this.request(`/chat/channels/${channelId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status })
-    })
-  }
 
-  async resumeChatChannel(channelId: number): Promise<void> {
-    await this.request(`/chat/channels/${channelId}/resume`, {
-      method: 'POST'
-    })
-  }
 
-  async getChatChannelMetrics(): Promise<ChannelMetrics[]> {
-    return this.request('/chat/channels/metrics')
-  }
 
   async getChannelLogs(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', channelId: number): Promise<ChannelLogsResponse> {
     return this.request(`/${type}/channels/${channelId}/logs`)
@@ -1020,37 +834,10 @@ class ApiService {
   // ============== 促销期管理 API ==============
 
   // 设置 Messages 渠道促销期
-  async setChannelPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void> {
-    const duration = this.normalizePromotionValue(durationSeconds)
-    const normalizedCount = this.normalizePromotionValue(count)
-
-    await this.request(`/messages/channels/${channelId}/promotion`, {
-      method: 'POST',
-      body: JSON.stringify({ duration, count: normalizedCount })
-    })
-  }
 
   // 设置 Responses 渠道促销期
-  async setResponsesChannelPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void> {
-    const duration = this.normalizePromotionValue(durationSeconds)
-    const normalizedCount = this.normalizePromotionValue(count)
-
-    await this.request(`/responses/channels/${channelId}/promotion`, {
-      method: 'POST',
-      body: JSON.stringify({ duration, count: normalizedCount })
-    })
-  }
 
   // 设置 Chat 渠道促销期
-  async setChatChannelPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void> {
-    const duration = this.normalizePromotionValue(durationSeconds)
-    const normalizedCount = this.normalizePromotionValue(count)
-
-    await this.request(`/chat/channels/${channelId}/promotion`, {
-      method: 'POST',
-      body: JSON.stringify({ duration, count: normalizedCount })
-    })
-  }
 
   // ============== Fuzzy 模式 API ==============
 
@@ -1185,14 +972,8 @@ class ApiService {
   }
 
   // 获取 Responses 渠道历史指标
-  async getResponsesChannelMetricsHistory(duration: '1h' | '6h' | '24h' = '24h'): Promise<MetricsHistoryResponse[]> {
-    return this.request(`/responses/channels/metrics/history?duration=${duration}`)
-  }
 
   // 获取 Chat 渠道历史指标
-  async getChatChannelMetricsHistory(duration: '1h' | '6h' | '24h' = '24h'): Promise<MetricsHistoryResponse[]> {
-    return this.request(`/chat/channels/metrics/history?duration=${duration}`)
-  }
 
   // ============== Key 级别历史指标 API ==============
 
@@ -1202,14 +983,8 @@ class ApiService {
   }
 
   // 获取 Responses 渠道 Key 级别历史指标
-  async getResponsesChannelKeyMetricsHistory(channelId: number, duration: '1h' | '6h' | '24h' | 'today' = '6h'): Promise<ChannelKeyMetricsHistoryResponse> {
-    return this.request(`/responses/channels/${channelId}/keys/metrics/history?duration=${duration}`)
-  }
 
   // 获取 Chat 渠道 Key 级别历史指标
-  async getChatChannelKeyMetricsHistory(channelId: number, duration: '1h' | '6h' | '24h' | 'today' = '6h'): Promise<ChannelKeyMetricsHistoryResponse> {
-    return this.request(`/chat/channels/${channelId}/keys/metrics/history?duration=${duration}`)
-  }
 
   // ============== 全局统计 API ==============
 
@@ -1219,14 +994,8 @@ class ApiService {
   }
 
   // 获取 Responses 全局统计历史
-  async getResponsesGlobalStats(duration: '1h' | '6h' | '24h' | 'today' = '24h'): Promise<GlobalStatsHistoryResponse> {
-    return this.request(`/responses/global/stats/history?duration=${duration}`)
-  }
 
   // 获取 Chat 全局统计历史
-  async getChatGlobalStats(duration: '1h' | '6h' | '24h' | 'today' = '24h'): Promise<GlobalStatsHistoryResponse> {
-    return this.request(`/chat/global/stats/history?duration=${duration}`)
-  }
 
   // 获取 Images 全局统计历史
   async getImagesGlobalStats(duration: '1h' | '6h' | '24h' | 'today' = '24h'): Promise<GlobalStatsHistoryResponse> {
@@ -1235,229 +1004,54 @@ class ApiService {
 
   // ============== Gemini 渠道管理 API ==============
 
-  async getGeminiChannels(): Promise<ChannelsResponse> {
-    return this.request('/gemini/channels')
-  }
 
-  async addGeminiChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
-    return this.request('/gemini/channels', {
-      method: 'POST',
-      body: JSON.stringify(channel)
-    })
-  }
 
-  async updateGeminiChannel(id: number, channel: Partial<Channel>): Promise<void> {
-    await this.request(`/gemini/channels/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(channel)
-    })
-  }
 
-  async deleteGeminiChannel(id: number): Promise<void> {
-    await this.request(`/gemini/channels/${id}`, {
-      method: 'DELETE'
-    })
-  }
 
-  async addGeminiApiKey(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/gemini/channels/${channelId}/keys`, {
-      method: 'POST',
-      body: JSON.stringify({ apiKey })
-    })
-  }
 
-  async removeGeminiApiKey(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/gemini/channels/${channelId}/keys/${encodeURIComponent(apiKey)}`, {
-      method: 'DELETE'
-    })
-  }
 
-  async moveGeminiApiKeyToTop(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/gemini/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/top`, {
-      method: 'POST'
-    })
-  }
 
-  async moveGeminiApiKeyToBottom(channelId: number, apiKey: string): Promise<void> {
-    await this.request(`/gemini/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/bottom`, {
-      method: 'POST'
-    })
-  }
 
   // ============== Gemini 多渠道调度 API ==============
 
-  async reorderGeminiChannels(order: number[]): Promise<void> {
-    await this.request('/gemini/channels/reorder', {
-      method: 'POST',
-      body: JSON.stringify({ order })
-    })
-  }
 
-  async setGeminiChannelStatus(channelId: number, status: ChannelStatus): Promise<void> {
-    await this.request(`/gemini/channels/${channelId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status })
-    })
-  }
 
   // Gemini 恢复渠道（降级实现：后端未实现 resume 端点，直接设置状态为 active）
-  async resumeGeminiChannel(channelId: number): Promise<void> {
-    await this.setGeminiChannelStatus(channelId, 'active')
-  }
 
-  async getGeminiChannelMetrics(): Promise<ChannelMetrics[]> {
-    return this.request('/gemini/channels/metrics')
-  }
 
-  async setGeminiChannelPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void> {
-    const duration = this.normalizePromotionValue(durationSeconds)
-    const normalizedCount = this.normalizePromotionValue(count)
 
-    await this.request(`/gemini/channels/${channelId}/promotion`, {
-      method: 'POST',
-      body: JSON.stringify({ duration, count: normalizedCount })
-    })
-  }
-
-  async updateGeminiLoadBalance(strategy: string): Promise<void> {
-    await this.request('/gemini/loadbalance', {
-      method: 'PUT',
-      body: JSON.stringify({ strategy })
-    })
-  }
 
   // ============== Gemini 历史指标 API ==============
 
   // 获取 Gemini 渠道历史指标
-  async getGeminiChannelMetricsHistory(duration: '1h' | '6h' | '24h' = '24h'): Promise<MetricsHistoryResponse[]> {
-    return this.request(`/gemini/channels/metrics/history?duration=${duration}`)
-  }
 
   // 获取 Gemini 渠道 Key 级别历史指标
-  async getGeminiChannelKeyMetricsHistory(channelId: number, duration: '1h' | '6h' | '24h' | 'today' = '6h'): Promise<ChannelKeyMetricsHistoryResponse> {
-    return this.request(`/gemini/channels/${channelId}/keys/metrics/history?duration=${duration}`)
-  }
 
   // 获取 Gemini 全局统计历史
-  async getGeminiGlobalStats(duration: '1h' | '6h' | '24h' | 'today' = '24h'): Promise<GlobalStatsHistoryResponse> {
-    return this.request(`/gemini/global/stats/history?duration=${duration}`)
-  }
 
-  async pingGeminiChannel(id: number): Promise<PingResult> {
-    return this.request(`/gemini/ping/${id}`)
-  }
 
-  async pingAllGeminiChannels(): Promise<Array<{ id: number; name: string; latency: number; status: string }>> {
-    const resp = await this.request('/gemini/ping')
-    // 后端返回 { channels: [...] }，需要提取并转换字段名
-    return (resp.channels || []).map((ch: { index: number; name: string; latency: number; success: boolean }) => ({
-      id: ch.index,
-      name: ch.name,
-      latency: ch.latency,
-      status: ch.success ? 'healthy' : 'error'
-    }))
-  }
 
   // Gemini Dashboard（使用后端统一接口）
-  async getGeminiChannelDashboard(): Promise<ChannelDashboardResponse> {
-    return this.request('/gemini/channels/dashboard')
-  }
 
-  async pingChatChannel(id: number): Promise<PingResult> {
-    return this.request(`/chat/ping/${id}`)
-  }
 
-  async pingAllChatChannels(): Promise<Array<{ id: number; name: string; latency: number; status: string }>> {
-    return this.request('/chat/ping')
-  }
 
-  async getChatChannelDashboard(): Promise<ChannelDashboardResponse> {
-    return this.request('/chat/channels/dashboard')
-  }
 
   // ===== Images API =====
 
-  async getImagesChannels(): Promise<ChannelsResponse> {
-    return this.request('/images/channels')
-  }
 
-  async addImagesChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse> {
-    return this.request('/images/channels', {
-      method: 'POST',
-      body: JSON.stringify(channel),
-    })
-  }
 
-  async updateImagesChannel(id: number, channel: Partial<Channel>): Promise<void> {
-    return this.request(`/images/channels/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(channel),
-    })
-  }
 
-  async deleteImagesChannel(id: number): Promise<void> {
-    return this.request(`/images/channels/${id}`, {
-      method: 'DELETE',
-    })
-  }
 
-  async reorderImagesChannels(order: number[]): Promise<void> {
-    return this.request('/images/channels/reorder', {
-      method: 'POST',
-      body: JSON.stringify({ order }),
-    })
-  }
 
-  async updateImagesLoadBalance(strategy: string): Promise<void> {
-    return this.request('/images/loadbalance', {
-      method: 'PUT',
-      body: JSON.stringify({ strategy }),
-    })
-  }
 
-  async setImagesChannelPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void> {
-    return this.request(`/images/channels/${channelId}/promotion`, {
-      method: 'POST',
-      body: JSON.stringify({ duration: durationSeconds, count: count ?? 0 }),
-    })
-  }
 
-  async setImagesChannelStatus(channelId: number, status: ChannelStatus): Promise<void> {
-    await this.request(`/images/channels/${channelId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status })
-    })
-  }
 
-  async resumeImagesChannel(channelId: number): Promise<void> {
-    await this.request(`/images/channels/${channelId}/resume`, {
-      method: 'POST'
-    })
-  }
 
-  async getImagesChannelMetrics(): Promise<ChannelMetrics[]> {
-    return this.request('/images/channels/metrics')
-  }
 
-  async getImagesChannelMetricsHistory(duration: '1h' | '6h' | '24h' = '24h'): Promise<MetricsHistoryResponse[]> {
-    return this.request(`/images/channels/metrics/history?duration=${duration}`)
-  }
 
-  async getImagesChannelKeyMetricsHistory(channelId: number, duration: '1h' | '6h' | '24h' | 'today' = '6h'): Promise<ChannelKeyMetricsHistoryResponse> {
-    return this.request(`/images/channels/${channelId}/keys/metrics/history?duration=${duration}`)
-  }
 
-  async pingImagesChannel(id: number): Promise<PingResult> {
-    return this.request(`/images/ping/${id}`)
-  }
 
-  async pingAllImagesChannels(): Promise<Array<{ id: number; name: string; latency: number; status: string }>> {
-    return this.request('/images/ping')
-  }
 
-  async getImagesChannelDashboard(): Promise<ChannelDashboardResponse> {
-    return this.request('/images/channels/dashboard')
-  }
 }
 
 // 健康检查响应类型
@@ -1499,6 +1093,47 @@ export function fetchUpstreamModels(
     serviceType,
     ...options
   })
+}
+
+/**
+ * 渠道 API 类型（对应后端 scheduler.ChannelKind 与路由前缀）
+ */
+export type ApiTab = 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
+
+/**
+ * 某一种渠道类型的统一 API 方法集。
+ * 收敛前：getChannels / getResponsesChannels / getChatChannels / getGeminiChannels / getImagesChannels
+ * 五组命名方法各自实现一遍 CRUD，仅 URL 前缀不同。工厂按 ApiTab 查表，一份实现覆盖五种渠道。
+ */
+export interface ChannelApi {
+  getChannels(): Promise<ChannelsResponse>
+  addChannel(channel: Omit<Channel, 'id' | 'index' | 'latency' | 'status'>): Promise<CreatedChannelResponse>
+  updateChannel(id: number, channel: Partial<Channel>): Promise<void>
+  deleteChannel(id: number): Promise<void>
+  addKey(channelId: number, apiKey: string): Promise<void>
+  removeKey(channelId: number, apiKey: string): Promise<void>
+  moveKeyToTop(channelId: number, apiKey: string): Promise<void>
+  moveKeyToBottom(channelId: number, apiKey: string): Promise<void>
+  reorder(order: number[]): Promise<void>
+  setStatus(channelId: number, status: ChannelStatus): Promise<void>
+  setPromotion(channelId: number, durationSeconds: number, count?: number): Promise<void>
+  pingChannel(id: number): Promise<PingResult>
+  pingAllChannels(): Promise<Array<{ id: number; name: string; latency: number; status: string }>>
+  updateLoadBalance(strategy: string): Promise<void>
+  resumeChannel(channelId: number): Promise<void>
+  getChannelMetrics(): Promise<ChannelMetrics[]>
+  getChannelMetricsHistory(duration?: '1h' | '6h' | '24h'): Promise<MetricsHistoryResponse[]>
+  getChannelKeyMetricsHistory(channelId: number, duration?: '1h' | '6h' | '24h' | 'today'): Promise<ChannelKeyMetricsHistoryResponse>
+  getGlobalStats(duration?: '1h' | '6h' | '24h' | 'today'): Promise<GlobalStatsHistoryResponse>
+  getChannelDashboard(): Promise<ChannelDashboardResponse>
+}
+
+/**
+ * 返回指定渠道类型的统一 API 方法集。
+ * 这是前端渠道管理收敛的核心：store/组件按 ApiTab 取用，不再散落 5 组命名方法。
+ */
+export function channelApiByType(type: ApiTab): ChannelApi {
+  return api.channelApi(type)
 }
 
 const handleImagesTestResponse = async (response: Response, onChunk: (_chunk: string) => void): Promise<void> => {

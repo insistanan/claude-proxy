@@ -71,7 +71,8 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTheme } from 'vuetify'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
-import { api, type ChannelKeyMetricsHistoryResponse } from '../services/api'
+import { api, channelApiByType, type ChannelKeyMetricsHistoryResponse } from '../services/api'
+import { useAutoRefresh } from '../composables/useAutoRefresh'
 
 // Register apexchart component
 const apexchart = VueApexCharts
@@ -145,26 +146,12 @@ const chartRef = ref<InstanceType<typeof VueApexCharts> | null>(null)
 // request id for refreshData
 let refreshRequestId = 0
 
-// Auto refresh timer (2 seconds interval, same as global refresh)
-const AUTO_REFRESH_INTERVAL = 2000
-let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
-
-const startAutoRefresh = () => {
-  stopAutoRefresh()
-  autoRefreshTimer = setInterval(() => {
-    // Skip if already refreshing to prevent concurrent requests / stale overwrites
-    if (!isRefreshing.value) {
-      refreshData(true) // true = auto refresh, use updateSeries
-    }
-  }, AUTO_REFRESH_INTERVAL)
-}
-
-const stopAutoRefresh = () => {
-  if (autoRefreshTimer) {
-    clearInterval(autoRefreshTimer)
-    autoRefreshTimer = null
-  }
-}
+// Auto refresh timer (2 seconds interval) — 收敛自 GlobalStatsChart 的重复定时器逻辑
+const { start: startAutoRefresh, stop: stopAutoRefresh } = useAutoRefresh(
+  () => refreshData(true), // true = auto refresh, use updateSeries
+  isRefreshing,
+  2000,
+)
 
 // Key colors - 支持最多 10 个 key
 const keyColors = [
@@ -817,18 +804,7 @@ const refreshData = async (isAutoRefresh = false) => {
   }
   errorMessage.value = ''
   try {
-    let newData: ChannelKeyMetricsHistoryResponse
-    if (props.channelType === 'responses') {
-      newData = await api.getResponsesChannelKeyMetricsHistory(props.channelId, selectedDuration.value)
-    } else if (props.channelType === 'gemini') {
-      newData = await api.getGeminiChannelKeyMetricsHistory(props.channelId, selectedDuration.value)
-    } else if (props.channelType === 'chat') {
-      newData = await api.getChatChannelKeyMetricsHistory(props.channelId, selectedDuration.value)
-    } else if (props.channelType === 'images') {
-      newData = await api.getImagesChannelKeyMetricsHistory(props.channelId, selectedDuration.value)
-    } else {
-      newData = await api.getChannelKeyMetricsHistory(props.channelId, selectedDuration.value)
-    }
+    const newData: ChannelKeyMetricsHistoryResponse = await channelApiByType(props.channelType).getChannelKeyMetricsHistory(props.channelId, selectedDuration.value)
 
     // Ignore stale response
     if (requestId !== refreshRequestId) return

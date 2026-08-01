@@ -851,7 +851,7 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTheme } from 'vuetify'
 import type { Channel, ChannelPool, ChannelStatus } from '../services/api'
-import { api, fetchUpstreamModels, ApiError } from '../services/api'
+import { api, fetchUpstreamModels, channelApiByType, ApiError } from '../services/api'
 import {
   isValidApiKey as _isValidApiKey,
   isValidUrl as _isValidQuickInputUrl,
@@ -1606,15 +1606,7 @@ const visionLayerChannelError = computed(() => {
 const loadVisionChannels = async () => {
   visionChannelsLoading.value = true
   try {
-    const response = props.channelType === 'gemini'
-      ? await api.getGeminiChannels()
-      : props.channelType === 'responses'
-        ? await api.getResponsesChannels()
-      : props.channelType === 'chat'
-        ? await api.getChatChannels()
-        : props.channelType === 'images'
-          ? await api.getImagesChannels()
-        : await api.getChannels()
+    const response = await channelApiByType(props.channelType).getChannels()
     visionChannels.value = response.channels || []
   } catch (error) {
     console.error('加载图片理解渠道失败:', error)

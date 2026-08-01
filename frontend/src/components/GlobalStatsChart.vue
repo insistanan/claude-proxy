@@ -95,10 +95,11 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { useAutoRefresh } from '@/composables/useAutoRefresh'
 import { useTheme } from 'vuetify'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
-import { api, type GlobalStatsHistoryResponse, type GlobalHistoryDataPoint as _GlobalHistoryDataPoint, type GlobalStatsSummary } from '../services/api'
+import { api, channelApiByType, type GlobalStatsHistoryResponse, type GlobalHistoryDataPoint as _GlobalHistoryDataPoint, type GlobalStatsSummary } from '../services/api'
 
 // Register apexchart component
 const apexchart = VueApexCharts
@@ -151,25 +152,12 @@ const errorMessage = ref('')
 // Chart ref for updateSeries
 const chartRef = ref<InstanceType<typeof VueApexCharts> | null>(null)
 
-// Auto refresh timer (2 seconds interval, same as KeyTrendChart)
-const AUTO_REFRESH_INTERVAL = 2000
-let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
-
-const startAutoRefresh = () => {
-  stopAutoRefresh()
-  autoRefreshTimer = setInterval(() => {
-    if (!isLoading.value) {
-      refreshData(true)
-    }
-  }, AUTO_REFRESH_INTERVAL)
-}
-
-const stopAutoRefresh = () => {
-  if (autoRefreshTimer) {
-    clearInterval(autoRefreshTimer)
-    autoRefreshTimer = null
-  }
-}
+// Auto refresh timer (2 seconds interval) — 收敛自 KeyTrendChart 的重复定时器逻辑
+const { start: startAutoRefresh, stop: stopAutoRefresh } = useAutoRefresh(
+  () => refreshData(true),
+  isLoading,
+  2000,
+)
 
 // Chart height based on compact mode
 const chartHeight = computed(() => props.compact ? 180 : 260)
@@ -355,18 +343,7 @@ const refreshData = async (isAutoRefresh = false) => {
   errorMessage.value = ''
 
   try {
-    let newData: GlobalStatsHistoryResponse
-    if (props.apiType === 'messages') {
-      newData = await api.getMessagesGlobalStats(selectedDuration.value)
-    } else if (props.apiType === 'gemini') {
-      newData = await api.getGeminiGlobalStats(selectedDuration.value)
-    } else if (props.apiType === 'chat') {
-      newData = await api.getChatGlobalStats(selectedDuration.value)
-    } else if (props.apiType === 'images') {
-      newData = await api.getImagesGlobalStats(selectedDuration.value)
-    } else {
-      newData = await api.getResponsesGlobalStats(selectedDuration.value)
-    }
+    const newData: GlobalStatsHistoryResponse = await channelApiByType(props.apiType).getGlobalStats(selectedDuration.value)
 
     // Check if we can use updateSeries for smooth update
     const canUpdateInPlace = isAutoRefresh &&

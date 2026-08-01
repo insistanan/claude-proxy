@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type Channel, type ChannelsResponse, type ChannelMetrics, type ChannelDashboardResponse, type CreatedChannelResponse } from '@/services/api'
+import { api, channelApiByType, type ApiTab, type Channel, type ChannelsResponse, type ChannelMetrics, type ChannelDashboardResponse, type CreatedChannelResponse } from '@/services/api'
 
 /**
  * 渠道数据管理 Store
@@ -16,7 +16,6 @@ export const useChannelStore = defineStore('channel', () => {
   // ===== 状态 =====
 
   // 当前选中的 API 类型
-  type ApiTab = 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
   const activeTab = ref<ApiTab>('messages')
 
   // 路由同步：从路由读取当前类型
@@ -32,35 +31,13 @@ export const useChannelStore = defineStore('channel', () => {
     activeTab.value = newType
   }, { immediate: true })
 
-  // 四种 API 类型的渠道数据
-  const channelsData = ref<ChannelsResponse>({
-    channels: [],
-    current: -1,
-    loadBalance: 'failover'
-  })
-
-  const responsesChannelsData = ref<ChannelsResponse>({
-    channels: [],
-    current: -1,
-    loadBalance: 'failover'
-  })
-
-  const geminiChannelsData = ref<ChannelsResponse>({
-    channels: [],
-    current: -1,
-    loadBalance: 'failover'
-  })
-
-  const chatChannelsData = ref<ChannelsResponse>({
-    channels: [],
-    current: -1,
-    loadBalance: 'failover'
-  })
-
-  const imagesChannelsData = ref<ChannelsResponse>({
-    channels: [],
-    current: -1,
-    loadBalance: 'failover'
+  // 各 API 类型的渠道数据（收敛为 Record，替代五组独立 ref）
+  const channelsDataMap = ref<Record<ApiTab, ChannelsResponse>>({
+    messages: { channels: [], current: -1, loadBalance: 'failover' },
+    responses: { channels: [], current: -1, loadBalance: 'failover' },
+    gemini: { channels: [], current: -1, loadBalance: 'failover' },
+    chat: { channels: [], current: -1, loadBalance: 'failover' },
+    images: { channels: [], current: -1, loadBalance: 'failover' }
   })
 
   // Dashboard 数据缓存结构（每个 tab 独立缓存）
@@ -116,16 +93,10 @@ export const useChannelStore = defineStore('channel', () => {
   // ===== 计算属性 =====
 
   // 根据当前 Tab 返回对应的渠道数据
-  const currentChannelsData = computed(() => {
-    switch (activeTab.value) {
-      case 'messages': return channelsData.value
-      case 'responses': return responsesChannelsData.value
-      case 'gemini': return geminiChannelsData.value
-      case 'chat': return chatChannelsData.value
-      case 'images': return imagesChannelsData.value
-      default: return channelsData.value
-    }
-  })
+  const currentChannelsData = computed(() => channelsDataMap.value[activeTab.value])
+
+  // 各类型对应的统一 API 方法集（收敛：store 内不再散落 5 组命名方法）
+  const tabApi = (tab: ApiTab = activeTab.value) => channelApiByType(tab)
 
   // 根据当前 Tab 返回对应的 Dashboard 数据（独立缓存，避免切换闪烁）
   const currentDashboardMetrics = computed(() => dashboardCache.value[activeTab.value].metrics)
@@ -182,63 +153,16 @@ export const useChannelStore = defineStore('channel', () => {
       try {
         const dashboard = await api.getChannelDashboard(tab)
 
-        if (tab === 'messages') {
-          channelsData.value = {
-            channels: mergeChannelsWithLocalData(dashboard.channels, channelsData.value.channels),
-            current: channelsData.value.current, // 保留当前选中状态
-            loadBalance: dashboard.loadBalance
-          }
-          // 更新 Messages tab 的独立缓存
-          dashboardCache.value.messages = {
-            metrics: dashboard.metrics,
-            stats: dashboard.stats,
-            recentActivity: dashboard.recentActivity
-          }
-        } else if (tab === 'responses') {
-          responsesChannelsData.value = {
-            channels: mergeChannelsWithLocalData(dashboard.channels, responsesChannelsData.value.channels),
-            current: responsesChannelsData.value.current, // 保留当前选中状态
-            loadBalance: dashboard.loadBalance
-          }
-          // 更新 Responses tab 的独立缓存
-          dashboardCache.value.responses = {
-            metrics: dashboard.metrics,
-            stats: dashboard.stats,
-            recentActivity: dashboard.recentActivity
-          }
-        } else if (tab === 'gemini') {
-          geminiChannelsData.value = {
-            channels: mergeChannelsWithLocalData(dashboard.channels, geminiChannelsData.value.channels),
-            current: geminiChannelsData.value.current,
-            loadBalance: dashboard.loadBalance
-          }
-          dashboardCache.value.gemini = {
-            metrics: dashboard.metrics,
-            stats: dashboard.stats,
-            recentActivity: dashboard.recentActivity
-          }
-        } else if (tab === 'images') {
-          imagesChannelsData.value = {
-            channels: mergeChannelsWithLocalData(dashboard.channels, imagesChannelsData.value.channels),
-            current: imagesChannelsData.value.current,
-            loadBalance: dashboard.loadBalance
-          }
-          dashboardCache.value.images = {
-            metrics: dashboard.metrics,
-            stats: dashboard.stats,
-            recentActivity: dashboard.recentActivity
-          }
-        } else {
-          chatChannelsData.value = {
-            channels: mergeChannelsWithLocalData(dashboard.channels, chatChannelsData.value.channels),
-            current: chatChannelsData.value.current,
-            loadBalance: dashboard.loadBalance
-          }
-          dashboardCache.value.chat = {
-            metrics: dashboard.metrics,
-            stats: dashboard.stats,
-            recentActivity: dashboard.recentActivity
-          }
+        channelsDataMap.value[tab] = {
+          channels: mergeChannelsWithLocalData(dashboard.channels, channelsDataMap.value[tab].channels),
+          current: channelsDataMap.value[tab].current, // 保留当前选中状态
+          loadBalance: dashboard.loadBalance
+        }
+        // 更新该 tab 的独立缓存
+        dashboardCache.value[tab] = {
+          metrics: dashboard.metrics,
+          stats: dashboard.stats,
+          recentActivity: dashboard.recentActivity
         }
 
         lastRefreshSuccess.value = true
@@ -271,55 +195,22 @@ export const useChannelStore = defineStore('channel', () => {
     editingChannelIndex: number | null,
     options?: { isQuickAdd?: boolean }
   ) {
-    const isResponses = activeTab.value === 'responses'
-    const isGemini = activeTab.value === 'gemini'
-    const isChat = activeTab.value === 'chat'
-    const isImages = activeTab.value === 'images'
+    const tab = activeTab.value
+    const ca = tabApi(tab)
 
     if (editingChannelIndex !== null) {
       // 更新现有渠道
-      if (isGemini) {
-        await api.updateGeminiChannel(editingChannelIndex, channel)
-      } else if (isChat) {
-        await api.updateChatChannel(editingChannelIndex, channel)
-      } else if (isImages) {
-        await api.updateImagesChannel(editingChannelIndex, channel)
-      } else if (isResponses) {
-        await api.updateResponsesChannel(editingChannelIndex, channel)
-      } else {
-        await api.updateChannel(editingChannelIndex, channel)
-      }
+      await ca.updateChannel(editingChannelIndex, channel)
       return { success: true, message: '渠道更新成功' }
     } else {
       // 添加新渠道
-      let createdChannel: CreatedChannelResponse
-      if (isGemini) {
-        createdChannel = await api.addGeminiChannel(channel)
-      } else if (isChat) {
-        createdChannel = await api.addChatChannel(channel)
-      } else if (isImages) {
-        createdChannel = await api.addImagesChannel(channel)
-      } else if (isResponses) {
-        createdChannel = await api.addResponsesChannel(channel)
-      } else {
-        createdChannel = await api.addChannel(channel)
-      }
+      const createdChannel = await ca.addChannel(channel)
 
       // 快速添加模式：后端新增时已设为最高优先级，仅为本次创建的渠道设置促销期。
       if (options?.isQuickAdd) {
         try {
           const channelIndex = createdChannel.channel.index
-          if (isGemini) {
-            await api.setGeminiChannelPromotion(channelIndex, 300, 0)
-          } else if (isImages) {
-            await api.setImagesChannelPromotion(channelIndex, 300, 0)
-          } else if (isChat) {
-            await api.setChatChannelPromotion(channelIndex, 300, 0)
-          } else if (isResponses) {
-            await api.setResponsesChannelPromotion(channelIndex, 300, 0)
-          } else {
-            await api.setChannelPromotion(channelIndex, 300, 0)
-          }
+          await ca.setPromotion(channelIndex, 300, 0)
 
           return {
             success: true,
@@ -340,17 +231,7 @@ export const useChannelStore = defineStore('channel', () => {
    * 删除渠道
    */
   async function deleteChannel(channelId: number) {
-    if (activeTab.value === 'gemini') {
-      await api.deleteGeminiChannel(channelId)
-    } else if (activeTab.value === 'images') {
-      await api.deleteImagesChannel(channelId)
-    } else if (activeTab.value === 'chat') {
-      await api.deleteChatChannel(channelId)
-    } else if (activeTab.value === 'responses') {
-      await api.deleteResponsesChannel(channelId)
-    } else {
-      await api.deleteChannel(channelId)
-    }
+    await tabApi().deleteChannel(channelId)
     await refreshChannels()
     return { success: true, message: '渠道删除成功' }
   }
@@ -359,25 +240,10 @@ export const useChannelStore = defineStore('channel', () => {
    * 测试单个渠道延迟
    */
   async function pingChannel(channelId: number) {
-    const result = activeTab.value === 'gemini'
-      ? await api.pingGeminiChannel(channelId)
-      : activeTab.value === 'images'
-        ? await api.pingImagesChannel(channelId)
-        : activeTab.value === 'chat'
-          ? await api.pingChatChannel(channelId)
-          : activeTab.value === 'responses'
-            ? await api.pingResponsesChannel(channelId)
-            : await api.pingChannel(channelId)
+    const tab = activeTab.value
+    const result = await tabApi(tab).pingChannel(channelId)
 
-    const data = activeTab.value === 'gemini'
-      ? geminiChannelsData.value
-      : activeTab.value === 'images'
-        ? imagesChannelsData.value
-        : activeTab.value === 'chat'
-          ? chatChannelsData.value
-          : (activeTab.value === 'messages' ? channelsData.value : responsesChannelsData.value)
-
-    const channel = data.channels?.find(c => c.index === channelId)
+    const channel = channelsDataMap.value[tab].channels?.find(c => c.index === channelId)
     if (channel) {
       channel.latency = result.latency
       channel.latencyTestTime = Date.now()
@@ -392,29 +258,14 @@ export const useChannelStore = defineStore('channel', () => {
   async function pingAllChannels() {
     if (isPingingAll.value) return { success: false, message: '正在测试中' }
 
+    const tab = activeTab.value
     isPingingAll.value = true
     try {
-      const results = activeTab.value === 'gemini'
-        ? await api.pingAllGeminiChannels()
-        : activeTab.value === 'images'
-          ? await api.pingAllImagesChannels()
-          : activeTab.value === 'chat'
-            ? await api.pingAllChatChannels()
-            : activeTab.value === 'responses'
-              ? await api.pingAllResponsesChannels()
-              : await api.pingAllChannels()
-
-      const data = activeTab.value === 'gemini'
-        ? geminiChannelsData.value
-        : activeTab.value === 'images'
-          ? imagesChannelsData.value
-          : activeTab.value === 'chat'
-          ? chatChannelsData.value
-          : (activeTab.value === 'messages' ? channelsData.value : responsesChannelsData.value)
+      const results = await tabApi(tab).pingAllChannels()
 
       const now = Date.now()
       results.forEach(result => {
-        const channel = data.channels?.find(c => c.index === result.id)
+        const channel = channelsDataMap.value[tab].channels?.find(c => c.index === result.id)
         if (channel) {
           channel.latency = result.latency
           channel.latencyTestTime = now  // 记录测试时间，用于 5 分钟后清除
@@ -431,22 +282,8 @@ export const useChannelStore = defineStore('channel', () => {
    * 更新负载均衡策略
    */
   async function updateLoadBalance(strategy: string) {
-    if (activeTab.value === 'gemini') {
-      await api.updateGeminiLoadBalance(strategy)
-      geminiChannelsData.value.loadBalance = strategy
-    } else if (activeTab.value === 'images') {
-      await api.updateImagesLoadBalance(strategy)
-      imagesChannelsData.value.loadBalance = strategy
-    } else if (activeTab.value === 'chat') {
-      await api.updateChatLoadBalance(strategy)
-      chatChannelsData.value.loadBalance = strategy
-    } else if (activeTab.value === 'messages') {
-      await api.updateLoadBalance(strategy)
-      channelsData.value.loadBalance = strategy
-    } else {
-      await api.updateResponsesLoadBalance(strategy)
-      responsesChannelsData.value.loadBalance = strategy
-    }
+    await tabApi().updateLoadBalance(strategy)
+    channelsDataMap.value[activeTab.value].loadBalance = strategy
     return { success: true, message: `负载均衡策略已更新为: ${strategy}` }
   }
 
@@ -491,59 +328,22 @@ export const useChannelStore = defineStore('channel', () => {
    * 清空所有渠道数据（用于注销）
    */
   function clearChannels() {
-    channelsData.value = {
-      channels: [],
-      current: -1,
-      loadBalance: 'failover'
-    }
-    responsesChannelsData.value = {
-      channels: [],
-      current: -1,
-      loadBalance: 'failover'
-    }
-    geminiChannelsData.value = {
-      channels: [],
-      current: -1,
-      loadBalance: 'failover'
-    }
-    chatChannelsData.value = {
-      channels: [],
-      current: -1,
-      loadBalance: 'failover'
-    }
-    imagesChannelsData.value = {
-      channels: [],
-      current: -1,
-      loadBalance: 'failover'
+    const empty: ChannelsResponse = { channels: [], current: -1, loadBalance: 'failover' }
+    channelsDataMap.value = {
+      messages: { ...empty },
+      responses: { ...empty },
+      gemini: { ...empty },
+      chat: { ...empty },
+      images: { ...empty }
     }
 
     // 清空所有 tab 的独立缓存
     dashboardCache.value = {
-      messages: {
-        metrics: [],
-        stats: undefined,
-        recentActivity: undefined
-      },
-      responses: {
-        metrics: [],
-        stats: undefined,
-        recentActivity: undefined
-      },
-      gemini: {
-        metrics: [],
-        stats: undefined,
-        recentActivity: undefined
-      },
-      chat: {
-        metrics: [],
-        stats: undefined,
-        recentActivity: undefined
-      },
-      images: {
-        metrics: [],
-        stats: undefined,
-        recentActivity: undefined
-      }
+      messages: { metrics: [], stats: undefined, recentActivity: undefined },
+      responses: { metrics: [], stats: undefined, recentActivity: undefined },
+      gemini: { metrics: [], stats: undefined, recentActivity: undefined },
+      chat: { metrics: [], stats: undefined, recentActivity: undefined },
+      images: { metrics: [], stats: undefined, recentActivity: undefined }
     }
 
     // 重置状态标志，避免注销后状态残留
@@ -553,25 +353,14 @@ export const useChannelStore = defineStore('channel', () => {
 
   // 获取特定类型的渠道列表
   function getChannelsByType(type: ApiTab): Channel[] {
-    switch (type) {
-      case 'messages': return channelsData.value.channels || []
-      case 'responses': return responsesChannelsData.value.channels || []
-      case 'gemini': return geminiChannelsData.value.channels || []
-      case 'chat': return chatChannelsData.value.channels || []
-      case 'images': return imagesChannelsData.value.channels || []
-      default: return []
-    }
+    return channelsDataMap.value[type].channels || []
   }
 
   // ===== 返回公开接口 =====
   return {
     // 状态
     activeTab,
-    channelsData,
-    responsesChannelsData,
-    geminiChannelsData,
-    chatChannelsData,
-    imagesChannelsData,
+    channelsDataMap,
     isPingingAll,
     lastRefreshSuccess,
 
