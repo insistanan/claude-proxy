@@ -4,6 +4,27 @@
 
 ---
 
+## [v2.18.0] - 2026-08-01
+
+### 重构：架构收敛 + 流式健壮性修复
+
+- **渠道管理五平行世界收敛** — 新增 `internal/core/channelcrud`，将 messages/responses/gemini/chat/images 五个协议包各自复制约 2900 行的渠道 CRUD/key 管理/ping 收敛为一份实现 + 各协议包薄封装工厂 `Crud()`，净删约 2700 行
+- **路由注册收敛** — 新增 `handlers.RegisterChannelRoutes`，main.go 中五段几乎逐字复制的路由注册（约 250 行）收敛为 5 次声明式调用
+- **scheduler 指标收敛** — `ChannelScheduler` 的 5 个独立 `MetricsManager`/`ChannelLogStore` 字段收敛为 `map[ChannelKind]` 查表
+- **指标 handler 收敛** — Gemini 3 个重复的 metrics handler 改为委托通用 `ByKind` 版本
+- **前端 api.ts 收敛** — 新增 `channelApiByType(type)` 工厂，89 个旧命名方法（`getResponsesChannels`/`getGeminiChannels` 等 5 组重复）清理为统一接口，api.ts 从 2028 行降至 1663 行；`stores/channel.ts` 的 5 路 if/else 瀑布收敛为 `channelsDataMap` + `tabApi()` 查表
+- **图表定时器收敛** — 新增 `useAutoRefresh` composable，GlobalStatsChart/KeyTrendChart 的重复定时器逻辑统一
+- **流式泄漏修复** — `Provider` 接口新增 `HandleStreamResponseCtx(ctx, body)`，5 个 provider 的生产 goroutine 在向 eventChan 发送时 select ctx.Done()，客户端断连立即中止，杜绝"缓冲写满后永久阻塞"的 goroutine/上游连接泄漏
+- **流式超时增强** — 流式 client 增加首字节超时（`RESPONSE_HEADER_TIMEOUT`，默认 120s）；新增 `STREAM_IDLE_TIMEOUT`（默认 300s）空闲超时，通过 `IdleTimeoutReader` 检测"TCP 通但流中挂起"的上游
+- **Bug 修复** — Messages/Responses 负载均衡下拉调用不存在的 `/loadbalance` 路由（404）已修复
+
+### 文档
+
+- **新增 ADR** — `docs/adr/ADR-0001~0004`：核心层收敛、协议注册机制、流式框架、渐进重构节奏
+- **新增术语表** — `docs/glossary.md`
+
+---
+
 ## [v2.12.2] - 2026-07-10
 
 ---

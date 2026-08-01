@@ -4,18 +4,23 @@
 
 ## 目录结构
 
-`
+```
 claude-proxy/
 ├── backend-go/              # Go 后端（主程序）
 │   ├── main.go              # 入口：初始化各组件、注册路由、优雅关闭
 │   └── internal/
+│       ├── core/            # 协议无关核心层（重构收敛产物）
+│       │   └── channelcrud/ # 渠道 CRUD + key 管理 + Ping（单份实现取代五组 ~2900 行重复）
 │       ├── handlers/        # HTTP 处理器（按 API 协议拆分）
+│       │   ├── channel_routes.go  # 渠道管理路由注册（五协议收敛为 RegisterChannelRoutes）
 │       │   ├── messages/    # Anthropic Messages API
 │       │   ├── responses/   # OpenAI Responses API（含 compact）
 │       │   ├── chat/        # OpenAI Chat Completions API
 │       │   ├── gemini/      # Google Gemini API
+│       │   ├── images/      # OpenAI Images API
 │       │   └── common/      # 多渠道 failover、流式处理、对话管理
 │       ├── providers/        # 上游适配器（Claude/OpenAI/Gemini/Responses）
+│       │                    # HandleStreamResponseCtx 新增 ctx 中止防泄漏
 │       ├── converters/       # 双向协议转换器（工厂模式）
 │       ├── scheduler/        # 多渠道调度：亲和 > 促销 > 优先级 + 熔断降级
 │       ├── session/          # Responses API 会话管理 + Trace 亲和性
@@ -25,17 +30,21 @@ claude-proxy/
 │       ├── conversation/     # 对话上下文注册与路由覆盖
 │       ├── modelcatalog/     # 模型目录（别名解析、后缀剥离）
 │       ├── middleware/       # 认证、CORS、日志过滤、Web UI 门控
+│       ├── httpclient/       # HTTP 客户端 (含 IdleTimeoutReader 流式空闲超时)
 │       └── types/           # 共享类型定义
 ├── frontend/                 # Vue 3 + Vuetify 3 管理界面
 │   └── src/
+│       ├── composables/     # Vue 组合式函数（useAutoRefresh 等共享逻辑）
 │       ├── components/      # Vue 组件
-│       └── services/        # API 封装 + 多协议模型发现
+│       └── services/        # API 封装（channelApiByType 工厂收敛五渠道 CRUD）
 ├── docs/                     # 技术文档
+│   ├── adr/                 # 架构决策记录 (ADR-0001~0004)
+│   └── glossary.md          # 项目术语表
 ├── .config/                  # 运行时配置（热重载）
 └── dist/                     # 发布构建产物
-`
+```
 
-## 四类渠道池
+## 五类渠道池
 
 | 渠道类型 | API 端点 | 上游协议 |
 |---------|---------|---------|
@@ -43,8 +52,33 @@ claude-proxy/
 | Responses | POST /v1/responses | OpenAI Responses |
 | Chat | POST /v1/chat/completions | OpenAI Chat |
 | Gemini | POST /v1beta/models/* | Google Gemini |
+| Images | POST /v1/images/* | OpenAI Images |
 
-每类渠道拥有独立的指标管理器和渠道池，由 ChannelScheduler 统一调度。
+每类渠道拥有独立的指标管理器和渠道池，由 ChannelScheduler 通过 `map[ChannelKind]*MetricsManager` 统一调度（收敛前为 5 个独立字段）。
+
+## 架构设计模式
+
+### 1. Provider 模式
+上游适配器统一实现 `Provider` 接口（`internal/providers/`）。Messages 入口和 visionlayer 通过 `GetProvider(serviceType)` 获取对应适配器。
+
+### 2. 渠道管理收敛模式
+渠道层的 CRUD、key 管理、Ping 通过 `core/channelcrud` 单份实现消除重复：各协议包导出 `Crud(cfgManager, sch)` 工厂返回 `*channelcrud.Handlers`，main.go 通过 `handlers.RegisterChannelRoutes` 声明式注册全部路由。新增协议 = 填 Ops + 导出工厂 + 注册一行（见 ADR-0002）。
+
+### 3. 流式防护三层防护
+1. **断连中止**：`HandleStreamResponseCtx` 生产 goroutine 在 send 时 `select ctx.Done()`，客户端断连立即中止（见 ADR-0003）
+2. **首字节超时**：`RESPONSE_HEADER_TIMEOUT`（默认 120s），限制"连接到响应头"时间
+3. **空闲超时**：`STREAM_IDLE_TIMEOUT`（默认 300s），`IdleTimeoutReader` 检测流中挂起
+
+### 4. Failover 模式
+`handlers/common/upstream_failover.go` 把 key 轮换、URL failover、性能画像、日志收敛成一个通用函数，是 handlers 层最接近可复用的部分。
+`ShouldRetryWithNextKey` 按 HTTP 状态码 + 错误消息关键词分类，支持 Fuzzy 模式。
+
+### 5. Session / Conversation
+- `session/`：基于 `previous_response_id` 的多轮对话跟踪，默认 7 天保留、5000 上限
+- `conversation/`：对话上下文注册与路由覆盖，支持对话级别渠道绑定
+
+### 6. 前端收敛模式
+前端通过 `channelApiByType(type)` 工厂获取统一渠道 API 方法集，`stores/channel.ts` 用 `channelsDataMap + tabApi()` 查表消除 5 路 if/else。图表定时器复用 `useAutoRefresh` composable。
 
 ## 调度优先级
 
@@ -74,7 +108,7 @@ converters/ 实现 Responses API 与各上游协议之间的双向转换：
 
 ## 会话管理
 
-Responses API 通过 previous_response_id 实现多轮对话，由 SessionManager 维护会话历史（默认 24h 过期、最多 100 条消息、100k tokens）。ConversationRegistry 基于 conversation_id / allback_key 建立对话路由，支持对话级别路由覆盖。
+Responses API 通过 previous_response_id 实现多轮对话，由 SessionManager 维护会话历史（默认 24h 过期、最多 100 条消息、100k tokens）。ConversationRegistry 基于 conversation_id / fallback_key 建立对话路由，支持对话级别路由覆盖。
 
 ## 模型后缀
 
