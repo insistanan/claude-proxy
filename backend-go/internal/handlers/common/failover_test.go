@@ -60,6 +60,48 @@ func TestClassifyByStatusCode(t *testing.T) {
 	}
 }
 
+func TestIsPromptCacheKeyUnsupported(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       bool
+	}{
+		{
+			name:       "兼容网关拒绝未知参数",
+			statusCode: 400,
+			body:       `{"error":{"message":"Validation: Unsupported parameter(s): \u0060prompt_cache_key\u0060","type":"bad_response_status_code"}}`,
+			want:       true,
+		},
+		{
+			name:       "参数必填不是不支持",
+			statusCode: 400,
+			body:       `{"error":{"message":"prompt_cache_key is required"}}`,
+			want:       false,
+		},
+		{
+			name:       "其他字段不触发",
+			statusCode: 400,
+			body:       `{"error":{"message":"Unsupported parameter: temperature"}}`,
+			want:       false,
+		},
+		{
+			name:       "服务端错误不触发",
+			statusCode: 500,
+			body:       `{"error":{"message":"Unsupported parameter: prompt_cache_key"}}`,
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsPromptCacheKeyUnsupported(tt.statusCode, []byte(tt.body)); got != tt.want {
+				t.Fatalf("IsPromptCacheKeyUnsupported() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestClassifyMessage 测试基于错误消息的分类
 func TestClassifyMessage(t *testing.T) {
 	tests := []struct {

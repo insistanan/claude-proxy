@@ -10,6 +10,37 @@ import (
 )
 
 func TestOpenAIProviderConvertToProviderRequest_UsesSingleTokenField(t *testing.T) {
+	t.Run("replays thinking as reasoning content", func(t *testing.T) {
+		c := newGinContext(http.MethodPost, "/v1/messages", []byte(`{
+			"model":"reasoning-model",
+			"messages":[{"role":"assistant","content":[
+				{"type":"thinking","thinking":"need inspect files"},
+				{"type":"text","text":"I will inspect the files."}
+			]}]
+		}`), nil)
+		upstream := &config.UpstreamConfig{BaseURL: "https://api.example.com", ServiceType: "openai"}
+
+		p := &OpenAIProvider{}
+		req, _, err := p.ConvertToProviderRequest(c, upstream, "sk-test")
+		if err != nil {
+			t.Fatalf("ConvertToProviderRequest() err = %v", err)
+		}
+
+		var got types.OpenAIRequest
+		if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if len(got.Messages) != 1 {
+			t.Fatalf("messages = %#v", got.Messages)
+		}
+		if got.Messages[0].ReasoningContent != "need inspect files" {
+			t.Fatalf("reasoning_content = %q", got.Messages[0].ReasoningContent)
+		}
+		if got.Messages[0].Content != "I will inspect the files." {
+			t.Fatalf("content = %#v", got.Messages[0].Content)
+		}
+	})
+
 	t.Run("generic openai keeps max_tokens only", func(t *testing.T) {
 		c := newGinContext(http.MethodPost, "/v1/messages", []byte(`{"model":"gpt-4o","max_tokens":123,"messages":[]}`), nil)
 		upstream := &config.UpstreamConfig{

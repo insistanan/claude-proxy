@@ -18,6 +18,53 @@ type AddedUpstream struct {
 	Index int
 }
 
+// MarkPromptCacheKeyUnsupported 记录渠道不支持 OpenAI prompt_cache_key。
+// channelType 使用内部渠道类型：messages、responses、gemini、chat、images。
+// 调用方已经从上游的明确参数校验错误中确认该能力，故需要立即持久化，避免后续请求重复探测。
+func (cm *ConfigManager) MarkPromptCacheKeyUnsupported(channelType, upstreamID string) error {
+	if strings.TrimSpace(upstreamID) == "" {
+		return fmt.Errorf("无法记录缓存键能力：渠道 ID 为空")
+	}
+
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	var upstreams []UpstreamConfig
+	switch channelType {
+	case "messages":
+		upstreams = cm.config.Upstream
+	case "responses":
+		upstreams = cm.config.ResponsesUpstream
+	case "gemini":
+		upstreams = cm.config.GeminiUpstream
+	case "chat":
+		upstreams = cm.config.ChatUpstream
+	case "images":
+		upstreams = cm.config.ImagesUpstream
+	default:
+		return fmt.Errorf("不支持的渠道类型: %s", channelType)
+	}
+
+	for index := range upstreams {
+		if upstreams[index].ID != upstreamID {
+			continue
+		}
+		if upstreams[index].DisablePromptCacheKey {
+			return nil
+		}
+
+		upstreams[index].DisablePromptCacheKey = true
+		if err := cm.saveConfigLocked(cm.config); err != nil {
+			upstreams[index].DisablePromptCacheKey = false
+			return fmt.Errorf("保存渠道缓存键能力失败: %w", err)
+		}
+		log.Printf("[Config-ChannelCapability] 渠道 %s (%s) 不支持 prompt_cache_key，已自动禁用", upstreams[index].Name, upstreamID)
+		return nil
+	}
+
+	return fmt.Errorf("未找到渠道 ID: %s", upstreamID)
+}
+
 // getFirstActive 从上游列表中选择第一个 active 且可调度的渠道
 func getFirstActive(upstreams []UpstreamConfig, label string) (*UpstreamConfig, error) {
 	if len(upstreams) == 0 {

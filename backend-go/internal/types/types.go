@@ -134,6 +134,8 @@ type CacheControl struct {
 type ClaudeContent struct {
 	Type         string        `json:"type"` // text, tool_use, tool_result
 	Text         string        `json:"text,omitempty"`
+	Thinking     string        `json:"thinking,omitempty"`
+	Signature    string        `json:"signature,omitempty"`
 	ID           string        `json:"id,omitempty"`
 	Name         string        `json:"name,omitempty"`
 	Input        interface{}   `json:"input,omitempty"`
@@ -176,10 +178,11 @@ type OpenAIRequest struct {
 
 // OpenAIMessage OpenAI 消息
 type OpenAIMessage struct {
-	Role       string           `json:"role"`
-	Content    interface{}      `json:"content"` // string 或 null
-	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Role             string           `json:"role"`
+	Content          interface{}      `json:"content"` // string 或 null
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
 }
 
 // OpenAIToolCall OpenAI 工具调用

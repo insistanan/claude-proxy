@@ -310,6 +310,7 @@ func TryUpstreamWithAllKeys(
 	var lastFailoverError *FailoverError
 	deprioritizeCandidates := make(map[string]bool)
 	requestLogID := nextAttemptLogID("req")
+	promptCacheKeyUnsupported := upstream.DisablePromptCacheKey
 
 	// 强制探测模式：基于本次优先尝试的 BaseURL 判断（避免 BaseURL/BaseURLs 不一致导致误判）
 	forceProbeMode := AreAllKeysSuspended(metricsManager, urlResults[0].URL, upstream.APIKeys)
@@ -349,6 +350,7 @@ func TryUpstreamWithAllKeys(
 			// 使用深拷贝避免并发修改问题
 			upstreamCopy := upstream.Clone()
 			upstreamCopy.BaseURL = currentBaseURL
+			upstreamCopy.DisablePromptCacheKey = promptCacheKeyUnsupported
 			recordConversationAttempt(channelScheduler, kind, upstream, logCtx, isStream)
 
 			req, err := buildRequest(c, upstreamCopy, apiKey)
@@ -438,43 +440,90 @@ func TryUpstreamWithAllKeys(
 				respBodyBytes, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				respBodyBytes = utils.DecompressGzipIfNeeded(resp, respBodyBytes)
+				retrySucceeded := false
 
-				shouldFailover, isQuotaRelated := ShouldRetryWithNextKey(resp.StatusCode, respBodyBytes, cfgManager.GetFuzzyModeEnabled(), apiType)
-				if shouldFailover {
-					lastError = fmt.Errorf("上游错误: %d", resp.StatusCode)
-					failedKeys[apiKey] = true
-					cfgManager.MarkKeyAsFailed(apiKey, apiType)
+				// 兼容部分严格的 OpenAI 协议网关：首次明确拒绝 prompt_cache_key 时，
+				// 使用同一渠道、BaseURL 和 API key 移除该字段后重试一次，并记住能力。
+				if !upstreamCopy.DisablePromptCacheKey && IsPromptCacheKeyUnsupported(resp.StatusCode, respBodyBytes) {
+					log.Printf("[%s-ChannelCapability] 渠道 %s 不支持 prompt_cache_key，移除后使用同一 key 重试一次", apiType, upstream.Name)
+					promptCacheKeyUnsupported = true
+					upstreamCopy.DisablePromptCacheKey = true
+					if err := cfgManager.MarkPromptCacheKeyUnsupported(string(kind), upstream.ID); err != nil {
+						log.Printf("[%s-ChannelCapability] 持久化 prompt_cache_key 能力失败: %v", apiType, err)
+					}
+
+					RestoreRequestBody(c, requestBody)
+					retryReq, retryErr := buildRequest(c, upstreamCopy, apiKey)
+					if retryErr != nil {
+						log.Printf("[%s-ChannelCapability] 重建无 prompt_cache_key 请求失败: %v", apiType, retryErr)
+					} else if retryErr = visionlayer.PrepareRequest(
+						c,
+						envCfg,
+						cfgManager,
+						channelScheduler,
+						kind,
+						upstreamCopy,
+						logCtx.Model,
+						logCtx.ConversationID,
+						retryReq,
+					); retryErr != nil {
+						_ = retryReq.Body.Close()
+						log.Printf("[%s-ChannelCapability] 准备无 prompt_cache_key 请求失败: %v", apiType, retryErr)
+					} else {
+						retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
+						if retryErr != nil {
+							log.Printf("[%s-ChannelCapability] 无 prompt_cache_key 重试失败: %v", apiType, retryErr)
+						} else {
+							resp = retryResp
+							if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
+								retrySucceeded = true
+							} else {
+								respBodyBytes, _ = io.ReadAll(retryResp.Body)
+								retryResp.Body.Close()
+								respBodyBytes = utils.DecompressGzipIfNeeded(retryResp, respBodyBytes)
+							}
+						}
+					}
+				}
+
+				if !retrySucceeded {
+					shouldFailover, isQuotaRelated := ShouldRetryWithNextKey(resp.StatusCode, respBodyBytes, cfgManager.GetFuzzyModeEnabled(), apiType)
+					if shouldFailover {
+						lastError = fmt.Errorf("上游错误: %d", resp.StatusCode)
+						failedKeys[apiKey] = true
+						cfgManager.MarkKeyAsFailed(apiKey, apiType)
+						metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
+						channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+						if pm := channelScheduler.GetProfileManager(); pm != nil {
+							pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
+						}
+						if markURLFailure != nil {
+							markURLFailure(currentBaseURL)
+						}
+						log.Printf("[%s-Key] 警告: API密钥失败 (状态: %d)，尝试下一个密钥", apiType, resp.StatusCode)
+
+						lastFailoverError = &FailoverError{
+							Status: resp.StatusCode,
+							Body:   respBodyBytes,
+						}
+
+						if isQuotaRelated {
+							deprioritizeCandidates[apiKey] = true
+						}
+						recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, isQuotaRelated), string(respBodyBytes), true, isStream, nil)
+						continue
+					}
+
+					// 非 failover 错误，记录失败指标后返回（请求已处理）
 					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
 					if pm := channelScheduler.GetProfileManager(); pm != nil {
 						pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
 					}
-					if markURLFailure != nil {
-						markURLFailure(currentBaseURL)
-					}
-					log.Printf("[%s-Key] 警告: API密钥失败 (状态: %d)，尝试下一个密钥", apiType, resp.StatusCode)
-
-					lastFailoverError = &FailoverError{
-						Status: resp.StatusCode,
-						Body:   respBodyBytes,
-					}
-
-					if isQuotaRelated {
-						deprioritizeCandidates[apiKey] = true
-					}
-					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, isQuotaRelated), string(respBodyBytes), true, isStream, nil)
-					continue
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, false), string(respBodyBytes), false, isStream, nil)
+					c.Data(resp.StatusCode, "application/json", respBodyBytes)
+					return true, "", 0, nil, nil, nil
 				}
-
-				// 非 failover 错误，记录失败指标后返回（请求已处理）
-				metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
-				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
-				if pm := channelScheduler.GetProfileManager(); pm != nil {
-					pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
-				}
-				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, false), string(respBodyBytes), false, isStream, nil)
-				c.Data(resp.StatusCode, "application/json", respBodyBytes)
-				return true, "", 0, nil, nil, nil
 			}
 
 			// 成功响应：处理 quota key 降级

@@ -48,6 +48,45 @@ func TestOpenAIProviderHandleStreamResponse_EmptyToolCallsKeepsSingleTextBlock(t
 	}
 }
 
+func TestOpenAIProviderHandleStreamResponse_PreservesReasoningContent(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl_test","model":"reasoning-model","choices":[{"index":0,"delta":{"reasoning_content":"need inspect"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_test","model":"reasoning-model","choices":[{"index":0,"delta":{"content":"I will inspect."},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_test","model":"reasoning-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	p := &OpenAIProvider{}
+	eventChan, errChan, err := p.HandleStreamResponse(io.NopCloser(strings.NewReader(body)))
+	if err != nil {
+		t.Fatalf("HandleStreamResponse() err = %v", err)
+	}
+
+	var events strings.Builder
+	for event := range eventChan {
+		events.WriteString(event)
+	}
+	select {
+	case err := <-errChan:
+		if err != nil {
+			t.Fatalf("stream err = %v", err)
+		}
+	default:
+	}
+
+	got := events.String()
+	if !strings.Contains(got, `"type":"thinking"`) || !strings.Contains(got, `"thinking":"need inspect"`) {
+		t.Fatalf("missing Claude thinking events:\n%s", got)
+	}
+	if !strings.Contains(got, `"text":"I will inspect."`) {
+		t.Fatalf("missing text events:\n%s", got)
+	}
+}
+
 func TestOpenAIProviderHandleStreamResponse_MapsCachedUsage(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"id":"chatcmpl_test","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`,
