@@ -102,6 +102,42 @@ func TestIsPromptCacheKeyUnsupported(t *testing.T) {
 	}
 }
 
+func TestIsReasoningContentRequired(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       bool
+	}{
+		{
+			name:       "DeepSeek strict thinking error",
+			statusCode: 400,
+			body:       `{"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API."}}`,
+			want:       true,
+		},
+		{
+			name:       "missing required phrase",
+			statusCode: 400,
+			body:       `{"error":{"message":"reasoning_content is invalid"}}`,
+			want:       false,
+		},
+		{
+			name:       "server failure is not capability",
+			statusCode: 500,
+			body:       `{"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API."}}`,
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsReasoningContentRequired(tt.statusCode, []byte(tt.body)); got != tt.want {
+				t.Fatalf("IsReasoningContentRequired() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestClassifyMessage 测试基于错误消息的分类
 func TestClassifyMessage(t *testing.T) {
 	tests := []struct {

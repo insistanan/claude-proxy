@@ -221,8 +221,11 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 	for _, set := range poolSets {
 		normalized, changed, err := ensurePoolsAndAssignments(*set.pools, set.upstreams)
 		if err != nil {
-			log.Printf("[Config-Migration] %s 子池配置无效，已恢复默认子池: %v", set.label, err)
-			normalized, changed, _ = ensurePoolsAndAssignments(nil, set.upstreams)
+			log.Printf("[Config-Migration] %s 子池配置验证失败，保留现有配置请手动修复: %v", set.label, err)
+			// 验证失败时不重置子池也不迁移渠道，避免数据丢失
+			// 保留现有配置，让用户通过管理界面手动修复
+			changed = false
+			normalized = *set.pools
 		}
 		*set.pools = normalized
 		needSave = needSave || changed

@@ -216,7 +216,7 @@ func main() {
 		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindMessages, channelDeps, handlers.ChannelRouteOptions{
 			Crud:           messages.Crud(cfgManager, channelScheduler),
 			LoadBalance:    messages.UpdateLoadBalance(cfgManager),
-			Dashboard:      handlers.GetChannelDashboard(cfgManager, channelScheduler),
+			Dashboard:      handlers.GetChannelDashboard(cfgManager, channelScheduler, scheduler.ChannelKindMessages),
 			SchedulerStats: handlers.GetSchedulerStats(channelScheduler),
 		})
 
@@ -224,6 +224,7 @@ func main() {
 		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindResponses, channelDeps, handlers.ChannelRouteOptions{
 			Crud:        responses.Crud(cfgManager, channelScheduler),
 			LoadBalance: responses.UpdateLoadBalance(cfgManager),
+			Dashboard:   handlers.GetChannelDashboard(cfgManager, channelScheduler, scheduler.ChannelKindResponses),
 		})
 
 		// Gemini 渠道管理

@@ -65,6 +65,53 @@ func (cm *ConfigManager) MarkPromptCacheKeyUnsupported(channelType, upstreamID s
 	return fmt.Errorf("未找到渠道 ID: %s", upstreamID)
 }
 
+// MarkReasoningContentRequired 记录渠道会拒绝缺少 reasoning_content 的 assistant 历史。
+// 该能力只在收到上游明确的字段校验错误后启用；后续 Messages 请求会在转换阶段补齐
+// 已被客户端隐藏或删除的历史推理字段，避免每轮都先收到一次 400。
+func (cm *ConfigManager) MarkReasoningContentRequired(channelType, upstreamID string) error {
+	if strings.TrimSpace(upstreamID) == "" {
+		return fmt.Errorf("无法记录推理字段能力：渠道 ID 为空")
+	}
+
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	var upstreams []UpstreamConfig
+	switch channelType {
+	case "messages":
+		upstreams = cm.config.Upstream
+	case "responses":
+		upstreams = cm.config.ResponsesUpstream
+	case "gemini":
+		upstreams = cm.config.GeminiUpstream
+	case "chat":
+		upstreams = cm.config.ChatUpstream
+	case "images":
+		upstreams = cm.config.ImagesUpstream
+	default:
+		return fmt.Errorf("不支持的渠道类型: %s", channelType)
+	}
+
+	for index := range upstreams {
+		if upstreams[index].ID != upstreamID {
+			continue
+		}
+		if upstreams[index].RequireReasoningContent {
+			return nil
+		}
+
+		upstreams[index].RequireReasoningContent = true
+		if err := cm.saveConfigLocked(cm.config); err != nil {
+			upstreams[index].RequireReasoningContent = false
+			return fmt.Errorf("保存渠道推理字段能力失败: %w", err)
+		}
+		log.Printf("[Config-ChannelCapability] 渠道 %s (%s) 要求补全 reasoning_content，已自动启用兼容模式", upstreams[index].Name, upstreamID)
+		return nil
+	}
+
+	return fmt.Errorf("未找到渠道 ID: %s", upstreamID)
+}
+
 // getFirstActive 从上游列表中选择第一个 active 且可调度的渠道
 func getFirstActive(upstreams []UpstreamConfig, label string) (*UpstreamConfig, error) {
 	if len(upstreams) == 0 {
@@ -406,6 +453,9 @@ func applyCommonUpdates(upstream *UpstreamConfig, index int, updates UpstreamUpd
 	}
 	if updates.DisablePromptCacheKey != nil {
 		upstream.DisablePromptCacheKey = *updates.DisablePromptCacheKey
+	}
+	if updates.RequireReasoningContent != nil {
+		upstream.RequireReasoningContent = *updates.RequireReasoningContent
 	}
 	if updates.EnablePreviousResponseID != nil {
 		upstream.EnablePreviousResponseID = *updates.EnablePreviousResponseID

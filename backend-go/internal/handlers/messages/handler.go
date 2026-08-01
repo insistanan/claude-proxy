@@ -392,6 +392,9 @@ func handleNormalResponse(
 	if err != nil {
 		return nil, fmt.Errorf("转换上游响应失败: %w", err)
 	}
+	// 将所有协议返回的 thinking 统一登记。下一轮即使故障转移到要求
+	// reasoning_content 的 Chat 渠道，也能回放该 assistant 工具调用回合。
+	providers.CacheClaudeResponseReasoning(claudeResp)
 
 	// Token 补全逻辑
 	if claudeResp.Usage == nil {

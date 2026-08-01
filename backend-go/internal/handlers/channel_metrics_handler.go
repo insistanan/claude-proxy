@@ -619,22 +619,9 @@ func truncateKeyMask(keyMask string, maxLen int) string {
 }
 
 // GetChannelDashboard 获取渠道仪表盘数据（合并 channels + metrics + stats）
-// GET /api/channels/dashboard?type=messages|responses|gemini|chat|images
-// 将原本需要 3 个请求的数据合并为 1 个请求，减少网络开销
-func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) gin.HandlerFunc {
+// 通过 kind 参数直接指定渠道类型，不再依赖 ?type= 查询参数
+func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler, kind scheduler.ChannelKind) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		kind := scheduler.ChannelKindMessages
-		switch strings.ToLower(c.Query("type")) {
-		case "responses":
-			kind = scheduler.ChannelKindResponses
-		case "gemini":
-			kind = scheduler.ChannelKindGemini
-		case "chat":
-			kind = scheduler.ChannelKindChat
-		case "images":
-			kind = scheduler.ChannelKindImages
-		}
-
 		cfg := cfgManager.GetConfig()
 		upstreams, loadBalance := upstreamsByKind(cfg, kind)
 		metricsManager := sch.GetMessagesMetricsManager()

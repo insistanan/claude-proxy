@@ -51,6 +51,7 @@ type UpstreamConfig struct {
 	StripThoughtSignature       bool `json:"stripThoughtSignature,omitempty"`       // 移除 thought_signature 字段（兼容旧版 Gemini API）
 	IncludeHistoryThinking      bool `json:"includeHistoryThinking,omitempty"`      // 是否将历史 reasoning/thinking 回灌上游
 	DisablePromptCacheKey       bool `json:"disablePromptCacheKey,omitempty"`       // 是否禁用兼容上游的 prompt_cache_key
+	RequireReasoningContent     bool `json:"requireReasoningContent,omitempty"`     // 严格渠道要求所有缺失的 assistant reasoning_content 使用兼容续接值
 	EnablePreviousResponseID    bool `json:"enablePreviousResponseID,omitempty"`    // Messages->Responses 是否启用 previous_response_id 链
 }
 
@@ -130,6 +131,7 @@ type UpstreamUpdate struct {
 	StripThoughtSignature       *bool `json:"stripThoughtSignature"`
 	IncludeHistoryThinking      *bool `json:"includeHistoryThinking"`
 	DisablePromptCacheKey       *bool `json:"disablePromptCacheKey"`
+	RequireReasoningContent     *bool `json:"requireReasoningContent"`
 	EnablePreviousResponseID    *bool `json:"enablePreviousResponseID"`
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 type StreamContext struct {
 	LogBuffer        bytes.Buffer
 	OutputTextBuffer bytes.Buffer
+	ResponseText     bytes.Buffer
+	Reasoning        bytes.Buffer
 	Synthesizer      *utils.StreamSynthesizer
 	LoggingEnabled   bool
 	LogBufferFull    bool // LogBuffer 达到上限后标记，避免重复检查
@@ -43,6 +46,14 @@ type StreamContext struct {
 	MessageStartInputTokens int // message_start 事件中的 input_tokens（用于推断隐式缓存）
 	// 兜底注入
 	SeenMessageStart bool // 是否已收到 message_start 事件
+	// 最终转换为 Claude SSE 后的工具调用；用于跨协议回放 reasoning_content。
+	ToolCalls map[int]*StreamToolCall
+}
+
+type StreamToolCall struct {
+	ID        string
+	Name      string
+	Arguments strings.Builder
 }
 
 // CollectedUsageData 从流事件中收集的 usage 数据
@@ -62,6 +73,7 @@ func NewStreamContext(envCfg *config.EnvConfig) *StreamContext {
 	ctx := &StreamContext{
 		LoggingEnabled:    envCfg.IsDevelopment() && envCfg.EnableResponseLogs,
 		ContentBlockTypes: make(map[int]string),
+		ToolCalls:         make(map[int]*StreamToolCall),
 	}
 	if ctx.LoggingEnabled {
 		ctx.Synthesizer = utils.NewStreamSynthesizer("claude")
@@ -205,6 +217,9 @@ func ProcessStreamEvent(
 	}
 
 	eventData, hasEventData := ParseSSEEventData(event)
+	if hasEventData {
+		ctx.captureReasoningContext(eventData)
+	}
 
 	// 提取文本用于估算 token
 	if hasEventData {
@@ -556,7 +571,105 @@ func HandleStreamResponse(
 	ctx.RequestModel = requestModel
 	ctx.LowQuality = upstream.LowQuality
 	seedSynthesizerFromRequest(ctx, requestBody)
-	return ProcessStreamEvents(c, w, flusher, eventChan, errChan, ctx, envCfg, startTime, requestBody)
+	usage, processErr := ProcessStreamEvents(c, w, flusher, eventChan, errChan, ctx, envCfg, startTime, requestBody)
+	if processErr == nil {
+		ctx.cacheClaudeReasoning()
+	}
+	return usage, processErr
+}
+
+func (ctx *StreamContext) captureReasoningContext(data map[string]interface{}) {
+	if ctx == nil || data == nil {
+		return
+	}
+	if ctx.ToolCalls == nil {
+		ctx.ToolCalls = make(map[int]*StreamToolCall)
+	}
+	index := 0
+	if value, ok := data["index"].(float64); ok {
+		index = int(value)
+	}
+	if contentBlock, ok := data["content_block"].(map[string]interface{}); ok {
+		switch contentBlock["type"] {
+		case "thinking":
+			if thinking, _ := contentBlock["thinking"].(string); thinking != "" {
+				ctx.Reasoning.WriteString(thinking)
+			}
+		case "text":
+			if text, _ := contentBlock["text"].(string); text != "" {
+				ctx.ResponseText.WriteString(text)
+			}
+		case "tool_use":
+			call := ctx.ToolCalls[index]
+			if call == nil {
+				call = &StreamToolCall{}
+				ctx.ToolCalls[index] = call
+			}
+			if id, _ := contentBlock["id"].(string); id != "" {
+				call.ID = id
+			}
+			if name, _ := contentBlock["name"].(string); name != "" {
+				call.Name = name
+			}
+		}
+	}
+
+	delta, ok := data["delta"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	switch delta["type"] {
+	case "thinking_delta":
+		if thinking, _ := delta["thinking"].(string); thinking != "" {
+			ctx.Reasoning.WriteString(thinking)
+		}
+	case "text_delta":
+		if text, _ := delta["text"].(string); text != "" {
+			ctx.ResponseText.WriteString(text)
+		}
+	case "input_json_delta":
+		if partialJSON, _ := delta["partial_json"].(string); partialJSON != "" {
+			call := ctx.ToolCalls[index]
+			if call == nil {
+				call = &StreamToolCall{}
+				ctx.ToolCalls[index] = call
+			}
+			call.Arguments.WriteString(partialJSON)
+		}
+	}
+}
+
+func (ctx *StreamContext) cacheClaudeReasoning() {
+	if ctx == nil || ctx.Reasoning.Len() == 0 {
+		return
+	}
+	indexes := make([]int, 0, len(ctx.ToolCalls))
+	for index := range ctx.ToolCalls {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	content := make([]types.ClaudeContent, 0, len(indexes)+2)
+	content = append(content, types.ClaudeContent{Type: "thinking", Thinking: ctx.Reasoning.String()})
+	if ctx.ResponseText.Len() > 0 {
+		content = append(content, types.ClaudeContent{Type: "text", Text: ctx.ResponseText.String()})
+	}
+	for _, index := range indexes {
+		call := ctx.ToolCalls[index]
+		if call == nil {
+			continue
+		}
+		var input interface{} = map[string]interface{}{}
+		if call.Arguments.Len() > 0 {
+			_ = json.Unmarshal([]byte(call.Arguments.String()), &input)
+		}
+		content = append(content, types.ClaudeContent{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Name,
+			Input: input,
+		})
+	}
+	providers.CacheClaudeResponseReasoning(&types.ClaudeResponse{Role: "assistant", Content: content})
 }
 
 // ========== Token 检测和修补相关函数 ==========
@@ -966,7 +1079,6 @@ func PatchMessageStartInputTokensIfNeeded(event string, requestBody []byte, need
 	return event
 }
 
-
 func patchUsageFieldsWithLog(usage map[string]interface{}, estimatedInput, estimatedOutput int, hasCacheTokens bool, enableLog bool, location string, lowQuality bool) {
 	originalInput := usage["input_tokens"]
 	originalOutput := usage["output_tokens"]
@@ -1020,7 +1132,6 @@ func patchUsageFieldsWithLog(usage map[string]interface{}, estimatedInput, estim
 		}
 	}
 }
-
 
 func abs(x int) int {
 	if x < 0 {
@@ -1398,4 +1509,3 @@ func StripCacheFieldsFromClaudeSSE(event string) string {
 	}
 	return strings.Join(lines, "\n")
 }
-

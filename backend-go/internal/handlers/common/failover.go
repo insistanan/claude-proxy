@@ -60,6 +60,21 @@ func IsPromptCacheKeyUnsupported(statusCode int, bodyBytes []byte) bool {
 	return false
 }
 
+// IsReasoningContentRequired 判断上游是否因 thinking 历史缺少 reasoning_content
+// 拒绝了请求。仅识别明确的 4xx 字段校验，避免把普通推理模型错误误判为兼容能力。
+func IsReasoningContentRequired(statusCode int, bodyBytes []byte) bool {
+	if statusCode < 400 || statusCode >= 500 || len(bodyBytes) == 0 {
+		return false
+	}
+
+	message := strings.ToLower(string(bodyBytes))
+	if !strings.Contains(message, "reasoning_content") {
+		return false
+	}
+	return strings.Contains(message, "thinking mode") &&
+		(strings.Contains(message, "must be passed back") || strings.Contains(message, "passed back to the api"))
+}
+
 // ShouldRetryWithNextKey 判断是否应该使用下一个密钥重试
 // 返回: (shouldFailover bool, isQuotaRelated bool)
 //

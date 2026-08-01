@@ -311,6 +311,7 @@ func TryUpstreamWithAllKeys(
 	deprioritizeCandidates := make(map[string]bool)
 	requestLogID := nextAttemptLogID("req")
 	promptCacheKeyUnsupported := upstream.DisablePromptCacheKey
+	requireReasoningContent := upstream.RequireReasoningContent
 
 	// 强制探测模式：基于本次优先尝试的 BaseURL 判断（避免 BaseURL/BaseURLs 不一致导致误判）
 	forceProbeMode := AreAllKeysSuspended(metricsManager, urlResults[0].URL, upstream.APIKeys)
@@ -351,6 +352,7 @@ func TryUpstreamWithAllKeys(
 			upstreamCopy := upstream.Clone()
 			upstreamCopy.BaseURL = currentBaseURL
 			upstreamCopy.DisablePromptCacheKey = promptCacheKeyUnsupported
+			upstreamCopy.RequireReasoningContent = requireReasoningContent
 			recordConversationAttempt(channelScheduler, kind, upstream, logCtx, isStream)
 
 			req, err := buildRequest(c, upstreamCopy, apiKey)
@@ -473,6 +475,53 @@ func TryUpstreamWithAllKeys(
 						retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
 						if retryErr != nil {
 							log.Printf("[%s-ChannelCapability] 无 prompt_cache_key 重试失败: %v", apiType, retryErr)
+						} else {
+							resp = retryResp
+							if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
+								retrySucceeded = true
+							} else {
+								respBodyBytes, _ = io.ReadAll(retryResp.Body)
+								retryResp.Body.Close()
+								respBodyBytes = utils.DecompressGzipIfNeeded(retryResp, respBodyBytes)
+							}
+						}
+					}
+				}
+
+				// 部分 DeepSeek 兼容渠道会在 thinking 模式下要求每条 assistant
+				// 历史都带 reasoning_content。Cursor 等客户端可能已将该字段
+				// 隐藏；首次收到明确 400 后，用同一渠道立即强制补齐并重试，
+				// 同时持久化能力，避免之后的每轮请求都先失败一次。
+				if !retrySucceeded && kind == scheduler.ChannelKindMessages && upstreamCopy.ServiceType == "openai" && !upstreamCopy.RequireReasoningContent &&
+					IsReasoningContentRequired(resp.StatusCode, respBodyBytes) {
+					log.Printf("[%s-ChannelCapability] 渠道 %s 要求完整 reasoning_content，补齐后使用同一 key 重试一次", apiType, upstream.Name)
+					requireReasoningContent = true
+					upstreamCopy.RequireReasoningContent = true
+					if err := cfgManager.MarkReasoningContentRequired(string(kind), upstream.ID); err != nil {
+						log.Printf("[%s-ChannelCapability] 持久化 reasoning_content 能力失败: %v", apiType, err)
+					}
+
+					RestoreRequestBody(c, requestBody)
+					retryReq, retryErr := buildRequest(c, upstreamCopy, apiKey)
+					if retryErr != nil {
+						log.Printf("[%s-ChannelCapability] 重建 reasoning_content 兼容请求失败: %v", apiType, retryErr)
+					} else if retryErr = visionlayer.PrepareRequest(
+						c,
+						envCfg,
+						cfgManager,
+						channelScheduler,
+						kind,
+						upstreamCopy,
+						logCtx.Model,
+						logCtx.ConversationID,
+						retryReq,
+					); retryErr != nil {
+						_ = retryReq.Body.Close()
+						log.Printf("[%s-ChannelCapability] 准备 reasoning_content 兼容请求失败: %v", apiType, retryErr)
+					} else {
+						retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
+						if retryErr != nil {
+							log.Printf("[%s-ChannelCapability] reasoning_content 兼容重试失败: %v", apiType, retryErr)
 						} else {
 							resp = retryResp
 							if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
