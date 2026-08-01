@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"bufio"
 	"bytes"
 	"crypto/sha256"
@@ -1324,7 +1325,15 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 }
 
 // HandleStreamResponse 处理流式响应
+// 兼容旧签名：内部委托带 ctx 的版本，使用 context.Background()。
 func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string, <-chan error, error) {
+	return p.HandleStreamResponseCtx(context.Background(), body)
+}
+
+// HandleStreamResponseCtx 处理流式响应（支持客户端断连中止）
+// 修复：所有向 eventChan 的发送都通过 send() 包装，select ctx.Done()，
+// 客户端断连时立即停止读取上游并退出，杜绝"缓冲写满后永久阻塞"的 goroutine 泄漏。
+func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
 	eventChan := make(chan string, 100)
 	errChan := make(chan error, 1)
 	shadowProviderID := p.shadowProviderID
@@ -1333,6 +1342,23 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 	go func() {
 		defer close(eventChan)
 		defer body.Close()
+
+		// send 向 eventChan 发送一个事件；若客户端断连（ctx 取消）返回 false，调用方应立即退出。
+		send := func(event string) bool {
+			select {
+			case eventChan <- event:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		// fail 向 errChan 发送错误；客户端断连时不阻塞。
+		fail := func(err error) {
+			select {
+			case errChan <- err:
+			case <-ctx.Done():
+			}
+		}
 
 		scanner := bufio.NewScanner(body)
 		const maxScannerBufferSize = 1024 * 1024 // 1MB
@@ -1360,7 +1386,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 
 		// 发送 message_stop 的辅助函数
 		emitMessageStop := func() {
-			eventChan <- "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+			send( "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 		}
 
 		// 关闭 thinking 块
@@ -1377,14 +1403,14 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				},
 			}
 			sigJSON, _ := json.Marshal(sigEvent)
-			eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", sigJSON)
+			send( fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", sigJSON))
 
 			stopEvent := map[string]interface{}{
 				"type":  "content_block_stop",
 				"index": thinkingBlockIndex,
 			}
 			stopJSON, _ := json.Marshal(stopEvent)
-			eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
+			send( fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
 			thinkingBlockStarted = false
 			thinkingBlockIndex = -1
 		}
@@ -1399,7 +1425,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				"index": textBlockIndex,
 			}
 			stopJSON, _ := json.Marshal(stopEvent)
-			eventChan <- fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON)
+			send( fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
 			textBlockStarted = false
 			textBlockIndex = -1
 		}
@@ -1442,7 +1468,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 					},
 				}
 				startJSON, _ := json.Marshal(msgStart)
-				eventChan <- fmt.Sprintf("event: message_start\ndata: %s\n\n", startJSON)
+				send( fmt.Sprintf("event: message_start\ndata: %s\n\n", startJSON))
 				messageStartEmitted = true
 			}
 
@@ -1481,7 +1507,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 						},
 					}
 					deltaJSON, _ := json.Marshal(deltaEvent)
-					eventChan <- fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON)
+					send( fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON))
 				}
 				continue
 			}
@@ -1515,7 +1541,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 							},
 						}
 						startJSON, _ := json.Marshal(startEvent)
-						eventChan <- fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON)
+						send( fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
 						thinkingBlockStarted = true
 					}
 
@@ -1528,7 +1554,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 						},
 					}
 					deltaJSON, _ := json.Marshal(deltaEvent)
-					eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON)
+					send( fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
 					continue
 				}
 
@@ -1548,7 +1574,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 							},
 						}
 						startJSON, _ := json.Marshal(startEvent)
-						eventChan <- fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON)
+						send( fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
 						textBlockStarted = true
 					}
 					if text != "" {
@@ -1573,7 +1599,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 						},
 					}
 					deltaJSON, _ := json.Marshal(deltaEvent)
-					eventChan <- fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON)
+					send( fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
 				}
 
 				// 处理函数调用
@@ -1605,7 +1631,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 
 					events := processToolUsePart(id, name, args, toolUseBlockIndex)
 					for _, event := range events {
-						eventChan <- event
+						send( event)
 					}
 				}
 			}
@@ -1633,7 +1659,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 					},
 				}
 				deltaJSON, _ := json.Marshal(deltaEvent)
-				eventChan <- fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON)
+				send( fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON))
 			}
 		}
 
@@ -1655,7 +1681,7 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				emitMessageStop()
 				return
 			}
-			errChan <- err
+			fail( err)
 		}
 
 		emitMessageStop()

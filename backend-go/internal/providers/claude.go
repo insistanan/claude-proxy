@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"bufio"
 	"bytes"
 	"encoding/json"
@@ -147,7 +148,16 @@ func (p *ClaudeProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 }
 
 // HandleStreamResponse 处理流式响应（直接透传）
+// 兼容旧签名：内部委托带 ctx 的版本，使用 context.Background()。
 func (p *ClaudeProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string, <-chan error, error) {
+	return p.HandleStreamResponseCtx(context.Background(), body)
+}
+
+// HandleStreamResponseCtx 处理流式响应（直接透传，支持客户端断连中止）
+// 修复：生产 goroutine 向 eventChan 发送事件时 select ctx.Done()，
+// 客户端断连（消费者不再消费）时立即停止读取上游并退出，杜绝
+// "上游持续产出 > 缓冲容量(100) 后 goroutine 永久阻塞在 channel send"的泄漏。
+func (p *ClaudeProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
 	eventChan := make(chan string, 100)
 	errChan := make(chan error, 1)
 
@@ -155,6 +165,16 @@ func (p *ClaudeProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 		defer close(eventChan)
 		defer close(errChan)
 		defer body.Close()
+
+		// trySend 向 eventChan 发送一个事件；若客户端断连（ctx 取消）则返回 false，调用方应立即退出。
+		trySend := func(event string) bool {
+			select {
+			case eventChan <- event:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
 
 		scanner := bufio.NewScanner(body)
 		// 设置更大的 buffer (1MB) 以处理大 JSON chunk，避免默认 64KB 限制
@@ -167,15 +187,23 @@ func (p *ClaudeProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 		// 上游以空行分隔事件：event/data/id/retry/... + "\n"，空行 => 事件结束。
 		var eventBuf strings.Builder
 
-		flushEvent := func() {
+		flushEvent := func() bool {
 			if eventBuf.Len() == 0 {
-				return
+				return true
 			}
-			eventChan <- eventBuf.String()
+			ok := trySend(eventBuf.String())
 			eventBuf.Reset()
+			return ok
 		}
 
 		for scanner.Scan() {
+			// 客户端断连：即使上游仍在产出，也立即中止，避免泄漏
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Text()
 
 			// 检测是否发送了 tool_use 相关的 stop_reason（通常在 data 行中）
@@ -190,12 +218,16 @@ func (p *ClaudeProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 
 			// 空行表示一个 SSE event 结束
 			if line == "" {
-				flushEvent()
+				if !flushEvent() {
+					return
+				}
 			}
 		}
 
 		// 若上游未以空行结尾，仍尝试把最后的残留事件发出去
-		flushEvent()
+		if !flushEvent() {
+			return
+		}
 
 		if err := scanner.Err(); err != nil {
 			// 在 tool_use 场景下，客户端主动断开是正常行为
@@ -207,7 +239,10 @@ func (p *ClaudeProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 				// 这是预期的客户端行为，不报告错误
 				return
 			}
-			errChan <- err
+			select {
+			case errChan <- err:
+			case <-ctx.Done():
+			}
 		}
 	}()
 

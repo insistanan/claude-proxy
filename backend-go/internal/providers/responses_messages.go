@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"bufio"
 	"bytes"
 	"crypto/sha256"
@@ -98,6 +99,10 @@ func (p *MessagesResponsesProvider) ConvertToClaudeResponse(providerResp *types.
 }
 
 func (p *MessagesResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string, <-chan error, error) {
+	return p.HandleStreamResponseCtx(context.Background(), body)
+}
+
+func (p *MessagesResponsesProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
 	eventChan := make(chan string, 100)
 	errChan := make(chan error, 1)
 
@@ -111,22 +116,44 @@ func (p *MessagesResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-
 		defer close(eventChan)
 		defer body.Close()
 
+		// send 向 eventChan 发送一个事件；若客户端断连（ctx 取消）返回 false，调用方应立即退出。
+		send := func(event string) bool {
+			select {
+			case eventChan <- event:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		// fail 向 errChan 发送错误；客户端断连时不阻塞。
+		fail := func(err error) {
+			select {
+			case errChan <- err:
+			case <-ctx.Done():
+			}
+		}
+
 		state := newResponsesToClaudeStreamState()
 		scanner := bufio.NewScanner(body)
 		const maxScannerBufferSize = 1024 * 1024
 		scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBufferSize)
 
 		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" || line == "data: [DONE]" {
 				continue
 			}
 			for _, event := range state.processLine(line) {
-				eventChan <- event
+				send( event)
 			}
 		}
 		for _, event := range state.finish() {
-			eventChan <- event
+			send( event)
 		}
 		if enableChain && claudeReq != nil && state.upstreamResponseID != "" {
 			rememberResponsesChain(conversationID, claudeReq, upstream, resolvedModel, state.upstreamResponseID)
@@ -136,7 +163,7 @@ func (p *MessagesResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-
 			if strings.Contains(errMsg, "broken pipe") || strings.Contains(errMsg, "connection reset") || strings.Contains(errMsg, "EOF") {
 				return
 			}
-			errChan <- err
+			fail( err)
 		}
 	}()
 

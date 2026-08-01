@@ -81,7 +81,18 @@ func SendRequest(req *http.Request, upstream *config.UpstreamConfig, envCfg *con
 		}
 	}
 
-	return client.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// 流式响应：包装 body 为带空闲超时的 reader，检测"TCP 通但流中挂起"的上游。
+	// 空闲超时默认保守（5 分钟），避免误杀思考模型的长静默期。
+	if isStream && resp != nil && resp.Body != nil {
+		resp.Body = httpclient.NewIdleTimeoutReader(resp.Body, time.Duration(envCfg.StreamIdleTimeout)*time.Second, apiType)
+	}
+
+	return resp, nil
 }
 
 // logRequestDetails 记录请求详情（仅开发模式）

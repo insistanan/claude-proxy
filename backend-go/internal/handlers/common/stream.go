@@ -533,7 +533,10 @@ func HandleStreamResponse(
 ) (*types.Usage, error) {
 	defer resp.Body.Close()
 
-	eventChan, errChan, err := provider.HandleStreamResponse(resp.Body)
+	// 使用带 ctx 的流式方法：客户端断连时 ctx 取消，
+	// provider goroutine 在向 eventChan 发送事件时 select ctx.Done() 立即退出，
+	// 杜绝"缓冲写满后永久阻塞"的 goroutine/上游连接泄漏。
+	eventChan, errChan, err := provider.HandleStreamResponseCtx(c.Request.Context(), resp.Body)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to handle stream response"})
 		return nil, err

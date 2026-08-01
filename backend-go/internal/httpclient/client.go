@@ -97,13 +97,15 @@ func (cm *ClientManager) GetStandardClientForUpstream(timeout time.Duration, cfg
 	return cm.GetStandardClient(timeout, upstream.InsecureSkipVerify, proxyURL)
 }
 
-// GetStreamClient 获取流式客户端（无超时，用于 SSE 流式响应）
-// 流式请求不设 ResponseHeaderTimeout，避免上游首字节延迟导致误超时
+// GetStreamClient 获取流式客户端（响应体无超时，用于 SSE 流式响应）
+// ResponseHeaderTimeout 限制"发出请求到收到响应头"的时间（首字节超时），
+// 防止"连接建立但永不响应"的上游占住 handler；响应体读取本身不受限，
+// 避免思考模型长静默期被整体超时误杀。流中挂起由 IdleTimeoutReader 检测（见 STREAM_IDLE_TIMEOUT）。
 func (cm *ClientManager) GetStreamClient(insecure bool, proxyURL string) (*http.Client, error) {
 	envConfig := config.NewEnvConfig()
 	proxyURL = strings.TrimSpace(proxyURL)
 
-	key := fmt.Sprintf("stream-%t-%t-%s", insecure, envConfig.ForceHTTP1, proxyKey(proxyURL))
+	key := fmt.Sprintf("stream-%t-%t-%d-%s", insecure, envConfig.ForceHTTP1, envConfig.ResponseHeaderTimeout, proxyKey(proxyURL))
 
 	cm.mu.RLock()
 	if client, ok := cm.clients[key]; ok {
@@ -130,6 +132,7 @@ func (cm *ClientManager) GetStreamClient(insecure bool, proxyURL string) (*http.
 		IdleConnTimeout:       120 * time.Second,
 		DisableCompression:    true,
 		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: time.Duration(envConfig.ResponseHeaderTimeout) * time.Second, // 首字节超时
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     !envConfig.ForceHTTP1,
 	}

@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -173,5 +174,10 @@ func (p *ResponsesProvider) ConvertToResponsesResponse(
 
 // HandleStreamResponse 处理流式响应（暂不实现）
 func (p *ResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string, <-chan error, error) {
+	return nil, nil, fmt.Errorf("Responses Provider 暂不支持流式响应")
+}
+
+// HandleStreamResponseCtx 处理流式响应（暂不实现）
+func (p *ResponsesProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
 	return nil, nil, fmt.Errorf("Responses Provider 暂不支持流式响应")
 }

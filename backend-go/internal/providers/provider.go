@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"io"
 	"net/http"
 
@@ -19,6 +20,11 @@ type Provider interface {
 
 	// HandleStreamResponse 处理流式响应
 	HandleStreamResponse(body io.ReadCloser) (<-chan string, <-chan error, error)
+
+	// HandleStreamResponseCtx 处理流式响应（带 context，客户端断连可中止，避免 goroutine/连接泄漏）
+	// ctx 用于监听客户端断开：生产 goroutine 在向 eventChan 发送事件时 select ctx.Done()，
+	// 一旦消费者离开（客户端断连）立即停止读取上游并退出，杜绝"缓冲写满后永久阻塞"。
+	HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error)
 }
 
 // GetProvider 根据服务类型获取提供商
