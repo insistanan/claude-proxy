@@ -201,8 +201,9 @@ func TestConvertMessage_PrefersExplicitThinkingOverCache(t *testing.T) {
 	}
 }
 
-// TestConvertMessage_DoesNotBackfillToolCalls 确认纯工具调用 assistant 消息不触发补回（无文本键可匹配）。
-func TestConvertMessage_DoesNotBackfillToolCalls(t *testing.T) {
+// TestConvertMessage_UsesCompatibilityFallbackForUnrecoverableToolCall 确认工具调用
+// 不会误用纯文本缓存；原始推理不可恢复时改为注入稳定的兼容续接值。
+func TestConvertMessage_UsesCompatibilityFallbackForUnrecoverableToolCall(t *testing.T) {
 	clearReasoningContentCacheForTest()
 	defer clearReasoningContentCacheForTest()
 
@@ -227,7 +228,190 @@ func TestConvertMessage_DoesNotBackfillToolCalls(t *testing.T) {
 	if len(got.Messages) != 1 {
 		t.Fatalf("messages = %#v", got.Messages)
 	}
-	if got.Messages[0].ReasoningContent != "" {
-		t.Fatalf("reasoning_content = %q, want empty for tool-only message", got.Messages[0].ReasoningContent)
+	if got.Messages[0].ReasoningContent != missingReasoningContentFallback {
+		t.Fatalf("reasoning_content = %q, want compatibility fallback", got.Messages[0].ReasoningContent)
+	}
+}
+
+func TestConvertMessage_ForceReasoningContentForAssistantTextHistory(t *testing.T) {
+	clearReasoningContentCacheForTest()
+	defer clearReasoningContentCacheForTest()
+
+	c := newGinContext(http.MethodPost, "/v1/messages", []byte(`{
+		"model":"reasoning-model",
+		"messages":[{"role":"assistant","content":"historical answer"}]
+	}`), nil)
+	req, _, err := (&OpenAIProvider{}).ConvertToProviderRequest(c, &config.UpstreamConfig{
+		BaseURL:                 "https://api.example.com",
+		ServiceType:             "openai",
+		RequireReasoningContent: true,
+	}, "sk-test")
+	if err != nil {
+		t.Fatalf("ConvertToProviderRequest() err = %v", err)
+	}
+
+	var got types.OpenAIRequest
+	if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].ReasoningContent != missingReasoningContentFallback {
+		t.Fatalf("messages = %#v", got.Messages)
+	}
+}
+
+func TestReasoningContentRoundTrip_NonStreamToolCall(t *testing.T) {
+	clearReasoningContentCacheForTest()
+	defer clearReasoningContentCacheForTest()
+
+	providerResp := &types.ProviderResponse{
+		Body: []byte(`{
+			"id":"chatcmpl_test",
+			"choices":[{"finish_reason":"tool_calls","message":{
+				"role":"assistant",
+				"reasoning_content":"I need to inspect the repository.",
+				"content":null,
+				"tool_calls":[{"id":"call_read_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"README.md\"}"}}]
+			}}]
+		}`),
+	}
+	if _, err := (&OpenAIProvider{}).ConvertToClaudeResponse(providerResp); err != nil {
+		t.Fatalf("ConvertToClaudeResponse() err = %v", err)
+	}
+
+	// Claude Code 会将部分历史 thinking 回传为 redacted_thinking。
+	c := newGinContext(http.MethodPost, "/v1/messages", []byte(`{
+		"model":"reasoning-model",
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"redacted_thinking"},
+				{"type":"tool_use","id":"call_read_1","name":"Read","input":{"path":"README.md"}}
+			]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_read_1","content":"# Project"}]}
+		]
+	}`), nil)
+	req, _, err := (&OpenAIProvider{}).ConvertToProviderRequest(c, &config.UpstreamConfig{BaseURL: "https://api.example.com", ServiceType: "openai"}, "sk-test")
+	if err != nil {
+		t.Fatalf("ConvertToProviderRequest() err = %v", err)
+	}
+
+	var got types.OpenAIRequest
+	if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if len(got.Messages) != 2 {
+		t.Fatalf("messages = %#v", got.Messages)
+	}
+	if got.Messages[0].ReasoningContent != "I need to inspect the repository." {
+		t.Fatalf("reasoning_content = %q", got.Messages[0].ReasoningContent)
+	}
+}
+
+func TestReasoningContentRoundTrip_StreamToolCall(t *testing.T) {
+	clearReasoningContentCacheForTest()
+	defer clearReasoningContentCacheForTest()
+
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl_test","model":"reasoning-model","choices":[{"index":0,"delta":{"reasoning_content":"I need to inspect the repository."},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_test","model":"reasoning-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_read_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"README.md\"}"}}]},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl_test","model":"reasoning-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		``,
+	}, "\n")
+
+	eventChan, errChan, err := (&OpenAIProvider{}).HandleStreamResponse(io.NopCloser(strings.NewReader(body)))
+	if err != nil {
+		t.Fatalf("HandleStreamResponse() err = %v", err)
+	}
+	for range eventChan {
+	}
+	select {
+	case err := <-errChan:
+		if err != nil {
+			t.Fatalf("stream err = %v", err)
+		}
+	default:
+	}
+
+	c := newGinContext(http.MethodPost, "/v1/messages", []byte(`{
+		"model":"reasoning-model",
+		"messages":[{"role":"assistant","content":[
+			{"type":"redacted_thinking"},
+			{"type":"tool_use","id":"call_read_1","name":"Read","input":{"path":"README.md"}}
+		]}]
+	}`), nil)
+	req, _, err := (&OpenAIProvider{}).ConvertToProviderRequest(c, &config.UpstreamConfig{BaseURL: "https://api.example.com", ServiceType: "openai"}, "sk-test")
+	if err != nil {
+		t.Fatalf("ConvertToProviderRequest() err = %v", err)
+	}
+
+	var got types.OpenAIRequest
+	if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].ReasoningContent != "I need to inspect the repository." {
+		t.Fatalf("messages = %#v", got.Messages)
+	}
+}
+
+func TestReasoningContentCache_FallsBackToToolCallIDAfterCompaction(t *testing.T) {
+	clearReasoningContentCacheForTest()
+	defer clearReasoningContentCacheForTest()
+
+	storeReasoningForAssistantMessage(types.OpenAIMessage{
+		Role: "assistant",
+		ToolCalls: []types.OpenAIToolCall{{
+			ID: "call_stable_id",
+			Function: types.OpenAIToolCallFunction{
+				Name:      "Read",
+				Arguments: `{"path":"very-long-original-path.md"}`,
+			},
+		}},
+	}, "original reasoning")
+
+	got := lookupReasoningForAssistantMessage(types.OpenAIMessage{
+		Role: "assistant",
+		ToolCalls: []types.OpenAIToolCall{{
+			ID: "call_stable_id",
+			Function: types.OpenAIToolCallFunction{
+				Name:      "Read",
+				Arguments: `{"path":"compacted-path.md"}`,
+			},
+		}},
+	})
+	if got != "original reasoning" {
+		t.Fatalf("lookupReasoningForAssistantMessage() = %q, want original reasoning", got)
+	}
+}
+
+func TestCacheClaudeResponseReasoning_CrossProviderToolCall(t *testing.T) {
+	clearReasoningContentCacheForTest()
+	defer clearReasoningContentCacheForTest()
+
+	CacheClaudeResponseReasoning(&types.ClaudeResponse{
+		Role: "assistant",
+		Content: []types.ClaudeContent{
+			{Type: "thinking", Thinking: "reasoning from another provider"},
+			{Type: "tool_use", ID: "call_cross_provider", Name: "Read", Input: map[string]interface{}{"path": "README.md"}},
+		},
+	})
+
+	c := newGinContext(http.MethodPost, "/v1/messages", []byte(`{
+		"model":"reasoning-model",
+		"messages":[{"role":"assistant","content":[
+			{"type":"redacted_thinking"},
+			{"type":"tool_use","id":"call_cross_provider","name":"Read","input":{"path":"README.md"}}
+		]}]
+	}`), nil)
+	req, _, err := (&OpenAIProvider{}).ConvertToProviderRequest(c, &config.UpstreamConfig{BaseURL: "https://api.example.com", ServiceType: "openai"}, "sk-test")
+	if err != nil {
+		t.Fatalf("ConvertToProviderRequest() err = %v", err)
+	}
+	var got types.OpenAIRequest
+	if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].ReasoningContent != "reasoning from another provider" {
+		t.Fatalf("messages = %#v", got.Messages)
 	}
 }

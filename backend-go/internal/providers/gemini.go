@@ -1,9 +1,9 @@
 package providers
 
 import (
-	"context"
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -1239,7 +1239,9 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 		defaultGeminiShadowStore.Record(p.shadowProviderID, p.shadowSessionID, shadowTurn)
 	}
 
+	thinkingParts := make([]types.ClaudeContent, 0)
 	textParts := make([]string, 0)
+	toolUseParts := make([]types.ClaudeContent, 0)
 
 	// 处理各个部分
 	for _, p := range parts {
@@ -1249,6 +1251,12 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 		}
 
 		if isGeminiThoughtPart(part) {
+			if thought, _ := part["text"].(string); thought != "" {
+				thinkingParts = append(thinkingParts, types.ClaudeContent{
+					Type:     "thinking",
+					Thinking: thought,
+				})
+			}
 			continue
 		}
 
@@ -1263,7 +1271,7 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 			args := fc["args"]
 			id, _ := fc["id"].(string)
 
-			claudeResp.Content = append(claudeResp.Content, types.ClaudeContent{
+			toolUseParts = append(toolUseParts, types.ClaudeContent{
 				Type:  "tool_use",
 				ID:    id,
 				Name:  name,
@@ -1271,12 +1279,14 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 			})
 		}
 	}
+	claudeResp.Content = append(claudeResp.Content, thinkingParts...)
 	if len(textParts) > 0 {
-		claudeResp.Content = append([]types.ClaudeContent{{
+		claudeResp.Content = append(claudeResp.Content, types.ClaudeContent{
 			Type: "text",
 			Text: strings.Join(textParts, ""),
-		}}, claudeResp.Content...)
+		})
 	}
+	claudeResp.Content = append(claudeResp.Content, toolUseParts...)
 
 	// 设置停止原因
 	finishReason, _ := candidate["finishReason"].(string)
@@ -1386,7 +1396,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 
 		// 发送 message_stop 的辅助函数
 		emitMessageStop := func() {
-			send( "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			send("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 		}
 
 		// 关闭 thinking 块
@@ -1403,14 +1413,14 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				},
 			}
 			sigJSON, _ := json.Marshal(sigEvent)
-			send( fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", sigJSON))
+			send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", sigJSON))
 
 			stopEvent := map[string]interface{}{
 				"type":  "content_block_stop",
 				"index": thinkingBlockIndex,
 			}
 			stopJSON, _ := json.Marshal(stopEvent)
-			send( fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
+			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
 			thinkingBlockStarted = false
 			thinkingBlockIndex = -1
 		}
@@ -1425,7 +1435,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				"index": textBlockIndex,
 			}
 			stopJSON, _ := json.Marshal(stopEvent)
-			send( fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
+			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
 			textBlockStarted = false
 			textBlockIndex = -1
 		}
@@ -1468,7 +1478,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 					},
 				}
 				startJSON, _ := json.Marshal(msgStart)
-				send( fmt.Sprintf("event: message_start\ndata: %s\n\n", startJSON))
+				send(fmt.Sprintf("event: message_start\ndata: %s\n\n", startJSON))
 				messageStartEmitted = true
 			}
 
@@ -1507,7 +1517,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 						},
 					}
 					deltaJSON, _ := json.Marshal(deltaEvent)
-					send( fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON))
+					send(fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON))
 				}
 				continue
 			}
@@ -1541,7 +1551,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 							},
 						}
 						startJSON, _ := json.Marshal(startEvent)
-						send( fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
+						send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
 						thinkingBlockStarted = true
 					}
 
@@ -1554,7 +1564,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 						},
 					}
 					deltaJSON, _ := json.Marshal(deltaEvent)
-					send( fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
+					send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
 					continue
 				}
 
@@ -1574,7 +1584,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 							},
 						}
 						startJSON, _ := json.Marshal(startEvent)
-						send( fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
+						send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
 						textBlockStarted = true
 					}
 					if text != "" {
@@ -1599,7 +1609,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 						},
 					}
 					deltaJSON, _ := json.Marshal(deltaEvent)
-					send( fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
+					send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
 				}
 
 				// 处理函数调用
@@ -1631,7 +1641,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 
 					events := processToolUsePart(id, name, args, toolUseBlockIndex)
 					for _, event := range events {
-						send( event)
+						send(event)
 					}
 				}
 			}
@@ -1659,7 +1669,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 					},
 				}
 				deltaJSON, _ := json.Marshal(deltaEvent)
-				send( fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON))
+				send(fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON))
 			}
 		}
 
@@ -1681,7 +1691,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				emitMessageStop()
 				return
 			}
-			fail( err)
+			fail(err)
 		}
 
 		emitMessageStop()

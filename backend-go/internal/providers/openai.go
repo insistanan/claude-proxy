@@ -1,9 +1,9 @@
 package providers
 
 import (
-	"context"
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -45,7 +45,7 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 
 	openaiReq := &types.OpenAIRequest{
 		Model:       config.ResolveUpstreamModel(claudeReq.Model, upstream),
-		Messages:    p.convertMessages(&claudeReq),
+		Messages:    p.convertMessages(&claudeReq, upstream != nil && upstream.RequireReasoningContent),
 		Stream:      claudeReq.Stream,
 		Temperature: claudeReq.Temperature,
 	}
@@ -136,7 +136,7 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 }
 
 // convertMessages 转换消息
-func (p *OpenAIProvider) convertMessages(claudeReq *types.ClaudeRequest) []types.OpenAIMessage {
+func (p *OpenAIProvider) convertMessages(claudeReq *types.ClaudeRequest, forceReasoningContent bool) []types.OpenAIMessage {
 	messages := []types.OpenAIMessage{}
 
 	// 添加系统消息
@@ -151,7 +151,7 @@ func (p *OpenAIProvider) convertMessages(claudeReq *types.ClaudeRequest) []types
 	}
 
 	for _, msg := range claudeReq.Messages {
-		openaiMsg := p.convertMessage(msg)
+		openaiMsg := p.convertMessage(msg, forceReasoningContent)
 		messages = append(messages, openaiMsg...)
 	}
 
@@ -159,16 +159,20 @@ func (p *OpenAIProvider) convertMessages(claudeReq *types.ClaudeRequest) []types
 }
 
 // convertMessage 转换单个消息
-func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIMessage {
+func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage, forceReasoningContent bool) []types.OpenAIMessage {
 	messages := []types.OpenAIMessage{}
 
 	// 如果是字符串内容
 	if str, ok := msg.Content.(string); ok {
 		if msg.Role != "tool" {
-			messages = append(messages, types.OpenAIMessage{
+			openaiMsg := types.OpenAIMessage{
 				Role:    normalizeRole(msg.Role),
 				Content: str,
-			})
+			}
+			if openaiMsg.Role == "assistant" && forceReasoningContent {
+				openaiMsg.ReasoningContent = reasoningContentForAssistantMessage(openaiMsg, true)
+			}
+			messages = append(messages, openaiMsg)
 		}
 		return messages
 	}
@@ -183,6 +187,7 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 	toolCalls := []types.OpenAIToolCall{}
 	multimodalContents := []map[string]interface{}{}
 	hasVisionContent := false
+	hasRedactedThinking := false
 	flushAssistantOrUserMessage := func() {
 		if len(textContents) == 0 && len(reasoningContents) == 0 && len(toolCalls) == 0 && len(multimodalContents) == 0 {
 			return
@@ -194,17 +199,6 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 			multimodalContents = nil
 			hasVisionContent = false
 			return
-		}
-
-		// 客户端回传历史时可能把明文 thinking 转成 redacted_thinking 或直接丢弃，
-		// 导致本消息没有任何明文 reasoning。此时用文本指纹从缓存补回，
-		// 满足 Chat 推理模型（如 DeepSeek）"reasoning_content 必须回传"的校验。
-		if role == "assistant" && len(reasoningContents) == 0 && len(toolCalls) == 0 {
-			if text := strings.Join(textContents, ""); text != "" {
-				if cached := lookupReasoning(text); cached != "" {
-					reasoningContents = append(reasoningContents, cached)
-				}
-			}
 		}
 
 		openaiMsg := types.OpenAIMessage{
@@ -220,6 +214,16 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 		if len(toolCalls) > 0 {
 			openaiMsg.ToolCalls = toolCalls
 		}
+		// 客户端回传历史时可能把明文 thinking 转成 redacted_thinking 或直接丢弃，
+		// 导致本消息没有任何明文 reasoning。用完整 assistant 消息（文本 + 工具调用）
+		// 从缓存补回，满足 Chat 推理模型（如 DeepSeek）对原样回传的校验。若旧会话
+		// 重启后缓存已不存在，则工具调用历史至少携带兼容续接值，避免严格渠道因
+		// reasoning_content 缺失直接拒绝请求。
+		if role == "assistant" && len(reasoningContents) == 0 {
+			if reasoning := reasoningContentForAssistantMessage(openaiMsg, forceReasoningContent || hasRedactedThinking); reasoning != "" {
+				reasoningContents = append(reasoningContents, reasoning)
+			}
+		}
 		if role == "assistant" && len(reasoningContents) > 0 {
 			openaiMsg.ReasoningContent = strings.Join(reasoningContents, "")
 		}
@@ -230,6 +234,7 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 		toolCalls = nil
 		multimodalContents = nil
 		hasVisionContent = false
+		hasRedactedThinking = false
 	}
 
 	for _, content := range contents {
@@ -243,7 +248,9 @@ func (p *OpenAIProvider) convertMessage(msg types.ClaudeMessage) []types.OpenAIM
 				}
 			}
 		case "redacted_thinking":
-			// 没有可回传的明文推理，始终忽略。
+			// 记录该历史回合确实产生过推理；缓存失效时仍需补齐严格 Chat
+			// 渠道所要求的 reasoning_content 字段。
+			hasRedactedThinking = normalizeRole(msg.Role) == "assistant"
 		case "text":
 			if text, ok := content["text"].(string); ok {
 				textContents = append(textContents, text)
@@ -400,6 +407,7 @@ func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 	if err := json.Unmarshal(providerResp.Body, &openaiResp); err != nil {
 		return nil, err
 	}
+	populateOpenAIReasoningContent(&openaiResp, providerResp.Body)
 
 	var usageEnvelope openAIUsageEnvelope
 	if err := json.Unmarshal(providerResp.Body, &usageEnvelope); err != nil {
@@ -418,15 +426,13 @@ func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 		msg := choice.Message
 
 		// Chat 推理模型会要求下一轮回传 reasoning_content；将其保存为 Claude thinking，
-		// 同时缓存 (assistant 文本 → reasoning)，供客户端回传历史丢失明文 thinking 时自动补回。
+		// 同时缓存完整 assistant 消息，供客户端回传历史丢失明文 thinking 时自动补回。
 		if msg.ReasoningContent != "" {
 			claudeResp.Content = append(claudeResp.Content, types.ClaudeContent{
 				Type:     "thinking",
 				Thinking: msg.ReasoningContent,
 			})
-			if text := extractOpenAIMessageText(msg); text != "" {
-				storeReasoning(text, msg.ReasoningContent)
-			}
+			storeReasoningForAssistantMessage(msg, msg.ReasoningContent)
 		}
 
 		// 添加文本内容
@@ -519,6 +525,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBufferSize)
 
 		toolCallAccumulator := make(map[int]*ToolCallAccumulator)
+		assistantToolCalls := make(map[int]types.OpenAIToolCall)
 		nextBlockIndex := 0
 
 		// 文本块状态跟踪
@@ -546,7 +553,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 
 		// 发送 message_stop 的辅助函数
 		emitMessageStop := func() {
-			send( "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			send("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 		}
 		emitMessageDelta := func(stopReason string) {
 			if messageDeltaEmitted {
@@ -555,7 +562,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			if stopReason == "" {
 				stopReason = "end_turn"
 			}
-			send( buildOpenAIMessageDeltaEvent(stopReason, streamUsage, hasStreamUsage))
+			send(buildOpenAIMessageDeltaEvent(stopReason, streamUsage, hasStreamUsage))
 			messageDeltaEmitted = true
 		}
 
@@ -574,7 +581,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				},
 			}
 			sigJSON, _ := json.Marshal(sigEvent)
-			send( fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", sigJSON))
+			send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", sigJSON))
 
 			// 发送 content_block_stop
 			stopEvent := map[string]interface{}{
@@ -582,7 +589,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				"index": thinkingBlockIndex,
 			}
 			stopJSON, _ := json.Marshal(stopEvent)
-			send( fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
+			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
 			thinkingBlockStarted = false
 			thinkingBlockIndex = -1
 		}
@@ -600,7 +607,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				},
 			}
 			deltaJSON, _ := json.Marshal(deltaEvent)
-			send( fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
+			send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
 		}
 
 		flushTextDelta := func() {
@@ -622,7 +629,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				"index": textBlockIndex,
 			}
 			stopJSON, _ := json.Marshal(stopEvent)
-			send( fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
+			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
 			textBlockStarted = false
 			textBlockIndex = -1
 		}
@@ -638,7 +645,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				},
 			}
 			startJSON, _ := json.Marshal(startEvent)
-			send( fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
+			send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
 		}
 		emitToolCallArgumentDelta := func(acc *ToolCallAccumulator, partialJSON string) {
 			if partialJSON == "" {
@@ -653,7 +660,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				},
 			}
 			deltaJSON, _ := json.Marshal(deltaEvent)
-			send( fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
+			send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
 		}
 		emitContentBlockStop := func(index int) {
 			stopEvent := map[string]interface{}{
@@ -661,7 +668,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				"index": index,
 			}
 			stopJSON, _ := json.Marshal(stopEvent)
-			send( fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
+			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
 		}
 		ensureToolCallStarted := func(acc *ToolCallAccumulator) bool {
 			if acc == nil {
@@ -714,10 +721,30 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				closeToolCall(index)
 			}
 		}
+		snapshotAssistantToolCalls := func() []types.OpenAIToolCall {
+			if len(assistantToolCalls) == 0 {
+				return nil
+			}
+			indexes := make([]int, 0, len(assistantToolCalls))
+			for index := range assistantToolCalls {
+				indexes = append(indexes, index)
+			}
+			sort.Ints(indexes)
+			toolCalls := make([]types.OpenAIToolCall, 0, len(indexes))
+			for _, index := range indexes {
+				toolCalls = append(toolCalls, assistantToolCalls[index])
+			}
+			return toolCalls
+		}
 		finishStream := func() {
-			// 缓存本轮 (assistant 文本 → reasoning)，供客户端回传历史丢失明文 thinking 时自动补回。
-			if reasoningDeltaBuffer.Len() > 0 && assistantTextBuffer.Len() > 0 {
-				storeReasoning(assistantTextBuffer.String(), reasoningDeltaBuffer.String())
+			// 缓存本轮完整 assistant 消息。工具调用回合通常没有文本，仍需用其
+			// 工具调用内容关联 reasoning_content，供 Claude Code 下一轮回传时补回。
+			if reasoningDeltaBuffer.Len() > 0 {
+				storeReasoningForAssistantMessage(types.OpenAIMessage{
+					Role:      "assistant",
+					Content:   assistantTextBuffer.String(),
+					ToolCalls: snapshotAssistantToolCalls(),
+				}, reasoningDeltaBuffer.String())
 			}
 			closeThinkingBlock()
 			closeTextBlock()
@@ -759,7 +786,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 
 			// 检查是否有错误
 			if errObj, ok := chunk["error"]; ok {
-				fail( fmt.Errorf("upstream error: %v", errObj))
+				fail(fmt.Errorf("upstream error: %v", errObj))
 				emitMessageStop()
 				return
 			}
@@ -783,7 +810,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 					},
 				}
 				startJSON, _ := json.Marshal(msgStart)
-				send( fmt.Sprintf("event: message_start\ndata: %s\n\n", startJSON))
+				send(fmt.Sprintf("event: message_start\ndata: %s\n\n", startJSON))
 				messageStartEmitted = true
 			}
 
@@ -803,7 +830,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			}
 
 			// 将上游 reasoning_content 映射为 Claude thinking，供下一轮原样回传。
-			if reasoningContent, ok := delta["reasoning_content"].(string); ok && reasoningContent != "" {
+			if reasoningContent := extractOpenAIReasoningContent(delta); reasoningContent != "" {
 				reasoningDeltaBuffer.WriteString(reasoningContent)
 				closeTextBlock()
 				if !thinkingBlockStarted {
@@ -853,7 +880,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 						},
 					}
 					startJSON, _ := json.Marshal(startEvent)
-					send( fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
+					send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
 					textBlockStarted = true
 				}
 
@@ -900,6 +927,14 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 							acc.Arguments += args
 						}
 					}
+					assistantToolCalls[index] = types.OpenAIToolCall{
+						ID:   acc.ID,
+						Type: "function",
+						Function: types.OpenAIToolCallFunction{
+							Name:      acc.Name,
+							Arguments: acc.Arguments,
+						},
+					}
 
 					if ensureToolCallStarted(acc) {
 						emitPendingToolCallArgumentDelta(acc)
@@ -938,7 +973,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				finishStream()
 				return
 			}
-			fail( err)
+			fail(err)
 		}
 
 		// 流正常结束，发送 message_stop
@@ -1371,4 +1406,35 @@ func extractOpenAIMessageText(msg types.OpenAIMessage) string {
 		return b.String()
 	}
 	return ""
+}
+
+// extractOpenAIReasoningContent 兼容部分 Chat 网关使用的非标准推理字段。
+// 对外仍统一发送 reasoning_content，满足严格渠道的历史消息校验。
+func extractOpenAIReasoningContent(fields map[string]interface{}) string {
+	for _, key := range []string{"reasoning_content", "reasoning", "thinking"} {
+		if value, ok := fields[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func populateOpenAIReasoningContent(response *types.OpenAIResponse, body []byte) {
+	if response == nil || len(response.Choices) == 0 {
+		return
+	}
+	var envelope struct {
+		Choices []struct {
+			Message map[string]interface{} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return
+	}
+	for index := range response.Choices {
+		if response.Choices[index].Message.ReasoningContent != "" || index >= len(envelope.Choices) {
+			continue
+		}
+		response.Choices[index].Message.ReasoningContent = extractOpenAIReasoningContent(envelope.Choices[index].Message)
+	}
 }
