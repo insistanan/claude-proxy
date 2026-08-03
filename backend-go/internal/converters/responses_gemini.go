@@ -35,12 +35,12 @@ func ConvertResponsesToGeminiRequest(model string, sess *session.Session, req *t
 			geminiReq.Contents = append(geminiReq.Contents, content)
 		}
 	}
-	if tools, err := ResponsesToolsToGeminiTools(req.Tools); err != nil {
+	if tools, err := responsesToolsToGeminiTools(req.Tools); err != nil {
 		return nil, err
 	} else if len(tools) > 0 {
 		geminiReq.Tools = tools
 	}
-	if toolConfig, err := ResponsesToolChoiceToGemini(req.ToolChoice); err != nil {
+	if toolConfig, err := responsesToolChoiceToGemini(req.ToolChoice); err != nil {
 		return nil, err
 	} else if toolConfig != nil {
 		geminiReq.ToolConfig = toolConfig
@@ -173,7 +173,7 @@ func ConvertGeminiResponseToResponses(originalRequestJSON []byte, upstreamRespon
 	return resp, nil
 }
 
-func ResponsesToolsToGeminiTools(raw interface{}) ([]types.GeminiTool, error) {
+func responsesToolsToGeminiTools(raw interface{}) ([]types.GeminiTool, error) {
 	items, err := interfaceSlice(raw)
 	if err != nil || len(items) == 0 {
 		return nil, err
@@ -200,7 +200,7 @@ func ResponsesToolsToGeminiTools(raw interface{}) ([]types.GeminiTool, error) {
 	return []types.GeminiTool{{FunctionDeclarations: decls}}, nil
 }
 
-func ResponsesToolChoiceToGemini(raw interface{}) (*types.GeminiToolConfig, error) {
+func responsesToolChoiceToGemini(raw interface{}) (*types.GeminiToolConfig, error) {
 	if raw == nil {
 		return nil, nil
 	}

@@ -427,24 +427,6 @@ func extractToolName(tool interface{}) interface{} {
 	return tool
 }
 
-// SimplifyToolsInJSON 简化JSON字节数组中的tools字段
-// 这是一个便利函数,直接处理JSON字节
-func SimplifyToolsInJSON(jsonData []byte) []byte {
-	var data interface{}
-	if err := json.Unmarshal(jsonData, &data); err != nil {
-		return jsonData // 如果不是有效JSON,返回原始数据
-	}
-
-	simplifiedData := SimplifyToolsArray(data)
-
-	simplifiedBytes, err := json.Marshal(simplifiedData)
-	if err != nil {
-		return jsonData // 如果序列化失败,返回原始数据
-	}
-
-	return simplifiedBytes
-}
-
 // FormatJSONForLog 格式化JSON用于日志输出
 // 先简化tools,再截断长文本,最后美化格式
 func FormatJSONForLog(data interface{}, maxTextLength int) string {

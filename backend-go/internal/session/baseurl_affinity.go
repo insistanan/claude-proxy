@@ -26,11 +26,11 @@ type BaseURLAffinityManager struct {
 
 // NewBaseURLAffinityManager 创建默认 30 分钟 TTL 的管理器。
 func NewBaseURLAffinityManager() *BaseURLAffinityManager {
-	return NewBaseURLAffinityManagerWithTTL(30 * time.Minute)
+	return newBaseURLAffinityManagerWithTTL(30 * time.Minute)
 }
 
-// NewBaseURLAffinityManagerWithTTL 创建自定义 TTL 的管理器。
-func NewBaseURLAffinityManagerWithTTL(ttl time.Duration) *BaseURLAffinityManager {
+// newBaseURLAffinityManagerWithTTL 创建自定义 TTL 的管理器。
+func newBaseURLAffinityManagerWithTTL(ttl time.Duration) *BaseURLAffinityManager {
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}

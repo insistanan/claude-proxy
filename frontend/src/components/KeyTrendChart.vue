@@ -111,10 +111,11 @@ const { start: startAutoRefresh, stop: stopAutoRefresh } = useAutoRefresh(
   () => refreshData(true), isRefreshing, 2000,
 )
 
-// 调色板 — 优雅渐变，支持最多 10 个 key
+// 调色板 — 低饱和的十色环，与 Instrument Deck 主题同调；
+// 明暗主题共用一套中间明度值，切主题时不需要重算系列色
 const keyColors = [
-  '#3B82F6', '#F97316', '#10B981', '#8B5CF6', '#EC4899',
-  '#EAB308', '#06B6D4', '#F43F5E', '#84CC16', '#6366F1',
+  '#5C6BC8', '#C1804A', '#2FA478', '#8A72C0', '#C46A92',
+  '#B99436', '#3E93A8', '#CA6072', '#7E9C46', '#6E77CE',
 ]
 
 const FAILURE_RATE_THRESHOLD = 0.1
@@ -186,7 +187,7 @@ const failureAnnotations = computed(() => {
       annotations.push({
         x: point.timestamp - interval / 2,
         x2: point.timestamp + interval / 2,
-        fillColor: '#EF4444',
+        fillColor: '#D05B5B',
         opacity: getFailureOpacity(point.failureRate),
         label: { text: '' }
       })
@@ -197,7 +198,7 @@ const failureAnnotations = computed(() => {
 
 const getThemeColors = computed(() => ({
   grid: isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
-  text: isDark.value ? '#94A3B8' : '#64748B',
+  text: isDark.value ? '#A2AAB8' : '#555E6E',
 }))
 
 const getChartColors = (): string[] => {
@@ -285,7 +286,7 @@ const buildTrafficTooltip = ({ seriesIndex, dataPointIndex, w }: any): string =>
   const hasFailure = grandFailure > 0
 
   let html = `<div style="padding: 10px 14px; font-size: 12px; min-width: 220px;">`
-  html += `<div style="font-weight: 600; margin-bottom: 8px; color: ${hasFailure ? '#EF4444' : 'inherit'}; border-bottom: 1px solid rgba(128,128,128,0.15); padding-bottom: 6px;">${timeStr}</div>`
+  html += `<div style="font-weight: 600; margin-bottom: 8px; color: ${hasFailure ? '#D05B5B' : 'inherit'}; border-bottom: 1px solid rgba(128,128,128,0.15); padding-bottom: 6px;">${timeStr}</div>`
   keyStats.forEach(stat => {
     const failureRate = stat.total > 0 ? (stat.failure / stat.total * 100).toFixed(0) : '0'
     const hasKeyFailure = stat.failure > 0
@@ -294,14 +295,14 @@ const buildTrafficTooltip = ({ seriesIndex, dataPointIndex, w }: any): string =>
     html += `<span style="flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${stat.keyMask}${stat.model ? ` <span style="font-size: 10px; color: #888;">(${stat.model})</span>` : ''}</span>`
     html += `<span style="font-weight: 600;">${stat.total}</span>`
     if (hasKeyFailure) {
-      html += `<span style="color: #EF4444; font-size: 11px; margin-left: 4px;">${stat.failure}失(${failureRate}%)</span>`
+      html += `<span style="color: #D05B5B; font-size: 11px; margin-left: 4px;">${stat.failure}失(${failureRate}%)</span>`
     }
     html += `</div>`
   })
   if (keyStats.length > 1) {
     html += `<div style="border-top: 1px solid rgba(128,128,128,0.2); margin-top: 8px; padding-top: 6px; font-weight: 600; display: flex; justify-content: space-between;">`
     html += `<span>合计: ${grandTotal} 请求</span>`
-    if (hasFailure) html += `<span style="color: #EF4444;">${grandFailure} 失败 (${grandFailureRate}%)</span>`
+    if (hasFailure) html += `<span style="color: #D05B5B;">${grandFailure} 失败 (${grandFailureRate}%)</span>`
     html += `</div>`
   }
   html += `</div>`
@@ -362,7 +363,7 @@ const buildDualTooltip = ({ seriesIndex, dataPointIndex, w }: any): string => {
     html += `<span>${label2}: <b style="color: rgb(var(--v-theme-on-surface));">${formatNumber(stat.val2)}</b></span>`
     html += `</div>`
     if (stat.cacheHitRate !== undefined) {
-      const hitColor = stat.cacheHitRate >= 50 ? '#10B981' : stat.cacheHitRate >= 20 ? '#3B82F6' : '#F59E0B'
+      const hitColor = stat.cacheHitRate >= 50 ? '#2FA478' : stat.cacheHitRate >= 20 ? '#5C6BC8' : '#C1804A'
       html += `<div style="padding-left: 14px; font-size: 11px; color: ${hitColor}; margin-top: 2px;">缓存命中率: <b>${stat.cacheHitRate.toFixed(1)}%</b></div>`
     }
     html += `</div>`

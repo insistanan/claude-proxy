@@ -18,7 +18,6 @@ const (
 
 // PrepareUpstreamHeaders 准备上游请求头（统一头部处理逻辑）
 // 保留原始请求头，移除代理相关头部，设置认证头
-// 注意：此函数适用于Claude类型渠道，对于其他类型请使用 PrepareMinimalHeaders
 func PrepareUpstreamHeaders(c *gin.Context, targetHost string) http.Header {
 	headers := c.Request.Header.Clone()
 
@@ -42,20 +41,6 @@ func PrepareUpstreamHeaders(c *gin.Context, targetHost string) http.Header {
 	// 移除 Accept-Encoding，让 Go 的 http.Client 自动处理 gzip 压缩/解压缩
 	// 这样可以避免在原始请求包含 Accept-Encoding 时 Go 不自动解压缩的问题
 	headers.Del("Accept-Encoding")
-
-	return headers
-}
-
-// PrepareMinimalHeaders 准备最小化请求头（适用于非Claude渠道如OpenAI、Gemini等）
-// 只保留必要的头部：Content-Type和Host，不包含任何Anthropic特定头部
-// 注意：不设置Accept-Encoding，让Go的http.Client自动处理gzip压缩
-func PrepareMinimalHeaders(targetHost string) http.Header {
-	headers := http.Header{}
-
-	// 只设置最基本的头部
-	headers.Set("Host", targetHost)
-	headers.Set("Content-Type", "application/json")
-	// 不显式设置Accept-Encoding，让Go的http.Client自动添加并处理gzip解压
 
 	return headers
 }
@@ -229,16 +214,6 @@ func ApplyClaudeCodeDisguise(headers http.Header, stream bool) {
 			headers.Set("Accept", "application/json")
 		}
 	}
-}
-
-// EnsureCodexHeaders 保留旧调用入口，按非流式请求补全 Codex 特征。
-func EnsureCodexHeaders(headers http.Header) {
-	ApplyCodexDisguise(headers, false)
-}
-
-// EnsureClaudeCodeHeaders 保留旧调用入口，按非流式请求补全 Claude Code 特征。
-func EnsureClaudeCodeHeaders(headers http.Header) {
-	ApplyClaudeCodeDisguise(headers, false)
 }
 
 func codexUserAgent() string {

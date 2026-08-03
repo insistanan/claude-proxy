@@ -89,7 +89,7 @@ func ModelDetail(ctx context.Context, cfgManager *config.ConfigManager, modelID 
 			return model, true
 		}
 	}
-	if !LooksLikeChatRouteAlias(modelID) {
+	if !looksLikeChatRouteAlias(modelID) {
 		return ModelEntry{}, false
 	}
 	chatModels, _, err := chatCatalog(ctx, cfgManager, false)
@@ -105,7 +105,7 @@ func ModelDetail(ctx context.Context, cfgManager *config.ConfigManager, modelID 
 }
 
 func ResolveChatRoute(ctx context.Context, cfgManager *config.ConfigManager, modelID string) (ChatRoute, bool) {
-	if !LooksLikeChatRouteAlias(modelID) {
+	if !looksLikeChatRouteAlias(modelID) {
 		return ChatRoute{}, false
 	}
 
@@ -124,7 +124,7 @@ func ResolveChatRoute(ctx context.Context, cfgManager *config.ConfigManager, mod
 	return route, ok
 }
 
-func LooksLikeChatRouteAlias(modelID string) bool {
+func looksLikeChatRouteAlias(modelID string) bool {
 	return strings.Contains(modelID, "__c") && strings.Contains(modelID, "__k")
 }
 

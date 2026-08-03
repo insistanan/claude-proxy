@@ -698,22 +698,31 @@ func TestClaudeConverter_WithInstructions(t *testing.T) {
 
 func TestConverterFactory(t *testing.T) {
 	tests := []struct {
-		serviceType  string
-		expectedType string
+		serviceType string
+		wantErr     bool
 	}{
-		{"openai", "*converters.OpenAIChatConverter"},
-		{"claude", "*converters.ClaudeConverter"},
-		{"responses", "*converters.ResponsesPassthroughConverter"},
-		{"unknown", "*converters.OpenAIChatConverter"}, // 默认
+		{"openai", false},
+		{"claude", false},
+		{"responses", false},
+		{"gemini", true},  // Responses → Gemini 走 responses_protocol.go，不支持旧结构化转换器
+		{"unknown", true}, // 未知 serviceType 必须显式报错，不能静默回退
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.serviceType, func(t *testing.T) {
-			converter := NewConverter(tt.serviceType)
-			if converter == nil {
-				t.Errorf("工厂返回 nil")
+			converter, err := NewConverterStrict(tt.serviceType)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("serviceType %q 应该返回错误", tt.serviceType)
+				}
+				return
 			}
-			// 检查类型（简单验证）
+			if err != nil {
+				t.Fatalf("工厂返回错误: %v", err)
+			}
+			if converter == nil {
+				t.Fatalf("工厂返回 nil")
+			}
 			if converter.GetProviderName() == "" {
 				t.Errorf("GetProviderName 返回空字符串")
 			}

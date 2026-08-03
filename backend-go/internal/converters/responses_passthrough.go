@@ -107,17 +107,17 @@ func (c *ResponsesPassthroughConverter) FromProviderResponse(resp map[string]int
 	usage := ExtractUsageMetrics(resp["usage"])
 
 	return &types.ResponsesResponse{
-		ID:                  id,
-		Object:              object,
-		Model:               model,
-		Output:              output,
-		Status:              status,
-		PreviousID:          previousID,
-		PreviousResponseID:  previousResponseID,
-		Usage:               usage,
-		Created:             created,
-		CreatedAt:           createdAt,
-		Extra:               resp,
+		ID:                 id,
+		Object:             object,
+		Model:              model,
+		Output:             output,
+		Status:             status,
+		PreviousID:         previousID,
+		PreviousResponseID: previousResponseID,
+		Usage:              usage,
+		Created:            created,
+		CreatedAt:          createdAt,
+		Extra:              resp,
 	}, nil
 }
 

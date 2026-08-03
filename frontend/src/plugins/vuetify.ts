@@ -59,7 +59,6 @@ import {
   mdiRotateRight,
   mdiDice6,
   mdiBackupRestore,
-  mdiKeyPlus,
   mdiPin,
   mdiPinOutline,
   mdiKeyChain,
@@ -202,7 +201,6 @@ const iconMap: Record<string, string> = {
   'shield-off-outline': mdiShieldOffOutline,
 
   'key': mdiKey,
-  'key-plus': mdiKeyPlus,
   'key-chain': mdiKeyChain,
   'speedometer': mdiSpeedometer,
   'speedometer-slow': mdiSpeedometerSlow,
@@ -308,61 +306,65 @@ const customSvgIconSet: IconSet = {
 }
 
 // ============================================================
-// 色彩系统 — 冷静、清晰的运维控制台
-// 冷灰结构底 + 深靛蓝主色 + 克制的状态色
+// 色彩系统 — "砚与铜"：石墨冷底 + 深靛主色 + 铜赤点缀
+//
+// 设计取舍：
+//   柔和 = 底色低饱和、文字避开纯黑/纯白、状态色统一压低明度纯度
+//   强对比 = 靠 outline（边框）和 surface/background 的层差拉开模块边界，
+//            而不是靠提高颜色饱和度——所以看着"狠"但不扎眼
 // ============================================================
 
-// Light Theme — 工程图纸底色，黑色结构线提供稳定骨架
+// Light Theme — 雾灰底 + 纯白卡片，深靛主色在白底上足够沉，长时间看不累
 const lightTheme: ThemeDefinition = {
   dark: false,
   colors: {
-    primary: '#4F5FC7',
-    'primary-darken-1': '#3F4FAF',
-    'primary-lighten-1': '#707DDB',
-    secondary: '#5F6877',
-    accent: '#B65F7A',
+    primary: '#3E4DA8',
+    'primary-darken-1': '#2F3C8B',
+    'primary-lighten-1': '#6774CB',
+    secondary: '#586170',
+    accent: '#A55E3C',
 
-    info: '#287F9D',
-    success: '#16845B',
-    warning: '#C47716',
-    error: '#C84848',
+    info: '#1F6E8C',
+    success: '#0E7551',
+    warning: '#A56A12',
+    error: '#B63E3E',
 
-    background: '#F3F5F7',
-    surface: '#FCFCFD',
-    'surface-variant': '#ECEFF3',
+    background: '#E9EBF1',
+    surface: '#FFFFFF',
+    'surface-variant': '#E1E5ED',
     'surface-bright': '#FFFFFF',
-    'on-surface': '#292D36',
-    'on-background': '#292D36',
-    'on-surface-variant': '#636A76',
-    outline: '#AEB5C0',
-    'outline-variant': '#D6DAE1',
+    'on-surface': '#1D222C',
+    'on-background': '#252B36',
+    'on-surface-variant': '#555E6E',
+    outline: '#939CAC',
+    'outline-variant': '#C9CFDA',
   }
 }
 
-// Dark Theme — 碳黑设备面板，保留同一套状态色语义
+// Dark Theme — 近黑石墨底 + 提亮卡片，文字用暖白而非纯白，避免暗背景上的眩光
 const darkTheme: ThemeDefinition = {
   dark: true,
   colors: {
-    primary: '#8D9AE8',
-    'primary-darken-1': '#7483DB',
-    'primary-lighten-1': '#AAB4F2',
-    secondary: '#AAB1BD',
-    accent: '#D78BA1',
+    primary: '#8E9BE8',
+    'primary-darken-1': '#7683DC',
+    'primary-lighten-1': '#ABB4F1',
+    secondary: '#A0A8B6',
+    accent: '#D18C68',
 
-    info: '#6AB7D1',
-    success: '#4CCB91',
-    warning: '#E5A34C',
-    error: '#ED7777',
+    info: '#63B0CE',
+    success: '#43C48D',
+    warning: '#DDA155',
+    error: '#E97C7C',
 
-    background: '#111419',
-    surface: '#1A1E25',
-    'surface-variant': '#242932',
-    'surface-bright': '#2B313B',
-    'on-surface': '#F4F6FA',
-    'on-background': '#E8EBF2',
-    'on-surface-variant': '#AEB5C0',
-    outline: '#626B78',
-    'outline-variant': '#333A45',
+    background: '#090C12',
+    surface: '#151A22',
+    'surface-variant': '#1F252F',
+    'surface-bright': '#28303C',
+    'on-surface': '#E7EAF1',
+    'on-background': '#DBDFE8',
+    'on-surface-variant': '#A2AAB8',
+    outline: '#5B6472',
+    'outline-variant': '#2B323D',
   }
 }
 

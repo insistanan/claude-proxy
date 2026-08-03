@@ -13,12 +13,6 @@ import (
 
 // ============== Responses → Claude Messages ==============
 
-// ResponsesToClaudeMessages 将 Responses 格式转换为 Claude Messages 格式
-// instructions 参数会被转换为 Claude API 的 system 参数（不在 messages 中）
-func ResponsesToClaudeMessages(sess *session.Session, newInput interface{}, instructions string) ([]types.ClaudeMessage, string, error) {
-	return ResponsesToClaudeMessagesWithOptions(sess, newInput, instructions, false)
-}
-
 // ResponsesToClaudeMessagesWithOptions converts Responses history+input to Claude messages.
 // includeHistoryThinking materializes type=reasoning as assistant text; default false skips it.
 // When session history exists and client input already replays the same prefix, avoid double-append.

@@ -265,11 +265,6 @@ func generateMetricsKey(baseURL, apiKey string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16] // 取前16位作为键
 }
 
-// GenerateMetricsKey 生成指标键 hash(baseURL + apiKey)（导出供外部使用）
-func GenerateMetricsKey(baseURL, apiKey string) string {
-	return generateMetricsKey(baseURL, apiKey)
-}
-
 // getOrCreateKey 获取或创建 Key 指标
 func (m *MetricsManager) getOrCreateKey(baseURL, apiKey string) *KeyMetrics {
 	metricsKey := generateMetricsKey(baseURL, apiKey)

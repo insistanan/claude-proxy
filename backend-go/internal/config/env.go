@@ -75,8 +75,8 @@ func NewEnvConfig() *EnvConfig {
 		MetricsRetentionDays:      clampInt(getEnvAsInt("METRICS_RETENTION_DAYS", 7), 3, 30),
 		// HTTP 客户端配置
 		ResponseHeaderTimeout: clampInt(getEnvAsInt("RESPONSE_HEADER_TIMEOUT", 120), 30, 300), // 30-300 秒，默认 120
-		StreamIdleTimeout:     clampInt(getEnvAsInt("STREAM_IDLE_TIMEOUT", 300), 30, 3600),     // 30-3600 秒，默认 300（5 分钟）
-		ForceHTTP1:            getEnv("FORCE_HTTP1", "false") == "true",                        // 默认 HTTP/2，可通过环境变量强制 HTTP/1.1
+		StreamIdleTimeout:     clampInt(getEnvAsInt("STREAM_IDLE_TIMEOUT", 300), 30, 3600),    // 30-3600 秒，默认 300（5 分钟）
+		ForceHTTP1:            getEnv("FORCE_HTTP1", "false") == "true",                       // 默认 HTTP/2，可通过环境变量强制 HTTP/1.1
 		// 日志文件配置
 		LogDir:        getEnv("LOG_DIR", "logs"),
 		LogFile:       getEnv("LOG_FILE", "app.log"),

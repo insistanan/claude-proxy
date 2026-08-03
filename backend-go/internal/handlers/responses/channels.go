@@ -12,6 +12,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Crud 返回本协议专用的渠道管理 handler 集合。
+// 路由注册见 handlers.RegisterChannelRoutes，它直接消费本函数返回的 *channelcrud.Handlers，
+// 因此本包不再提供逐方法的 gin.HandlerFunc 包装。
 func Crud(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) *channelcrud.Handlers {
 	return channelcrud.New(channelcrud.Ops{
 		Kind: scheduler.ChannelKindResponses,
@@ -38,72 +41,7 @@ func Crud(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) *ch
 	}, sch)
 }
 
-// GetUpstreams 获取 Responses 上游列表
-func GetUpstreams(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).GetUpstreams
-}
-
-// AddUpstream 添加 Responses 上游
-func AddUpstream(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).AddUpstream
-}
-
-// UpdateUpstream 更新 Responses 上游
-func UpdateUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) gin.HandlerFunc {
-	return Crud(cfgManager, sch).UpdateUpstream
-}
-
-// DeleteUpstream 删除 Responses 上游
-func DeleteUpstream(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) gin.HandlerFunc {
-	return Crud(cfgManager, sch).DeleteUpstream
-}
-
-// AddApiKey 添加 Responses 渠道 API 密钥
-func AddApiKey(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).AddApiKey
-}
-
-// DeleteApiKey 删除 Responses 渠道 API 密钥
-func DeleteApiKey(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).DeleteApiKey
-}
-
-// MoveApiKeyToTop 将 Responses 渠道 API 密钥移到最前面
-func MoveApiKeyToTop(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).MoveApiKeyToTop
-}
-
-// MoveApiKeyToBottom 将 Responses 渠道 API 密钥移到最后面
-func MoveApiKeyToBottom(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).MoveApiKeyToBottom
-}
-
-// UpdateLoadBalance 更新 Responses 负载均衡策略
+// UpdateLoadBalance 更新负载均衡策略（RegisterChannelRoutes 的可选端点）
 func UpdateLoadBalance(cfgManager *config.ConfigManager) gin.HandlerFunc {
 	return Crud(cfgManager, nil).UpdateLoadBalance
-}
-
-// ReorderChannels 重新排序 Responses 渠道优先级
-func ReorderChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).ReorderChannels
-}
-
-// SetChannelStatus 设置 Responses 渠道状态
-func SetChannelStatus(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).SetChannelStatus
-}
-
-// SetChannelPromotion 设置 Responses 渠道促销期
-func SetChannelPromotion(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).SetChannelPromotion
-}
-
-// PingChannel 测试 Responses 渠道连通性
-func PingChannel(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).PingChannel
-}
-
-// PingAllChannels 测试所有 Responses 渠道连通性
-func PingAllChannels(cfgManager *config.ConfigManager) gin.HandlerFunc {
-	return Crud(cfgManager, nil).PingAllChannels
 }

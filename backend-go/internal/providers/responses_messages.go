@@ -1,9 +1,9 @@
 package providers
 
 import (
-	"context"
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -149,11 +149,11 @@ func (p *MessagesResponsesProvider) HandleStreamResponseCtx(ctx context.Context,
 				continue
 			}
 			for _, event := range state.processLine(line) {
-				send( event)
+				send(event)
 			}
 		}
 		for _, event := range state.finish() {
-			send( event)
+			send(event)
 		}
 		if enableChain && claudeReq != nil && state.upstreamResponseID != "" {
 			rememberResponsesChain(conversationID, claudeReq, upstream, resolvedModel, state.upstreamResponseID)
@@ -163,7 +163,7 @@ func (p *MessagesResponsesProvider) HandleStreamResponseCtx(ctx context.Context,
 			if strings.Contains(errMsg, "broken pipe") || strings.Contains(errMsg, "connection reset") || strings.Contains(errMsg, "EOF") {
 				return
 			}
-			fail( err)
+			fail(err)
 		}
 	}()
 

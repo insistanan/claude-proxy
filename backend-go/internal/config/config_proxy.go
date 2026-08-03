@@ -120,7 +120,14 @@ func (cm *ConfigManager) GetSettings() SettingsConfig {
 }
 
 func (cm *ConfigManager) UpdateNetworkSettings(settings NetworkSettings) error {
+	cm.mu.RLock()
+	currentURL := cm.config.Settings.Network.UpstreamProxyURL
+	cm.mu.RUnlock()
+
 	settings.UpstreamProxyURL = strings.TrimSpace(settings.UpstreamProxyURL)
+	if settings.UpstreamProxyURL == "" && currentURL != "" {
+		settings.UpstreamProxyURL = currentURL
+	}
 	if err := ValidateProxyURL(settings.UpstreamProxyURL); err != nil {
 		return err
 	}

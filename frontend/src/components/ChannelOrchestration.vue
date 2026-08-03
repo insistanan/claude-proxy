@@ -62,6 +62,10 @@
                     :rx="bar.radius"
                     :ry="bar.radius"
                     class="activity-bar"
+                    :class="[
+                      `activity-bar-${bar.level}`,
+                      { 'activity-bar-latest': i === getActivityBars(element.index).length - 1 }
+                    ]"
                   />
                 </g>
               </svg>
@@ -193,8 +197,17 @@
                               :class="getRateLevel(get15mStats(element.index)?.successRate)"
                               :style="{ width: `${get15mStats(element.index)?.successRate ?? 0}%` }"
                             ></div>
+                            <!-- 指标刷新时重放一次扫光 -->
+                            <span
+                              :key="`mf-${get15mStats(element.index)?.successRate?.toFixed(0)}`"
+                              class="mmb-flash"
+                            ></span>
                           </div>
-                          <span class="mmb-value" :class="getRateLevel(get15mStats(element.index)?.successRate)">
+                          <span
+                            class="mmb-value"
+                            :key="`mmb-${get15mStats(element.index)?.successRate?.toFixed(0)}`"
+                            :class="getRateLevel(get15mStats(element.index)?.successRate)"
+                          >
                             {{ get15mStats(element.index)?.successRate?.toFixed(0) }}%
                           </span>
                         </div>
@@ -916,7 +929,7 @@ const logTrendChartOptions = computed<ApexOptions>(() => ({
     animations: { enabled: false },
     fontFamily: 'inherit'
   },
-  colors: ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#64748b'],
+  colors: ['#5C6BC8', '#2FA478', '#C1804A', '#8A72C0', '#7B8494'],
   dataLabels: { enabled: false },
   stroke: {
     width: [2, 2, 2, 2, 2],
@@ -927,7 +940,7 @@ const logTrendChartOptions = computed<ApexOptions>(() => ({
     strokeWidth: 0
   },
   grid: {
-    borderColor: 'rgba(148, 163, 184, 0.25)',
+    borderColor: 'rgba(128, 134, 148, 0.24)',
     strokeDashArray: 4
   },
   xaxis: {
@@ -1250,9 +1263,21 @@ const getChannelActivity = (channelIndex: number): ChannelRecentActivity | undef
   return activityMap.value.get(channelIndex)
 }
 
+// 波形柱的健康档位 — 驱动 CSS 动效强度（越差动得越急）
+type ActivityLevel = 'idle' | 'ok' | 'warn' | 'bad'
+type ActivityBar = {
+  x: number
+  y: number
+  width: number
+  height: number
+  radius: number
+  color: string
+  level: ActivityLevel
+}
+
 // 缓存所有渠道的柱状图数据（避免在模板中重复计算）
 const activityBarsCache = computed(() => {
-  const cache = new Map<number, Array<{ x: number; y: number; width: number; height: number; radius: number; color: string }>>()
+  const cache = new Map<number, ActivityBar[]>()
 
   // 使用 activityUpdateTick 触发响应式更新
   const _ = activityUpdateTick.value
@@ -1274,7 +1299,7 @@ const activityBarsCache = computed(() => {
     // 使用历史最大值作为归一化基准（避免高流量段离开后柱子突然变高）
     const maxRequests = maxRequestsHistory.value.get(channelIndex) ?? Math.max(...segments.map(s => s.requestCount), 1)
 
-    const bars: Array<{ x: number; y: number; width: number; height: number; radius: number; color: string }> = []
+    const bars: ActivityBar[] = []
 
     for (let i = 0; i < numSegments; i++) {
       const segment = segments[i]
@@ -1287,6 +1312,8 @@ const activityBarsCache = computed(() => {
 
       // 根据该 6 秒段的成功率计算颜色（7 档分级：极端档位 + 整数档位）
       let color = 'rgb(52, 211, 153)'  // 默认绿色（无请求或 100% 成功）
+      // 动效档位：柱子越"红"动得越急，故障在余光里也能被察觉
+      let level: ActivityLevel = 'idle'
 
       if (requests > 0) {
         const successCount = requests - segment.failureCount
@@ -1294,18 +1321,25 @@ const activityBarsCache = computed(() => {
 
         if (successRate < 5) {
           color = 'rgb(220, 38, 38)'       // 0-5%：深红色（极端故障）
+          level = 'bad'
         } else if (successRate < 20) {
           color = 'rgb(248, 113, 113)'     // 5-20%：红色（严重失败）
+          level = 'bad'
         } else if (successRate < 40) {
           color = 'rgb(251, 146, 60)'      // 20-40%：深橙色（高失败率）
+          level = 'bad'
         } else if (successRate < 60) {
           color = 'rgb(250, 204, 21)'      // 40-60%：黄色（中等失败率）
+          level = 'warn'
         } else if (successRate < 80) {
           color = 'rgb(163, 230, 53)'      // 60-80%：黄绿色（轻微失败）
+          level = 'warn'
         } else if (successRate < 95) {
           color = 'rgb(74, 222, 128)'      // 80-95%：亮绿色（良好）
+          level = 'ok'
         } else {
           color = 'rgb(52, 211, 153)'      // 95-100%：翠绿色（优秀）
+          level = 'ok'
         }
       }
 
@@ -1315,7 +1349,8 @@ const activityBarsCache = computed(() => {
         width: actualBarWidth,
         height,
         radius: Math.min(actualBarWidth / 2, 1.5),  // 圆角半径
-        color
+        color,
+        level
       })
     }
 
@@ -1326,7 +1361,7 @@ const activityBarsCache = computed(() => {
 })
 
 // 生成波形柱状图数据（从缓存中读取）
-const getActivityBars = (channelIndex: number): Array<{ x: number; y: number; width: number; height: number; radius: number; color: string }> => {
+const getActivityBars = (channelIndex: number): ActivityBar[] => {
   return activityBarsCache.value.get(channelIndex) ?? []
 }
 
@@ -1403,83 +1438,6 @@ function catmullRomToPath(points: { x: number; y: number }[]): string {
   }
 
   return path.join(' ')
-}
-
-// 生成平滑曲线填充区域路径
-const _getActivityAreaPath = (channelIndex: number): string => {
-  const linePath = getActivityPath(channelIndex)
-  if (!linePath) return ''
-
-  const activity = getChannelActivity(channelIndex)
-  if (!activity || !activity.segments) return ''
-
-  const numSegments = activity.segments.length
-
-  // 在曲线路径后添加闭合到底部
-  return `${linePath} L ${numSegments - 1} 100 L 0 100 Z`
-}
-
-// 获取渠道的活跃度渐变背景（已废弃，改用 SVG 曲线）
-const _getActivityGradient = (channelIndex: number): string => {
-  const activity = getChannelActivity(channelIndex)
-  if (!activity || !activity.segments || activity.segments.length === 0) return 'transparent'
-
-  // 检查是否有任何活动
-  const hasActivity = activity.segments.some(seg => seg.requestCount > 0)
-  if (!hasActivity) return 'transparent'
-
-  // 使用 activityUpdateTick 触发响应式更新
-   
-  const _ = activityUpdateTick.value
-
-  // 后端返回 150 段（每段 6 秒）
-  // 直接使用原始数据，不做加权平均，确保用户调用 API 后立即看到反馈
-  const numSegments = activity.segments.length  // 150
-
-  // 生成每个 6 秒段的颜色（基于原始请求数）
-  const segmentColors: string[] = []
-
-  for (let i = 0; i < numSegments; i++) {
-    const seg = activity.segments[i]
-
-    // 无请求则透明
-    if (seg.requestCount === 0) {
-      segmentColors.push('transparent')
-      continue
-    }
-
-    const hasFailure = seg.failureCount > 0
-
-    if (hasFailure) {
-      const failureRatio = seg.failureCount / seg.requestCount
-      if (failureRatio >= 0.5) {
-        // 高失败率：红色
-        const intensity = Math.min(0.5, 0.2 + seg.requestCount * 0.01)
-        segmentColors.push(`rgba(200, 72, 72, ${intensity})`)
-      } else {
-        // 部分失败：橙色
-        const intensity = Math.min(0.4, 0.15 + seg.requestCount * 0.008)
-        segmentColors.push(`rgba(196, 119, 22, ${intensity})`)
-      }
-    } else {
-      // 纯成功：绿色，6 级深浅按请求量
-      if (seg.requestCount >= 20) segmentColors.push('rgba(22, 132, 91, 0.54)')
-      else if (seg.requestCount >= 15) segmentColors.push('rgba(22, 132, 91, 0.46)')
-      else if (seg.requestCount >= 10) segmentColors.push('rgba(22, 132, 91, 0.40)')
-      else if (seg.requestCount >= 6) segmentColors.push('rgba(22, 132, 91, 0.34)')
-      else if (seg.requestCount >= 3) segmentColors.push('rgba(76, 160, 122, 0.29)')
-      else segmentColors.push('rgba(76, 160, 122, 0.23)')
-    }
-  }
-
-  // 生成渐变：每段占 100/150 %
-  const stops = segmentColors.map((color, i) => {
-    const start = (i / numSegments * 100).toFixed(3)
-    const end = ((i + 1) / numSegments * 100).toFixed(3)
-    return `${color} ${start}%, ${color} ${end}%`
-  }).join(', ')
-
-  return `linear-gradient(to right, ${stops})`
 }
 
 // 格式化 RPM 显示
@@ -1842,18 +1800,23 @@ defineExpose({
 .orchestration-header {
   min-height: 58px;
   margin-bottom: 16px;
-  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.5);
+  border-bottom: 2px solid rgba(var(--v-theme-outline), 0.55);
   position: relative;
   overflow: visible;
 }
+/* 标题下的主色标尺 — 带刻度，像面板上的量程条 */
 .orchestration-header::after {
   content: '';
   position: absolute;
   left: 0;
-  bottom: -1px;
+  bottom: -2px;
   width: clamp(110px, 18vw, 240px);
   height: 3px;
-  background: rgb(var(--v-theme-primary));
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(255, 255, 255, 0.55) 0 1px,
+      transparent 1px 8px),
+    rgb(var(--v-theme-primary));
 }
 .channel-list { display: flex; flex-direction: column; gap: 8px; }
 .channel-item-wrapper { display: flex; flex-direction: column; }
@@ -1862,25 +1825,54 @@ defineExpose({
   position: relative;
   padding: 12px 16px;
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-outline), 0.48);
-  border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(24, 28, 38, 0.045);
+  border: 1px solid rgba(var(--v-theme-outline), 0.6);
+  /* 对角不对称切角 — 全站统一的形状签名 */
+  border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs);
+  box-shadow: var(--shadow-1);
   min-height: 52px;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  transition: transform 0.16s var(--ease-out), box-shadow 0.16s ease, border-color 0.16s ease;
   cursor: pointer;
   overflow: hidden;
 }
 
+/* 左侧刻度状态轨 */
 .channel-row::before {
   content: '';
   position: absolute;
   top: 0;
   left: 0;
   bottom: 0;
-  width: 3px;
-  background: rgb(var(--v-theme-primary));
+  width: var(--rail);
+  background:
+    repeating-linear-gradient(180deg,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1px 8px),
+    linear-gradient(180deg,
+      rgb(var(--v-theme-primary)) 0%,
+      rgba(var(--v-theme-primary), 0.42) 50%,
+      rgb(var(--v-theme-primary)) 100%);
+  background-size: 100% 100%, 100% 200%;
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.14);
   z-index: 2;
 }
+
+/* 横向扫描线 — 仅 hover 时扫过，避免整屏几十行同时闪动 */
+.channel-row::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(var(--v-theme-primary), 0.1), transparent);
+  pointer-events: none;
+  opacity: 0;
+  animation: scan-sweep 2.6s ease-in-out infinite;
+  animation-play-state: paused;
+  z-index: 3;
+}
+.channel-row:hover::after { opacity: 1; animation-play-state: running; }
+.channel-row:hover::before { animation: rail-flow 3s linear infinite; }
 
 .channel-row-content {
   display: grid;
@@ -1892,35 +1884,63 @@ defineExpose({
 }
 
 .channel-row:hover {
-  border-color: rgba(var(--v-theme-primary), 0.42);
-  box-shadow: 0 4px 12px rgba(24, 28, 38, 0.075);
-  transform: translateY(-1px);
+  border-color: rgba(var(--v-theme-primary), 0.7);
+  box-shadow: var(--shadow-2);
+  transform: translateY(-2px);
 }
 
-.channel-row:active { transform: translateY(0); box-shadow: 0 1px 3px rgba(24, 28, 38, 0.05); }
+.channel-row:active { transform: translateY(0); box-shadow: var(--shadow-1); }
 
-/* suspended 状态 */
+/* suspended 状态 — 琥珀底 + 琥珀轨，与活跃行拉开明显反差 */
 .channel-row.is-suspended {
-  background: rgba(var(--v-theme-warning), 0.08);
-  background: color-mix(in srgb, rgb(var(--v-theme-warning)) 8%, rgb(var(--v-theme-surface)));
-  border-color: rgba(var(--v-theme-warning), 0.42);
+  background: color-mix(in srgb, rgb(var(--v-theme-warning)) 9%, rgb(var(--v-theme-surface)));
+  border-color: rgba(var(--v-theme-warning), 0.6);
 }
-.channel-row.is-suspended:hover { border-color: rgba(var(--v-theme-warning), 0.4); }
-.channel-row.is-suspended::before { background: rgb(var(--v-theme-warning)); }
+.channel-row.is-suspended:hover { border-color: rgba(var(--v-theme-warning), 0.85); }
+.channel-row.is-suspended::before {
+  background:
+    repeating-linear-gradient(180deg,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1px 8px),
+    rgb(var(--v-theme-warning));
+}
 
 .channel-row.ghost {
   opacity: 0.5;
   background: rgba(var(--v-theme-primary), 0.06);
-  border: 2px dashed rgba(var(--v-theme-primary), 0.3);
+  border: 2px dashed rgba(var(--v-theme-primary), 0.45);
 }
 
-/* SVG 活跃度波形背景 — 更醒目的展示 */
+/* SVG 活跃度波形背景 */
 .activity-chart-bg {
   position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-  pointer-events: none; z-index: 0; opacity: 0.32; overflow: hidden;
-  border-radius: 5px;
+  pointer-events: none; z-index: 0; opacity: 0.45; overflow: hidden;
+  border-radius: inherit;
+  transition: opacity 0.2s ease;
 }
-.activity-bar { transition: none; }
+.channel-row:hover .activity-chart-bg { opacity: 0.62; }
+
+/* 柱子生长 — 从底部竖起（首次渲染播放一次） */
+.activity-bar {
+  transition: none;
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: bar-rise 0.5s var(--ease-out) both;
+}
+
+/* 分档动效：健康档静止，越差抖得越急 —— 余光扫过就能发现故障段 */
+.activity-bar-warn {
+  animation: bar-rise 0.5s var(--ease-out) both, spark-blink 2.4s ease-in-out infinite;
+}
+.activity-bar-bad {
+  animation: bar-rise 0.5s var(--ease-out) both, spark-blink 1.05s ease-in-out infinite;
+}
+
+/* 最新柱 — 高亮并持续闪烁，标记"当前实时" */
+.activity-bar-latest {
+  filter: brightness(1.45) saturate(1.2);
+  animation: bar-rise 0.5s var(--ease-out) both, led-blink 1.6s ease-in-out infinite;
+}
 
 .channel-chart-wrapper { margin: 4px 0 8px 0; }
 
@@ -1936,10 +1956,13 @@ defineExpose({
   display: flex; align-items: center; justify-content: center;
   width: 24px; height: 24px;
   background: rgb(var(--v-theme-primary));
-  color: white; font-size: 11px; font-weight: 700;
+  color: rgb(var(--v-theme-on-primary));
+  font-size: 11px; font-weight: 800;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
   border: none;
-  border-radius: 4px;
-  box-shadow: none;
+  /* 与卡片同向的不对称切角 */
+  border-radius: 6px 2px 6px 2px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
 .channel-name {
@@ -1967,29 +1990,148 @@ defineExpose({
 
 .channel-metrics { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap; min-width: 140px; }
 
-/* 迷你指标条 */
+/* ===== 迷你指标条 — 与渠道卡同一套仪表语言的压缩版 ===== */
 .metrics-visual { min-width: 130px; }
-.mini-metric-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 1px; }
-.mmb-track { flex: 1; height: 6px; background: rgba(var(--v-theme-outline), 0.18); border-radius: 3px; overflow: hidden; min-width: 60px; }
-.mmb-fill { height: 100%; border-radius: 3px; transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1); min-width: 2px; }
-.mmb-fill.high { background: rgb(var(--v-theme-success)); }
-.mmb-fill.medium { background: rgb(var(--v-theme-warning)); }
-.mmb-fill.low { background: rgb(var(--v-theme-error)); }
+.mini-metric-bar { display: flex; align-items: center; gap: 7px; margin-bottom: 2px; }
 
-.mmb-value { font-size: 11px; font-weight: 700; font-family: 'Fira Code', 'JetBrains Mono', monospace; white-space: nowrap; }
+/* 凹槽轨道 + 等距刻度 */
+.mmb-track {
+  flex: 1;
+  height: 9px;
+  min-width: 60px;
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(var(--v-theme-on-surface), 0.13) 0 1px,
+      transparent 1px var(--tick)),
+    rgba(var(--v-theme-outline), 0.24);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+/* 90% 健康阈值刻线 */
+.mmb-track::after {
+  content: '';
+  position: absolute;
+  left: 90%; top: 0; bottom: 0;
+  width: 1px;
+  background: rgba(var(--v-theme-on-surface), 0.4);
+  z-index: 3;
+}
+.v-theme--dark .mmb-track {
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(255, 255, 255, 0.09) 0 1px,
+      transparent 1px var(--tick)),
+    rgba(0, 0, 0, 0.4);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+.v-theme--dark .mmb-track::after { background: rgba(255, 255, 255, 0.3); }
+
+.mmb-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.85s var(--ease-spring);
+  min-width: 3px;
+  position: relative;
+  z-index: 1;
+}
+
+/* 波头 — 末端示波器亮点 */
+.mmb-fill::before {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 8px 2px currentColor;
+  animation: wave-head 2.6s ease-in-out infinite;
+}
+
+/* 流光 — 数据在流动 */
+.mmb-fill::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 55%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.36), transparent);
+  animation: shimmer-slide 3.2s ease-in-out infinite both;
+}
+
+/* 指标刷新扫光 */
+.mmb-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  animation: shimmer-slide 0.62s var(--ease-out) 1 both;
+}
+.v-theme--dark .mmb-flash { background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent); }
+
+/* 健康（绿）— 平稳 */
+.mmb-fill.high {
+  background: linear-gradient(90deg, rgba(var(--v-theme-success), 0.72), rgb(var(--v-theme-success)));
+  color: rgb(var(--v-theme-success));
+  box-shadow: 0 0 8px rgba(var(--v-theme-success), 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+/* 亚健康（黄）— 节奏加快 */
+.mmb-fill.medium {
+  background: linear-gradient(90deg, rgba(var(--v-theme-warning), 0.72), rgb(var(--v-theme-warning)));
+  color: rgb(var(--v-theme-warning));
+  box-shadow: 0 0 8px rgba(var(--v-theme-warning), 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+.mmb-fill.medium::before { animation-duration: 1.8s; }
+.mmb-fill.medium::after { animation-duration: 2.2s; }
+/* 故障（红）— 滚动警示斜纹 + 急促红光呼吸 */
+.mmb-fill.low {
+  background:
+    repeating-linear-gradient(135deg,
+      rgba(0, 0, 0, 0.26) 0 5px,
+      transparent 5px 10px),
+    linear-gradient(90deg, rgba(var(--v-theme-error), 0.75), rgb(var(--v-theme-error)));
+  background-size: 20px 100%, 100% 100%;
+  color: rgb(var(--v-theme-error));
+  animation: stripe-drift 0.85s linear infinite, alarm-breathe 1.5s ease-in-out infinite;
+}
+.mmb-fill.low::before { animation-duration: 1.05s; }
+.mmb-fill.low::after { display: none; }
+
+.mmb-value {
+  font-size: 11px; font-weight: 700;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  animation: value-pop 0.45s var(--ease-spring);
+}
 .mmb-value.high { color: rgb(var(--v-theme-success)); }
 .mmb-value.medium { color: rgb(var(--v-theme-warning)); }
 .mmb-value.low { color: rgb(var(--v-theme-error)); }
 
-.mini-metric-secondary { display: flex; align-items: center; gap: 4px; font-size: 10px; color: rgba(var(--v-theme-on-surface-variant), 0.65); }
-.mm-sep { opacity: 0.3; }
+.mini-metric-secondary {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 10px;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  color: rgba(var(--v-theme-on-surface-variant), 0.8);
+}
+.mm-sep { opacity: 0.35; }
 .channel-latency { display: flex; align-items: center; min-width: 60px; }
 
 .channel-rpm-tpm { display: flex; flex-direction: column; align-items: center; min-width: 60px; }
-.rpm-tpm-values { display: flex; align-items: baseline; gap: 2px; font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.45); }
+.rpm-tpm-values {
+  display: flex; align-items: baseline; gap: 2px;
+  font-size: 13px; font-weight: 700;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
 .rpm-tpm-values .rpm-value.has-data, .rpm-tpm-values .tpm-value.has-data { color: rgb(var(--v-theme-primary)); }
 .rpm-tpm-separator { color: rgba(var(--v-theme-on-surface), 0.2); font-weight: 400; }
-.rpm-tpm-labels { display: flex; align-items: center; gap: 2px; font-size: 9px; color: rgba(var(--v-theme-on-surface), 0.35); text-transform: uppercase; letter-spacing: 0.5px; }
+.rpm-tpm-labels { display: flex; align-items: center; gap: 2px; font-size: 9px; color: rgba(var(--v-theme-on-surface), 0.4); text-transform: uppercase; letter-spacing: 0.06em; }
 
 .channel-keys { display: flex; align-items: center; }
 .channel-keys .keys-chip { cursor: pointer; transition: all 0.15s ease; }
@@ -2001,19 +2143,23 @@ defineExpose({
 .inactive-pool-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .inactive-pool {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;
-  background: rgba(var(--v-theme-surface-variant), 0.28);
-  padding: 16px; border: 1px dashed rgba(var(--v-theme-outline), 0.5); border-radius: 7px;
+  background: rgba(var(--v-theme-surface-variant), 0.45);
+  padding: 16px;
+  border: 1px dashed rgba(var(--v-theme-outline), 0.65);
+  border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs);
 }
 .inactive-channel-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 14px;
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-outline), 0.36); border-radius: 6px;
-  transition: transform 0.15s ease, border-color 0.15s ease;
+  border: 1px solid rgba(var(--v-theme-outline), 0.55);
+  border-radius: 7px 2px 7px 2px;
+  transition: transform 0.15s var(--ease-out), border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .inactive-channel-row:hover {
   border-color: rgb(var(--v-theme-primary));
-  transform: translateX(2px);
+  box-shadow: var(--shadow-1);
+  transform: translateX(3px);
 }
 .inactive-channel-row .channel-info { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
 .inactive-channel-row .channel-info-main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2104,8 +2250,18 @@ defineExpose({
 
 @media (prefers-reduced-motion: reduce) {
   .channel-row,
+  .channel-row::before,
+  .channel-row::after,
   .drag-handle,
+  .activity-bar,
+  .activity-bar-warn,
+  .activity-bar-bad,
+  .activity-bar-latest,
   .mmb-fill,
-  .inactive-channel-row { transition: none !important; }
+  .mmb-fill::before,
+  .mmb-fill::after,
+  .mmb-flash,
+  .mmb-value,
+  .inactive-channel-row { transition: none !important; animation: none !important; }
 }
 </style>

@@ -87,10 +87,13 @@ const loadError = ref('')
 const proxyEnabled = ref(false)
 const proxyUrl = ref('')
 const savedProxyUrl = ref('')
+const savedProxyEnabled = ref(false)
 const notice = ref<{ type: 'success' | 'error'; message: string } | null>(null)
 
 const normalizedProxyUrl = computed(() => (proxyEnabled.value ? proxyUrl.value.trim() : ''))
-const dirty = computed(() => normalizedProxyUrl.value !== savedProxyUrl.value)
+const dirty = computed(() =>
+  proxyEnabled.value !== savedProxyEnabled.value || normalizedProxyUrl.value !== savedProxyUrl.value
+)
 
 const proxyUrlRule = (value: string) => {
   const raw = value?.trim()
@@ -116,9 +119,11 @@ const loadSettings = async () => {
   try {
     const settings = await api.getSettings()
     const current = settings.network?.upstreamProxyUrl?.trim() || ''
+    const enabled = settings.network?.upstreamProxyEnabled ?? false
     savedProxyUrl.value = current
+    savedProxyEnabled.value = enabled
     proxyUrl.value = current
-    proxyEnabled.value = current !== ''
+    proxyEnabled.value = enabled
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : '加载设置失败'
   } finally {
@@ -135,13 +140,19 @@ const saveSettings = async () => {
   saving.value = true
   notice.value = null
   try {
+    const payloadUrl = proxyUrl.value.trim()
     const settings = await api.updateSettings({
-      network: { upstreamProxyUrl: normalizedProxyUrl.value }
+      network: {
+        upstreamProxyUrl: payloadUrl,
+        upstreamProxyEnabled: proxyEnabled.value
+      }
     })
     const saved = settings.network?.upstreamProxyUrl?.trim() || ''
+    const enabled = settings.network?.upstreamProxyEnabled ?? false
     savedProxyUrl.value = saved
+    savedProxyEnabled.value = enabled
     proxyUrl.value = saved
-    proxyEnabled.value = saved !== ''
+    proxyEnabled.value = enabled
     notice.value = { type: 'success', message: '设置已保存' }
   } catch (error) {
     notice.value = { type: 'error', message: error instanceof Error ? error.message : '保存设置失败' }

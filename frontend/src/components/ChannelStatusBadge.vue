@@ -81,104 +81,161 @@ const formatTime = (dateStr: string): string => {
   align-items: center;
   gap: 4px;
   padding: 3px 10px;
-  border-radius: 8px;
+  /* 不对称切角 — 与全站形状语言一致 */
+  border-radius: 6px 2px 6px 2px;
   cursor: help;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.18s var(--ease-spring), box-shadow 0.18s ease, background 0.18s ease;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   border: 1px solid transparent;
 }
 
 .badge-content:hover {
-  filter: brightness(1.05);
-  transform: scale(1.03);
+  transform: translateY(-1px) scale(1.04);
 }
 
 .status-label {
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
 }
 
-/* 状态样式 — 更清晰的视觉区分 */
+/* ===== 状态样式 — 全部走主题变量，明暗主题自动跟随；
+        边框比底色更实，靠轮廓而非高饱和填充制造对比 ===== */
 .status-active .badge-content {
-  background: rgba(16, 185, 129, 0.12);
+  background: rgba(var(--v-theme-success), 0.14);
   color: rgb(var(--v-theme-success));
-  border-color: rgba(16, 185, 129, 0.15);
+  border-color: rgba(var(--v-theme-success), 0.45);
+  position: relative;
+  padding-left: 24px;
 }
+
+/* 在线状态灯 — LED 呼吸，提示渠道在线 */
+.status-active .badge-content::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgb(var(--v-theme-success));
+  box-shadow: 0 0 8px 1px rgba(var(--v-theme-success), 0.85);
+  animation: led-blink 2.2s ease-in-out infinite;
+}
+
+/* 活跃状态环形脉冲 — 仅 hover 时扩散，避免整屏徽章同时脉动 */
+.status-active .badge-content::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 1px solid rgba(var(--v-theme-success), 0.55);
+  opacity: 0;
+  animation: pulse-ring 2s ease-out infinite;
+  animation-play-state: paused;
+  pointer-events: none;
+}
+.status-active .badge-content:hover::after { opacity: 1; animation-play-state: running; }
 
 .status-suspended .badge-content {
-  background: rgba(245, 158, 11, 0.12);
+  background: rgba(var(--v-theme-warning), 0.14);
   color: rgb(var(--v-theme-warning));
-  border-color: rgba(245, 158, 11, 0.15);
+  border-color: rgba(var(--v-theme-warning), 0.45);
+  position: relative;
+  padding-left: 24px;
+}
+
+/* 熔断状态灯 — 琥珀色警示闪烁（稍快，提示暂停） */
+.status-suspended .badge-content::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(var(--v-theme-warning));
+  box-shadow: 0 0 7px 1px rgba(var(--v-theme-warning), 0.85);
+  animation: led-blink 1.6s ease-in-out infinite;
 }
 
 .status-disabled .badge-content {
-  background: rgba(148, 163, 184, 0.1);
-  color: #64748B;
-  border-color: rgba(148, 163, 184, 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgb(var(--v-theme-on-surface-variant));
+  border-color: rgba(var(--v-theme-outline), 0.5);
 }
 
 .status-deprecated .badge-content {
-  background: rgba(148, 163, 184, 0.06);
-  color: #94A3B8;
-  border-color: rgba(148, 163, 184, 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: rgba(var(--v-theme-on-surface-variant), 0.75);
+  border-color: rgba(var(--v-theme-outline), 0.35);
 }
 
 .status-error .badge-content {
-  background: rgba(239, 68, 68, 0.12);
+  background: rgba(var(--v-theme-error), 0.14);
   color: rgb(var(--v-theme-error));
-  border-color: rgba(239, 68, 68, 0.15);
+  border-color: rgba(var(--v-theme-error), 0.5);
+  position: relative;
+  /* 故障徽章本体持续警报呼吸，不必等 hover 就能被余光捕捉 */
+  animation: alarm-breathe 1.6s ease-in-out infinite;
+}
+
+/* 错误状态 — 短促冲击波警示扩散 */
+.status-error .badge-content::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 1px solid rgba(var(--v-theme-error), 0.7);
+  animation: ring-ping 1.8s ease-out infinite;
+  pointer-events: none;
 }
 
 .status-unknown .badge-content {
-  background: rgba(148, 163, 184, 0.06);
-  color: #94A3B8;
-  border-color: rgba(148, 163, 184, 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: rgba(var(--v-theme-on-surface-variant), 0.75);
+  border-color: rgba(var(--v-theme-outline), 0.35);
 }
 
-/* 暗色模式 */
-.v-theme--dark .status-active .badge-content {
-  background: rgba(16, 185, 129, 0.15);
-}
-.v-theme--dark .status-suspended .badge-content {
-  background: rgba(245, 158, 11, 0.15);
-}
-.v-theme--dark .status-disabled .badge-content {
-  background: rgba(148, 163, 184, 0.1);
-}
-.v-theme--dark .status-deprecated .badge-content {
-  background: rgba(148, 163, 184, 0.08);
-}
-.v-theme--dark .status-error .badge-content {
-  background: rgba(239, 68, 68, 0.15);
-}
+/* 暗色模式 — 底色略提，边框保持高对比 */
+.v-theme--dark .status-active .badge-content { background: rgba(var(--v-theme-success), 0.16); }
+.v-theme--dark .status-suspended .badge-content { background: rgba(var(--v-theme-warning), 0.16); }
+.v-theme--dark .status-disabled .badge-content { background: rgba(255, 255, 255, 0.07); }
+.v-theme--dark .status-deprecated .badge-content { background: rgba(255, 255, 255, 0.045); }
+.v-theme--dark .status-error .badge-content { background: rgba(var(--v-theme-error), 0.17); }
 
 /* 手机端简化 */
 @media (max-width: 600px) {
   .status-label { display: none; }
-  .badge-content { padding: 2px; background: transparent !important; }
+  .badge-content { padding: 2px; background: transparent !important; border-color: transparent !important; }
   .status-icon { font-size: 16px !important; }
+  .status-active .badge-content::before,
+  .status-suspended .badge-content::before { display: none; }
+  .status-active .badge-content,
+  .status-suspended .badge-content { padding-left: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .badge-content,
+  .badge-content::before,
+  .badge-content::after { animation: none !important; transition: none !important; }
 }
 
 .tooltip-content { max-width: 200px; }
 </style>
 
 <style>
+/* Tooltip 走主题变量，明暗切换自动跟随，不再硬编码两套色值 */
 .status-tooltip {
-  background: #FFFFFF !important;
-  color: #1E293B !important;
-  border: 1px solid rgba(0, 0, 0, 0.06) !important;
-  border-radius: 10px !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1) !important;
+  background: rgb(var(--v-theme-surface)) !important;
+  color: rgb(var(--v-theme-on-surface)) !important;
+  border: 1px solid rgba(var(--v-theme-outline), 0.6) !important;
+  border-radius: 8px 2px 8px 2px !important;
+  box-shadow: var(--shadow-2) !important;
   padding: 8px 14px !important;
   font-size: 0.8rem !important;
-}
-
-.v-theme--dark .status-tooltip {
-  background: #1E293B !important;
-  color: #F1F5F9 !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
 }
 </style>

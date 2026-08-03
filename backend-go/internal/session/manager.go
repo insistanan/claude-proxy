@@ -44,14 +44,6 @@ type SessionManager struct {
 	stopOnce    sync.Once
 }
 
-// NewSessionManager 创建会话管理器
-// maxSessions 参数已弃用，请使用 SetMaxSessions() 设置上限
-func NewSessionManager(maxAge time.Duration, maxMessages int, maxTokens int) *SessionManager {
-	sm := newSessionManager(maxAge, maxMessages, maxTokens, nil)
-	go sm.cleanupLoop()
-	return sm
-}
-
 func NewPersistentSessionManager(path string, maxAge time.Duration, maxMessages int, maxTokens int) (*SessionManager, error) {
 	store, err := newSQLiteStore(path)
 	if err != nil {

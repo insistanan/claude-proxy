@@ -97,9 +97,9 @@ func StripContextSuffix(model string) (string, bool) {
 	return model, false
 }
 
-// RedirectModelList 模型重定向（返回模型列表，支持多个备选）
+// redirectModelList 模型重定向（返回模型列表，支持多个备选）
 // 返回：[]string 重定向后的模型列表（如果没有映射则返回包含原模型的列表）
-func RedirectModelList(model string, upstream *UpstreamConfig) []string {
+func redirectModelList(model string, upstream *UpstreamConfig) []string {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil
@@ -160,9 +160,9 @@ func RedirectModelList(model string, upstream *UpstreamConfig) []string {
 	return []string{model}
 }
 
-// RedirectModel 模型重定向（兼容旧代码，返回第一个匹配的模型）
-func RedirectModel(model string, upstream *UpstreamConfig) string {
-	models := RedirectModelList(model, upstream)
+// redirectModel 模型重定向（返回第一个匹配的模型）
+func redirectModel(model string, upstream *UpstreamConfig) string {
+	models := redirectModelList(model, upstream)
 	if len(models) > 0 {
 		return models[0]
 	}
@@ -179,8 +179,8 @@ func ResolveUpstreamModel(model string, upstream *UpstreamConfig) string {
 		return strings.TrimSpace(upstream.DefaultModel)
 	}
 
-	// RedirectModel 内部会处理后缀匹配逻辑
-	return RedirectModel(model, upstream)
+	// redirectModel 内部会处理后缀匹配逻辑
+	return redirectModel(model, upstream)
 }
 
 // ResolveUpstreamModelList 解析上游模型列表（支持多个备选）
@@ -194,8 +194,8 @@ func ResolveUpstreamModelList(model string, upstream *UpstreamConfig) []string {
 		return []string{strings.TrimSpace(upstream.DefaultModel)}
 	}
 
-	// RedirectModelList 内部会处理后缀匹配逻辑
-	return RedirectModelList(model, upstream)
+	// redirectModelList 内部会处理后缀匹配逻辑
+	return redirectModelList(model, upstream)
 }
 
 // ============== 渠道状态与优先级辅助函数 ==============

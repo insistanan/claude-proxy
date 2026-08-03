@@ -290,7 +290,7 @@ func OpenAIResponseToGemini(openaiResp map[string]interface{}) (*types.GeminiRes
 				argsStr, _ := function["arguments"].(string)
 				var args map[string]interface{}
 				if argsStr != "" {
-					_ = JSONUnmarshal([]byte(argsStr), &args)
+					_ = jsonUnmarshal([]byte(argsStr), &args)
 				}
 
 				// OpenAI 响应不包含 signature，统一使用 dummy signature
@@ -324,7 +324,7 @@ func OpenAIResponseToGemini(openaiResp map[string]interface{}) (*types.GeminiRes
 	if usageRaw, ok := openaiResp["usage"].(map[string]interface{}); ok {
 		promptTokens, _ := getIntFromMap(usageRaw, "prompt_tokens")
 		completionTokens, _ := getIntFromMap(usageRaw, "completion_tokens")
-		
+
 		// 提取缓存读取（OpenAI 格式）
 		var cachedTokens int
 		if details, ok := usageRaw["prompt_token_details"].(map[string]interface{}); ok {
@@ -335,7 +335,7 @@ func OpenAIResponseToGemini(openaiResp map[string]interface{}) (*types.GeminiRes
 				cachedTokens, _ = getIntFromMap(details, "cached_tokens")
 			}
 		}
-		
+
 		// OpenAI 的 prompt_tokens 包含缓存，Gemini 格式也需要包含
 		geminiResp.UsageMetadata = &types.GeminiUsageMetadata{
 			PromptTokenCount:        promptTokens, // OpenAI 的 prompt_tokens 已包含缓存
@@ -451,7 +451,7 @@ func geminiContentToOpenAIMessage(content *types.GeminiContent, pendingToolCallI
 				callID = fmt.Sprintf("call_%d", len(*pendingToolCallIDs))
 				*pendingToolCallIDs = append(*pendingToolCallIDs, callID)
 			}
-			argsJSON, _ := JSONMarshal(part.FunctionCall.Args)
+			argsJSON, _ := jsonMarshal(part.FunctionCall.Args)
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"id":   callID,
 				"type": "function",
@@ -480,7 +480,7 @@ func geminiContentToOpenAIMessage(content *types.GeminiContent, pendingToolCallI
 		if str, ok := toolResponseContent.(string); ok {
 			contentStr = str
 		} else {
-			contentBytes, _ := JSONMarshal(toolResponseContent)
+			contentBytes, _ := jsonMarshal(toolResponseContent)
 			contentStr = string(contentBytes)
 		}
 		return map[string]interface{}{
@@ -580,12 +580,12 @@ func geminiFinishReasonToOpenAI(finishReason string) string {
 	}
 }
 
-// JSONMarshal JSON 序列化包装函数
-func JSONMarshal(v interface{}) ([]byte, error) {
+// jsonMarshal JSON 序列化包装函数
+func jsonMarshal(v interface{}) ([]byte, error) {
 	return json.Marshal(v)
 }
 
-// JSONUnmarshal JSON 反序列化包装函数
-func JSONUnmarshal(data []byte, v interface{}) error {
+// jsonUnmarshal JSON 反序列化包装函数
+func jsonUnmarshal(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
 }

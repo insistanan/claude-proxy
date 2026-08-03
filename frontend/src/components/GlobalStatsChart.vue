@@ -125,10 +125,11 @@ const hasData = computed(() => {
     historyData.value.dataPoints.some(dp => dp.requestCount > 0)
 })
 
-// 颜色系统
+// 颜色系统 — 压低饱和度，与 Instrument Deck 主题色板同调，
+// 取明暗主题都能读的中间值，避免图表比页面其他部分跳得多
 const chartColors = {
-  traffic: { primary: '#3B82F6', success: '#10B981', failure: '#EF4444' },
-  tokens: { input: '#8B5CF6', output: '#F97316' }
+  traffic: { primary: '#5C6BC8', success: '#2FA478', failure: '#D05B5B' },
+  tokens: { input: '#8A72C0', output: '#C1804A' }
 }
 
 const successRateClass = computed(() => {
@@ -187,12 +188,12 @@ const formatNumber = (num: number): string => {
   return num.toFixed(0)
 }
 
-// 颜色主题
+// 颜色主题 — 与 vuetify 主题的 surface / outline / on-surface-variant 对齐
 const getThemeColors = computed(() => ({
   grid: isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
-  text: isDark.value ? '#94A3B8' : '#64748B',
-  tooltipBg: isDark.value ? '#1E293B' : '#FFFFFF',
-  tooltipBorder: isDark.value ? '#334155' : '#E2E8F0',
+  text: isDark.value ? '#A2AAB8' : '#555E6E',
+  tooltipBg: isDark.value ? '#151A22' : '#FFFFFF',
+  tooltipBorder: isDark.value ? '#39414E' : '#C9CFDA',
 }))
 
 const chartOptions = computed<ApexOptions>(() => {

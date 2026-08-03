@@ -963,20 +963,6 @@ const getDefaultServiceTypeValue = (): 'openai' | 'gemini' | 'claude' | 'respons
   return 'claude'
 }
 
-// 获取默认 Base URL
-const _getDefaultBaseUrl = (): string => {
-  if (props.channelType === 'gemini') {
-    return 'https://generativelanguage.googleapis.com'
-  }
-  if (props.channelType === 'responses') {
-    return 'https://api.openai.com/v1'
-  }
-  if (props.channelType === 'chat' || props.channelType === 'images') {
-    return 'https://api.openai.com/v1'
-  }
-  return 'https://api.anthropic.com'
-}
-
 // 快速模式表单验证
 const isQuickFormValid = computed(() => {
   return detectedBaseUrls.value.length > 0 && detectedApiKeys.value.length > 0
@@ -1032,54 +1018,6 @@ const generatedChannelName = computed(() => {
   }
   const domain = extractDomain(detectedBaseUrl.value)
   return `${domain}-${randomSuffix.value}`
-})
-
-// 预期请求 URL（模拟后端逻辑）
-const _expectedRequestUrl = computed(() => {
-  if (!detectedBaseUrl.value) return ''
-
-  let baseUrl = detectedBaseUrl.value
-  const skipVersion = baseUrl.endsWith('#')
-  if (skipVersion) {
-    baseUrl = baseUrl.slice(0, -1)
-  }
-
-  // 检查是否已包含版本号
-  const hasVersion = /\/v\d+[a-z]*$/.test(baseUrl)
-
-  // 根据渠道类型和服务类型确定端点（与后端逻辑一致）
-  const serviceType = detectedServiceType.value || getDefaultServiceTypeValue()
-  let endpoint = ''
-  if (props.channelType === 'responses') {
-    // responses 渠道根据 serviceType 决定端点
-    if (serviceType === 'responses') {
-      endpoint = '/responses'
-    } else if (serviceType === 'claude') {
-      endpoint = '/messages'
-    } else {
-      endpoint = '/chat/completions'
-    }
-  } else if (props.channelType === 'chat') {
-    endpoint = '/chat/completions'
-  } else {
-    // messages 渠道：根据检测到的服务类型决定端点
-    if (serviceType === 'claude') {
-      endpoint = '/messages'
-    } else if (serviceType === 'responses') {
-      endpoint = '/responses'
-    } else if (serviceType === 'gemini') {
-      endpoint = '/models/{model}:generateContent'
-    } else {
-      endpoint = '/chat/completions'
-    }
-  }
-
-  if (hasVersion || skipVersion) {
-    return baseUrl + endpoint
-  }
-  // Gemini 使用 /v1beta，其他使用 /v1
-  const versionPrefix = serviceType === 'gemini' ? '/v1beta' : '/v1'
-  return baseUrl + versionPrefix + endpoint
 })
 
 // 生成单个 URL 的预期请求地址

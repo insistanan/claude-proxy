@@ -244,7 +244,7 @@
                 <v-icon size="28">mdi-server-network</v-icon>
               </div>
               <div class="stat-card-content">
-                <div class="stat-card-value">{{ channelStore.currentChannelsData.channels?.length || 0 }}</div>
+                <div class="stat-card-value">{{ totalChannelsDisplay }}</div>
                 <div class="stat-card-label">总渠道数</div>
                 <div class="stat-card-desc">已配置的API渠道</div>
               </div>
@@ -259,7 +259,7 @@
               </div>
               <div class="stat-card-content">
                 <div class="stat-card-value">
-                  {{ channelStore.activeChannelCount }}<span class="stat-card-total">/{{ channelStore.failoverChannelCount }}</span>
+                  {{ activeChannelCountDisplay }}<span class="stat-card-total">/{{ channelStore.failoverChannelCount }}</span>
                 </div>
                 <div class="stat-card-label">活跃渠道</div>
                 <div class="stat-card-desc">参与故障转移调度</div>
@@ -364,18 +364,28 @@
         </div>
 
         <!-- 渠道编排（高密度列表模式） -->
-        <router-view
-          @edit="editChannel"
-          @delete="deleteChannel"
-          @ping="pingChannel"
-          @quick-test="handleQuickTest"
-          @refresh="refreshChannels"
-          @error="showErrorToast"
-          @success="showSuccessToast"
-        />
+        <router-view v-slot="{ Component }">
+          <transition name="page" mode="out-in" appear>
+            <component
+              :is="Component"
+              :key="route.path"
+              @edit="editChannel"
+              @delete="deleteChannel"
+              @ping="pingChannel"
+              @quick-test="handleQuickTest"
+              @refresh="refreshChannels"
+              @error="showErrorToast"
+              @success="showSuccessToast"
+            />
+          </transition>
+        </router-view>
         </template>
         <template v-else-if="isAuthenticated">
-          <router-view />
+          <router-view v-slot="{ Component }">
+            <transition name="page" mode="out-in" appear>
+              <component :is="Component" :key="route.path" />
+            </transition>
+          </router-view>
         </template>
       </v-container>
     </v-main>
@@ -387,32 +397,6 @@
       :channel-type="channelStore.activeTab"
       @save="saveChannel"
     />
-
-    <!-- 添加API密钥对话框 -->
-    <v-dialog v-model="dialogStore.showAddKeyModal" max-width="500">
-      <v-card rounded="lg">
-        <v-card-title class="d-flex align-center">
-          <v-icon class="mr-3">mdi-key-plus</v-icon>
-          添加API密钥
-        </v-card-title>
-        <v-card-text>
-          <v-text-field
-            v-model="dialogStore.newApiKey"
-            label="API密钥"
-            type="password"
-            variant="outlined"
-            density="comfortable"
-            placeholder="输入API密钥"
-            @keyup.enter="addApiKey"
-          />
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer/>
-          <v-btn variant="text" @click="dialogStore.closeAddKeyModal()">取消</v-btn>
-          <v-btn :disabled="!dialogStore.newApiKey.trim()" color="primary" variant="elevated" @click="addApiKey">添加</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
 
     <!-- Toast通知 -->
     <v-snackbar
@@ -444,9 +428,11 @@ import { usePreferencesStore } from './stores/preferences'
 import { useDialogStore } from './stores/dialog'
 import { useSystemStore } from './stores/system'
 import { usePlaygroundStore } from './stores/playground'
+import { useToast } from './composables/useToast'
 import AddChannelModal from './components/AddChannelModal.vue'
 import GlobalStatsChart from './components/GlobalStatsChart.vue'
 import { useAppTheme } from './composables/useTheme'
+import { useCountUp } from './composables/useCountUp'
 
 // Vuetify主题
 const theme = useTheme()
@@ -461,6 +447,14 @@ const authStore = useAuthStore()
 const channelStore = useChannelStore()
 const route = useRoute()
 const router = useRouter()
+
+// 统计卡片数字滚动（数据刷新时平滑过渡，而非硬跳变）
+const totalChannels = computed(() => channelStore.currentChannelsData.channels?.length || 0)
+const { displayValue: totalChannelsDisplay } = useCountUp(totalChannels)
+
+const activeChannels = computed(() => channelStore.activeChannelCount || 0)
+const { displayValue: activeChannelCountDisplay } = useCountUp(activeChannels)
+
 const isConversationPage = computed(() => route.name === 'conversations')
 const isLogsPage = computed(() => route.name === 'request-logs')
 const isSkillsPage = computed(() => route.name === 'skills')
@@ -510,62 +504,7 @@ const topNavActive = computed(() => {
   return typeof type === 'string' ? type : 'messages'
 })
 
-// Toast通知系统
-interface Toast {
-  id: number
-  message: string
-  type: 'success' | 'error' | 'warning' | 'info'
-  show?: boolean
-}
-const toasts = ref<Toast[]>([])
-let toastId = 0
-
-// Toast工具函数
-const getToastColor = (type: string) => {
-  const colorMap: Record<string, string> = {
-    success: 'success',
-    error: 'error',
-    warning: 'warning',
-    info: 'info'
-  }
-  return colorMap[type] || 'info'
-}
-
-const getToastIcon = (type: string) => {
-  const iconMap: Record<string, string> = {
-    success: 'mdi-check-circle',
-    error: 'mdi-alert-circle',
-    warning: 'mdi-alert',
-    info: 'mdi-information'
-  }
-  return iconMap[type] || 'mdi-information'
-}
-
-// 工具函数
-const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
-  const toast: Toast = { id: ++toastId, message, type, show: true }
-  toasts.value.push(toast)
-  setTimeout(() => {
-    const index = toasts.value.findIndex(t => t.id === toast.id)
-    if (index > -1) toasts.value.splice(index, 1)
-  }, 3000)
-}
-
-const _handleError = (error: unknown, defaultMessage: string) => {
-  const message = error instanceof Error ? error.message : defaultMessage
-  showToast(message, 'error')
-  console.error(error)
-}
-
-// 直接显示错误消息（供子组件事件使用）
-const showErrorToast = (message: string) => {
-  showToast(message, 'error')
-}
-
-// 直接显示成功消息（供子组件事件使用）
-const showSuccessToast = (message: string) => {
-  showToast(message, 'info')
-}
+const { toasts, getToastColor, getToastIcon, showToast, showErrorToast, showSuccessToast } = useToast()
 
 // 主要功能函数 - 使用 ChannelStore
 const refreshChannels = async () => {
@@ -607,35 +546,6 @@ const deleteChannel = async (channelId: number) => {
 
 const openAddChannelModal = () => {
   dialogStore.openAddChannelModal()
-}
-
-const _openAddKeyModal = (channelId: number) => {
-  dialogStore.openAddKeyModal(channelId)
-}
-
-const addApiKey = async () => {
-  if (!dialogStore.newApiKey.trim()) return
-
-  try {
-    await channelApiByType(channelStore.activeTab).addKey(dialogStore.selectedChannelForKey, dialogStore.newApiKey.trim())
-    showToast('API密钥添加成功', 'success')
-    dialogStore.closeAddKeyModal()
-    await refreshChannels()
-  } catch (error) {
-    showToast(`添加API密钥失败: ${error instanceof Error ? error.message : '未知错误'}`, 'error')
-  }
-}
-
-const _removeApiKey = async (channelId: number, apiKey: string) => {
-  if (!confirm('确定要删除这个API密钥吗？')) return
-
-  try {
-    await channelApiByType(channelStore.activeTab).removeKey(channelId, apiKey)
-    showToast('API密钥删除成功', 'success')
-    await refreshChannels()
-  } catch (error) {
-    showToast(`删除API密钥失败: ${error instanceof Error ? error.message : '未知错误'}`, 'error')
-  }
 }
 
 const pingChannel = async (channelId: number) => {
@@ -710,15 +620,6 @@ const pingAllChannels = async () => {
     // 不再使用 Toast，延迟结果直接显示在渠道列表中
   } catch (error) {
     showToast(`批量延迟测试失败: ${error instanceof Error ? error.message : '未知错误'}`, 'error')
-  }
-}
-
-const _updateLoadBalance = async (strategy: string) => {
-  try {
-    const result = await channelStore.updateLoadBalance(strategy)
-    showToast(result.message, 'success')
-  } catch (error) {
-    showToast(`更新负载均衡策略失败: ${error instanceof Error ? error.message : '未知错误'}`, 'error')
   }
 }
 
@@ -1116,19 +1017,19 @@ onUnmounted(() => {
 
 /* ----- 应用栏 ----- */
 .app-header {
-  background: rgba(var(--v-theme-surface), 0.96) !important;
-  backdrop-filter: blur(12px) !important;
-  -webkit-backdrop-filter: blur(12px) !important;
-  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.45) !important;
-  box-shadow: 0 1px 0 rgba(var(--v-theme-primary), 0.12) !important;
+  background: rgba(var(--v-theme-surface), 0.94) !important;
+  backdrop-filter: blur(14px) saturate(1.2) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(1.2) !important;
+  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.62) !important;
+  box-shadow: 0 1px 0 rgba(var(--v-theme-primary), 0.16) !important;
   padding: 0 20px !important;
   transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 .v-theme--dark .app-header {
-  background: rgba(var(--v-theme-surface), 0.94) !important;
-  border-bottom-color: rgba(var(--v-theme-outline), 0.5) !important;
-  box-shadow: 0 1px 0 rgba(var(--v-theme-primary), 0.16) !important;
+  background: rgba(var(--v-theme-surface), 0.9) !important;
+  border-bottom-color: rgba(var(--v-theme-outline), 0.85) !important;
+  box-shadow: 0 1px 0 rgba(var(--v-theme-primary), 0.2) !important;
 }
 
 .app-header :deep(.v-toolbar__prepend) {
@@ -1146,21 +1047,22 @@ onUnmounted(() => {
 }
 
 .app-logo {
-  width: 35px;
-  height: 35px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgb(var(--v-theme-primary));
-  border: 1px solid rgba(var(--v-theme-primary-darken-1), 0.75);
-  border-radius: 7px;
-  box-shadow: 0 3px 10px rgba(var(--v-theme-primary), 0.24);
+  background: linear-gradient(135deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary-darken-1)));
+  border: 1px solid rgba(var(--v-theme-primary-darken-1), 0.8);
+  /* 不对称切角 — 品牌形状的第一处露出 */
+  border-radius: 11px 3px 11px 3px;
+  box-shadow: 0 3px 10px rgba(var(--v-theme-primary), 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.28);
   margin-right: 10px;
   flex-shrink: 0;
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  transition: transform 0.2s var(--ease-spring), box-shadow 0.2s ease;
 }
-.app-logo:hover { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(var(--v-theme-primary), 0.3); }
-.v-theme--dark .app-logo { border-color: rgba(var(--v-theme-primary-lighten-1), 0.6); box-shadow: 0 3px 12px rgba(var(--v-theme-primary), 0.2); }
+.app-logo:hover { transform: translateY(-2px) rotate(-6deg); box-shadow: 0 6px 16px rgba(var(--v-theme-primary), 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.28); }
+.v-theme--dark .app-logo { border-color: rgba(var(--v-theme-primary-lighten-1), 0.55); box-shadow: 0 3px 12px rgba(var(--v-theme-primary), 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.16); }
 
 /* 标题容器 */
 .header-title {
@@ -1176,47 +1078,50 @@ onUnmounted(() => {
 
 .api-type-text {
   cursor: pointer;
-  opacity: 0.55;
-  transition: color 0.16s ease, background 0.16s ease, transform 0.16s ease;
-  padding: 5px 9px;
+  opacity: 0.6;
+  transition: color 0.16s ease, background 0.16s ease, transform 0.16s var(--ease-out);
+  padding: 5px 10px;
   text-decoration: none;
   color: inherit;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 7px 2px 7px 2px;
   font-size: 0.85rem;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 a.api-type-text { display: inline-block; }
-.api-type-text:not(.separator):hover { opacity: 0.9; background: rgba(var(--v-theme-primary), 0.08); transform: translateY(-1px); }
+.api-type-text:not(.separator):hover { opacity: 0.95; background: rgba(var(--v-theme-primary), 0.1); transform: translateY(-1px); }
 .api-type-text.active {
   opacity: 1;
   font-weight: 800;
-  color: white;
+  color: rgb(var(--v-theme-on-primary));
   background: rgb(var(--v-theme-primary));
   border-color: transparent;
-  box-shadow: 0 2px 6px rgba(var(--v-theme-primary), 0.22);
-}
-.v-theme--dark .api-type-text.active {
-  background: rgb(var(--v-theme-primary));
-  border-color: transparent;
-  color: rgb(var(--v-theme-background));
-  box-shadow: 0 2px 8px rgba(var(--v-theme-primary), 0.18);
+  box-shadow: 0 2px 8px rgba(var(--v-theme-primary), 0.28);
 }
 .v-theme--dark .api-type-text:not(.separator):hover {
-  background: rgba(var(--v-theme-primary), 0.08);
+  background: rgba(var(--v-theme-primary), 0.1);
 }
 
-.separator { opacity: 0.22; margin: 0 1px; cursor: default; padding: 0; font-weight: 800; }
-.brand-text { margin-left: 8px; color: rgb(var(--v-theme-primary)); font-weight: 800; font-size: 0.8rem; opacity: 0.9; text-transform: uppercase; }
+.separator { opacity: 0.25; margin: 0 1px; cursor: default; padding: 0; font-weight: 800; }
+.brand-text {
+  margin-left: 8px;
+  color: rgb(var(--v-theme-primary));
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 0.72rem;
+  opacity: 0.85;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
 
 .header-btn {
   margin-left: 2px;
-  transition: all 0.15s ease !important;
+  transition: background 0.15s ease, border-color 0.15s ease !important;
   border: 1px solid transparent;
-  border-radius: 6px !important;
+  border-radius: 7px 2px 7px 2px !important;
 }
-.header-btn:hover { background: rgba(var(--v-theme-primary), 0.1) !important; border-color: rgba(var(--v-theme-on-surface), 0.55); }
+.header-btn:hover { background: rgba(var(--v-theme-primary), 0.1) !important; border-color: rgba(var(--v-theme-primary), 0.45); }
 
 /* ----- 版本信息 ----- */
 .version-badge {
@@ -1226,9 +1131,9 @@ a.api-type-text { display: inline-block; }
   margin-right: 6px;
   font-family: 'Fira Code', 'JetBrains Mono', monospace;
   font-size: 11px;
-  border-radius: 5px;
-  background: rgba(var(--v-theme-surface-variant), 0.6);
-  border: 1px solid rgba(var(--v-theme-outline), 0.45);
+  border-radius: 6px 2px 6px 2px;
+  background: rgba(var(--v-theme-surface-variant), 0.7);
+  border: 1px solid rgba(var(--v-theme-outline), 0.6);
   box-shadow: none;
   transition: all 0.25s ease;
   cursor: default;
@@ -1236,150 +1141,189 @@ a.api-type-text { display: inline-block; }
 .version-badge.version-clickable { cursor: pointer; }
 .version-badge.version-clickable:hover {
   background: rgba(var(--v-theme-primary), 0.1);
-  border-color: rgba(var(--v-theme-primary), 0.35);
+  border-color: rgba(var(--v-theme-primary), 0.55);
   transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(var(--v-theme-primary), 0.12);
+  box-shadow: 0 2px 7px rgba(var(--v-theme-primary), 0.14);
 }
-.version-badge.version-latest { border-color: rgba(var(--v-theme-success), 0.4); background: rgba(var(--v-theme-success), 0.08); }
-.version-badge.version-update { border-color: rgba(var(--v-theme-warning), 0.4); background: rgba(var(--v-theme-warning), 0.08); }
+.version-badge.version-latest { border-color: rgba(var(--v-theme-success), 0.6); background: rgba(var(--v-theme-success), 0.1); }
+.version-badge.version-update { border-color: rgba(var(--v-theme-warning), 0.6); background: rgba(var(--v-theme-warning), 0.1); }
 .version-text { color: rgb(var(--v-theme-on-surface)); }
-.version-arrow { color: rgb(var(--v-theme-warning)); font-weight: 600; }
-.version-latest-text { color: rgb(var(--v-theme-warning)); font-weight: 600; }
+.version-arrow { color: rgb(var(--v-theme-warning)); font-weight: 700; }
+.version-latest-text { color: rgb(var(--v-theme-warning)); font-weight: 700; }
 
 /* 暗色模式版本徽章 */
 .v-theme--dark .version-badge {
-  background: rgba(var(--v-theme-primary), 0.08);
-  border-color: rgba(var(--v-theme-primary), 0.2);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(var(--v-theme-outline), 0.75);
 }
 .v-theme--dark .version-badge.version-latest {
-  border-color: rgba(var(--v-theme-success), 0.3);
-  background: rgba(var(--v-theme-success), 0.08);
+  border-color: rgba(var(--v-theme-success), 0.5);
+  background: rgba(var(--v-theme-success), 0.1);
 }
 .v-theme--dark .version-badge.version-update {
-  border-color: rgba(var(--v-theme-warning), 0.3);
-  background: rgba(var(--v-theme-warning), 0.08);
+  border-color: rgba(var(--v-theme-warning), 0.5);
+  background: rgba(var(--v-theme-warning), 0.1);
 }
 
 /* ----- 统计卡片：用细色轨区分类型，避免装饰压过数据 ----- */
 .stat-cards-row { margin-bottom: 20px !important; }
 
+/* 统计卡与操作栏入场浮现（阶梯 delay，仅首屏播放一次） */
+.stat-cards-row .v-col:nth-child(1) .stat-card { animation: float-in 0.5s ease-out both; animation-delay: 60ms; }
+.stat-cards-row .v-col:nth-child(2) .stat-card { animation: float-in 0.5s ease-out both; animation-delay: 120ms; }
+.stat-cards-row .v-col:nth-child(3) .stat-card { animation: float-in 0.5s ease-out both; animation-delay: 180ms; }
+.action-bar { animation: float-in 0.5s ease-out both; animation-delay: 240ms; }
+
 .stat-card {
+  /* 每张卡的语义色，驱动色轨 / 图标 / 数值，避免三处各写一遍 */
+  --sc: var(--v-theme-primary);
   position: relative;
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 20px 22px;
+  padding: 20px 22px 20px 26px;
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-outline), 0.42);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(24, 28, 38, 0.055);
-  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+  border: 1px solid rgba(var(--v-theme-outline), 0.62);
+  /* 与主卡片反向的切角 — 同一形状语言，不同节奏 */
+  border-radius: var(--cut-sm) var(--cut-lg) var(--cut-sm) var(--cut-lg);
+  box-shadow: var(--shadow-1);
+  transition: transform 0.2s var(--ease-out), box-shadow 0.2s ease, border-color 0.2s ease;
   overflow: hidden;
-  min-height: 100px;
+  min-height: 106px;
 }
 
+.stat-card-info { --sc: var(--v-theme-primary); }
+.stat-card-success,
+.stat-card-emerald { --sc: var(--v-theme-success); }
+.stat-card-error { --sc: var(--v-theme-error); }
+
+/* 左侧刻度色轨 — 从顶部横条改到侧边，配合右上大切角形成不对称构图 */
 .stat-card::before {
   content: '';
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
-  height: 3px;
-  background: rgb(var(--v-theme-primary));
+  bottom: 0;
+  width: var(--rail-strong);
+  background:
+    repeating-linear-gradient(180deg,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1px 9px),
+    linear-gradient(180deg,
+      rgb(var(--sc)) 0%,
+      rgba(var(--sc), 0.45) 50%,
+      rgb(var(--sc)) 100%);
+  background-size: 100% 100%, 100% 200%;
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.14);
   pointer-events: none;
+  z-index: 2;
 }
 
-.stat-card::after { display: none; }
-.stat-card-success::before,
-.stat-card-emerald::before { background: rgb(var(--v-theme-success)); }
-.stat-card-error::before { background: rgb(var(--v-theme-error)); }
+/* 色轨上滑过的高光 — 装置感扫描，缓慢循环 */
+.stat-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--rail-strong);
+  height: 34%;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  pointer-events: none;
+  z-index: 3;
+  animation: rail-sweep 4.6s ease-in-out infinite;
+}
+
+/* 色轨纵向扫光 */
+@keyframes rail-sweep {
+  0%   { transform: translateY(-120%); opacity: 0; }
+  15%  { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { transform: translateY(420%); opacity: 0; }
+}
 
 .stat-card:hover {
-  border-color: rgba(var(--v-theme-primary), 0.35);
-  box-shadow: 0 6px 18px rgba(24, 28, 38, 0.08);
-  transform: translateY(-2px);
+  border-color: rgba(var(--sc), 0.7);
+  box-shadow: var(--shadow-2);
+  transform: translateY(-3px);
+}
+
+/* 统计卡底部微光 — 悬停时泛起的呼吸光晕 */
+.stat-card-glow {
+  position: absolute;
+  right: -24px;
+  bottom: -36px;
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(var(--sc), 0.22), transparent 70%);
+  filter: blur(10px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+.stat-card:hover .stat-card-glow {
+  opacity: 1;
+  transform: scale(1.15);
 }
 
 .v-theme--dark .stat-card {
-  background: rgb(var(--v-theme-surface));
-  border-color: rgba(var(--v-theme-outline), 0.4);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.22);
+  border-color: rgba(var(--v-theme-outline), 0.85);
+  box-shadow: var(--shadow-1), var(--inset-hi);
 }
 
 .v-theme--dark .stat-card:hover {
-  border-color: rgba(var(--v-theme-primary), 0.45);
-  box-shadow: 0 7px 20px rgba(0, 0, 0, 0.3);
+  border-color: rgba(var(--sc), 0.8);
+  box-shadow: var(--shadow-2), var(--inset-hi);
 }
 
 .stat-card-icon {
-  width: 48px;
-  height: 48px;
+  width: 50px;
+  height: 50px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  border: none;
-  border-radius: 7px;
-  box-shadow: none;
+  /* 与卡片反向切角保持同一族形状 */
+  border-radius: var(--cut-xs) var(--cut-md) var(--cut-xs) var(--cut-md);
+  background: rgb(var(--sc));
+  box-shadow: 0 3px 12px rgba(var(--sc), 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.3);
   position: relative;
   isolation: isolate;
+  transition: transform 0.22s var(--ease-spring), box-shadow 0.22s ease;
+}
+.stat-card:hover .stat-card-icon {
+  transform: scale(1.08) rotate(-4deg);
+  box-shadow: 0 5px 18px rgba(var(--sc), 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .stat-card-content { flex: 1; min-width: 0; }
 
 .stat-card-value {
-  font-size: 1.7rem;
-  font-weight: 800;
-  line-height: 1.2;
-  letter-spacing: 0;
-  color: rgb(var(--v-theme-on-surface));
+  font-size: 2rem;
+  font-weight: 700;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  color: rgb(var(--sc));
 }
 
-.stat-card-total { font-size: 0.9rem; font-weight: 500; opacity: 0.45; }
+.stat-card-total { font-size: 0.9rem; font-weight: 500; opacity: 0.4; }
 
 .stat-card-label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  margin-top: 3px;
-  opacity: 0.65;
+  font-size: 0.72rem;
+  font-weight: 800;
+  margin-top: 4px;
+  opacity: 0.7;
   text-transform: uppercase;
-  letter-spacing: 0;
+  letter-spacing: 0.06em;
   color: rgb(var(--v-theme-on-surface));
 }
 
-.stat-card-desc { font-size: 0.7rem; opacity: 0.4; margin-top: 2px; }
+.stat-card-desc { font-size: 0.7rem; opacity: 0.45; margin-top: 2px; }
 
-.stat-card-info .stat-card-icon {
-  background: rgb(var(--v-theme-primary));
-  color: white;
-}
-.stat-card-info .stat-card-value { color: rgb(var(--v-theme-primary-darken-1)); }
-.v-theme--dark .stat-card-info .stat-card-value { color: rgb(var(--v-theme-primary)); }
-
-.stat-card-success .stat-card-icon {
-  background: rgb(var(--v-theme-success));
-  color: white;
-}
-.stat-card-success .stat-card-value { color: rgb(var(--v-theme-success)); }
-.v-theme--dark .stat-card-success .stat-card-value { color: rgb(var(--v-theme-success)); }
-
-.stat-card-emerald .stat-card-icon {
-  background: rgb(var(--v-theme-success));
-  color: white;
-}
-.stat-card-emerald .stat-card-value { color: rgb(var(--v-theme-success)); }
-.v-theme--dark .stat-card-emerald .stat-card-value { color: rgb(var(--v-theme-success)); }
-
-.stat-card-error .stat-card-icon {
-  background: rgb(var(--v-theme-error));
-  color: white;
-}
-.stat-card-error .stat-card-value { color: #DC2626; }
-.v-theme--dark .stat-card-error .stat-card-value { color: #F87171; }
-
-.stat-card-icon .v-icon { color: white !important; }
-.stat-card-success .stat-card-icon .v-icon,
-.stat-card-emerald .stat-card-icon .v-icon { color: white !important; }
+.stat-card-icon .v-icon { color: rgb(var(--v-theme-surface)) !important; }
+.v-theme--dark .stat-card-icon .v-icon { color: rgb(var(--v-theme-background)) !important; }
 
 /* ----- 操作按钮区域 ----- */
 .action-bar {
@@ -1388,58 +1332,67 @@ a.api-type-text { display: inline-block; }
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 20px;
+  padding: 16px 20px 16px 24px;
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-outline), 0.42);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(24, 28, 38, 0.05);
+  border: 1px solid rgba(var(--v-theme-outline), 0.62);
+  border-radius: var(--cut-sm) var(--cut-lg) var(--cut-sm) var(--cut-lg);
+  box-shadow: var(--shadow-1);
   position: relative;
+  overflow: hidden;
 }
 
-.action-bar::before { display: none; }
+/* 左侧刻度色轨 — 与统计卡同一装置语言 */
+.action-bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--rail);
+  background:
+    repeating-linear-gradient(180deg,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1px 9px),
+    linear-gradient(180deg, rgb(var(--v-theme-primary)), rgba(var(--v-theme-primary), 0.4));
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.14);
+  transition: opacity 0.3s ease;
+}
 
 .v-theme--dark .action-bar {
-  background: rgb(var(--v-theme-surface));
-  border-color: rgba(var(--v-theme-outline), 0.4);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.22);
+  border-color: rgba(var(--v-theme-outline), 0.85);
+  box-shadow: var(--shadow-1), var(--inset-hi);
 }
 
 .action-bar-left, .action-bar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 
-.action-btn { font-weight: 700; transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.action-btn {
+  font-weight: 700;
+  transition: transform 0.15s var(--ease-out), box-shadow 0.15s ease;
+}
 
 .action-btn-primary {
   background: rgb(var(--v-theme-primary)) !important;
-  color: white !important;
-  border: 1px solid rgb(var(--v-theme-primary-darken-1)) !important;
-  box-shadow: 0 3px 9px rgba(var(--v-theme-primary), 0.24) !important;
+  color: rgb(var(--v-theme-on-primary)) !important;
+  border: 1px solid rgba(var(--v-theme-primary-darken-1), 0.9) !important;
+  box-shadow: 0 3px 9px rgba(var(--v-theme-primary), 0.26) !important;
 }
 .action-btn-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 5px 13px rgba(var(--v-theme-primary), 0.3) !important;
-}
-.v-theme--dark .action-btn-primary {
-  border-color: rgb(var(--v-theme-primary-darken-1)) !important;
-  color: rgb(var(--v-theme-background)) !important;
-  box-shadow: 0 3px 10px rgba(var(--v-theme-primary), 0.2) !important;
-}
-.v-theme--dark .action-btn-primary:hover {
-  box-shadow: 0 5px 14px rgba(var(--v-theme-primary), 0.25) !important;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(var(--v-theme-primary), 0.34) !important;
 }
 
 /* ----- 全局统计面板 ----- */
 .global-stats-panel {
   background: rgb(var(--v-theme-surface)) !important;
-  border: 1px solid rgba(var(--v-theme-outline), 0.42) !important;
-  border-radius: 8px !important;
+  border: 1px solid rgba(var(--v-theme-outline), 0.62) !important;
+  border-radius: var(--cut-lg) var(--cut-sm) var(--cut-lg) var(--cut-sm) !important;
   overflow: hidden;
-  box-shadow: 0 2px 8px rgba(24, 28, 38, 0.05) !important;
+  box-shadow: var(--shadow-1) !important;
 }
 
 .v-theme--dark .global-stats-panel {
-  background: rgb(var(--v-theme-surface)) !important;
-  border-color: rgba(var(--v-theme-outline), 0.4) !important;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.22) !important;
+  border-color: rgba(var(--v-theme-outline), 0.85) !important;
+  box-shadow: var(--shadow-1), var(--inset-hi) !important;
 }
 
 .global-stats-header { min-height: 58px; position: relative; transition: background 0.15s ease; }
@@ -1453,9 +1406,24 @@ a.api-type-text { display: inline-block; }
 .channel-list-leave-to { opacity: 0; transform: translateY(-8px); }
 .channel-list-move { transition: transform 0.2s ease; }
 
-/* 心跳动画 */
-.pulse-animation { animation: pulse-glow 2s ease-in-out infinite; }
-@keyframes pulse-glow { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+/* 心跳动画 — 呼吸缩放 + 微光，营造"系统活着"的感觉 */
+.pulse-animation { animation: pulse-glow 2.2s ease-in-out infinite; }
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.85; transform: scale(0.94); }
+}
+
+/* 运行状态图标 — 同心扩散，心跳般的持续呼吸 */
+.stat-card-emerald .stat-card-icon::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 2px solid rgba(var(--v-theme-success), 0.6);
+  opacity: 0;
+  animation: pulse-ring 2.4s ease-out infinite;
+  pointer-events: none;
+}
 
 /* 响应式 */
 @media (min-width: 768px) { .app-header { padding: 0 28px !important; } }
@@ -1487,7 +1455,12 @@ a.api-type-text { display: inline-block; }
   .app-logo,
   .api-type-text,
   .stat-card,
+  .stat-card::after,
+  .stat-card-icon,
+  .stat-card-glow,
   .action-btn,
+  .pulse-animation,
+  .stat-card-emerald .stat-card-icon::after,
   .channel-list-enter-active,
   .channel-list-leave-active,
   .channel-list-move { transition: none !important; animation: none !important; }
@@ -1495,28 +1468,31 @@ a.api-type-text { display: inline-block; }
 </style>
 
 <!-- ============================================================
-     全局样式 — 个性美学设计系统
-     暖色底蕴 + 深空戏剧感
+     全局样式 — Instrument Deck 设计系统
+     柔和的雾底 / 深空底，模块靠深边框与切角"焊"在上面
      ============================================================ -->
 <style>
-/* 全局背景 — 工程图纸网格，保持低对比度避免干扰数据 */
+/* 全局背景 — 工程图纸网格 + 顶部主色微光；网格比色块更耐看，也更不像模板 */
 .v-application {
   background:
-    linear-gradient(rgba(var(--v-theme-on-background), 0.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(var(--v-theme-on-background), 0.018) 1px, transparent 1px),
+    radial-gradient(1100px 460px at 50% -170px, rgba(var(--v-theme-primary), 0.07), transparent 62%),
+    linear-gradient(rgba(var(--v-theme-on-background), 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--v-theme-on-background), 0.022) 1px, transparent 1px),
     rgb(var(--v-theme-background)) !important;
-  background-size: 24px 24px;
+  background-size: auto, 26px 26px, 26px 26px, auto;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
   min-height: 100vh;
 }
 
-/* 暗色模式沿用同一套网格语言 */
+/* 暗色模式 — 顶部主色光晕 + 右下角铜色微光，两点光源拉开纵深 */
 .v-application.v-theme--dark {
   background:
-    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    radial-gradient(1200px 520px at 50% -190px, rgba(var(--v-theme-primary), 0.13), transparent 62%),
+    radial-gradient(900px 460px at 100% 100%, rgba(var(--v-theme-accent), 0.05), transparent 62%),
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px),
     rgb(var(--v-theme-background)) !important;
-  background-size: 24px 24px;
+  background-size: auto, auto, 26px 26px, 26px 26px, auto;
 }
 
 .v-main {
@@ -1525,18 +1501,18 @@ a.api-type-text { display: inline-block; }
   z-index: 1;
 }
 
-/* 基础容器保持克制，关键模块再使用硬投影 */
+/* 主卡片 — 对角不对称切角是全站签名；边框深、影子浅，模块边界硬但不压抑 */
 .v-card {
-  border-radius: 8px !important;
-  border: 1px solid rgba(var(--v-theme-outline), 0.38) !important;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03), 0 2px 8px rgba(0, 0, 0, 0.02) !important;
+  border-radius: var(--cut-lg) var(--cut-sm) var(--cut-lg) var(--cut-sm) !important;
+  border: 1px solid rgba(var(--v-theme-outline), 0.62) !important;
+  box-shadow: var(--shadow-1) !important;
 }
 
-/* 暗色模式卡片 — 深空质感 + 微光内边 */
+/* 暗色卡片 — 提亮一档 + 内高光勾边，从近黑底上"浮"起来 */
 .v-application.v-theme--dark .v-card {
   background: rgb(var(--v-theme-surface)) !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28) !important;
+  border-color: rgba(var(--v-theme-outline), 0.85) !important;
+  box-shadow: var(--shadow-1), var(--inset-hi) !important;
 }
 
 /* 代码元素 — Fira Code 等宽字体 */
@@ -1546,18 +1522,18 @@ code, pre, .text-mono {
   line-height: 1.5;
 }
 
-.v-application.v-theme--dark code {
-  background: rgba(var(--v-theme-primary), 0.08);
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  color: rgb(var(--v-theme-primary-lighten-1));
-}
-
 code {
-  background: rgba(0, 0, 0, 0.04);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 4px;
+  background: rgba(var(--v-theme-primary), 0.07);
+  border: 1px solid rgba(var(--v-theme-primary), 0.18);
+  border-radius: 4px 1px 4px 1px;
   padding: 1px 5px;
   color: rgb(var(--v-theme-on-surface-variant));
+}
+
+.v-application.v-theme--dark code {
+  background: rgba(var(--v-theme-primary), 0.1);
+  border-color: rgba(var(--v-theme-primary), 0.24);
+  color: rgb(var(--v-theme-primary-lighten-1));
 }
 
 /* 无边框卡片变体 */
@@ -1566,109 +1542,110 @@ code {
   box-shadow: none !important;
 }
 
-/* 按钮圆角 */
+/* 按钮 — 小号切角，与卡片大切角形成层级对比 */
 .v-btn:not(.v-btn--icon) {
-  border-radius: 6px !important;
+  border-radius: 9px 3px 9px 3px !important;
   font-weight: 700 !important;
   text-transform: none !important;
   letter-spacing: 0.01em;
 }
 
-/* Chip 圆角 */
+.v-btn--icon { border-radius: 8px 3px 8px 3px !important; }
+
+/* 描边按钮 — 边框加实，弱化"幽灵按钮"的模板感 */
+.v-btn--variant-outlined { border-width: 1px !important; }
+
+/* Chip — 切角 + 实边框 */
 .v-chip {
-  border-radius: 5px !important;
+  border-radius: 5px 1px 5px 1px !important;
   font-weight: 650;
 }
 
 /* 对话框 */
 .v-dialog .v-card {
-  border-radius: 10px !important;
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.15) !important;
-  border: 1px solid rgba(var(--v-theme-outline), 0.3) !important;
+  border-radius: var(--cut-lg) var(--cut-sm) var(--cut-lg) var(--cut-sm) !important;
+  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.2) !important;
+  border: 1px solid rgba(var(--v-theme-outline), 0.6) !important;
 }
 
 .v-application.v-theme--dark .v-dialog .v-card {
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5), 0 0 40px rgba(var(--v-theme-primary), 0.05) !important;
-  border-color: rgba(var(--v-theme-primary), 0.15) !important;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.6), 0 0 44px rgba(var(--v-theme-primary), 0.06) !important;
+  border-color: rgba(var(--v-theme-outline), 0.9) !important;
 }
 
 /* 菜单 */
 .v-menu > .v-overlay__content > .v-list {
-  border-radius: 8px !important;
-  border: 1px solid rgba(var(--v-theme-outline), 0.25) !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08) !important;
+  border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs) !important;
+  border: 1px solid rgba(var(--v-theme-outline), 0.55) !important;
+  box-shadow: var(--shadow-2) !important;
   padding: 6px !important;
 }
 
 .v-application.v-theme--dark .v-menu > .v-overlay__content > .v-list {
-  background: rgba(var(--v-theme-surface), 0.98) !important;
-  border-color: rgba(var(--v-theme-primary), 0.12) !important;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4) !important;
+  background: rgb(var(--v-theme-surface)) !important;
+  border-color: rgba(var(--v-theme-outline), 0.9) !important;
 }
 
 .v-menu > .v-overlay__content > .v-list .v-list-item {
-  border-radius: 5px !important;
+  border-radius: 5px 1px 5px 1px !important;
   margin-bottom: 1px;
 }
 
 /* Snackbar */
 .v-snackbar__wrapper {
-  border-radius: 8px !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
-  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+  border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs) !important;
+  box-shadow: var(--shadow-2) !important;
+  border: 1px solid rgba(var(--v-theme-outline), 0.5) !important;
 }
 
 /* 输入框 */
-.v-text-field .v-field {
-  border-radius: 6px !important;
-}
-
+.v-text-field .v-field,
 .v-select .v-field {
-  border-radius: 6px !important;
+  border-radius: 8px 2px 8px 2px !important;
 }
 
 /* 工具提示 */
 .v-tooltip > .v-overlay__content {
-  border-radius: 4px !important;
+  border-radius: 6px 1px 6px 1px !important;
   font-size: 0.8rem;
   padding: 6px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(var(--v-theme-outline), 0.4);
 }
 
 /* 表格 */
 .v-table {
-  border-radius: 7px !important;
-  border: 1px solid rgba(var(--v-theme-outline), 0.2) !important;
+  border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs) !important;
+  border: 1px solid rgba(var(--v-theme-outline), 0.4) !important;
 }
 
 /* 展开面板 */
 .v-expansion-panel {
-  border-radius: 7px !important;
-  border: 1px solid rgba(var(--v-theme-outline), 0.2) !important;
+  border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs) !important;
+  border: 1px solid rgba(var(--v-theme-outline), 0.45) !important;
 }
 
 .v-expansion-panel-title {
-  border-radius: 7px !important;
+  border-radius: inherit !important;
 }
 
 /* 分割线 */
 .v-divider {
-  border-color: rgba(var(--v-theme-outline), 0.2) !important;
+  border-color: rgba(var(--v-theme-outline), 0.4) !important;
 }
 
 /* 进度条 */
 .v-progress-circular { stroke-linecap: round; }
 
 /* 按钮组 */
-.v-btn-toggle .v-btn:first-child { border-radius: 6px 0 0 6px !important; }
-.v-btn-toggle .v-btn:last-child { border-radius: 0 6px 6px 0 !important; }
+.v-btn-toggle .v-btn:first-child { border-radius: 8px 0 8px 0 !important; }
+.v-btn-toggle .v-btn:last-child { border-radius: 0 8px 0 8px !important; }
 
 /* 警报 */
-.v-alert { border-radius: 8px !important; }
+.v-alert { border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs) !important; }
 
 /* 选中态高亮 */
 .v-list-item--active {
-  background: rgba(var(--v-theme-primary), 0.08) !important;
+  background: rgba(var(--v-theme-primary), 0.1) !important;
 }
 
 /* 输入框 outline 圆角 */
@@ -1679,25 +1656,16 @@ code {
   border-radius: 6px !important;
 }
 
-/* 暗色模式 tooltip */
+/* 通用浮层 tooltip */
 .fuzzy-tooltip {
-  background: rgb(var(--v-theme-surface-bright)) !important;
+  background: rgb(var(--v-theme-surface)) !important;
   color: rgb(var(--v-theme-on-surface)) !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  border-radius: 8px !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
+  border: 1px solid rgba(var(--v-theme-outline), 0.6) !important;
+  border-radius: 8px 2px 8px 2px !important;
+  box-shadow: var(--shadow-2) !important;
   padding: 8px 14px !important;
   font-size: 0.8rem !important;
 }
-
-.v-theme--dark .fuzzy-tooltip {
-  background: rgb(var(--v-theme-surface)) !important;
-  border-color: rgba(255, 255, 255, 0.08) !important;
-}
-
-/* 暗色滚动条 */
-.v-theme--dark ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); }
-.v-theme--dark ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.25); }
 
 :where(a, button, [role='button'], .v-btn, .v-list-item):focus-visible {
   outline: 2px solid rgb(var(--v-theme-primary)) !important;
@@ -1708,8 +1676,9 @@ code {
   touch-action: manipulation;
 }
 
+/* 文本选中 — 主色薄底，保留原文字色，不做高饱和反白 */
 ::selection {
-  background: rgb(var(--v-theme-warning));
-  color: rgb(var(--v-theme-background));
+  background: rgba(var(--v-theme-primary), 0.22);
+  color: inherit;
 }
 </style>

@@ -34,8 +34,8 @@ func EstimateTokens(text string) int {
 	return int(cjkTokens + otherTokens + 0.5) // 四舍五入
 }
 
-// EstimateMessagesTokens 估算消息数组的 token 数量
-func EstimateMessagesTokens(messages interface{}) int {
+// estimateMessagesTokens 估算消息数组的 token 数量
+func estimateMessagesTokens(messages interface{}) int {
 	if messages == nil {
 		return 0
 	}
@@ -85,7 +85,7 @@ func EstimateRequestTokens(bodyBytes []byte) int {
 
 	// messages
 	if messages, ok := req["messages"]; ok {
-		total += EstimateMessagesTokens(messages)
+		total += estimateMessagesTokens(messages)
 	}
 
 	// tools (每个工具约 100-200 tokens)

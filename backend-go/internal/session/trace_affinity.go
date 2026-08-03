@@ -28,22 +28,13 @@ type TraceAffinityManager struct {
 	stopCh   chan struct{} // 用于停止清理 goroutine
 }
 
-// NewTraceAffinityManager 创建 Trace 亲和性管理器
+// NewTraceAffinityManager 创建 Trace 亲和性管理器（默认 30 分钟无活动过期）
 func NewTraceAffinityManager() *TraceAffinityManager {
-	mgr := &TraceAffinityManager{
-		affinity: make(map[string]*TraceAffinity),
-		ttl:      30 * time.Minute, // 默认 30 分钟无活动后过期
-		stopCh:   make(chan struct{}),
-	}
-
-	// 启动定期清理
-	go mgr.cleanupLoop()
-
-	return mgr
+	return newTraceAffinityManagerWithTTL(0)
 }
 
-// NewTraceAffinityManagerWithTTL 创建带自定义 TTL 的管理器
-func NewTraceAffinityManagerWithTTL(ttl time.Duration) *TraceAffinityManager {
+// newTraceAffinityManagerWithTTL 创建带自定义 TTL 的管理器；ttl <= 0 时取默认值。
+func newTraceAffinityManagerWithTTL(ttl time.Duration) *TraceAffinityManager {
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}
@@ -54,6 +45,7 @@ func NewTraceAffinityManagerWithTTL(ttl time.Duration) *TraceAffinityManager {
 		stopCh:   make(chan struct{}),
 	}
 
+	// 启动定期清理
 	go mgr.cleanupLoop()
 
 	return mgr
