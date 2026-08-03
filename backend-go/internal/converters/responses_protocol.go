@@ -95,12 +95,32 @@ func convertResponsesPassthroughRequest(model string, bodyBytes []byte, upstream
 	if err := json.Unmarshal(bodyBytes, &reqMap); err != nil {
 		return nil, fmt.Errorf("透传模式下解析请求失败: %w", err)
 	}
+
+	// 判断是否需要修改请求体
+	changed := false
+	// model 名映射：仅当新值非空且与原始值不同时才修改
 	if model != "" {
-		reqMap["model"] = model
+		if origModel, _ := reqMap["model"].(string); origModel != model {
+			reqMap["model"] = model
+			changed = true
+		}
 	}
+	// prompt_cache_key 删除
 	if upstream != nil && upstream.DisablePromptCacheKey {
-		delete(reqMap, "prompt_cache_key")
-		delete(reqMap, "prompt_cache_retention")
+		if _, hasKey := reqMap["prompt_cache_key"]; hasKey {
+			delete(reqMap, "prompt_cache_key")
+			changed = true
+		}
+		if _, hasKey := reqMap["prompt_cache_retention"]; hasKey {
+			delete(reqMap, "prompt_cache_retention")
+			changed = true
+		}
+	}
+
+	// 如果不需要任何修改，直接返回原始请求体字节流，避免重新序列化改变 JSON 编码格式
+	// （例如 HTML 字符转义、数字精度、字段顺序等），从而避免触发上游安全检测
+	if !changed {
+		return bodyBytes, nil
 	}
 	return utils.MarshalJSONNoEscape(reqMap)
 }
