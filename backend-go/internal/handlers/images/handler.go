@@ -2,9 +2,7 @@ package images
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,7 +16,6 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
-	"github.com/BenedictKing/claude-proxy/internal/middleware"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -27,259 +24,28 @@ import (
 
 var chatVersionPattern = regexp.MustCompile(`/v\d+[a-z]*$`)
 
+// Handler Images API 代理处理器
+// 使用通用 RunProxyRequest 骨架，通过 ProtocolSpec 注入协议特有逻辑。
 func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channelScheduler *scheduler.ChannelScheduler, endpoint string) gin.HandlerFunc {
-	return gin.HandlerFunc(func(c *gin.Context) {
-		middleware.ProxyAuthMiddleware(envCfg)(c)
-		if c.IsAborted() {
-			return
-		}
-
-		startTime := time.Now()
-		bodyBytes, err := common.ReadRequestBody(c, envCfg.MaxRequestBodySize)
-		if err != nil {
-			return
-		}
-
-		requestMeta := extractImagesRequestMetadata(c.GetHeader("Content-Type"), bodyBytes)
-		model := requestMeta.Model
-		prompts := common.ExtractPromptJSONFieldPrompts(bodyBytes, "prompt")
-		userID := common.ObserveConversationRequest(
-			channelScheduler,
-			scheduler.ChannelKindImages,
-			common.ResolveConversationIdentity(c, bodyBytes),
-			common.BuildConversationTranscript(string(scheduler.ChannelKindImages), bodyBytes),
-			model,
-			prompts,
-			utils.ExtractImageFingerprints(bodyBytes),
-			false,
-		)
-		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindImages)
-
-		common.LogOriginalRequest(c, bodyBytes, envCfg, "Images")
-
-		requestedChannelIndex, hasRequestedChannel, err := common.ExtractRequestedChannelIndex(bodyBytes)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "INVALID_CHANNEL_INDEX"})
-			return
-		}
-		if hasRequestedChannel {
-			upstream, channelIndex, err := common.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindImages, requestedChannelIndex)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "INVALID_CHANNEL_INDEX"})
-				return
-			}
-			handleImagesSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, requestMeta.Stream, upstream, channelIndex, startTime)
-			return
-		}
-
-		if channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindImages, model) {
-			handleImagesMultiChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, requestMeta.Stream, startTime)
-			return
-		}
-
-		handleImagesSingleChannel(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, requestMeta.Stream, startTime)
-	})
-}
-
-func handleImagesMultiChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	endpoint string,
-	bodyBytes []byte,
-	model string,
-	userID string,
-	isStream bool,
-	startTime time.Time,
-) {
-	metricsManager := channelScheduler.GetImagesMetricsManager()
-
-	common.HandleMultiChannelFailover(
-		c,
-		envCfg,
-		channelScheduler,
-		scheduler.ChannelKindImages,
-		"Images",
-		userID,
-		model,
-		false,
-		cfgManager.GetFuzzyModeEnabled(),
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
-			upstream := selection.Upstream
-			channelIndex := selection.ChannelIndex
-			if upstream == nil {
-				return common.MultiChannelAttemptResult{}
-			}
-
-			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindImages, channelIndex, upstream.GetAllBaseURLs())
-			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithModelMappingFailover(
-				c,
-				envCfg,
-				cfgManager,
-				channelScheduler,
-				scheduler.ChannelKindImages,
-				"Images",
-				metricsManager,
-				upstream,
-				model,
-				cfgManager.GetFuzzyModeEnabled(),
-				sortedURLResults,
-				bodyBytes,
-				isStream,
-				func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-					return cfgManager.GetNextImagesAPIKey(upstream, failedKeys)
-				},
-				func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-					return buildImagesUpstreamRequest(c, upstreamCopy, apiKey, endpoint, bodyBytes)
-				},
-				func(apiKey string) {
-					if err := cfgManager.MoveImagesAPIKeyToBottom(channelIndex, apiKey); err != nil {
-						log.Printf("[Images-Key] 警告: 密钥降级失败: %v", err)
-					}
-				},
-				func(url string) {
-					channelScheduler.MarkURLFailure(scheduler.ChannelKindImages, channelIndex, url)
-				},
-				func(url string) {
-					channelScheduler.MarkURLSuccess(scheduler.ChannelKindImages, channelIndex, url)
-				},
-				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return handleImagesSuccess(c, resp, envCfg, startTime, isStream)
-				},
-				common.AttemptLogContext{
-					ChannelIndex:    channelIndex,
-					Model:           model,
-					ConversationID:  userID,
-					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindImages),
-					RequestLogStore: channelScheduler.GetRequestLogStore(),
-				},
-			)
-
-			return common.MultiChannelAttemptResult{
-				Handled:           handled,
-				Attempted:         true,
-				SuccessKey:        successKey,
-				SuccessBaseURLIdx: successBaseURLIdx,
-				FailoverError:     failoverErr,
-				Usage:             usage,
-				LastError:         lastErr,
-			}
+	spec := common.ProtocolSpec{
+		Kind:    scheduler.ChannelKindImages,
+		LogName: "Images",
+		PreRoute: nil,
+		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
+			requestMeta := extractImagesRequestMetadata(c.GetHeader("Content-Type"), body)
+			prompts := common.ExtractPromptJSONFieldPrompts(body, "prompt")
+			return requestMeta.Model, requestMeta.Stream, prompts, true
 		},
-		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
-			if selection == nil || selection.Upstream == nil {
-				return
-			}
-			if result.SuccessKey != "" {
-				common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindImages, selection.ChannelIndex, selection.Upstream.Name)
-				return
-			}
-			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-				common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindImages, result.LastError)
-			}
+		BuildUpstreamRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string, body []byte) (*http.Request, error) {
+			return buildImagesUpstreamRequest(c, up, apiKey, endpoint, body)
 		},
-		func(ctx *gin.Context, failoverErr *common.FailoverError, lastError error) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindImages, lastError)
-			common.HandleAllChannelsFailed(ctx, cfgManager.GetFuzzyModeEnabled(), failoverErr, lastError, "Images")
+		HandleSuccess: func(c *gin.Context, resp *http.Response, up *config.UpstreamConfig, apiKey string, body []byte, startTime time.Time) (*types.Usage, error) {
+			return handleImagesSuccess(c, resp, envCfg, startTime, false)
 		},
-	)
-}
-
-func handleImagesSingleChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	endpoint string,
-	bodyBytes []byte,
-	model string,
-	userID string,
-	isStream bool,
-	startTime time.Time,
-) {
-	upstream, channelIndex, err := cfgManager.GetCurrentImagesUpstreamWithIndexForModel(model)
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error(), "code": "NO_IMAGES_UPSTREAM"})
-		return
 	}
-	handleImagesSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, endpoint, bodyBytes, model, userID, isStream, upstream, channelIndex, startTime)
-}
-
-func handleImagesSingleChannelWithUpstream(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	endpoint string,
-	bodyBytes []byte,
-	model string,
-	userID string,
-	isStream bool,
-	upstream *config.UpstreamConfig,
-	channelIndex int,
-	startTime time.Time,
-) {
-	if len(upstream.APIKeys) == 0 {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": fmt.Sprintf("当前 Images 渠道 \"%s\" 未配置API密钥", upstream.Name), "code": "NO_API_KEYS"})
-		return
+	return func(c *gin.Context) {
+		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
 	}
-	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindImages, channelIndex); err != nil {
-		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindImages, err)
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
-		return
-	}
-
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
-		c,
-		envCfg,
-		cfgManager,
-		channelScheduler,
-		scheduler.ChannelKindImages,
-		"Images",
-		channelScheduler.GetImagesMetricsManager(),
-		upstream,
-		model,
-		cfgManager.GetFuzzyModeEnabled(),
-		common.BuildDefaultURLResults(upstream.GetAllBaseURLs()),
-		bodyBytes,
-		isStream,
-		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-			return cfgManager.GetNextImagesAPIKey(upstream, failedKeys)
-		},
-		func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-			return buildImagesUpstreamRequest(c, upstreamCopy, apiKey, endpoint, bodyBytes)
-		},
-		func(apiKey string) {
-			if err := cfgManager.MoveImagesAPIKeyToBottom(channelIndex, apiKey); err != nil {
-				log.Printf("[Images-Key] 警告: 密钥降级失败: %v", err)
-			}
-		},
-		nil,
-		nil,
-		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleImagesSuccess(c, resp, envCfg, startTime, isStream)
-		},
-		common.AttemptLogContext{
-			ChannelIndex:    channelIndex,
-			Model:           model,
-			ConversationID:  userID,
-			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindImages),
-			RequestLogStore: channelScheduler.GetRequestLogStore(),
-		},
-	)
-	if handled {
-		if successKey != "" {
-			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindImages, channelIndex, upstream.Name)
-			channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindImages)
-		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindImages, lastError)
-		}
-		return
-	}
-
-	log.Printf("[Images-Error] 所有 Images API密钥都失败了")
-	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindImages, lastError)
-	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Images")
 }
 
 func buildImagesUpstreamRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string, endpoint string, originalBody []byte) (*http.Request, error) {

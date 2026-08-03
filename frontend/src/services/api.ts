@@ -1,5 +1,8 @@
 // API服务模块
 import { useAuthStore } from '@/stores/auth'
+import { generateUUID } from '@/utils/uuid'
+import { detectOS, detectArch } from '@/utils/platform'
+import { readSSEStream } from '@/utils/sse'
 
 export class ApiError extends Error {
   readonly status: number
@@ -196,6 +199,7 @@ export interface RemoteSkillPreview {
 export interface AppSettings {
   network: {
     upstreamProxyUrl: string
+    upstreamProxyEnabled: boolean
   }
 }
 
@@ -1168,18 +1172,140 @@ const handleImagesTestResponse = async (response: Response, onChunk: (_chunk: st
  * @param onChunk 流式返回回调
  * @param sessionContext 会话上下文（用于模拟客户端）
  */
-export const testChannel = async (
-  apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
+
+/**
+ * 渠道测试协议适配器表
+ * 将 testChannel / testChannelWithModel 的 switch (apiType) 分支提取为常量表，
+ * 两份实现共用同一份适配器定义。
+ */
+const PROTOCOL_TEST_ADAPTERS: Record<ApiTab, {
+  endpoint: string
+  buildHeaders: (sessionId: string, threadId: string) => Record<string, string>
+  buildBody: (model: string | undefined, prompt: string, metadata: Record<string, unknown>, sessionId: string) => Record<string, unknown>
+  parseChunk: (parsed: any) => string
+  defaultModel: string
+}> = {
+  messages: {
+    endpoint: '/v1/messages',
+    buildHeaders: (sessionId, _threadId) => ({
+      'User-Agent': 'claude-code/2.1.83',
+      'X-Claude-Code-Session-Id': sessionId,
+      'Anthropic-Version': '2023-06-01',
+      'Anthropic-Beta': 'interleaved-thinking-2025-05-14',
+      'X-App': 'cli',
+      'X-Stainless-Lang': 'js',
+      'X-Stainless-Runtime': 'node',
+      'X-Stainless-Runtime-Version': 'v24.3.0',
+      'X-Stainless-Os': detectOS(),
+      'X-Stainless-Arch': detectArch(),
+      'X-Stainless-Package-Version': '0.75.0',
+      'X-Stainless-Retry-Count': '0',
+      'X-Stainless-Timeout': '600',
+    }),
+    buildBody: (model, prompt, metadata, _sessionId) => ({
+      model: model!,
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }],
+      metadata,
+      stream: true,
+    }),
+    parseChunk: (parsed) => parsed.delta?.text || '',
+    defaultModel: 'claude-3-5-sonnet-20241022',
+  },
+  responses: {
+    endpoint: '/v1/responses',
+    buildHeaders: (sessionId, threadId) => {
+      const requestId = generateUUID()
+      const installationId = sessionId
+      return {
+        'X-Codex-Window-Id': `${threadId}:0`,
+        'X-Codex-Installation-Id': installationId,
+        'X-Request-Id': requestId,
+        'X-Codex-Turn-Metadata': JSON.stringify({
+          session_id: installationId,
+          thread_id: threadId,
+          request_kind: 'turn',
+        }),
+      }
+    },
+    buildBody: (model, prompt, metadata, _sessionId) => ({
+      input: prompt,
+      model: model!,
+      metadata,
+      stream: true,
+    }),
+    parseChunk: (parsed) => {
+      if (parsed.type === 'response.output_text.delta' && typeof parsed.delta === 'string') {
+        return parsed.delta
+      }
+      if (typeof parsed.completion === 'string') {
+        return parsed.completion
+      }
+      return ''
+    },
+    defaultModel: 'claude-3-5-sonnet-20241022',
+  },
+  gemini: {
+    endpoint: '/gemini/v1beta/models',
+    buildHeaders: (_sessionId, _threadId) => ({
+      'Api-Revision': '2026-05-20',
+      'User-Agent': 'google-genai-sdk/1.71.0 gl-python/3.14.3',
+    }),
+    buildBody: (model, prompt, metadata, _sessionId) => ({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      metadata,
+    }),
+    parseChunk: (parsed) => parsed.candidates?.[0]?.content?.parts?.[0]?.text || '',
+    defaultModel: 'gemini-2.0-flash-exp',
+  },
+  chat: {
+    endpoint: '/v1/chat/completions',
+    buildHeaders: (_sessionId, _threadId) => ({}),
+    buildBody: (model, prompt, metadata, sessionId) => ({
+      model: model!,
+      messages: [{ role: 'user', content: prompt }],
+      metadata,
+      user: sessionId,
+      stream: true,
+    }),
+    parseChunk: (parsed) => parsed.choices?.[0]?.delta?.content || '',
+    defaultModel: 'gpt-4',
+  },
+  images: {
+    endpoint: '/v1/images/generations',
+    buildHeaders: (_sessionId, _threadId) => ({}),
+    buildBody: (model, prompt, _metadata, _sessionId) => ({
+      model: model || 'gpt-image-1',
+      prompt,
+      n: 1,
+    }),
+    parseChunk: () => '',
+    defaultModel: 'gpt-image-1',
+  },
+}
+
+/**
+ * 测试渠道连通性（快捷测试专用，可指定模型和会话上下文）
+ * @param apiType API 协议类型
+ * @param channelIndex 渠道索引
+ * @param model 模型名称（不传则用 API 默认模型）
+ * @param message 测试消息
+ * @param onChunk 流式返回回调
+ * @param sessionContext 可选的多轮对话上下文
+ */
+export const testChannelWithModel = async (
+  apiType: ApiTab,
   channelIndex: number,
+  model: string | undefined,
   message: string,
   onChunk: (_chunk: string) => void,
   sessionContext?: {
     sessionId?: string
     threadId?: string
     interactionId?: string
-		onInteractionId?: (_id: string) => void
+    onInteractionId?: (_id: string) => void
     responseId?: string
-		onResponseId?: (_id: string) => void
+    onResponseId?: (_id: string) => void
   }
 ): Promise<void> => {
   const authStore = useAuthStore()
@@ -1188,396 +1314,43 @@ export const testChannel = async (
 
   if (!accessKey) {
     throw new Error('未检测到访问密钥，请先完成登录认证')
-  }
-  
-  // 生成 UUID
-  const generateUUID = () => {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = Math.random() * 16 | 0
-      const v = c === 'x' ? r : (r & 0x3 | 0x8)
-      return v.toString(16)
-    })
-  }
-
-  // 检测操作系统
-  const detectOS = () => {
-    const ua = navigator.userAgent
-    if (ua.includes('Win')) return 'Windows'
-    if (ua.includes('Mac')) return 'MacOS'
-    if (ua.includes('Linux')) return 'Linux'
-    return 'Unknown'
-  }
-
-  // 检测架构
-  const detectArch = () => {
-    const ua = navigator.userAgent
-    if (ua.includes('ARM') || ua.includes('aarch64')) return 'arm64'
-    return 'x64'
   }
 
   const sessionId = sessionContext?.sessionId || generateUUID()
   const threadId = sessionContext?.threadId || `thread-${generateUUID()}`
+  const adapter = PROTOCOL_TEST_ADAPTERS[apiType]
+  const resolvedModel = model || adapter.defaultModel
   const createConversationMetadata = () => ({
     channel_index: channelIndex,
     user_id: sessionId,
     session_id: sessionId,
-    thread_id: threadId
+    thread_id: threadId,
   })
 
-  let endpoint = ''
-	let body: Record<string, unknown> = {}
+  const endpoint = apiType === 'gemini'
+    ? `${adapter.endpoint}/${resolvedModel}:streamGenerateContent`
+    : adapter.endpoint
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'x-api-key': accessKey
+    'x-api-key': accessKey,
+    ...adapter.buildHeaders(sessionId, threadId),
   }
 
-  switch (apiType) {
-    case 'messages': {
-      // 模拟 Claude Code CLI
-      endpoint = '/v1/messages'
-      headers['User-Agent'] = 'claude-code/2.1.83'
-      headers['X-Claude-Code-Session-Id'] = sessionId
-      headers['Anthropic-Version'] = '2023-06-01'
-      headers['Anthropic-Beta'] = 'interleaved-thinking-2025-05-14'
-      headers['X-App'] = 'cli'
-      headers['X-Stainless-Lang'] = 'js'
-      headers['X-Stainless-Runtime'] = 'node'
-      headers['X-Stainless-Runtime-Version'] = 'v24.3.0'
-      headers['X-Stainless-Os'] = detectOS()
-      headers['X-Stainless-Arch'] = detectArch()
-      headers['X-Stainless-Package-Version'] = '0.75.0'
-      headers['X-Stainless-Retry-Count'] = '0'
-      headers['X-Stainless-Timeout'] = '600'
-      
-      body = {
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: message }],
-        metadata: createConversationMetadata(),
-        stream: true
-      }
-      break
-    }
-    
-    case 'responses': {
-      // 模拟 Codex CLI
-      endpoint = '/v1/responses'
-      const requestId = generateUUID()
-      const installationId = sessionId
-      
-      headers['X-Codex-Window-Id'] = `${threadId}:0`
-      headers['X-Codex-Installation-Id'] = installationId
-      headers['X-Request-Id'] = requestId
-      headers['X-Codex-Turn-Metadata'] = JSON.stringify({
-        session_id: installationId,
-        thread_id: threadId,
-        request_kind: 'turn'
-      })
-      
-      body = {
-        input: message,
-        model: 'claude-3-5-sonnet-20241022',
-        metadata: createConversationMetadata(),
-        stream: true
-      }
-      if (sessionContext?.responseId) {
-        body.previous_response_id = sessionContext.responseId
-      }
-      break
-    }
-    
-    case 'gemini': {
-      // 模拟 Gemini SDK
-      endpoint = '/gemini/v1beta/models/gemini-2.0-flash-exp:streamGenerateContent'
-      headers['Api-Revision'] = '2026-05-20'
-      headers['User-Agent'] = 'google-genai-sdk/1.71.0 gl-python/3.14.3'
-      
-      body = {
-        contents: [{ role: 'user', parts: [{ text: message }] }],
-        metadata: createConversationMetadata()
-      }
-      
-      // 多轮对话支持
-      if (sessionContext?.interactionId) {
-        body.previous_interaction_id = sessionContext.interactionId
-      }
-      break
-    }
-    
-    case 'chat': {
-      // Chat API 不需要特殊模拟
-      endpoint = '/v1/chat/completions'
-      body = {
-        model: 'gpt-4',
-        messages: [{ role: 'user', content: message }],
-        metadata: createConversationMetadata(),
-        user: sessionId,
-        stream: true
-      }
-      break
-    }
+  const body = adapter.buildBody(resolvedModel, message, createConversationMetadata(), sessionId)
 
-    case 'images': {
-      endpoint = '/v1/images/generations'
-      body = {
-        model: 'gpt-image-1',
-        prompt: message,
-        n: 1,
-        metadata: createConversationMetadata()
-      }
-      break
-    }
+  // 多轮对话支持
+  if (sessionContext?.responseId && apiType === 'responses') {
+    (body as Record<string, unknown>).previous_response_id = sessionContext.responseId
+  }
+  if (sessionContext?.interactionId && apiType === 'gemini') {
+    (body as Record<string, unknown>).previous_interaction_id = sessionContext.interactionId
   }
 
   const response = await fetch(`${baseUrl}${endpoint}`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(body)
-  })
-
-  if (!response.ok) {
-    throw new Error(`请求失败: ${response.status} ${response.statusText}`)
-  }
-
-  if (apiType === 'images') {
-    await handleImagesTestResponse(response, onChunk)
-    return
-  }
-
-  const reader = response.body?.getReader()
-  if (!reader) {
-    throw new Error('无法读取响应流')
-  }
-
-  const decoder = new globalThis.TextDecoder()
-  let buffer = ''
-
-  const processSSELine = (line: string) => {
-    if (!line.trim() || !line.startsWith('data:')) return
-
-    const data = line.slice(5).trim()
-    if (data === '[DONE]') return
-
-    try {
-      const parsed = JSON.parse(data)
-
-      if (apiType === 'gemini' && parsed.id && sessionContext?.onInteractionId) {
-        sessionContext.onInteractionId(parsed.id)
-      }
-
-      if (
-        apiType === 'responses' &&
-        parsed.type === 'response.completed' &&
-        typeof parsed.response?.id === 'string' &&
-        parsed.response.id &&
-        sessionContext?.onResponseId
-      ) {
-        sessionContext.onResponseId(parsed.response.id)
-      }
-
-      let content = ''
-      if (apiType === 'messages') {
-        content = parsed.delta?.text || ''
-      } else if (apiType === 'responses') {
-        if (parsed.type === 'response.output_text.delta' && typeof parsed.delta === 'string') {
-          content = parsed.delta
-        } else if (typeof parsed.completion === 'string') {
-          content = parsed.completion
-        }
-      } else if (apiType === 'gemini') {
-        content = parsed.candidates?.[0]?.content?.parts?.[0]?.text || ''
-      } else if (apiType === 'chat') {
-        content = parsed.choices?.[0]?.delta?.content || ''
-      }
-
-      if (content) {
-        onChunk(content)
-      }
-    } catch {
-      // 忽略非 JSON SSE 行
-    }
-  }
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        processSSELine(line)
-      }
-    }
-
-    buffer += decoder.decode()
-    if (buffer) {
-      processSSELine(buffer)
-    }
-  } finally {
-    reader.releaseLock()
-  }
-}
-/**
- * 测试渠道连通性（快捷测试专用，可指定模型）
- * @param apiType API 协议类型
- * @param channelIndex 渠道索引
- * @param model 模型名称
- * @param message 测试消息
- * @param onChunk 流式返回回调
- */
-export const testChannelWithModel = async (
-  apiType: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
-  channelIndex: number,
-  model: string,
-  message: string,
-  onChunk: (_chunk: string) => void
-): Promise<void> => {
-  const authStore = useAuthStore()
-  const baseUrl = import.meta.env.PROD ? '' : (import.meta.env.VITE_BACKEND_URL || '')
-  const accessKey = authStore.apiKey?.trim() || ''
-
-  if (!accessKey) {
-    throw new Error('未检测到访问密钥，请先完成登录认证')
-  }
-  
-  // 生成 UUID
-  const generateUUID = () => {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = Math.random() * 16 | 0
-      const v = c === 'x' ? r : (r & 0x3 | 0x8)
-      return v.toString(16)
-    })
-  }
-
-  // 检测操作系统
-  const detectOS = () => {
-    const ua = navigator.userAgent
-    if (ua.includes('Win')) return 'Windows'
-    if (ua.includes('Mac')) return 'MacOS'
-    if (ua.includes('Linux')) return 'Linux'
-    return 'Unknown'
-  }
-
-  // 检测架构
-  const detectArch = () => {
-    const ua = navigator.userAgent
-    if (ua.includes('ARM') || ua.includes('aarch64')) return 'arm64'
-    return 'x64'
-  }
-
-  const sessionId = generateUUID()
-  const threadId = `thread-${generateUUID()}`
-  const createConversationMetadata = () => ({
-    channel_index: channelIndex,
-    user_id: sessionId,
-    session_id: sessionId,
-    thread_id: threadId
-  })
-
-  let endpoint = ''
-	let body: Record<string, unknown> = {}
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'x-api-key': accessKey
-  }
-
-  switch (apiType) {
-    case 'messages': {
-      // 模拟 Claude Code CLI
-      endpoint = '/v1/messages'
-      headers['User-Agent'] = 'claude-code/2.1.83'
-      headers['X-Claude-Code-Session-Id'] = sessionId
-      headers['Anthropic-Version'] = '2023-06-01'
-      headers['Anthropic-Beta'] = 'interleaved-thinking-2025-05-14'
-      headers['X-App'] = 'cli'
-      headers['X-Stainless-Lang'] = 'js'
-      headers['X-Stainless-Runtime'] = 'node'
-      headers['X-Stainless-Runtime-Version'] = 'v24.3.0'
-      headers['X-Stainless-Os'] = detectOS()
-      headers['X-Stainless-Arch'] = detectArch()
-      headers['X-Stainless-Package-Version'] = '0.75.0'
-      headers['X-Stainless-Retry-Count'] = '0'
-      headers['X-Stainless-Timeout'] = '600'
-      
-      body = {
-        model: model,
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: message }],
-        metadata: createConversationMetadata(),
-        stream: true
-      }
-      break
-    }
-    
-    case 'responses': {
-      // 模拟 Codex CLI
-      endpoint = '/v1/responses'
-      const requestId = generateUUID()
-      const installationId = sessionId
-      
-      headers['X-Codex-Window-Id'] = `${threadId}:0`
-      headers['X-Codex-Installation-Id'] = installationId
-      headers['X-Request-Id'] = requestId
-      headers['X-Codex-Turn-Metadata'] = JSON.stringify({
-        session_id: installationId,
-        thread_id: threadId,
-        request_kind: 'turn'
-      })
-      
-      body = {
-        input: message,
-        model: model,
-        metadata: createConversationMetadata(),
-        stream: true
-      }
-      break
-    }
-    
-    case 'gemini': {
-      // Gemini API 的模型在 endpoint 中指定
-      endpoint = `/gemini/v1beta/models/${model}:streamGenerateContent`
-      headers['Api-Revision'] = '2026-05-20'
-      headers['User-Agent'] = 'google-genai-sdk/1.71.0 gl-python/3.14.3'
-      
-      body = {
-        contents: [{ role: 'user', parts: [{ text: message }] }],
-        metadata: createConversationMetadata()
-      }
-      break
-    }
-    
-    case 'chat': {
-      // Chat API
-      endpoint = '/v1/chat/completions'
-      body = {
-        model: model,
-        messages: [{ role: 'user', content: message }],
-        metadata: createConversationMetadata(),
-        user: sessionId,
-        stream: true
-      }
-      break
-    }
-
-    case 'images': {
-      endpoint = '/v1/images/generations'
-      body = {
-        model,
-        prompt: message,
-        n: 1,
-        metadata: createConversationMetadata()
-      }
-      break
-    }
-  }
-
-  const response = await fetch(`${baseUrl}${endpoint}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
   })
 
   if (!response.ok) {
@@ -1603,67 +1376,53 @@ export const testChannelWithModel = async (
     return
   }
 
-  const reader = response.body?.getReader()
-  if (!reader) {
-    throw new Error('无法读取响应流')
-  }
-
-  const decoder = new globalThis.TextDecoder()
-  let buffer = ''
-
-  const processSSELine = (line: string) => {
-    if (!line.trim() || !line.startsWith('data:')) return
-
-    const data = line.slice(5).trim()
-    if (data === '[DONE]') return
-
+  await readSSEStream(response, (data) => {
     try {
       const parsed = JSON.parse(data)
 
-      let content = ''
-      if (apiType === 'messages') {
-        content = parsed.delta?.text || ''
-      } else if (apiType === 'responses') {
-        if (parsed.type === 'response.output_text.delta' && typeof parsed.delta === 'string') {
-          content = parsed.delta
-        } else if (typeof parsed.completion === 'string') {
-          content = parsed.completion
-        }
-      } else if (apiType === 'gemini') {
-        content = parsed.candidates?.[0]?.content?.parts?.[0]?.text || ''
-      } else if (apiType === 'chat') {
-        content = parsed.choices?.[0]?.delta?.content || ''
+      // 会话 ID 回调
+      if (apiType === 'gemini' && parsed.id && sessionContext?.onInteractionId) {
+        sessionContext.onInteractionId(parsed.id)
+      }
+      if (
+        apiType === 'responses' &&
+        parsed.type === 'response.completed' &&
+        typeof parsed.response?.id === 'string' &&
+        parsed.response.id &&
+        sessionContext?.onResponseId
+      ) {
+        sessionContext.onResponseId(parsed.response.id)
       }
 
+      const content = adapter.parseChunk(parsed)
       if (content) {
         onChunk(content)
       }
     } catch {
       // 忽略非 JSON SSE 行
     }
+  })
+}
+
+/**
+ * 测试渠道连通性（旧版接口，使用默认模型，支持多轮会话）
+ * 委托给 testChannelWithModel 实现
+ */
+export const testChannel = async (
+  apiType: ApiTab,
+  channelIndex: number,
+  message: string,
+  onChunk: (_chunk: string) => void,
+  sessionContext?: {
+    sessionId?: string
+    threadId?: string
+    interactionId?: string
+    onInteractionId?: (_id: string) => void
+    responseId?: string
+    onResponseId?: (_id: string) => void
   }
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        processSSELine(line)
-      }
-    }
-
-    buffer += decoder.decode()
-    if (buffer) {
-      processSSELine(buffer)
-    }
-  } finally {
-    reader.releaseLock()
-  }
+): Promise<void> => {
+  return testChannelWithModel(apiType, channelIndex, undefined, message, onChunk, sessionContext)
 }
 
 export default api

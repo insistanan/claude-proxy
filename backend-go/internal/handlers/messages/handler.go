@@ -2,9 +2,7 @@
 package messages
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,318 +21,48 @@ import (
 
 // Handler Messages API 代理处理器
 // 支持多渠道调度：当配置多个渠道时自动启用
+// Handler Messages API 代理处理器。
+// 使用通用 RunProxyRequest 骨架，通过 ProtocolSpec 注入协议特有逻辑。
 func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channelScheduler *scheduler.ChannelScheduler) gin.HandlerFunc {
-	return gin.HandlerFunc(func(c *gin.Context) {
-		// 先进行认证
-		middleware.ProxyAuthMiddleware(envCfg)(c)
-		if c.IsAborted() {
-			return
-		}
-		c.Set(utils.ContextKeyClaudeCodeDisguise, cfgManager.GetClaudeCodeDisguiseEnabled())
-
-		startTime := time.Now()
-
-		// 读取请求体
-		bodyBytes, err := common.ReadRequestBody(c, envCfg.MaxRequestBodySize)
-		if err != nil {
-			return
-		}
-
-		// 预处理：移除空 signature 字段，预防 400 错误
-		// modified 表示请求体是否被修改，详细日志由 RemoveEmptySignatures 内部记录
-		bodyBytes, modified := common.RemoveEmptySignatures(bodyBytes, envCfg.EnableRequestLogs, "Messages")
-		_ = modified // 保留以便未来扩展（如需在 handler 层面做额外处理）
-
-		// 解析请求
-		var claudeReq types.ClaudeRequest
-		if len(bodyBytes) > 0 {
-			_ = json.Unmarshal(bodyBytes, &claudeReq)
-		}
-
-		hasImage := utils.DetectImageContent(bodyBytes)
-
-		// 提取对话标识
-		prompts := common.ExtractPromptsFromClaude(claudeReq.Messages)
-		userID := common.ObserveConversationRequest(
-			channelScheduler,
-			scheduler.ChannelKindMessages,
-			common.ResolveConversationIdentity(c, bodyBytes),
-			common.BuildConversationTranscript(string(scheduler.ChannelKindMessages), bodyBytes),
-			claudeReq.Model,
-			prompts,
-			utils.ExtractImageFingerprints(bodyBytes),
-			claudeReq.Stream,
-		)
-		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindMessages)
-
-		// 记录原始请求信息（仅在入口处记录一次）
-		common.LogOriginalRequest(c, bodyBytes, envCfg, "Messages")
-
-		requestedChannelIndex, hasRequestedChannel, err := common.ExtractRequestedChannelIndex(bodyBytes)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": err.Error(),
-				"code":  "INVALID_CHANNEL_INDEX",
-			})
-			return
-		}
-		if hasRequestedChannel {
-			upstream, channelIndex, err := common.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindMessages, requestedChannelIndex)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": err.Error(),
-					"code":  "INVALID_CHANNEL_INDEX",
-				})
-				return
+	spec := common.ProtocolSpec{
+		Kind:    scheduler.ChannelKindMessages,
+		LogName: "Messages",
+		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
+			body, _ = common.RemoveEmptySignatures(body, envCfg.EnableRequestLogs, "Messages")
+			c.Set(utils.ContextKeyClaudeCodeDisguise, cfgManager.GetClaudeCodeDisguiseEnabled())
+			var claudeReq types.ClaudeRequest
+			if len(body) > 0 {
+				_ = json.Unmarshal(body, &claudeReq)
 			}
-			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, upstream, channelIndex, startTime)
-			return
-		}
-
-		// 检查是否为多渠道模式
-		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindMessages, claudeReq.Model)
-
-		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, hasImage, startTime)
-		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, startTime)
-		}
-	})
-}
-
-// handleMultiChannel 处理多渠道代理请求
-func handleMultiChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	bodyBytes []byte,
-	claudeReq types.ClaudeRequest,
-	userID string,
-	hasImage bool,
-	startTime time.Time,
-) {
-	common.HandleMultiChannelFailover(
-		c,
-		envCfg,
-		channelScheduler,
-		scheduler.ChannelKindMessages,
-		"Messages",
-		userID,
-		claudeReq.Model,
-		hasImage,
-		cfgManager.GetFuzzyModeEnabled(),
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
-			upstream := selection.Upstream
-			channelIndex := selection.ChannelIndex
-
-			if upstream == nil {
-				return common.MultiChannelAttemptResult{}
-			}
-
-			provider := providers.GetProvider(upstream.ServiceType)
+			prompts := common.ExtractPromptsFromClaude(claudeReq.Messages)
+			return claudeReq.Model, claudeReq.Stream, prompts, true
+		},
+		PreRoute: nil,
+		BuildUpstreamRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string, body []byte) (*http.Request, error) {
+			provider := providers.GetProvider(up.ServiceType)
 			if provider == nil {
-				return common.MultiChannelAttemptResult{}
+				return nil, fmt.Errorf("unsupported service type: %s", up.ServiceType)
 			}
-
-			metricsManager := channelScheduler.GetMessagesMetricsManager()
-			baseURLs := upstream.GetAllBaseURLs()
-			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindMessages, channelIndex, baseURLs)
-
-			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithModelMappingFailover(
-				c,
-				envCfg,
-				cfgManager,
-				channelScheduler,
-				scheduler.ChannelKindMessages,
-				"Messages",
-				metricsManager,
-				upstream,
-				claudeReq.Model, // 传入客户端请求的原始模型
-				cfgManager.GetFuzzyModeEnabled(),
-				sortedURLResults,
-				bodyBytes,
-				claudeReq.Stream,
-				func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-					return cfgManager.GetNextAPIKey(upstream, failedKeys, "Messages")
-				},
-				func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-					req, _, err := provider.ConvertToProviderRequest(c, upstreamCopy, apiKey)
-					return req, err
-				},
-				func(apiKey string) {
-					if err := cfgManager.MoveAPIKeyToBottom(channelIndex, apiKey); err != nil {
-						log.Printf("[Messages-Key] 警告: 密钥降级失败: %v", err)
-					}
-				},
-				func(url string) {
-					channelScheduler.MarkURLFailure(scheduler.ChannelKindMessages, channelIndex, url)
-				},
-				func(url string) {
-					channelScheduler.MarkURLSuccess(scheduler.ChannelKindMessages, channelIndex, url)
-				},
-				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					if claudeReq.Stream {
-						return common.HandleStreamResponse(c, resp, provider, envCfg, startTime, upstreamCopy, bodyBytes, claudeReq.Model)
-					}
-					return handleNormalResponse(c, resp, provider, envCfg, startTime, bodyBytes, upstreamCopy, apiKey)
-				},
-				common.AttemptLogContext{
-					ChannelIndex:    channelIndex,
-					Model:           claudeReq.Model,
-					ConversationID:  userID,
-					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
-					RequestLogStore: channelScheduler.GetRequestLogStore(),
-				},
-			)
-
-			return common.MultiChannelAttemptResult{
-				Handled:           handled,
-				Attempted:         true,
-				SuccessKey:        successKey,
-				SuccessBaseURLIdx: successBaseURLIdx,
-				FailoverError:     failoverErr,
-				Usage:             usage,
-				LastError:         lastErr,
-			}
-		},
-		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
-			if selection == nil || selection.Upstream == nil {
-				return
-			}
-			if result.SuccessKey != "" {
-				common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindMessages, selection.ChannelIndex, selection.Upstream.Name)
-				return
-			}
-			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-				common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, result.LastError)
-			}
-		},
-		func(ctx *gin.Context, failoverErr *common.FailoverError, lastError error) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, lastError)
-			common.HandleAllChannelsFailed(ctx, cfgManager.GetFuzzyModeEnabled(), failoverErr, lastError, "Messages")
-		},
-	)
-}
-
-// handleSingleChannel 处理单渠道代理请求
-func handleSingleChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	bodyBytes []byte,
-	claudeReq types.ClaudeRequest,
-	userID string,
-	startTime time.Time,
-) {
-	upstream, channelIndex, err := cfgManager.GetCurrentUpstreamWithIndexForModel(claudeReq.Model)
-	if err != nil {
-		c.JSON(503, gin.H{
-			"error": err.Error(),
-			"code":  "NO_UPSTREAM",
-		})
-		return
-	}
-
-	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, claudeReq, userID, upstream, channelIndex, startTime)
-}
-
-func handleSingleChannelWithUpstream(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	bodyBytes []byte,
-	claudeReq types.ClaudeRequest,
-	userID string,
-	upstream *config.UpstreamConfig,
-	channelIndex int,
-	startTime time.Time,
-) {
-
-	if len(upstream.APIKeys) == 0 {
-		c.JSON(503, gin.H{
-			"error": fmt.Sprintf("当前渠道 \"%s\" 未配置API密钥", upstream.Name),
-			"code":  "NO_API_KEYS",
-		})
-		return
-	}
-	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindMessages, channelIndex); err != nil {
-		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, err)
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
-		return
-	}
-
-	provider := providers.GetProvider(upstream.ServiceType)
-	if provider == nil {
-		c.JSON(400, gin.H{"error": "Unsupported service type"})
-		return
-	}
-
-	metricsManager := channelScheduler.GetMessagesMetricsManager()
-	baseURLs := upstream.GetAllBaseURLs()
-
-	urlResults := common.BuildDefaultURLResults(baseURLs)
-
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
-		c,
-		envCfg,
-		cfgManager,
-		channelScheduler,
-		scheduler.ChannelKindMessages,
-		"Messages",
-		metricsManager,
-		upstream,
-		claudeReq.Model,
-		cfgManager.GetFuzzyModeEnabled(),
-		urlResults,
-		bodyBytes,
-		claudeReq.Stream,
-		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-			return cfgManager.GetNextAPIKey(upstream, failedKeys, "Messages")
-		},
-		func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-			req, _, err := provider.ConvertToProviderRequest(c, upstreamCopy, apiKey)
+			req, _, err := provider.ConvertToProviderRequest(c, up, apiKey)
 			return req, err
 		},
-		func(apiKey string) {
-			if err := cfgManager.MoveAPIKeyToBottom(channelIndex, apiKey); err != nil {
-				log.Printf("[Messages-Key] 警告: 密钥降级失败: %v", err)
+		HandleSuccess: func(c *gin.Context, resp *http.Response, up *config.UpstreamConfig, apiKey string, body []byte, startTime time.Time) (*types.Usage, error) {
+			provider := providers.GetProvider(up.ServiceType)
+			if provider == nil {
+				return nil, fmt.Errorf("unsupported service type: %s", up.ServiceType)
 			}
-		},
-		nil,
-		nil,
-		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+			var claudeReq types.ClaudeRequest
+			_ = json.Unmarshal(body, &claudeReq)
 			if claudeReq.Stream {
-				return common.HandleStreamResponse(c, resp, provider, envCfg, startTime, upstreamCopy, bodyBytes, claudeReq.Model)
+				return common.HandleStreamResponse(c, resp, provider, envCfg, startTime, up, body, claudeReq.Model)
 			}
-			return handleNormalResponse(c, resp, provider, envCfg, startTime, bodyBytes, upstreamCopy, apiKey)
+			return handleNormalResponse(c, resp, provider, envCfg, startTime, body, up, apiKey)
 		},
-		common.AttemptLogContext{
-			ChannelIndex:    channelIndex,
-			Model:           claudeReq.Model,
-			ConversationID:  userID,
-			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindMessages),
-			RequestLogStore: channelScheduler.GetRequestLogStore(),
-		},
-	)
-	if handled {
-		if successKey != "" {
-			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindMessages, channelIndex, upstream.Name)
-			channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindMessages)
-		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, lastError)
-		}
-		return
 	}
-
-	log.Printf("[Messages-Error] 所有API密钥都失败了")
-	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindMessages, lastError)
-	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Messages")
+	return func(c *gin.Context) {
+		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
+	}
 }
-
-// handleNormalResponse 处理非流式响应
 func handleNormalResponse(
 	c *gin.Context,
 	resp *http.Response,

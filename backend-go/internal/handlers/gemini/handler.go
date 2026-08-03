@@ -3,9 +3,7 @@ package gemini
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,7 +14,6 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/converters"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
-	"github.com/BenedictKing/claude-proxy/internal/middleware"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -25,118 +22,106 @@ import (
 
 // Handler Gemini API 代理处理器
 // 支持多渠道调度：当配置多个渠道时自动启用
+// Handler Gemini API 代理处理器。
+// 使用通用 RunProxyRequest 骨架，通过 ProtocolSpec 注入协议特有逻辑。
 func Handler(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
 	channelScheduler *scheduler.ChannelScheduler,
 ) gin.HandlerFunc {
-	return gin.HandlerFunc(func(c *gin.Context) {
-		// Gemini 代理端点统一使用代理访问密钥鉴权（x-api-key / Authorization: Bearer）
-		middleware.ProxyAuthMiddleware(envCfg)(c)
-		if c.IsAborted() {
-			return
-		}
-
-		startTime := time.Now()
-
-		// 读取原始请求体
-		maxBodySize := envCfg.MaxRequestBodySize
-		bodyBytes, err := common.ReadRequestBody(c, maxBodySize)
-		if err != nil {
-			return
-		}
-
-		// 解析 Gemini 请求
-		var geminiReq types.GeminiRequest
-		if len(bodyBytes) > 0 {
-			if err := json.Unmarshal(bodyBytes, &geminiReq); err != nil {
+	spec := common.ProtocolSpec{
+		Kind:    scheduler.ChannelKindGemini,
+		LogName: "Gemini",
+		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
+			var geminiReq types.GeminiRequest
+			if len(body) > 0 {
+				if err := json.Unmarshal(body, &geminiReq); err != nil {
+					c.JSON(400, types.GeminiError{
+						Error: types.GeminiErrorDetail{
+							Code:    400,
+							Message: fmt.Sprintf("Invalid request body: %v", err),
+							Status:  "INVALID_ARGUMENT",
+						},
+					})
+					return "", false, nil, false
+				}
+			}
+			c.Set("__gemini_req", &geminiReq)
+			modelAction := c.Param("modelAction")
+			modelAction = strings.TrimPrefix(modelAction, "/")
+			model := extractModelName(modelAction)
+			if model == "" {
 				c.JSON(400, types.GeminiError{
 					Error: types.GeminiErrorDetail{
 						Code:    400,
-						Message: fmt.Sprintf("Invalid request body: %v", err),
+						Message: "Model name is required in URL path",
 						Status:  "INVALID_ARGUMENT",
 					},
 				})
-				return
+				return "", false, nil, false
 			}
-		}
-
-		// 从 URL 路径提取模型名称
-		// 格式: /v1/models/{model}:generateContent 或 /v1/models/{model}:streamGenerateContent
-		// 使用 *modelAction 通配符捕获整个后缀，如 /gemini-pro:generateContent
-		modelAction := c.Param("modelAction")
-		// 移除前导斜杠（Gin 的 * 通配符会保留前导斜杠）
-		modelAction = strings.TrimPrefix(modelAction, "/")
-		model := extractModelName(modelAction)
-		if model == "" {
-			c.JSON(400, types.GeminiError{
-				Error: types.GeminiErrorDetail{
-					Code:    400,
-					Message: "Model name is required in URL path",
-					Status:  "INVALID_ARGUMENT",
-				},
-			})
-			return
-		}
-
-		// 判断是否流式
-		isStream := strings.Contains(c.Request.URL.Path, "streamGenerateContent")
-
-		// 提取对话标识
-		prompts := common.ExtractPromptsFromGemini(geminiReq.Contents)
-		userID := common.ObserveConversationRequest(
-			channelScheduler,
-			scheduler.ChannelKindGemini,
-			common.ResolveConversationIdentity(c, bodyBytes),
-			common.BuildConversationTranscript(string(scheduler.ChannelKindGemini), bodyBytes),
-			model,
-			prompts,
-			utils.ExtractImageFingerprints(bodyBytes),
-			isStream,
-		)
-		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindGemini)
-
-		// 记录原始请求信息
-		common.LogOriginalRequest(c, bodyBytes, envCfg, "Gemini")
-
-		requestedChannelIndex, hasRequestedChannel, err := common.ExtractRequestedChannelIndex(bodyBytes)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, types.GeminiError{
-				Error: types.GeminiErrorDetail{
-					Code:    http.StatusBadRequest,
-					Message: err.Error(),
-					Status:  "INVALID_ARGUMENT",
-				},
-			})
-			return
-		}
-		if hasRequestedChannel {
-			upstream, channelIndex, err := common.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindGemini, requestedChannelIndex)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, types.GeminiError{
+			isStream := strings.Contains(c.Request.URL.Path, "streamGenerateContent")
+			prompts := common.ExtractPromptsFromGemini(geminiReq.Contents)
+			return model, isStream, prompts, true
+		},
+		PreRoute: nil,
+		BuildUpstreamRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string, body []byte) (*http.Request, error) {
+			geminiReq := c.MustGet("__gemini_req").(*types.GeminiRequest)
+			modelAction := strings.TrimPrefix(c.Param("modelAction"), "/")
+			model := extractModelName(modelAction)
+			isStream := strings.Contains(c.Request.URL.Path, "streamGenerateContent")
+			return buildProviderRequest(c, up, up.GetEffectiveBaseURL(), apiKey, geminiReq, model, isStream)
+		},
+		HandleSuccess: func(c *gin.Context, resp *http.Response, up *config.UpstreamConfig, apiKey string, body []byte, startTime time.Time) (*types.Usage, error) {
+			geminiReq := c.MustGet("__gemini_req").(*types.GeminiRequest)
+			modelAction := strings.TrimPrefix(c.Param("modelAction"), "/")
+			model := extractModelName(modelAction)
+			isStream := strings.Contains(c.Request.URL.Path, "streamGenerateContent")
+			return handleSuccess(c, resp, up.ServiceType, envCfg, startTime, geminiReq, model, isStream)
+		},
+		HandleAllFailed: func(c *gin.Context, failoverErr *common.FailoverError, lastError error) {
+			if failoverErr != nil {
+				c.JSON(failoverErr.Status, types.GeminiError{
 					Error: types.GeminiErrorDetail{
-						Code:    http.StatusBadRequest,
-						Message: err.Error(),
-						Status:  "INVALID_ARGUMENT",
+						Code:    failoverErr.Status,
+						Message: string(failoverErr.Body),
+						Status:  "UNAVAILABLE",
 					},
 				})
 				return
 			}
-			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, upstream, channelIndex, startTime)
-			return
-		}
-
-		// 检查是否为多渠道模式
-		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindGemini, model)
-
-		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, startTime)
-		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, &geminiReq, model, isStream, userID, startTime)
-		}
-	})
+			c.JSON(503, types.GeminiError{
+				Error: types.GeminiErrorDetail{
+					Code:    503,
+					Message: "All channels failed",
+					Status:  "UNAVAILABLE",
+				},
+			})
+		},
+		HandleAllKeysFailed: func(c *gin.Context, fuzzyMode bool, failoverErr *common.FailoverError, lastError error) {
+			if failoverErr != nil {
+				c.JSON(failoverErr.Status, types.GeminiError{
+					Error: types.GeminiErrorDetail{
+						Code:    failoverErr.Status,
+						Message: string(failoverErr.Body),
+						Status:  "UNAVAILABLE",
+					},
+				})
+				return
+			}
+			c.JSON(503, types.GeminiError{
+				Error: types.GeminiErrorDetail{
+					Code:    503,
+					Message: "All keys failed",
+					Status:  "UNAVAILABLE",
+				},
+			})
+		},
+	}
+	return func(c *gin.Context) {
+		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
+	}
 }
-
 // extractModelName 从 URL 参数提取模型名称
 // 输入: "gemini-2.0-flash:generateContent" 或 "gemini-2.0-flash"
 // 输出: "gemini-2.0-flash"
@@ -152,245 +137,6 @@ func extractModelName(param string) string {
 }
 
 // handleMultiChannel 处理多渠道 Gemini 请求
-func handleMultiChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	bodyBytes []byte,
-	geminiReq *types.GeminiRequest,
-	model string,
-	isStream bool,
-	userID string,
-	startTime time.Time,
-) {
-	metricsManager := channelScheduler.GetGeminiMetricsManager()
-	common.HandleMultiChannelFailover(
-		c,
-		envCfg,
-		channelScheduler,
-		scheduler.ChannelKindGemini,
-		"Gemini",
-		userID,
-		model,
-		false,
-		cfgManager.GetFuzzyModeEnabled(),
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
-			upstream := selection.Upstream
-			channelIndex := selection.ChannelIndex
-
-			if upstream == nil {
-				return common.MultiChannelAttemptResult{}
-			}
-
-			baseURLs := upstream.GetAllBaseURLs()
-			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindGemini, channelIndex, baseURLs)
-
-			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithModelMappingFailover(
-				c,
-				envCfg,
-				cfgManager,
-				channelScheduler,
-				scheduler.ChannelKindGemini,
-				"Gemini",
-				metricsManager,
-				upstream,
-				model,
-				cfgManager.GetFuzzyModeEnabled(),
-				sortedURLResults,
-				bodyBytes,
-				isStream,
-				func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-					return cfgManager.GetNextGeminiAPIKey(upstream, failedKeys)
-				},
-				func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-					return buildProviderRequest(c, upstreamCopy, upstreamCopy.BaseURL, apiKey, geminiReq, model, isStream)
-				},
-				func(apiKey string) {
-					if err := cfgManager.MoveGeminiAPIKeyToBottom(channelIndex, apiKey); err != nil {
-						log.Printf("[Gemini-Key] 警告: 密钥降级失败: %v", err)
-					}
-				},
-				func(url string) {
-					channelScheduler.MarkURLFailure(scheduler.ChannelKindGemini, channelIndex, url)
-				},
-				func(url string) {
-					channelScheduler.MarkURLSuccess(scheduler.ChannelKindGemini, channelIndex, url)
-				},
-				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return handleSuccess(c, resp, upstreamCopy.ServiceType, envCfg, startTime, geminiReq, model, isStream)
-				},
-				common.AttemptLogContext{
-					ChannelIndex:    channelIndex,
-					Model:           model,
-					ConversationID:  userID,
-					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
-					RequestLogStore: channelScheduler.GetRequestLogStore(),
-				},
-			)
-
-			return common.MultiChannelAttemptResult{
-				Handled:           handled,
-				Attempted:         true,
-				SuccessKey:        successKey,
-				SuccessBaseURLIdx: successBaseURLIdx,
-				FailoverError:     failoverErr,
-				Usage:             usage,
-				LastError:         lastErr,
-			}
-		},
-		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
-			if selection == nil || selection.Upstream == nil {
-				return
-			}
-			if result.SuccessKey != "" {
-				common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindGemini, selection.ChannelIndex, selection.Upstream.Name)
-				return
-			}
-			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-				common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, result.LastError)
-			}
-		},
-		func(ctx *gin.Context, failoverErr *common.FailoverError, lastError error) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, lastError)
-			handleAllChannelsFailed(ctx, failoverErr, lastError)
-		},
-	)
-}
-
-// handleSingleChannel 处理单渠道 Gemini 请求
-func handleSingleChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	bodyBytes []byte,
-	geminiReq *types.GeminiRequest,
-	model string,
-	isStream bool,
-	userID string,
-	startTime time.Time,
-) {
-	upstream, channelIndex, err := cfgManager.GetCurrentGeminiUpstreamWithIndexForModel(model)
-	if err != nil {
-		c.JSON(503, types.GeminiError{
-			Error: types.GeminiErrorDetail{
-				Code:    503,
-				Message: err.Error(),
-				Status:  "UNAVAILABLE",
-			},
-		})
-		return
-	}
-
-	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, geminiReq, model, isStream, userID, upstream, channelIndex, startTime)
-}
-
-func handleSingleChannelWithUpstream(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	bodyBytes []byte,
-	geminiReq *types.GeminiRequest,
-	model string,
-	isStream bool,
-	userID string,
-	upstream *config.UpstreamConfig,
-	channelIndex int,
-	startTime time.Time,
-) {
-
-	if len(upstream.APIKeys) == 0 {
-		c.JSON(503, types.GeminiError{
-			Error: types.GeminiErrorDetail{
-				Code:    503,
-				Message: fmt.Sprintf("No API keys configured for upstream \"%s\"", upstream.Name),
-				Status:  "UNAVAILABLE",
-			},
-		})
-		return
-	}
-	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindGemini, channelIndex); err != nil {
-		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, err)
-		c.JSON(http.StatusConflict, types.GeminiError{
-			Error: types.GeminiErrorDetail{
-				Code:    http.StatusConflict,
-				Message: err.Error(),
-				Status:  "FAILED_PRECONDITION",
-			},
-		})
-		return
-	}
-
-	metricsManager := channelScheduler.GetGeminiMetricsManager()
-	baseURLs := upstream.GetAllBaseURLs()
-	urlResults := common.BuildDefaultURLResults(baseURLs)
-
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
-		c,
-		envCfg,
-		cfgManager,
-		channelScheduler,
-		scheduler.ChannelKindGemini,
-		"Gemini",
-		metricsManager,
-		upstream,
-		model,
-		cfgManager.GetFuzzyModeEnabled(),
-		urlResults,
-		bodyBytes,
-		isStream,
-		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-			return cfgManager.GetNextGeminiAPIKey(upstream, failedKeys)
-		},
-		func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-			return buildProviderRequest(c, upstreamCopy, upstreamCopy.BaseURL, apiKey, geminiReq, model, isStream)
-		},
-		func(apiKey string) {
-			if err := cfgManager.MoveGeminiAPIKeyToBottom(channelIndex, apiKey); err != nil {
-				log.Printf("[Gemini-Key] 警告: 密钥降级失败: %v", err)
-			}
-		},
-		nil,
-		nil,
-		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleSuccess(c, resp, upstreamCopy.ServiceType, envCfg, startTime, geminiReq, model, isStream)
-		},
-		common.AttemptLogContext{
-			ChannelIndex:    channelIndex,
-			Model:           model,
-			ConversationID:  userID,
-			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindGemini),
-			RequestLogStore: channelScheduler.GetRequestLogStore(),
-		},
-	)
-	if handled {
-		if successKey != "" {
-			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindGemini, channelIndex, upstream.Name)
-			channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindGemini)
-		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, lastError)
-		}
-		return
-	}
-
-	log.Printf("[Gemini-Error] 所有 API密钥都失败了")
-	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindGemini, lastError)
-	handleAllKeysFailed(c, lastFailoverError, lastError)
-}
-
-// ensureThoughtSignatures 确保所有 functionCall 都有 thought_signature 字段
-// 用于兼容 x666.me 等要求必须有该字段的第三方 API
-// 参考: https://ai.google.dev/gemini-api/docs/thought-signatures
-//
-// 行为：
-//   - 如果 functionCall 已有 thought_signature（非空），保留原始值
-//   - 如果 functionCall 没有 thought_signature（空字符串），填充 DummyThoughtSignature
-//
-// 使用场景：
-//   - x666.me 等第三方 API 会验证 thought_signature 字段必须存在
-//   - Gemini CLI 等客户端可能不会为所有 functionCall 提供 thought_signature
 func ensureThoughtSignatures(geminiReq *types.GeminiRequest) {
 	for i := range geminiReq.Contents {
 		for j := range geminiReq.Contents[i].Parts {

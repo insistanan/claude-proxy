@@ -17,7 +17,6 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
-	"github.com/BenedictKing/claude-proxy/internal/middleware"
 	"github.com/BenedictKing/claude-proxy/internal/modelcatalog"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
@@ -32,190 +31,52 @@ const chatWebSearchProxyName = "web_search"
 
 // Handler Chat Completions API 代理处理器。
 // Chat 是独立一等公民：只走 Chat 渠道池，不默认进行 Anthropic/Gemini 协议转换。
+// Handler Chat Completions API 代理处理器。
+// Chat 是独立一等公民：只走 Chat 渠道池，不默认进行 Anthropic/Gemini 协议转换。
+// 使用通用 RunProxyRequest 骨架，通过 ProtocolSpec 注入协议特有逻辑。
 func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channelScheduler *scheduler.ChannelScheduler) gin.HandlerFunc {
-	return gin.HandlerFunc(func(c *gin.Context) {
-		middleware.ProxyAuthMiddleware(envCfg)(c)
-		if c.IsAborted() {
-			return
-		}
-
-		startTime := time.Now()
-		bodyBytes, err := common.ReadRequestBody(c, envCfg.MaxRequestBodySize)
-		if err != nil {
-			return
-		}
-
-		var chatReq types.OpenAIRequest
-		if len(bodyBytes) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Chat Completions request body"})
-			return
-		}
-		if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":  "Invalid Chat Completions request body",
-				"detail": err.Error(),
-			})
-			return
-		}
-		if strings.TrimSpace(chatReq.Model) == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "model is required"})
-			return
-		}
-
-		hasImage := utils.DetectImageContent(bodyBytes)
-		prompts := common.ExtractPromptsFromOpenAI(chatReq.Messages)
-		userID := common.ObserveConversationRequest(
-			channelScheduler,
-			scheduler.ChannelKindChat,
-			common.ResolveConversationIdentity(c, bodyBytes),
-			common.BuildConversationTranscript(string(scheduler.ChannelKindChat), bodyBytes),
-			chatReq.Model,
-			prompts,
-			utils.ExtractImageFingerprints(bodyBytes),
-			chatReq.Stream,
-		)
-		defer common.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindChat)
-
-		common.LogOriginalRequest(c, bodyBytes, envCfg, "Chat")
-
-		requestedChannelIndex, hasRequestedChannel, err := common.ExtractRequestedChannelIndex(bodyBytes)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": err.Error(),
-				"code":  "INVALID_CHANNEL_INDEX",
-			})
-			return
-		}
-		if hasRequestedChannel {
-			upstream, channelIndex, err := common.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindChat, requestedChannelIndex)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": err.Error(),
-					"code":  "INVALID_CHANNEL_INDEX",
-				})
-				return
+	spec := common.ProtocolSpec{
+		Kind:    scheduler.ChannelKindChat,
+		LogName: "Chat",
+		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
+			if len(body) == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Chat Completions request body"})
+				return "", false, nil, false
 			}
-			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, upstream, channelIndex, startTime)
-			return
-		}
-
-		if route, ok := modelcatalog.ResolveChatRoute(c.Request.Context(), cfgManager, chatReq.Model); ok {
-			handleRoutedChat(c, envCfg, cfgManager, channelScheduler, route, bodyBytes, chatReq, userID, startTime)
-			return
-		}
-
-		if channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindChat, chatReq.Model) {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, hasImage, startTime)
-			return
-		}
-
-		handleSingleChannel(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, startTime)
-	})
-}
-
-func handleMultiChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	bodyBytes []byte,
-	chatReq types.OpenAIRequest,
-	userID string,
-	hasImage bool,
-	startTime time.Time,
-) {
-	metricsManager := channelScheduler.GetChatMetricsManager()
-
-	common.HandleMultiChannelFailover(
-		c,
-		envCfg,
-		channelScheduler,
-		scheduler.ChannelKindChat,
-		"Chat",
-		userID,
-		chatReq.Model,
-		hasImage,
-		cfgManager.GetFuzzyModeEnabled(),
-		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
-			upstream := selection.Upstream
-			channelIndex := selection.ChannelIndex
-			if upstream == nil {
-				return common.MultiChannelAttemptResult{}
+			var chatReq types.OpenAIRequest
+			if err := json.Unmarshal(body, &chatReq); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Chat Completions request body", "detail": err.Error()})
+				return "", false, nil, false
 			}
-
-			baseURLs := upstream.GetAllBaseURLs()
-			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindChat, channelIndex, baseURLs)
-
-			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithModelMappingFailover(
-				c,
-				envCfg,
-				cfgManager,
-				channelScheduler,
-				scheduler.ChannelKindChat,
-				"Chat",
-				metricsManager,
-				upstream,
-				chatReq.Model, // 传入客户端请求的原始模型
-				cfgManager.GetFuzzyModeEnabled(),
-				sortedURLResults,
-				bodyBytes,
-				chatReq.Stream,
-				func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-					return cfgManager.GetNextChatAPIKey(upstream, failedKeys)
-				},
-				func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-					return buildChatUpstreamRequest(c, upstreamCopy, apiKey, bodyBytes)
-				},
-				func(apiKey string) {
-					if err := cfgManager.MoveChatAPIKeyToBottom(channelIndex, apiKey); err != nil {
-						log.Printf("[Chat-Key] 警告: 密钥降级失败: %v", err)
-					}
-				},
-				func(url string) {
-					channelScheduler.MarkURLFailure(scheduler.ChannelKindChat, channelIndex, url)
-				},
-				func(url string) {
-					channelScheduler.MarkURLSuccess(scheduler.ChannelKindChat, channelIndex, url)
-				},
-				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, bodyBytes)
-				},
-				common.AttemptLogContext{
-					ChannelIndex:    channelIndex,
-					Model:           chatReq.Model,
-					ConversationID:  userID,
-					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
-					RequestLogStore: channelScheduler.GetRequestLogStore(),
-				},
-			)
-
-			return common.MultiChannelAttemptResult{
-				Handled:           handled,
-				Attempted:         true,
-				SuccessKey:        successKey,
-				SuccessBaseURLIdx: successBaseURLIdx,
-				FailoverError:     failoverErr,
-				Usage:             usage,
-				LastError:         lastErr,
+			if strings.TrimSpace(chatReq.Model) == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+				return "", false, nil, false
 			}
+			prompts := common.ExtractPromptsFromOpenAI(chatReq.Messages)
+			return chatReq.Model, chatReq.Stream, prompts, true
 		},
-		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
-			if selection == nil || selection.Upstream == nil {
-				return
+		PreRoute: func(c *gin.Context, body []byte, model string, userID string, startTime time.Time) bool {
+			route, ok := modelcatalog.ResolveChatRoute(c.Request.Context(), cfgManager, model)
+			if !ok {
+				return false
 			}
-			if result.SuccessKey != "" {
-				common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, selection.ChannelIndex, selection.Upstream.Name)
-				return
-			}
-			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-				common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
-			}
+			var chatReq types.OpenAIRequest
+			_ = json.Unmarshal(body, &chatReq)
+			handleRoutedChat(c, envCfg, cfgManager, channelScheduler, route, body, model, chatReq.Stream, userID, startTime)
+			return true
 		},
-		func(ctx *gin.Context, failoverErr *common.FailoverError, lastError error) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
-			common.HandleAllChannelsFailed(ctx, cfgManager.GetFuzzyModeEnabled(), failoverErr, lastError, "Chat")
+		BuildUpstreamRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string, body []byte) (*http.Request, error) {
+			return buildChatUpstreamRequest(c, up, apiKey, body)
 		},
-	)
+		HandleSuccess: func(c *gin.Context, resp *http.Response, up *config.UpstreamConfig, apiKey string, body []byte, startTime time.Time) (*types.Usage, error) {
+			var chatReq types.OpenAIRequest
+			_ = json.Unmarshal(body, &chatReq)
+			return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, body)
+		},
+	}
+	return func(c *gin.Context) {
+		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
+	}
 }
 
 func handleRoutedChat(
@@ -225,7 +86,8 @@ func handleRoutedChat(
 	channelScheduler *scheduler.ChannelScheduler,
 	route modelcatalog.ChatRoute,
 	bodyBytes []byte,
-	chatReq types.OpenAIRequest,
+	model string,
+	stream bool,
 	userID string,
 	startTime time.Time,
 ) {
@@ -265,11 +127,11 @@ func handleRoutedChat(
 		"Chat",
 		metricsManager,
 		upstream,
-		chatReq.Model, // 添加 requestedModel 参数
+		model, // 添加 requestedModel 参数
 		cfgManager.GetFuzzyModeEnabled(),
 		urlResults,
 		routedBody,
-		chatReq.Stream,
+		stream,
 		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
 			if failedKeys[route.APIKey] {
 				return "", fmt.Errorf("路由模型 %s 指定的 API Key 已失败", route.Alias)
@@ -287,11 +149,11 @@ func handleRoutedChat(
 			channelScheduler.MarkURLSuccess(scheduler.ChannelKindChat, route.ChannelIndex, url)
 		},
 		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, routedBody)
+			return handleSuccess(c, resp, envCfg, startTime, stream, routedBody)
 		},
 		common.AttemptLogContext{
 			ChannelIndex:    route.ChannelIndex,
-			Model:           chatReq.Model,
+			Model:           model,
 			ConversationID:  userID,
 			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 			RequestLogStore: channelScheduler.GetRequestLogStore(),
@@ -340,110 +202,6 @@ func chatRouteUpstream(cfgManager *config.ConfigManager, route modelcatalog.Chat
 	upstream.ModelMapping = nil
 	upstream.DefaultModel = ""
 	return upstream, nil
-}
-
-func handleSingleChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	bodyBytes []byte,
-	chatReq types.OpenAIRequest,
-	userID string,
-	startTime time.Time,
-) {
-	upstream, channelIndex, err := cfgManager.GetCurrentChatUpstreamWithIndexForModel(chatReq.Model)
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": err.Error(),
-			"code":  "NO_CHAT_UPSTREAM",
-		})
-		return
-	}
-
-	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, bodyBytes, chatReq, userID, upstream, channelIndex, startTime)
-}
-
-func handleSingleChannelWithUpstream(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	bodyBytes []byte,
-	chatReq types.OpenAIRequest,
-	userID string,
-	upstream *config.UpstreamConfig,
-	channelIndex int,
-	startTime time.Time,
-) {
-
-	if len(upstream.APIKeys) == 0 {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": fmt.Sprintf("当前 Chat 渠道 \"%s\" 未配置API密钥", upstream.Name),
-			"code":  "NO_API_KEYS",
-		})
-		return
-	}
-	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindChat, channelIndex); err != nil {
-		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
-		return
-	}
-
-	metricsManager := channelScheduler.GetChatMetricsManager()
-	urlResults := common.BuildDefaultURLResults(upstream.GetAllBaseURLs())
-
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
-		c,
-		envCfg,
-		cfgManager,
-		channelScheduler,
-		scheduler.ChannelKindChat,
-		"Chat",
-		metricsManager,
-		upstream,
-		chatReq.Model,
-		cfgManager.GetFuzzyModeEnabled(),
-		urlResults,
-		bodyBytes,
-		chatReq.Stream,
-		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-			return cfgManager.GetNextChatAPIKey(upstream, failedKeys)
-		},
-		func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-			return buildChatUpstreamRequest(c, upstreamCopy, apiKey, bodyBytes)
-		},
-		func(apiKey string) {
-			if err := cfgManager.MoveChatAPIKeyToBottom(channelIndex, apiKey); err != nil {
-				log.Printf("[Chat-Key] 警告: 密钥降级失败: %v", err)
-			}
-		},
-		nil,
-		nil,
-		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleSuccess(c, resp, envCfg, startTime, chatReq.Stream, bodyBytes)
-		},
-		common.AttemptLogContext{
-			ChannelIndex:    channelIndex,
-			Model:           chatReq.Model,
-			ConversationID:  userID,
-			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
-			RequestLogStore: channelScheduler.GetRequestLogStore(),
-		},
-	)
-	if handled {
-		if successKey != "" {
-			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, channelIndex, upstream.Name)
-			channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindChat)
-		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
-		}
-		return
-	}
-
-	log.Printf("[Chat-Error] 所有 Chat API密钥都失败了")
-	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
-	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Chat")
 }
 
 func buildChatUpstreamRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string, originalBody []byte) (*http.Request, error) {
