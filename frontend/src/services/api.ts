@@ -201,6 +201,10 @@ export interface AppSettings {
 
 export type OpenCodeProtocol = 'chat' | 'responses' | 'messages' | 'custom'
 
+export interface OpenCodeVariant {
+  reasoningEffort: string
+}
+
 export interface OpenCodeModel {
   key: string
   apiModelId: string
@@ -209,6 +213,7 @@ export interface OpenCodeModel {
   inputLimit: number
   outputLimit: number
   options: Record<string, unknown>
+  variants?: Record<string, OpenCodeVariant>
 }
 
 export interface OpenCodeProvider {

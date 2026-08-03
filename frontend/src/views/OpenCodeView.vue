@@ -157,16 +157,33 @@
                       <v-col cols="12" sm="4">
                         <v-text-field v-model.number="model.outputLimit" label="最大输出 Token" type="number" min="0" variant="outlined" density="comfortable" />
                       </v-col>
-                      <v-col cols="12" sm="6">
-                        <v-select v-model="model.reasoningEffort" label="思考等级" variant="outlined" density="comfortable" :items="reasoningEfforts" item-title="title" item-value="value" />
-                      </v-col>
-                      <v-col cols="12">
-                        <v-textarea v-model="model.optionsText" label="模型高级 options JSON" variant="outlined" density="comfortable" rows="3" auto-grow placeholder="{&#10;  &quot;reasoningEffort&quot;: &quot;high&quot;&#10;}" />
-                      </v-col>
                     </v-row>
-                    <div class="d-flex justify-end">
-                      <v-btn color="error" variant="text" size="small" prepend-icon="mdi-delete" @click="removeModel(selectedProvider, model.localId)">删除模型</v-btn>
+
+                    <!-- Variants 配置 -->
+                    <div class="variants-section mt-4">
+                      <div class="d-flex align-center justify-space-between mb-2">
+                        <div>
+                          <div class="text-subtitle-2 font-weight-bold">思考等级 Variants</div>
+                          <div class="text-caption text-medium-emphasis">开启后可在 OpenCode TUI 中按 Ctrl+T 切换思考等级</div>
+                        </div>
+                        <v-switch v-model="model.variantsEnabled" color="primary" density="compact" hide-details />
+                      </div>
+                      <v-expand-transition>
+                        <div v-show="model.variantsEnabled" class="variants-list pl-1">
+                          <div v-for="(variant, vi) in model.variants" :key="vi" class="variant-row d-flex align-center ga-2 mb-2">
+                            <v-checkbox v-model="variant.enabled" density="compact" hide-details class="flex-grow-0" />
+                            <v-text-field v-model.trim="variant.name" label="变体名称" variant="outlined" density="compact" hide-details style="max-width: 160px;" placeholder="high" />
+                            <v-select v-model="variant.reasoningEffort" label="reasoningEffort" variant="outlined" density="compact" hide-details :items="reasoningEfforts" item-title="title" item-value="value" style="max-width: 200px;" />
+                            <v-btn icon="mdi-delete" size="x-small" variant="text" @click="model.variants.splice(vi, 1)" />
+                          </div>
+                          <v-btn size="small" variant="tonal" prepend-icon="mdi-plus" @click="model.variants.push({ name: '', reasoningEffort: 'medium', enabled: true })">添加变体</v-btn>
+                        </div>
+                      </v-expand-transition>
                     </div>
+
+                    <v-col cols="12" class="pa-0 mt-4">
+                      <v-textarea v-model="model.optionsText" label="模型高级 options JSON" variant="outlined" density="comfortable" rows="3" auto-grow placeholder='{ "key": "value" }' />
+                    </v-col>
                   </v-expansion-panel-text>
                 </v-expansion-panel>
               </v-expansion-panels>
@@ -191,7 +208,13 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { api, type OpenCodeConfig, type OpenCodeProtocol, type OpenCodeProvider, type SaveOpenCodeProvider } from '@/services/api'
+import { api, type OpenCodeConfig, type OpenCodeProtocol, type OpenCodeProvider, type OpenCodeVariant, type SaveOpenCodeProvider } from '@/services/api'
+
+interface EditableVariant {
+  name: string
+  reasoningEffort: string
+  enabled: boolean
+}
 
 interface EditableModel {
   localId: string
@@ -201,7 +224,8 @@ interface EditableModel {
   contextLimit: number
   inputLimit: number
   outputLimit: number
-  reasoningEffort: string
+  variantsEnabled: boolean
+  variants: EditableVariant[]
   optionsText: string
 }
 
@@ -228,13 +252,18 @@ const protocols: Array<{ title: string; value: OpenCodeProtocol }> = [
 ]
 
 const reasoningEfforts = [
-  { title: '使用提供商默认值', value: '' },
   { title: '不启用推理', value: 'none' },
   { title: '低', value: 'low' },
   { title: '中', value: 'medium' },
   { title: '高', value: 'high' },
   { title: '超高', value: 'xhigh' }
 ]
+
+const defaultVariantNames = ['none', 'low', 'medium', 'high', 'xhigh']
+
+function makeDefaultVariants(): EditableVariant[] {
+  return defaultVariantNames.map(name => ({ name, reasoningEffort: name, enabled: true }))
+}
 
 const loading = ref(false)
 const saving = ref(false)
@@ -258,9 +287,31 @@ const toEditableProvider = (provider: OpenCodeProvider): EditableProvider => ({
   optionsText: stringifyJSON(provider.options),
   models: provider.models.map(model => {
     const options = { ...model.options }
-    const reasoningEffort = typeof options.reasoningEffort === 'string' ? options.reasoningEffort : ''
     delete options.reasoningEffort
-    return { ...model, localId: localID(), reasoningEffort, optionsText: stringifyJSON(options) }
+    // 从 model.variants 构建 editable variants
+    const rawVariants = model.variants ?? {}
+    const variantNames = Object.keys(rawVariants)
+    let variants: EditableVariant[]
+    let variantsEnabled: boolean
+    if (variantNames.length > 0) {
+      variantsEnabled = true
+      variants = variantNames.map(name => ({
+        name,
+        reasoningEffort: rawVariants[name]?.reasoningEffort ?? 'high',
+        enabled: true
+      }))
+    } else {
+      // 从旧版 model.options.reasoningEffort 迁移
+      const oldEffort = typeof model.options.reasoningEffort === 'string' ? model.options.reasoningEffort : ''
+      if (oldEffort) {
+        variantsEnabled = true
+        variants = makeDefaultVariants().map(v => ({ ...v, enabled: v.name === oldEffort }))
+      } else {
+        variantsEnabled = false
+        variants = makeDefaultVariants()
+      }
+    }
+    return { ...model, localId: localID(), variantsEnabled, variants, optionsText: stringifyJSON(options) }
   })
 })
 
@@ -319,7 +370,8 @@ const addModel = (provider: EditableProvider) => {
     contextLimit: 200000,
     inputLimit: 80000,
     outputLimit: 64800,
-    reasoningEffort: '',
+    variantsEnabled: false,
+    variants: makeDefaultVariants(),
     optionsText: ''
   })
 }
@@ -379,8 +431,15 @@ const prepareProvider = (provider: EditableProvider): SaveOpenCodeProvider => {
     options: parseJSONObject(provider.optionsText, `提供商 ${provider.id} 的高级选项`),
     models: provider.models.map(model => {
       const options = parseJSONObject(model.optionsText, `模型 ${model.key || '新模型'} 的高级选项`)
-      if (model.reasoningEffort) options.reasoningEffort = model.reasoningEffort
-      else delete options.reasoningEffort
+      // variants
+      const variants: Record<string, OpenCodeVariant> = {}
+      if (model.variantsEnabled) {
+        const enabledVariants = model.variants.filter(v => v.enabled && v.name.trim())
+        if (enabledVariants.length === 0) throw new Error(`模型 ${model.key || '新模型'} 开启了 Variants 但未启用任何变体`)
+        for (const v of enabledVariants) {
+          variants[v.name.trim()] = { reasoningEffort: v.reasoningEffort }
+        }
+      }
       return {
         key: model.key.trim(),
         apiModelId: model.apiModelId.trim(),
@@ -388,7 +447,8 @@ const prepareProvider = (provider: EditableProvider): SaveOpenCodeProvider => {
         contextLimit: Number(model.contextLimit) || 0,
         inputLimit: Number(model.inputLimit) || 0,
         outputLimit: Number(model.outputLimit) || 0,
-        options
+        options,
+        variants: model.variantsEnabled ? variants : {}
       }
     })
   }
@@ -420,5 +480,7 @@ onMounted(loadConfig)
 .empty-editor { min-height: 390px; }
 .empty-providers, .empty-models { border: 1px dashed rgba(var(--v-theme-on-surface), 0.2); border-radius: 6px; }
 .model-panels :deep(.v-expansion-panel) { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); margin-bottom: 8px; }
+.variants-section { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-radius: 8px; padding: 12px 16px; }
+.variant-row { flex-wrap: nowrap; }
 @media (max-width: 600px) { .page-heading { align-items: flex-start; flex-direction: column; } }
 </style>

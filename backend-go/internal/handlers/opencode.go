@@ -42,13 +42,18 @@ type openCodeProviderView struct {
 }
 
 type openCodeModelView struct {
-	Key          string                 `json:"key"`
-	APIModelID   string                 `json:"apiModelId"`
-	Name         string                 `json:"name"`
-	ContextLimit int                    `json:"contextLimit"`
-	InputLimit   int                    `json:"inputLimit"`
-	OutputLimit  int                    `json:"outputLimit"`
-	Options      map[string]interface{} `json:"options"`
+	Key          string                         `json:"key"`
+	APIModelID   string                         `json:"apiModelId"`
+	Name         string                         `json:"name"`
+	ContextLimit int                            `json:"contextLimit"`
+	InputLimit   int                            `json:"inputLimit"`
+	OutputLimit  int                            `json:"outputLimit"`
+	Options      map[string]interface{}         `json:"options"`
+	Variants     map[string]openCodeVariantView `json:"variants"`
+}
+
+type openCodeVariantView struct {
+	ReasoningEffort string `json:"reasoningEffort"`
 }
 
 type saveOpenCodeConfigRequest struct {
@@ -69,13 +74,18 @@ type saveOpenCodeProvider struct {
 }
 
 type saveOpenCodeModel struct {
-	Key          string                 `json:"key" binding:"required"`
-	APIModelID   string                 `json:"apiModelId"`
-	Name         string                 `json:"name"`
-	ContextLimit int                    `json:"contextLimit"`
-	InputLimit   int                    `json:"inputLimit"`
-	OutputLimit  int                    `json:"outputLimit"`
-	Options      map[string]interface{} `json:"options"`
+	Key          string                         `json:"key" binding:"required"`
+	APIModelID   string                         `json:"apiModelId"`
+	Name         string                         `json:"name"`
+	ContextLimit int                            `json:"contextLimit"`
+	InputLimit   int                            `json:"inputLimit"`
+	OutputLimit  int                            `json:"outputLimit"`
+	Options      map[string]interface{}         `json:"options"`
+	Variants     map[string]saveOpenCodeVariant `json:"variants"`
+}
+
+type saveOpenCodeVariant struct {
+	ReasoningEffort string `json:"reasoningEffort"`
 }
 
 // GetOpenCodeConfig 读取 OpenCode 全局配置。API 响应只包含脱敏后的密钥信息。
@@ -303,6 +313,24 @@ func mergeOpenCodeProviders(existing map[string]interface{}, providers []saveOpe
 			} else {
 				oldModel["options"] = model.Options
 			}
+			// variants
+			if len(model.Variants) == 0 {
+				delete(oldModel, "variants")
+			} else {
+				variants := make(map[string]interface{}, len(model.Variants))
+				for variantName, variant := range model.Variants {
+					v := make(map[string]interface{})
+					setOptionalString(v, "reasoningEffort", variant.ReasoningEffort)
+					if len(v) > 0 {
+						variants[variantName] = v
+					}
+				}
+				if len(variants) == 0 {
+					delete(oldModel, "variants")
+				} else {
+					oldModel["variants"] = variants
+				}
+			}
 			models[model.Key] = oldModel
 		}
 		if len(models) == 0 {
@@ -394,7 +422,19 @@ func openCodeModelViews(models map[string]interface{}) []openCodeModelView {
 			InputLimit:   intValue(limits["input"]),
 			OutputLimit:  intValue(limits["output"]),
 			Options:      objectValue(model["options"]),
+			Variants:     openCodeVariantViews(objectValue(model["variants"])),
 		})
+	}
+	return result
+}
+
+func openCodeVariantViews(variants map[string]interface{}) map[string]openCodeVariantView {
+	result := make(map[string]openCodeVariantView, len(variants))
+	for name, rawVariant := range variants {
+		variant := objectValue(rawVariant)
+		result[name] = openCodeVariantView{
+			ReasoningEffort: stringValue(variant["reasoningEffort"]),
+		}
 	}
 	return result
 }
