@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/handlers"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/session"
@@ -67,7 +68,7 @@ func TestGetDashboard_IncludesStripThoughtSignature(t *testing.T) {
 	sch := scheduler.NewChannelScheduler(cfgManager, messagesMetrics, responsesMetrics, geminiMetrics, chatMetrics, imagesMetrics, traceAffinity, urlManager)
 
 	r := gin.New()
-	r.GET("/gemini/channels/dashboard", GetDashboard(cfgManager, sch))
+	r.GET("/gemini/channels/dashboard", handlers.GetChannelDashboard(cfgManager, sch, scheduler.ChannelKindGemini))
 
 	req := httptest.NewRequest(http.MethodGet, "/gemini/channels/dashboard", nil)
 	w := httptest.NewRecorder()

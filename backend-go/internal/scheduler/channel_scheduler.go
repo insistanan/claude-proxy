@@ -18,17 +18,17 @@ import (
 
 // ChannelScheduler 多渠道调度器
 type ChannelScheduler struct {
-	mu                  sync.RWMutex
-	configManager       *config.ConfigManager
-	metricsManagers     map[ChannelKind]*metrics.MetricsManager // 各渠道类型对应的指标管理器
-	channelLogStores    map[ChannelKind]*metrics.ChannelLogStore
-	requestLogStore     *metrics.RequestLogStore
-	traceAffinity       *session.TraceAffinityManager
-	baseURLAffinity     *session.BaseURLAffinityManager
+	mu                   sync.RWMutex
+	configManager        *config.ConfigManager
+	metricsManagers      map[ChannelKind]*metrics.MetricsManager // 各渠道类型对应的指标管理器
+	channelLogStores     map[ChannelKind]*metrics.ChannelLogStore
+	requestLogStore      *metrics.RequestLogStore
+	traceAffinity        *session.TraceAffinityManager
+	baseURLAffinity      *session.BaseURLAffinityManager
 	conversationRegistry *conversation.Registry
-	urlManager          *urlhealth.URLManager   // URL 管理器（非阻塞，动态排序）
-	profileManager      *metrics.ProfileManager // 性能画像管理器
-	adaptiveScheduler   *AdaptiveScheduler      // 自适应调度器
+	urlManager           *urlhealth.URLManager   // URL 管理器（非阻塞，动态排序）
+	profileManager       *metrics.ProfileManager // 性能画像管理器
+	adaptiveScheduler    *AdaptiveScheduler      // 自适应调度器
 	// inFlightByKind 记录选渠后、真正发出上游请求前的在途预留。
 	// 让并发对话在 StartRequest 之前就能看到彼此占用，从而分摊到不同供应商。
 	inFlightByKind map[ChannelKind]map[int]int64
@@ -74,10 +74,10 @@ func NewChannelScheduler(
 			ChannelKindChat:      metrics.NewChannelLogStore(),
 			ChannelKindImages:    metrics.NewChannelLogStore(),
 		},
-		traceAffinity:       traceAffinity,
-		baseURLAffinity:     session.NewBaseURLAffinityManager(),
-		urlManager:          urlMgr,
-		inFlightByKind:      make(map[ChannelKind]map[int]int64),
+		traceAffinity:   traceAffinity,
+		baseURLAffinity: session.NewBaseURLAffinityManager(),
+		urlManager:      urlMgr,
+		inFlightByKind:  make(map[ChannelKind]map[int]int64),
 	}
 }
 
@@ -1073,6 +1073,12 @@ func (s *ChannelScheduler) GetChatMetricsManager() *metrics.MetricsManager {
 // GetImagesMetricsManager 获取 Images 渠道指标管理器
 func (s *ChannelScheduler) GetImagesMetricsManager() *metrics.MetricsManager {
 	return s.getMetricsManager(ChannelKindImages)
+}
+
+// MetricsManager 按渠道类型返回对应的指标管理器。
+// 调用方不应再用 GetXxxMetricsManager + switch kind 的写法。
+func (s *ChannelScheduler) MetricsManager(kind ChannelKind) *metrics.MetricsManager {
+	return s.getMetricsManager(kind)
 }
 
 // GetTraceAffinityManager 获取 Trace 亲和性管理器

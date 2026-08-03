@@ -624,55 +624,10 @@ func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.Channe
 	return func(c *gin.Context) {
 		cfg := cfgManager.GetConfig()
 		upstreams, loadBalance := upstreamsByKind(cfg, kind)
-		metricsManager := sch.GetMessagesMetricsManager()
-		switch kind {
-		case scheduler.ChannelKindResponses:
-			metricsManager = sch.GetResponsesMetricsManager()
-		case scheduler.ChannelKindGemini:
-			metricsManager = sch.GetGeminiMetricsManager()
-		case scheduler.ChannelKindChat:
-			metricsManager = sch.GetChatMetricsManager()
-		case scheduler.ChannelKindImages:
-			metricsManager = sch.GetImagesMetricsManager()
-		}
+		metricsManager := sch.MetricsManager(kind)
 
-		// 1. 构建 channels 数据
-		channels := make([]gin.H, 0, len(upstreams))
-		for i, up := range upstreams {
-			if config.GetChannelStatus(&up) == config.ChannelStatusDeleted {
-				continue
-			}
-			status := config.GetChannelStatus(&up)
-			priority := config.GetChannelPriority(&up, i)
-
-			channels = append(channels, gin.H{
-				"id":                      up.ID,
-				"poolId":                  up.PoolID,
-				"index":                   i,
-				"name":                    up.Name,
-				"serviceType":             up.ServiceType,
-				"baseUrl":                 up.BaseURL,
-				"baseUrls":                up.BaseURLs,
-				"apiKeys":                 up.APIKeys,
-				"description":             up.Description,
-				"website":                 up.Website,
-				"insecureSkipVerify":      up.InsecureSkipVerify,
-				"modelMapping":            up.ModelMapping,
-				"defaultModel":            up.DefaultModel,
-				"latency":                 nil,
-				"status":                  status,
-				"priority":                priority,
-				"promotionUntil":          up.PromotionUntil,
-				"promotionCount":          up.PromotionCount,
-				"lowQuality":              up.LowQuality,
-				"visionCapable":           up.VisionCapable,
-				"excludeFromConversation": up.ExcludeFromConversation,
-				"disablePromptCacheKey":   up.DisablePromptCacheKey,
-				"visionLayerEnabled":      up.VisionLayerEnabled,
-				"visionLayerChannelId":    up.VisionLayerChannelID,
-				"visionLayerModel":        up.VisionLayerModel,
-			})
-		}
+		// 1. 构建 channels 数据（统一使用 ChannelListToDTO）
+		channels := config.ChannelListToDTO(upstreams)
 
 		// 2. 构建 metrics 数据
 		metricsResult := make([]gin.H, 0, len(upstreams))

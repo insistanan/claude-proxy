@@ -231,21 +231,21 @@ func main() {
 		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindGemini, channelDeps, handlers.ChannelRouteOptions{
 			Crud:        gemini.Crud(cfgManager, channelScheduler),
 			LoadBalance: gemini.UpdateLoadBalance(cfgManager),
-			Dashboard:   gemini.GetDashboard(cfgManager, channelScheduler),
+			Dashboard:   handlers.GetChannelDashboard(cfgManager, channelScheduler, scheduler.ChannelKindGemini),
 		})
 
 		// Chat 渠道管理
 		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindChat, channelDeps, handlers.ChannelRouteOptions{
 			Crud:        chat.Crud(cfgManager, channelScheduler),
 			LoadBalance: chat.UpdateLoadBalance(cfgManager),
-			Dashboard:   chat.GetDashboard(cfgManager, channelScheduler),
+			Dashboard:   handlers.GetChannelDashboard(cfgManager, channelScheduler, scheduler.ChannelKindChat),
 		})
 
 		// Images 渠道管理
 		handlers.RegisterChannelRoutes(apiGroup, scheduler.ChannelKindImages, channelDeps, handlers.ChannelRouteOptions{
 			Crud:        images.Crud(cfgManager, channelScheduler),
 			LoadBalance: images.UpdateLoadBalance(cfgManager),
-			Dashboard:   images.GetDashboard(cfgManager, channelScheduler),
+			Dashboard:   handlers.GetChannelDashboard(cfgManager, channelScheduler, scheduler.ChannelKindImages),
 		})
 
 		// 渠道性能报告（自适应负载均衡）

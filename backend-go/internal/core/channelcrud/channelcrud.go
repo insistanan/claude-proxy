@@ -84,47 +84,8 @@ func (h *Handlers) resetMetrics(index int) {
 
 // GetUpstreams 获取上游列表（兼容前端 channels 字段名）
 func (h *Handlers) GetUpstreams(c *gin.Context) {
-	list := h.ops.List()
-	upstreams := make([]gin.H, 0, len(list))
-	for i, up := range list {
-		if config.GetChannelStatus(&up) == config.ChannelStatusDeleted {
-			continue
-		}
-		status := config.GetChannelStatus(&up)
-		priority := config.GetChannelPriority(&up, i)
-
-		upstreams = append(upstreams, gin.H{
-			"id":                      up.ID,
-			"poolId":                  up.PoolID,
-			"index":                   i,
-			"name":                    up.Name,
-			"serviceType":             up.ServiceType,
-			"baseUrl":                 up.BaseURL,
-			"baseUrls":                up.BaseURLs,
-			"apiKeys":                 up.APIKeys,
-			"description":             up.Description,
-			"website":                 up.Website,
-			"insecureSkipVerify":      up.InsecureSkipVerify,
-			"proxyMode":               up.ProxyMode,
-			"proxyUrl":                up.ProxyURL,
-			"modelMapping":            up.ModelMapping,
-			"latency":                 nil,
-			"status":                  status,
-			"priority":                priority,
-			"promotionUntil":          up.PromotionUntil,
-			"promotionCount":          up.PromotionCount,
-			"lowQuality":              up.LowQuality,
-			"visionCapable":           up.VisionCapable,
-			"excludeFromConversation": up.ExcludeFromConversation,
-			"disablePromptCacheKey":   up.DisablePromptCacheKey,
-			"visionLayerEnabled":      up.VisionLayerEnabled,
-			"visionLayerChannelId":    up.VisionLayerChannelID,
-			"visionLayerModel":        up.VisionLayerModel,
-		})
-	}
-
 	c.JSON(200, gin.H{
-		"channels":    upstreams,
+		"channels":    config.ChannelListToDTO(h.ops.List()),
 		"loadBalance": h.ops.LoadBalance(),
 	})
 }
@@ -148,8 +109,8 @@ func (h *Handlers) AddUpstream(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"message":  "上游已添加",
-		"channel":  gin.H{"id": created.ID, "index": created.Index},
+		"message":   "上游已添加",
+		"channel":   gin.H{"id": created.ID, "index": created.Index},
 		"channelId": created.ID,
 	})
 }
