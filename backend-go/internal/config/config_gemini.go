@@ -1,12 +1,10 @@
 package config
 
 import (
-	"fmt"
-	"log"
 	"time"
 )
 
-// ============== Gemini 渠道方法 ==============
+// ============== Gemini 渠道方法（薄委托） ==============
 
 func (cm *ConfigManager) GetCurrentGeminiUpstream() (*UpstreamConfig, error) {
 	cm.mu.RLock()
@@ -21,9 +19,7 @@ func (cm *ConfigManager) GetCurrentGeminiUpstreamWithIndex() (*UpstreamConfig, i
 }
 
 func (cm *ConfigManager) GetCurrentGeminiUpstreamWithIndexForModel(model string) (*UpstreamConfig, int, error) {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-	return getFirstActiveWithIndexForModel(cm.config.GeminiUpstream, cm.config.GeminiPools, "Gemini", model)
+	return cm.currentChannelForModel("gemini", model)
 }
 
 func (cm *ConfigManager) AddGeminiUpstream(upstream UpstreamConfig) error {
@@ -32,84 +28,23 @@ func (cm *ConfigManager) AddGeminiUpstream(upstream UpstreamConfig) error {
 }
 
 func (cm *ConfigManager) AddGeminiUpstreamWithResult(upstream UpstreamConfig) (AddedUpstream, error) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	previous := cm.config.GeminiUpstream
-	next, result, err := addValidatedUpstreamOp(previous, cm.config.GeminiPools, upstream)
-	if err != nil {
-		return AddedUpstream{}, err
-	}
-	cm.config.GeminiUpstream = next
-
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		cm.config.GeminiUpstream = previous
-		return AddedUpstream{}, err
-	}
-	log.Printf("[Config-Upstream] 已添加 Gemini 上游（优先级1）: %s", cm.config.GeminiUpstream[result.Index].Name)
-	return result, nil
+	return cm.addChannel("gemini", upstream)
 }
 
 func (cm *ConfigManager) UpdateGeminiUpstream(index int, updates UpstreamUpdate) (shouldResetMetrics bool, err error) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if index < 0 || index >= len(cm.config.GeminiUpstream) {
-		return false, fmt.Errorf("无效的 Gemini 上游索引: %d", index)
-	}
-
-	previous := cm.config.GeminiUpstream
-	next := cloneUpstreamList(previous)
-	shouldResetMetrics, err = applyCommonUpdatesToList(next, cm.config.GeminiPools, index, updates, "Gemini")
-	if err != nil {
-		return false, err
-	}
-
-	cm.config.GeminiUpstream = next
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		cm.config.GeminiUpstream = previous
-		return false, err
-	}
-	log.Printf("[Config-Upstream] 已更新 Gemini 上游: [%d] %s", index, cm.config.GeminiUpstream[index].Name)
-	return shouldResetMetrics, nil
+	return cm.updateChannel("gemini", index, updates)
 }
 
 func (cm *ConfigManager) RemoveGeminiUpstream(index int) (*UpstreamConfig, error) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	newSlice, removed, err := removeFromSlice(cm.config.GeminiUpstream, index, "Gemini")
-	if err != nil {
-		return nil, err
-	}
-	cm.config.GeminiUpstream = newSlice
-	cm.clearFailedKeysForUpstream(removed, "Gemini")
-
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return nil, err
-	}
-	log.Printf("[Config-Upstream] 已删除 Gemini 上游: %s", removed.Name)
-	return removed, nil
+	return cm.removeChannel("gemini", index)
 }
 
 func (cm *ConfigManager) AddGeminiAPIKey(index int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := addAPIKeyOp(cm.config.GeminiUpstream, index, apiKey, "Gemini"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.addChannelKey("gemini", index, apiKey)
 }
 
 func (cm *ConfigManager) RemoveGeminiAPIKey(index int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := removeAPIKeyOp(cm.config.GeminiUpstream, index, apiKey, "Gemini"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.removeChannelKey("gemini", index, apiKey)
 }
 
 // GetNextGeminiAPIKey 获取下一个 API 密钥
@@ -118,53 +53,23 @@ func (cm *ConfigManager) GetNextGeminiAPIKey(upstream *UpstreamConfig, failedKey
 }
 
 func (cm *ConfigManager) MoveGeminiAPIKeyToTop(upstreamIndex int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := moveKeyToTopOp(cm.config.GeminiUpstream, upstreamIndex, apiKey); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.moveChannelKeyTop("gemini", upstreamIndex, apiKey)
 }
 
 func (cm *ConfigManager) MoveGeminiAPIKeyToBottom(upstreamIndex int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := moveKeyToBottomOp(cm.config.GeminiUpstream, upstreamIndex, apiKey); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.moveChannelKeyBottom("gemini", upstreamIndex, apiKey)
 }
 
 func (cm *ConfigManager) ReorderGeminiUpstreams(order []int) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := reorderOp(cm.config.GeminiUpstream, order, "Gemini"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.reorderChannels("gemini", order)
 }
 
 func (cm *ConfigManager) SetGeminiChannelStatus(index int, status string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := setStatusOp(cm.config.GeminiUpstream, index, status, "Gemini"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.setChannelStatusFor("gemini", index, status)
 }
 
 func (cm *ConfigManager) SetGeminiChannelPromotion(index int, duration time.Duration, count int) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := setPromotionOp(cm.config.GeminiUpstream, index, duration, count, "Gemini"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.setChannelPromotionFor("gemini", index, duration, count)
 }
 
 func (cm *ConfigManager) GetPromotedGeminiChannel() (int, bool) {
@@ -174,17 +79,5 @@ func (cm *ConfigManager) GetPromotedGeminiChannel() (int, bool) {
 }
 
 func (cm *ConfigManager) SetGeminiLoadBalance(strategy string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := validateLoadBalanceStrategy(strategy); err != nil {
-		return err
-	}
-	cm.config.GeminiLoadBalance = strategy
-
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return err
-	}
-	log.Printf("[Config-LoadBalance] 已设置 Gemini 负载均衡策略: %s", strategy)
-	return nil
+	return cm.setLoadBalanceFor("gemini", strategy)
 }

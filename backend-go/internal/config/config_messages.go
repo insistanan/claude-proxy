@@ -1,12 +1,10 @@
 package config
 
 import (
-	"fmt"
-	"log"
 	"time"
 )
 
-// ============== Messages 渠道方法 ==============
+// ============== Messages 渠道方法（薄委托） ==============
 
 func (cm *ConfigManager) GetCurrentUpstream() (*UpstreamConfig, error) {
 	cm.mu.RLock()
@@ -21,9 +19,7 @@ func (cm *ConfigManager) GetCurrentUpstreamWithIndex() (*UpstreamConfig, int, er
 }
 
 func (cm *ConfigManager) GetCurrentUpstreamWithIndexForModel(model string) (*UpstreamConfig, int, error) {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-	return getFirstActiveWithIndexForModel(cm.config.Upstream, cm.config.MessagePools, "Messages", model)
+	return cm.currentChannelForModel("messages", model)
 }
 
 func (cm *ConfigManager) AddUpstream(upstream UpstreamConfig) error {
@@ -32,143 +28,46 @@ func (cm *ConfigManager) AddUpstream(upstream UpstreamConfig) error {
 }
 
 func (cm *ConfigManager) AddUpstreamWithResult(upstream UpstreamConfig) (AddedUpstream, error) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	previous := cm.config.Upstream
-	next, result, err := addValidatedUpstreamOp(previous, cm.config.MessagePools, upstream)
-	if err != nil {
-		return AddedUpstream{}, err
-	}
-	cm.config.Upstream = next
-
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		cm.config.Upstream = previous
-		return AddedUpstream{}, err
-	}
-	log.Printf("[Config-Upstream] 已添加上游（优先级1）: %s", cm.config.Upstream[result.Index].Name)
-	return result, nil
+	return cm.addChannel("messages", upstream)
 }
 
 func (cm *ConfigManager) UpdateUpstream(index int, updates UpstreamUpdate) (shouldResetMetrics bool, err error) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if index < 0 || index >= len(cm.config.Upstream) {
-		return false, fmt.Errorf("无效的上游索引: %d", index)
-	}
-
-	previous := cm.config.Upstream
-	next := cloneUpstreamList(previous)
-	shouldResetMetrics, err = applyCommonUpdatesToList(next, cm.config.MessagePools, index, updates, "Messages")
-	if err != nil {
-		return false, err
-	}
-
-	cm.config.Upstream = next
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		cm.config.Upstream = previous
-		return false, err
-	}
-	log.Printf("[Config-Upstream] 已更新上游: [%d] %s", index, cm.config.Upstream[index].Name)
-	return shouldResetMetrics, nil
+	return cm.updateChannel("messages", index, updates)
 }
 
 func (cm *ConfigManager) RemoveUpstream(index int) (*UpstreamConfig, error) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	newSlice, removed, err := removeFromSlice(cm.config.Upstream, index, "")
-	if err != nil {
-		return nil, err
-	}
-	cm.config.Upstream = newSlice
-	cm.clearFailedKeysForUpstream(removed, "Messages")
-
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return nil, err
-	}
-	log.Printf("[Config-Upstream] 已删除上游: %s", removed.Name)
-	return removed, nil
+	return cm.removeChannel("messages", index)
 }
 
 func (cm *ConfigManager) AddAPIKey(index int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := addAPIKeyOp(cm.config.Upstream, index, apiKey, "Messages"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.addChannelKey("messages", index, apiKey)
 }
 
 func (cm *ConfigManager) RemoveAPIKey(index int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := removeAPIKeyOp(cm.config.Upstream, index, apiKey, "Messages"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.removeChannelKey("messages", index, apiKey)
 }
 
 func (cm *ConfigManager) SetLoadBalance(strategy string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := validateLoadBalanceStrategy(strategy); err != nil {
-		return err
-	}
-	cm.config.LoadBalance = strategy
-
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return err
-	}
-	log.Printf("[Config-LoadBalance] 已设置负载均衡策略: %s", strategy)
-	return nil
+	return cm.setLoadBalanceFor("messages", strategy)
 }
 
 func (cm *ConfigManager) MoveAPIKeyToTop(upstreamIndex int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := moveKeyToTopOp(cm.config.Upstream, upstreamIndex, apiKey); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.moveChannelKeyTop("messages", upstreamIndex, apiKey)
 }
 
 func (cm *ConfigManager) MoveAPIKeyToBottom(upstreamIndex int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := moveKeyToBottomOp(cm.config.Upstream, upstreamIndex, apiKey); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.moveChannelKeyBottom("messages", upstreamIndex, apiKey)
 }
 
 func (cm *ConfigManager) ReorderUpstreams(order []int) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := reorderOp(cm.config.Upstream, order, "Messages"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.reorderChannels("messages", order)
 }
 
 func (cm *ConfigManager) SetChannelStatus(index int, status string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := setStatusOp(cm.config.Upstream, index, status, "Messages"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.setChannelStatusFor("messages", index, status)
 }
 
-// ConsumePromotionCount 消费促销请求次数
+// ConsumePromotionCount 消费促销请求次数（多 kind 共享方法）
 func (cm *ConfigManager) ConsumePromotionCount(channelIndex int, channelType string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -193,13 +92,7 @@ func (cm *ConfigManager) ConsumePromotionCount(channelIndex int, channelType str
 }
 
 func (cm *ConfigManager) SetChannelPromotion(index int, duration time.Duration, count int) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := setPromotionOp(cm.config.Upstream, index, duration, count, "Messages"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.setChannelPromotionFor("messages", index, duration, count)
 }
 
 func (cm *ConfigManager) GetPromotedChannel() (int, bool) {

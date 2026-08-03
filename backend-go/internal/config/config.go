@@ -216,7 +216,8 @@ type SettingsConfig struct {
 
 // NetworkSettings 网络相关设置。
 type NetworkSettings struct {
-	UpstreamProxyURL string `json:"upstreamProxyUrl"`
+	UpstreamProxyURL     string `json:"upstreamProxyUrl"`
+	UpstreamProxyEnabled bool   `json:"upstreamProxyEnabled"`
 }
 
 // Config 配置结构

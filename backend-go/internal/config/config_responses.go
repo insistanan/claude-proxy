@@ -1,12 +1,10 @@
 package config
 
 import (
-	"fmt"
-	"log"
 	"time"
 )
 
-// ============== Responses 渠道方法 ==============
+// ============== Responses 渠道方法（薄委托） ==============
 
 func (cm *ConfigManager) GetCurrentResponsesUpstream() (*UpstreamConfig, error) {
 	cm.mu.RLock()
@@ -21,9 +19,7 @@ func (cm *ConfigManager) GetCurrentResponsesUpstreamWithIndex() (*UpstreamConfig
 }
 
 func (cm *ConfigManager) GetCurrentResponsesUpstreamWithIndexForModel(model string) (*UpstreamConfig, int, error) {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-	return getFirstActiveWithIndexForModel(cm.config.ResponsesUpstream, cm.config.ResponsesPools, "Responses", model)
+	return cm.currentChannelForModel("responses", model)
 }
 
 func (cm *ConfigManager) AddResponsesUpstream(upstream UpstreamConfig) error {
@@ -32,84 +28,23 @@ func (cm *ConfigManager) AddResponsesUpstream(upstream UpstreamConfig) error {
 }
 
 func (cm *ConfigManager) AddResponsesUpstreamWithResult(upstream UpstreamConfig) (AddedUpstream, error) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	previous := cm.config.ResponsesUpstream
-	next, result, err := addValidatedUpstreamOp(previous, cm.config.ResponsesPools, upstream)
-	if err != nil {
-		return AddedUpstream{}, err
-	}
-	cm.config.ResponsesUpstream = next
-
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		cm.config.ResponsesUpstream = previous
-		return AddedUpstream{}, err
-	}
-	log.Printf("[Config-Upstream] 已添加 Responses 上游（优先级1）: %s", cm.config.ResponsesUpstream[result.Index].Name)
-	return result, nil
+	return cm.addChannel("responses", upstream)
 }
 
 func (cm *ConfigManager) UpdateResponsesUpstream(index int, updates UpstreamUpdate) (shouldResetMetrics bool, err error) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if index < 0 || index >= len(cm.config.ResponsesUpstream) {
-		return false, fmt.Errorf("无效的 Responses 上游索引: %d", index)
-	}
-
-	previous := cm.config.ResponsesUpstream
-	next := cloneUpstreamList(previous)
-	shouldResetMetrics, err = applyCommonUpdatesToList(next, cm.config.ResponsesPools, index, updates, "Responses")
-	if err != nil {
-		return false, err
-	}
-
-	cm.config.ResponsesUpstream = next
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		cm.config.ResponsesUpstream = previous
-		return false, err
-	}
-	log.Printf("[Config-Upstream] 已更新 Responses 上游: [%d] %s", index, cm.config.ResponsesUpstream[index].Name)
-	return shouldResetMetrics, nil
+	return cm.updateChannel("responses", index, updates)
 }
 
 func (cm *ConfigManager) RemoveResponsesUpstream(index int) (*UpstreamConfig, error) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	newSlice, removed, err := removeFromSlice(cm.config.ResponsesUpstream, index, "Responses")
-	if err != nil {
-		return nil, err
-	}
-	cm.config.ResponsesUpstream = newSlice
-	cm.clearFailedKeysForUpstream(removed, "Responses")
-
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return nil, err
-	}
-	log.Printf("[Config-Upstream] 已删除 Responses 上游: %s", removed.Name)
-	return removed, nil
+	return cm.removeChannel("responses", index)
 }
 
 func (cm *ConfigManager) AddResponsesAPIKey(index int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := addAPIKeyOp(cm.config.ResponsesUpstream, index, apiKey, "Responses"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.addChannelKey("responses", index, apiKey)
 }
 
 func (cm *ConfigManager) RemoveResponsesAPIKey(index int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := removeAPIKeyOp(cm.config.ResponsesUpstream, index, apiKey, "Responses"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.removeChannelKey("responses", index, apiKey)
 }
 
 // GetNextResponsesAPIKey 获取下一个 API 密钥
@@ -118,69 +53,27 @@ func (cm *ConfigManager) GetNextResponsesAPIKey(upstream *UpstreamConfig, failed
 }
 
 func (cm *ConfigManager) SetResponsesLoadBalance(strategy string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := validateLoadBalanceStrategy(strategy); err != nil {
-		return err
-	}
-	cm.config.ResponsesLoadBalance = strategy
-
-	if err := cm.saveConfigLocked(cm.config); err != nil {
-		return err
-	}
-	log.Printf("[Config-LoadBalance] 已设置 Responses 负载均衡策略: %s", strategy)
-	return nil
+	return cm.setLoadBalanceFor("responses", strategy)
 }
 
 func (cm *ConfigManager) MoveResponsesAPIKeyToTop(upstreamIndex int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := moveKeyToTopOp(cm.config.ResponsesUpstream, upstreamIndex, apiKey); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.moveChannelKeyTop("responses", upstreamIndex, apiKey)
 }
 
 func (cm *ConfigManager) MoveResponsesAPIKeyToBottom(upstreamIndex int, apiKey string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := moveKeyToBottomOp(cm.config.ResponsesUpstream, upstreamIndex, apiKey); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.moveChannelKeyBottom("responses", upstreamIndex, apiKey)
 }
 
 func (cm *ConfigManager) ReorderResponsesUpstreams(order []int) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := reorderOp(cm.config.ResponsesUpstream, order, "Responses"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.reorderChannels("responses", order)
 }
 
 func (cm *ConfigManager) SetResponsesChannelStatus(index int, status string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := setStatusOp(cm.config.ResponsesUpstream, index, status, "Responses"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.setChannelStatusFor("responses", index, status)
 }
 
 func (cm *ConfigManager) SetResponsesChannelPromotion(index int, duration time.Duration, count int) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if err := setPromotionOp(cm.config.ResponsesUpstream, index, duration, count, "Responses"); err != nil {
-		return err
-	}
-	return cm.saveConfigLocked(cm.config)
+	return cm.setChannelPromotionFor("responses", index, duration, count)
 }
 
 func (cm *ConfigManager) GetPromotedResponsesChannel() (int, bool) {
