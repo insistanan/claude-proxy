@@ -14,6 +14,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -91,38 +92,37 @@ func ConvertUpstreamStreamLineToResponses(ctx context.Context, serviceType strin
 }
 
 func convertResponsesPassthroughRequest(model string, bodyBytes []byte, upstream *config.UpstreamConfig) ([]byte, error) {
-	var reqMap map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &reqMap); err != nil {
-		return nil, fmt.Errorf("透传模式下解析请求失败: %w", err)
+	if !gjson.ValidBytes(bodyBytes) {
+		return nil, fmt.Errorf("透传模式下解析请求失败: 请求体不是有效 JSON")
 	}
 
-	// 判断是否需要修改请求体
-	changed := false
-	// model 名映射：仅当新值非空且与原始值不同时才修改
-	if model != "" {
-		if origModel, _ := reqMap["model"].(string); origModel != model {
-			reqMap["model"] = model
-			changed = true
+	result := bodyBytes
+	var err error
+
+	// 只原位修改顶层字段，避免为模型映射重排整份 Responses 请求。
+	if model != "" && gjson.GetBytes(result, "model").String() != model {
+		result, err = sjson.SetBytes(result, "model", model)
+		if err != nil {
+			return nil, fmt.Errorf("透传模式下修改 model 失败: %w", err)
 		}
 	}
-	// prompt_cache_key 删除
+
 	if upstream != nil && upstream.DisablePromptCacheKey {
-		if _, hasKey := reqMap["prompt_cache_key"]; hasKey {
-			delete(reqMap, "prompt_cache_key")
-			changed = true
+		if gjson.GetBytes(result, "prompt_cache_key").Exists() {
+			result, err = sjson.DeleteBytes(result, "prompt_cache_key")
+			if err != nil {
+				return nil, fmt.Errorf("透传模式下删除 prompt_cache_key 失败: %w", err)
+			}
 		}
-		if _, hasKey := reqMap["prompt_cache_retention"]; hasKey {
-			delete(reqMap, "prompt_cache_retention")
-			changed = true
+		if gjson.GetBytes(result, "prompt_cache_retention").Exists() {
+			result, err = sjson.DeleteBytes(result, "prompt_cache_retention")
+			if err != nil {
+				return nil, fmt.Errorf("透传模式下删除 prompt_cache_retention 失败: %w", err)
+			}
 		}
 	}
 
-	// 如果不需要任何修改，直接返回原始请求体字节流，避免重新序列化改变 JSON 编码格式
-	// （例如 HTML 字符转义、数字精度、字段顺序等），从而避免触发上游安全检测
-	if !changed {
-		return bodyBytes, nil
-	}
-	return utils.MarshalJSONNoEscape(reqMap)
+	return result, nil
 }
 
 func convertResponsesRequestToOpenAIChat(model string, bodyBytes []byte, stream bool, sess *session.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {

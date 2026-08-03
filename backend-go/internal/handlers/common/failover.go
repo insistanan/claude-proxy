@@ -2,9 +2,13 @@
 package common
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -454,13 +458,10 @@ func getMapKeys(m map[string]interface{}) []string {
 // isNonRetryableErrorCode 判断错误码是否不应重试
 // 这些错误与请求内容相关，换 Key 重试不会改变结果
 func isNonRetryableErrorCode(code string) bool {
+	if isContentPolicyErrorCode(code) {
+		return true
+	}
 	nonRetryableCodes := []string{
-		// 内容审核相关
-		"sensitive_words_detected",
-		"content_policy_violation",
-		"content_filter",
-		"content_blocked",
-		"moderation_blocked",
 		// 请求内容无效
 		"invalid_request",
 		"invalid_request_error",
@@ -473,6 +474,135 @@ func isNonRetryableErrorCode(code string) bool {
 		}
 	}
 	return false
+}
+
+func isContentPolicyErrorCode(code string) bool {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "sensitive_words_detected", "content_policy_violation", "content_filter", "content_blocked", "moderation_blocked":
+		return true
+	default:
+		return false
+	}
+}
+
+func isContentPolicyError(bodyBytes []byte) bool {
+	var errResp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(bodyBytes, &errResp); err != nil {
+		return false
+	}
+	return isContentPolicyErrorCode(errResp.Error.Code)
+}
+
+func shouldFailoverToNextChannel(bodyBytes []byte, activeChannelCount int) bool {
+	return activeChannelCount > 1 && isContentPolicyError(bodyBytes)
+}
+
+// buildContentPolicyCompatibilityBody 保持 JSON 解码结果不变，将容易被原始字节扫描
+// 误判的非 ASCII 文本和审核错误码改为 JSON Unicode 转义。
+func buildContentPolicyCompatibilityBody(bodyBytes []byte) ([]byte, bool, error) {
+	if !json.Valid(bodyBytes) {
+		return nil, false, fmt.Errorf("内容审核兼容重试的请求体不是有效 JSON")
+	}
+
+	replacements := []struct {
+		plain   []byte
+		escaped []byte
+	}{
+		{[]byte("sensitive_words_detected"), []byte(`sensitive\u005fwords_detected`)},
+		{[]byte("content_policy_violation"), []byte(`content\u005fpolicy_violation`)},
+		{[]byte("content_filter"), []byte(`content\u005ffilter`)},
+		{[]byte("content_blocked"), []byte(`content\u005fblocked`)},
+		{[]byte("moderation_blocked"), []byte(`moderation\u005fblocked`)},
+	}
+
+	result := append([]byte(nil), bodyBytes...)
+	changed := false
+	for _, replacement := range replacements {
+		if bytes.Contains(result, replacement.plain) {
+			result = bytes.ReplaceAll(result, replacement.plain, replacement.escaped)
+			changed = true
+		}
+	}
+
+	result, unicodeChanged, err := escapeNonASCIIInJSONStrings(result)
+	if err != nil {
+		return nil, false, err
+	}
+	return result, changed || unicodeChanged, nil
+}
+
+func escapeNonASCIIInJSONStrings(bodyBytes []byte) ([]byte, bool, error) {
+	result := make([]byte, 0, len(bodyBytes))
+	inString := false
+	escaped := false
+	changed := false
+
+	for i := 0; i < len(bodyBytes); {
+		b := bodyBytes[i]
+		if !inString {
+			result = append(result, b)
+			if b == '"' {
+				inString = true
+			}
+			i++
+			continue
+		}
+
+		if escaped {
+			result = append(result, b)
+			escaped = false
+			i++
+			continue
+		}
+		if b == '\\' {
+			result = append(result, b)
+			escaped = true
+			i++
+			continue
+		}
+		if b == '"' {
+			result = append(result, b)
+			inString = false
+			i++
+			continue
+		}
+		if b < utf8.RuneSelf {
+			result = append(result, b)
+			i++
+			continue
+		}
+
+		r, size := utf8.DecodeRune(bodyBytes[i:])
+		if r == utf8.RuneError && size == 1 {
+			return nil, false, fmt.Errorf("内容审核兼容重试的请求体包含无效 UTF-8")
+		}
+		if r <= 0xffff {
+			result = appendJSONUnicodeEscape(result, uint16(r))
+		} else {
+			high, low := utf16.EncodeRune(r)
+			result = appendJSONUnicodeEscape(result, uint16(high))
+			result = appendJSONUnicodeEscape(result, uint16(low))
+		}
+		changed = true
+		i += size
+	}
+
+	return result, changed, nil
+}
+
+func appendJSONUnicodeEscape(dst []byte, value uint16) []byte {
+	const hex = "0123456789abcdef"
+	return append(dst,
+		'\\', 'u',
+		hex[value>>12],
+		hex[(value>>8)&0xf],
+		hex[(value>>4)&0xf],
+		hex[value&0xf],
+	)
 }
 
 // isNonRetryableError 检查响应体是否包含不可重试的错误码

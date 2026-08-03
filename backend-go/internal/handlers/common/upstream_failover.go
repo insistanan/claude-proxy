@@ -48,11 +48,12 @@ type DeprioritizeKeyFunc func(apiKey string)
 type HandleSuccessFunc func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error)
 
 type AttemptLogContext struct {
-	ChannelIndex    int
-	Model           string
-	ConversationID  string
-	LogStore        *metrics.ChannelLogStore
-	RequestLogStore *metrics.RequestLogStore
+	ChannelIndex                      int
+	Model                             string
+	ConversationID                    string
+	LogStore                          *metrics.ChannelLogStore
+	RequestLogStore                   *metrics.RequestLogStore
+	AllowContentPolicyChannelFailover bool
 }
 
 var attemptLogCounter uint64
@@ -535,7 +536,68 @@ func TryUpstreamWithAllKeys(
 					}
 				}
 
+				// 某些 Responses 中转会扫描原始 JSON 字节，中文业务文本或历史中的审核错误码
+				// 可能被稳定误判。保持 JSON 解码值不变，改用 Unicode 转义后重试一次。
+				if !retrySucceeded && kind == scheduler.ChannelKindResponses && upstreamCopy.ServiceType == "responses" && isContentPolicyError(respBodyBytes) {
+					escapedBody, changed, escapeErr := buildContentPolicyCompatibilityBody(requestBody)
+					if escapeErr != nil {
+						log.Printf("[%s-ContentPolicy] 构建等价 JSON 转义请求失败: %v", apiType, escapeErr)
+					} else if changed {
+						log.Printf("[%s-ContentPolicy] 使用等价 JSON Unicode 转义在同一渠道重试一次", apiType)
+						RestoreRequestBody(c, escapedBody)
+						retryReq, retryErr := buildRequest(c, upstreamCopy, apiKey)
+						if retryErr != nil {
+							log.Printf("[%s-ContentPolicy] 重建转义请求失败: %v", apiType, retryErr)
+						} else if retryErr = visionlayer.PrepareRequest(
+							c,
+							envCfg,
+							cfgManager,
+							channelScheduler,
+							kind,
+							upstreamCopy,
+							logCtx.Model,
+							logCtx.ConversationID,
+							retryReq,
+						); retryErr != nil {
+							_ = retryReq.Body.Close()
+							log.Printf("[%s-ContentPolicy] 准备转义请求失败: %v", apiType, retryErr)
+						} else {
+							retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
+							if retryErr != nil {
+								log.Printf("[%s-ContentPolicy] 转义请求重试失败: %v", apiType, retryErr)
+							} else {
+								resp = retryResp
+								if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
+									retrySucceeded = true
+									log.Printf("[%s-ContentPolicy] 等价 JSON 转义重试成功", apiType)
+								} else {
+									respBodyBytes, _ = io.ReadAll(retryResp.Body)
+									retryResp.Body.Close()
+									respBodyBytes = utils.DecompressGzipIfNeeded(retryResp, respBodyBytes)
+								}
+							}
+						}
+						RestoreRequestBody(c, requestBody)
+					}
+				}
+
 				if !retrySucceeded {
+					// 内容审核与当前请求正文、上游策略相关。不要换 Key，也不要计入渠道故障；
+					// 多渠道可用时把原始错误交给外层继续选渠。
+					if logCtx.AllowContentPolicyChannelFailover && shouldFailoverToNextChannel(respBodyBytes, channelScheduler.GetActiveChannelCountForModel(kind, logCtx.Model)) {
+						metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
+						channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+						if pm := channelScheduler.GetProfileManager(); pm != nil {
+							pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
+						}
+
+						lastError = fmt.Errorf("上游内容审核拒绝请求")
+						lastFailoverError = &FailoverError{Status: resp.StatusCode, Body: respBodyBytes}
+						recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "content_policy", string(respBodyBytes), true, isStream, nil)
+						log.Printf("[%s-ContentPolicy] 渠道 %s 拒绝请求，跳过当前渠道", apiType, upstream.Name)
+						return false, "", 0, lastFailoverError, nil, lastError
+					}
+
 					shouldFailover, isQuotaRelated := ShouldRetryWithNextKey(resp.StatusCode, respBodyBytes, cfgManager.GetFuzzyModeEnabled(), apiType)
 					if shouldFailover {
 						lastError = fmt.Errorf("上游错误: %d", resp.StatusCode)

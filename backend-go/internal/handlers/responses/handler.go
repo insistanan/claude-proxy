@@ -186,11 +186,12 @@ func handleMultiChannel(
 					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage, channelScheduler, userID)
 				},
 				common.AttemptLogContext{
-					ChannelIndex:    channelIndex,
-					Model:           responsesReq.Model,
-					ConversationID:  userID,
-					LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
-					RequestLogStore: channelScheduler.GetRequestLogStore(),
+					ChannelIndex:                      channelIndex,
+					Model:                             responsesReq.Model,
+					ConversationID:                    userID,
+					LogStore:                          channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
+					RequestLogStore:                   channelScheduler.GetRequestLogStore(),
+					AllowContentPolicyChannelFailover: cfgManager.GetFuzzyModeEnabled(),
 				},
 			)
 

@@ -1,12 +1,38 @@
 package converters
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
+
+func TestConvertResponsesPassthroughRequest_ModelMappingPreservesBody(t *testing.T) {
+	body := []byte("{\n  \"input\" : [{\"text\":\"\\u003ctag\\u003e\"}],\n  \"model\" : \"gpt-terra\",\n  \"number\": 1.0\n}")
+	want := []byte("{\n  \"input\" : [{\"text\":\"\\u003ctag\\u003e\"}],\n  \"model\" : \"gpt-sol\",\n  \"number\": 1.0\n}")
+
+	got, err := convertResponsesPassthroughRequest("gpt-sol", body, nil)
+	if err != nil {
+		t.Fatalf("模型映射失败: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("模型映射改动了 model 之外的请求字节\nwant: %s\n got: %s", want, got)
+	}
+}
+
+func TestConvertResponsesPassthroughRequest_NoChangeReturnsOriginalBody(t *testing.T) {
+	body := []byte(`{ "model" : "gpt-sol", "input" : "keep formatting" }`)
+
+	got, err := convertResponsesPassthroughRequest("gpt-sol", body, nil)
+	if err != nil {
+		t.Fatalf("Responses 透传失败: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("未修改请求不应被重新序列化\nwant: %s\n got: %s", body, got)
+	}
+}
 
 // ============== extractTextFromContent 测试 ==============
 

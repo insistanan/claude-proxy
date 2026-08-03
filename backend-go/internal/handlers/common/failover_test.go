@@ -1,7 +1,9 @@
 package common
 
 import (
+	"bytes"
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -812,6 +814,84 @@ func TestShouldRetryWithNextKey_SensitiveWordsDetected(t *testing.T) {
 					tt.statusCode, tt.fuzzyMode, gotQuota, tt.wantQuota)
 			}
 		})
+	}
+}
+
+func TestShouldFailoverToNextChannel_ContentPolicyOnly(t *testing.T) {
+	contentPolicyBody := []byte(`{"error":{"code":"sensitive_words_detected"}}`)
+	invalidRequestBody := []byte(`{"error":{"code":"invalid_request"}}`)
+
+	if !shouldFailoverToNextChannel(contentPolicyBody, 2) {
+		t.Fatal("存在其他渠道时，内容审核错误应跳过当前渠道")
+	}
+	if shouldFailoverToNextChannel(contentPolicyBody, 1) {
+		t.Fatal("只有一个渠道时，不应伪造渠道 failover")
+	}
+	if shouldFailoverToNextChannel(invalidRequestBody, 2) {
+		t.Fatal("普通无效请求不应切换渠道")
+	}
+}
+
+func TestBuildContentPolicyCompatibilityBodyPreservesJSONValue(t *testing.T) {
+	body := []byte(`{"input":[{"type":"input_text","text":"工资发放与交通补助"},{"type":"function_call_output","output":"{\"error\":{\"code\":\"sensitive_words_detected\"}}"}],"note":"content_policy_violation"}`)
+	escaped, changed, err := buildContentPolicyCompatibilityBody(body)
+	if err != nil {
+		t.Fatalf("构建兼容请求失败: %v", err)
+	}
+	if !changed {
+		t.Fatal("包含非 ASCII 文本或审核错误码时应生成转义请求")
+	}
+	if bytes.Contains(escaped, []byte("sensitive_words_detected")) || bytes.Contains(escaped, []byte("content_policy_violation")) {
+		t.Fatalf("转义请求仍包含连续审核错误码: %s", escaped)
+	}
+	if bytes.Contains(escaped, []byte("工资发放")) || bytes.Contains(escaped, []byte("交通补助")) {
+		t.Fatalf("转义请求仍包含原始非 ASCII 文本: %s", escaped)
+	}
+
+	var originalValue interface{}
+	var escapedValue interface{}
+	if err := json.Unmarshal(body, &originalValue); err != nil {
+		t.Fatalf("解析原始 JSON 失败: %v", err)
+	}
+	if err := json.Unmarshal(escaped, &escapedValue); err != nil {
+		t.Fatalf("解析转义 JSON 失败: %v", err)
+	}
+	if !reflect.DeepEqual(originalValue, escapedValue) {
+		t.Fatalf("转义改变了 JSON 语义\noriginal: %#v\n escaped: %#v", originalValue, escapedValue)
+	}
+}
+
+func TestBuildContentPolicyCompatibilityBodyNoMatch(t *testing.T) {
+	body := []byte(`{"input":"normal request"}`)
+	escaped, changed, err := buildContentPolicyCompatibilityBody(body)
+	if err != nil {
+		t.Fatalf("构建兼容请求失败: %v", err)
+	}
+	if changed || !bytes.Equal(escaped, body) {
+		t.Fatal("不含非 ASCII 文本或审核错误码的请求不应被修改")
+	}
+}
+
+func TestBuildContentPolicyCompatibilityBodyPreservesSupplementaryRune(t *testing.T) {
+	body := []byte(`{"input":"测试😀"}`)
+	escaped, changed, err := buildContentPolicyCompatibilityBody(body)
+	if err != nil {
+		t.Fatalf("构建兼容请求失败: %v", err)
+	}
+	if !changed || !bytes.Contains(escaped, []byte(`\ud83d\ude00`)) {
+		t.Fatalf("补充平面字符未转成 JSON 代理对: %s", escaped)
+	}
+
+	var originalValue interface{}
+	var escapedValue interface{}
+	if err := json.Unmarshal(body, &originalValue); err != nil {
+		t.Fatalf("解析原始 JSON 失败: %v", err)
+	}
+	if err := json.Unmarshal(escaped, &escapedValue); err != nil {
+		t.Fatalf("解析转义 JSON 失败: %v", err)
+	}
+	if !reflect.DeepEqual(originalValue, escapedValue) {
+		t.Fatalf("转义改变了补充平面字符语义: %#v != %#v", originalValue, escapedValue)
 	}
 }
 

@@ -565,8 +565,17 @@ func (m *MetricsManager) RecordRequestFinalizeFailure(baseURL, apiKey string, re
 	}
 }
 
-// RecordRequestFinalizeClientCancel 记录客户端取消的请求（计入总请求数但不计入失败）
+// RecordRequestFinalizeNeutral 结束不代表上游质量的请求，不计入成功率或熔断。
+func (m *MetricsManager) RecordRequestFinalizeNeutral(baseURL, apiKey string, requestID uint64) {
+	m.recordRequestFinalizeNeutral(baseURL, apiKey, requestID, false)
+}
+
+// RecordRequestFinalizeClientCancel 记录客户端取消（计入总请求数，但不计入成功率窗口）。
 func (m *MetricsManager) RecordRequestFinalizeClientCancel(baseURL, apiKey string, requestID uint64) {
+	m.recordRequestFinalizeNeutral(baseURL, apiKey, requestID, true)
+}
+
+func (m *MetricsManager) recordRequestFinalizeNeutral(baseURL, apiKey string, requestID uint64, countRequest bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -581,15 +590,11 @@ func (m *MetricsManager) RecordRequestFinalizeClientCancel(baseURL, apiKey strin
 		return
 	}
 	delete(metrics.pendingHistoryIdx, requestID)
+	if countRequest {
+		metrics.RequestCount++
+	}
 
-	// 仅计入总请求数，不计入失败数
-	metrics.RequestCount++
-	// 注意：不重置 ConsecutiveFailures，客户端取消不应影响连续失败计数
-
-	// 不更新滑动窗口（不影响失败率计算）
-	// 不检查熔断状态（客户端取消不应触发熔断）
-
-	// 从历史记录中移除（客户端取消不记录）
+	// 从历史记录中移除（中性结果不进入成功率历史）
 	metrics.requestHistory = append(metrics.requestHistory[:idx], metrics.requestHistory[idx+1:]...)
 	// 更新后续索引
 	for rid, ridx := range metrics.pendingHistoryIdx {
