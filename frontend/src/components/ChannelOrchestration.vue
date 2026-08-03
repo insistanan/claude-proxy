@@ -1,7 +1,7 @@
 <template>
   <v-card elevation="0" rounded="lg" class="channel-orchestration" variant="flat">
     <!-- 调度器统计信息 -->
-    <v-card-title class="d-flex align-center justify-space-between py-3 px-0">
+    <v-card-title class="orchestration-header d-flex align-center justify-space-between py-3 px-0">
       <div class="d-flex align-center">
         <v-icon class="mr-2" color="primary">mdi-swap-vertical-bold</v-icon>
         <span class="text-h6">渠道编排</span>
@@ -1455,20 +1455,20 @@ const _getActivityGradient = (channelIndex: number): string => {
       if (failureRatio >= 0.5) {
         // 高失败率：红色
         const intensity = Math.min(0.5, 0.2 + seg.requestCount * 0.01)
-        segmentColors.push(`rgba(239, 68, 68, ${intensity})`)
+        segmentColors.push(`rgba(200, 72, 72, ${intensity})`)
       } else {
         // 部分失败：橙色
         const intensity = Math.min(0.4, 0.15 + seg.requestCount * 0.008)
-        segmentColors.push(`rgba(251, 146, 60, ${intensity})`)
+        segmentColors.push(`rgba(196, 119, 22, ${intensity})`)
       }
     } else {
       // 纯成功：绿色，6 级深浅按请求量
-      if (seg.requestCount >= 20) segmentColors.push('rgba(22, 163, 74, 0.65)')       // 极深绿
-      else if (seg.requestCount >= 15) segmentColors.push('rgba(22, 163, 74, 0.55)')  // 深绿
-      else if (seg.requestCount >= 10) segmentColors.push('rgba(34, 197, 94, 0.50)')  // 中深绿
-      else if (seg.requestCount >= 6) segmentColors.push('rgba(34, 197, 94, 0.42)')   // 中绿
-      else if (seg.requestCount >= 3) segmentColors.push('rgba(74, 222, 128, 0.38)')  // 浅绿
-      else segmentColors.push('rgba(74, 222, 128, 0.30)')                              // 极浅绿
+      if (seg.requestCount >= 20) segmentColors.push('rgba(22, 132, 91, 0.54)')
+      else if (seg.requestCount >= 15) segmentColors.push('rgba(22, 132, 91, 0.46)')
+      else if (seg.requestCount >= 10) segmentColors.push('rgba(22, 132, 91, 0.40)')
+      else if (seg.requestCount >= 6) segmentColors.push('rgba(22, 132, 91, 0.34)')
+      else if (seg.requestCount >= 3) segmentColors.push('rgba(76, 160, 122, 0.29)')
+      else segmentColors.push('rgba(76, 160, 122, 0.23)')
     }
   }
 
@@ -1834,24 +1834,52 @@ defineExpose({
 
 <style scoped>
 /* ============================================================
-   Claude Proxy — 渠道编排 高对比度设计
-   清晰边框 · 白色背景 · 良好可读性
+   Claude Proxy — 调度轨道
+   编号、状态边线、数据波形组成统一的设备语言
    ============================================================ */
 
-.channel-orchestration { overflow: hidden; background: transparent; border: none; }
-.channel-list { display: flex; flex-direction: column; gap: 6px; }
+.channel-orchestration { overflow: visible; background: transparent; border: none; }
+.orchestration-header {
+  min-height: 58px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.5);
+  position: relative;
+  overflow: visible;
+}
+.orchestration-header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: clamp(110px, 18vw, 240px);
+  height: 3px;
+  background: rgb(var(--v-theme-primary));
+}
+.channel-list { display: flex; flex-direction: column; gap: 8px; }
 .channel-item-wrapper { display: flex; flex-direction: column; }
 
 .channel-row {
   position: relative;
   padding: 12px 16px;
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-outline), 0.4);
-  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-outline), 0.48);
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(24, 28, 38, 0.045);
   min-height: 52px;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   cursor: pointer;
   overflow: hidden;
+}
+
+.channel-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 3px;
+  background: rgb(var(--v-theme-primary));
+  z-index: 2;
 }
 
 .channel-row-content {
@@ -1864,18 +1892,21 @@ defineExpose({
 }
 
 .channel-row:hover {
-  border-color: rgba(var(--v-theme-primary), 0.35);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border-color: rgba(var(--v-theme-primary), 0.42);
+  box-shadow: 0 4px 12px rgba(24, 28, 38, 0.075);
+  transform: translateY(-1px);
 }
 
-.channel-row:active { transform: translateY(0); }
+.channel-row:active { transform: translateY(0); box-shadow: 0 1px 3px rgba(24, 28, 38, 0.05); }
 
 /* suspended 状态 */
 .channel-row.is-suspended {
-  background: rgba(var(--v-theme-warning), 0.04);
-  border-color: rgba(var(--v-theme-warning), 0.25);
+  background: rgba(var(--v-theme-warning), 0.08);
+  background: color-mix(in srgb, rgb(var(--v-theme-warning)) 8%, rgb(var(--v-theme-surface)));
+  border-color: rgba(var(--v-theme-warning), 0.42);
 }
 .channel-row.is-suspended:hover { border-color: rgba(var(--v-theme-warning), 0.4); }
+.channel-row.is-suspended::before { background: rgb(var(--v-theme-warning)); }
 
 .channel-row.ghost {
   opacity: 0.5;
@@ -1886,8 +1917,8 @@ defineExpose({
 /* SVG 活跃度波形背景 — 更醒目的展示 */
 .activity-chart-bg {
   position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-  pointer-events: none; z-index: 0; opacity: 0.4; overflow: hidden;
-  border-radius: 8px;
+  pointer-events: none; z-index: 0; opacity: 0.32; overflow: hidden;
+  border-radius: 5px;
 }
 .activity-bar { transition: none; }
 
@@ -1895,7 +1926,7 @@ defineExpose({
 
 .drag-handle {
   cursor: grab; display: flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; border-radius: 6px;
+  width: 24px; height: 24px; border-radius: 5px;
   transition: all 0.1s ease;
 }
 .drag-handle:hover { background: rgba(var(--v-theme-on-surface), 0.06); }
@@ -1906,7 +1937,9 @@ defineExpose({
   width: 24px; height: 24px;
   background: rgb(var(--v-theme-primary));
   color: white; font-size: 11px; font-weight: 700;
-  border-radius: 6px;
+  border: none;
+  border-radius: 4px;
+  box-shadow: none;
 }
 
 .channel-name {
@@ -1927,7 +1960,7 @@ defineExpose({
 .channel-name-link:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; border-radius: 4px; }
 
 .channel-status-toggle {
-  display: inline-flex; align-items: center; border-radius: 6px; cursor: pointer;
+  display: inline-flex; align-items: center; border-radius: 3px; cursor: pointer;
 }
 .channel-status-toggle:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
 .channel-status-toggle :deep(.badge-content) { cursor: pointer; }
@@ -1937,22 +1970,16 @@ defineExpose({
 /* 迷你指标条 */
 .metrics-visual { min-width: 130px; }
 .mini-metric-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 1px; }
-.mmb-track { flex: 1; height: 6px; background: rgba(var(--v-theme-outline), 0.2); border-radius: 3px; overflow: hidden; min-width: 60px; }
+.mmb-track { flex: 1; height: 6px; background: rgba(var(--v-theme-outline), 0.18); border-radius: 3px; overflow: hidden; min-width: 60px; }
 .mmb-fill { height: 100%; border-radius: 3px; transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1); min-width: 2px; }
-.mmb-fill.high { background: linear-gradient(90deg, #059669, #10B981); }
-.mmb-fill.medium { background: linear-gradient(90deg, #D97706, #F59E0B); }
-.mmb-fill.low { background: linear-gradient(90deg, #DC2626, #EF4444); }
-.v-theme--dark .mmb-fill.high { background: linear-gradient(90deg, #059669, #34D399); }
-.v-theme--dark .mmb-fill.medium { background: linear-gradient(90deg, #D97706, #FBBF24); }
-.v-theme--dark .mmb-fill.low { background: linear-gradient(90deg, #DC2626, #F87171); }
+.mmb-fill.high { background: rgb(var(--v-theme-success)); }
+.mmb-fill.medium { background: rgb(var(--v-theme-warning)); }
+.mmb-fill.low { background: rgb(var(--v-theme-error)); }
 
 .mmb-value { font-size: 11px; font-weight: 700; font-family: 'Fira Code', 'JetBrains Mono', monospace; white-space: nowrap; }
-.mmb-value.high { color: #059669; }
-.mmb-value.medium { color: #D97706; }
-.mmb-value.low { color: #DC2626; }
-.v-theme--dark .mmb-value.high { color: #34D399; }
-.v-theme--dark .mmb-value.medium { color: #FBBF24; }
-.v-theme--dark .mmb-value.low { color: #F87171; }
+.mmb-value.high { color: rgb(var(--v-theme-success)); }
+.mmb-value.medium { color: rgb(var(--v-theme-warning)); }
+.mmb-value.low { color: rgb(var(--v-theme-error)); }
 
 .mini-metric-secondary { display: flex; align-items: center; gap: 4px; font-size: 10px; color: rgba(var(--v-theme-on-surface-variant), 0.65); }
 .mm-sep { opacity: 0.3; }
@@ -1974,19 +2001,19 @@ defineExpose({
 .inactive-pool-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .inactive-pool {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;
-  background: rgb(var(--v-theme-surface));
-  padding: 16px; border: 1px dashed rgba(var(--v-theme-outline), 0.35); border-radius: 10px;
+  background: rgba(var(--v-theme-surface-variant), 0.28);
+  padding: 16px; border: 1px dashed rgba(var(--v-theme-outline), 0.5); border-radius: 7px;
 }
 .inactive-channel-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 14px;
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-outline), 0.25); border-radius: 8px;
-  transition: all 0.15s ease;
+  border: 1px solid rgba(var(--v-theme-outline), 0.36); border-radius: 6px;
+  transition: transform 0.15s ease, border-color 0.15s ease;
 }
 .inactive-channel-row:hover {
-  border-color: rgba(var(--v-theme-primary), 0.25);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border-color: rgb(var(--v-theme-primary));
+  transform: translateX(2px);
 }
 .inactive-channel-row .channel-info { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
 .inactive-channel-row .channel-info-main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2010,7 +2037,7 @@ defineExpose({
 .channel-logs-dialog-body { overflow: auto; padding: 16px 20px 20px; }
 
 .log-trend-panel {
-  border: 1px solid rgba(var(--v-theme-outline), 0.15); border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-outline), 0.3); border-radius: 4px;
   padding: 14px 16px 8px; margin-bottom: 16px;
   background: rgba(var(--v-theme-surface-variant), 0.15);
 }
@@ -2018,7 +2045,7 @@ defineExpose({
 
 .channel-logs-table-shell {
   max-height: min(46vh, 520px); overflow: auto;
-  border: 1px solid rgba(var(--v-theme-outline), 0.15); border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-outline), 0.3); border-radius: 4px;
   background: rgb(var(--v-theme-surface));
 }
 .channel-logs-table { min-width: 1160px; }
@@ -2073,5 +2100,12 @@ defineExpose({
   .channel-row { padding: 10px 12px; }
   .channel-metrics, .channel-latency, .channel-keys, .channel-rpm-tpm { display: none; }
   .priority-number, .drag-handle { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .channel-row,
+  .drag-handle,
+  .mmb-fill,
+  .inactive-channel-row { transition: none !important; }
 }
 </style>

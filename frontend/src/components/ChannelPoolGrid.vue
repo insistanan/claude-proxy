@@ -362,74 +362,97 @@ const deletePool = async () => {
 </script>
 
 <style scoped>
-.pool-section { padding-top: 14px; }
+.pool-section { padding-top: 12px; }
 .section-header, .vision-pool-header {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px;
 }
+.section-header {
+  position: relative;
+  min-height: 54px;
+  padding-top: 0;
+  border-top: none;
+}
+.section-header::before { display: none; }
 .pool-grid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start;
 }
-.pool-column { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.pool-column { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 .pool-card {
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-outline), 0.25);
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(var(--v-theme-outline), 0.48);
+  border-radius: 7px;
+  box-shadow: 0 2px 7px rgba(24, 28, 38, 0.05);
   min-width: 0;
   overflow: hidden;
   container-type: inline-size;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
 }
 .pool-card:hover {
-  border-color: rgba(var(--v-theme-primary), 0.2);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
+  border-color: rgba(var(--v-theme-primary), 0.36);
+  box-shadow: 0 7px 18px rgba(24, 28, 38, 0.08);
+  transform: translateY(-1px);
 }
 
+.pool-column:nth-child(even) .pool-card { box-shadow: 0 2px 7px rgba(24, 28, 38, 0.05); }
+.pool-column:nth-child(even) .pool-card:hover { box-shadow: 0 7px 18px rgba(24, 28, 38, 0.08); }
+
 .pool-card-header {
-  min-height: 48px;
+  min-height: 58px;
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.12);
-  background: linear-gradient(180deg, rgba(var(--v-theme-primary), 0.05), transparent);
+  padding: 11px 14px 10px 18px;
+  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.32);
+  background: rgba(var(--v-theme-primary), 0.055);
+  position: relative;
 }
+.pool-card-header::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: rgb(var(--v-theme-primary));
+}
+.pool-column:nth-child(even) .pool-card-header { background: rgba(var(--v-theme-primary), 0.055); }
+.pool-column:nth-child(even) .pool-card-header::before { background: rgb(var(--v-theme-primary)); }
 .pool-name {
-  font-weight: 700; line-height: 1.2;
+  font-weight: 800; line-height: 1.2;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pool-rule {
   margin-top: 3px; font-size: 12px;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
   color: rgba(var(--v-theme-on-surface), 0.5);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pool-channel-list {
-  padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 68px;
+  padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 72px;
 }
 .pool-drag-item { min-width: 0; }
-.ghost { opacity: .45; background: rgba(var(--v-theme-primary), .1); border-radius: 10px; }
+.ghost { opacity: .45; background: rgba(var(--v-theme-primary), .1); border-radius: 6px; }
 .chosen { cursor: grabbing; }
 .dragging { opacity: .9; }
 .drag-handle { cursor: grab; }
 .pool-channel-row, .vision-channel-row {
   display: flex; align-items: center; gap: 8px; min-width: 0;
   padding: 8px 10px;
-  border: 1px solid rgba(var(--v-theme-outline), 0.12);
-  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-outline), 0.36);
+  border-radius: 6px;
   cursor: pointer;
-  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
 }
 .pool-channel-row:hover, .vision-channel-row:hover {
-  background: rgba(var(--v-theme-primary), 0.04);
-  border-color: rgba(var(--v-theme-primary), 0.15);
+  background: rgba(var(--v-theme-primary), 0.07);
+  border-color: rgb(var(--v-theme-primary));
   transform: translateX(2px);
 }
 .pool-index {
   display: inline-grid; place-items: center;
   width: 22px; height: 22px; flex: 0 0 auto;
-  background: linear-gradient(135deg, rgb(var(--v-theme-primary)), rgb(var(--v-theme-primary-darken-1, var(--v-theme-primary))));
+  background: rgb(var(--v-theme-primary));
   color: rgb(var(--v-theme-on-primary));
   font-size: 11px; font-weight: 700;
-  border-radius: 6px;
-  box-shadow: 0 1px 4px rgba(var(--v-theme-primary-rgb), 0.3);
+  border: none;
+  border-radius: 4px;
+  box-shadow: none;
 }
 .pool-channel-main {
   min-width: 0; flex: 1;
@@ -443,13 +466,14 @@ const deletePool = async () => {
   color: rgba(var(--v-theme-on-surface), .45); font-size: 13px;
 }
 .vision-pool-section {
-  margin-top: 18px; padding-bottom: 14px;
-  border-bottom: 1px solid rgba(var(--v-theme-outline), .1);
+  margin-top: 22px; padding: 14px 0;
+  border-top: 1px solid rgba(var(--v-theme-outline), 0.36);
+  border-bottom: 1px solid rgba(var(--v-theme-outline), .25);
 }
 .vision-channel-list {
   display: flex; flex-direction: column; gap: 6px; padding: 10px;
-  border: 1px dashed rgba(var(--v-theme-outline), .25);
-  border-radius: 12px;
+  border: 1px dashed rgba(var(--v-theme-outline), .48);
+  border-radius: 7px;
   background: rgba(var(--v-theme-surface-variant), 0.4);
 }
 .vision-status-toggle {
@@ -465,5 +489,11 @@ const deletePool = async () => {
 @media (max-width: 900px) {
   .section-header, .vision-pool-header { align-items: flex-start; flex-direction: column; }
   .pool-channel-row, .vision-channel-row { flex-wrap: wrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pool-card,
+  .pool-channel-row,
+  .vision-channel-row { transition: none !important; }
 }
 </style>

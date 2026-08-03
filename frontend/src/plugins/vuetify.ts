@@ -308,64 +308,61 @@ const customSvgIconSet: IconSet = {
 }
 
 // ============================================================
-// 🎨 色彩系统 — 暖色调高级感设计
+// 色彩系统 — 冷静、清晰的运维控制台
+// 冷灰结构底 + 深靛蓝主色 + 克制的状态色
 // ============================================================
 
-// Light Theme — 暖白色调和丰富层次
+// Light Theme — 工程图纸底色，黑色结构线提供稳定骨架
 const lightTheme: ThemeDefinition = {
   dark: false,
   colors: {
-    // 主色调 — 深邃蓝
-    primary: '#1D4ED8',
-    'primary-darken-1': '#1E40AF',
-    'primary-lighten-1': '#3B82F6',
-    secondary: '#7C3AED',
-    accent: '#D97706',
+    primary: '#4F5FC7',
+    'primary-darken-1': '#3F4FAF',
+    'primary-lighten-1': '#707DDB',
+    secondary: '#5F6877',
+    accent: '#B65F7A',
 
-    // 语义色彩 — 高饱和度，更醒目
-    info: '#0891B2',
-    success: '#059669',
-    warning: '#D97706',
-    error: '#DC2626',
+    info: '#287F9D',
+    success: '#16845B',
+    warning: '#C47716',
+    error: '#C84848',
 
-    // 表面色 — 暖白层次
-    background: '#F3F0EB',
-    surface: '#FFFFFF',
-    'surface-variant': '#F8F6F2',
+    background: '#F3F5F7',
+    surface: '#FCFCFD',
+    'surface-variant': '#ECEFF3',
     'surface-bright': '#FFFFFF',
-    'on-surface': '#1C1917',
-    'on-background': '#292524',
-    'on-surface-variant': '#57534E',
-    'outline': '#D6D3D1',
-    'outline-variant': '#E7E5E4',
+    'on-surface': '#292D36',
+    'on-background': '#292D36',
+    'on-surface-variant': '#636A76',
+    outline: '#AEB5C0',
+    'outline-variant': '#D6DAE1',
   }
 }
 
-// Dark Theme — 深邃高对比，同步优化
+// Dark Theme — 碳黑设备面板，保留同一套状态色语义
 const darkTheme: ThemeDefinition = {
   dark: true,
   colors: {
-    primary: '#60A5FA',
-    'primary-darken-1': '#3B82F6',
-    'primary-lighten-1': '#93C5FD',
-    secondary: '#A78BFA',
-    accent: '#FBBF24',
+    primary: '#8D9AE8',
+    'primary-darken-1': '#7483DB',
+    'primary-lighten-1': '#AAB4F2',
+    secondary: '#AAB1BD',
+    accent: '#D78BA1',
 
-    info: '#38BDF8',
-    success: '#34D399',
-    warning: '#FBBF24',
-    error: '#F87171',
+    info: '#6AB7D1',
+    success: '#4CCB91',
+    warning: '#E5A34C',
+    error: '#ED7777',
 
-    // 表面色 — 深色层次分明
-    background: '#0F0D0A',
-    surface: '#1C1917',
-    'surface-variant': '#292524',
-    'surface-bright': '#292524',
-    'on-surface': '#F5F5F0',
-    'on-background': '#E7E5E4',
-    'on-surface-variant': '#A8A29E',
-    'outline': '#44403C',
-    'outline-variant': '#292524',
+    background: '#111419',
+    surface: '#1A1E25',
+    'surface-variant': '#242932',
+    'surface-bright': '#2B313B',
+    'on-surface': '#F4F6FA',
+    'on-background': '#E8EBF2',
+    'on-surface-variant': '#AEB5C0',
+    outline: '#626B78',
+    'outline-variant': '#333A45',
   }
 }
 
@@ -391,19 +388,19 @@ export default createVuetify({
   defaults: {
     VCard: {
       elevation: 0,
-      rounded: 'lg',
-    },
-    VBtn: {
-      rounded: 'lg',
-    },
-    VChip: {
       rounded: 'md',
     },
+    VBtn: {
+      rounded: 'sm',
+    },
+    VChip: {
+      rounded: 'sm',
+    },
     VDialog: {
-      rounded: 'xl',
+      rounded: 'md',
     },
     VMenu: {
-      rounded: 'lg',
+      rounded: 'md',
     },
     VTooltip: {
       location: 'top',

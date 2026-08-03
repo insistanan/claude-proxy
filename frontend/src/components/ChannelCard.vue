@@ -670,7 +670,7 @@ const serviceStyle = computed(() => {
 <style scoped>
 /* --- BASE STYLES (LIGHT MODE) --- */
 .channel-card {
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
   overflow: hidden;
   background: rgb(var(--v-theme-surface));
@@ -803,6 +803,11 @@ const serviceStyle = computed(() => {
   padding: 12px 14px;
 }
 
+.v-theme--dark .metrics-bars {
+  background: rgba(99, 102, 241, 0.04);
+  border-color: rgba(99, 102, 241, 0.12);
+}
+
 .metric-bar-row {
   margin-bottom: 8px;
 }
@@ -832,12 +837,12 @@ const serviceStyle = computed(() => {
   line-height: 1;
 }
 
-.metric-bar-value.rate-high { color: #059669; }
+.metric-bar-value.rate-high { color: #22C55E; }
 .metric-bar-value.rate-medium { color: #D97706; }
 .metric-bar-value.rate-low { color: #DC2626; }
 .metric-bar-value.rate-unknown { color: rgb(var(--v-theme-on-surface-variant)); }
 
-.v-theme--dark .metric-bar-value.rate-high { color: #34D399; }
+.v-theme--dark .metric-bar-value.rate-high { color: #4ADE80; }
 .v-theme--dark .metric-bar-value.rate-medium { color: #FBBF24; }
 .v-theme--dark .metric-bar-value.rate-low { color: #F87171; }
 
@@ -858,8 +863,8 @@ const serviceStyle = computed(() => {
 }
 
 .metric-bar-fill.fill-high {
-  background: linear-gradient(90deg, #059669, #10B981);
-  box-shadow: 0 0 8px rgba(5, 150, 105, 0.4);
+  background: linear-gradient(90deg, #22C55E, #4ADE80);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.35);
 }
 .metric-bar-fill.fill-medium {
   background: linear-gradient(90deg, #D97706, #F59E0B);
@@ -871,16 +876,16 @@ const serviceStyle = computed(() => {
 }
 
 .v-theme--dark .metric-bar-fill.fill-high {
-  background: linear-gradient(90deg, #059669, #34D399);
-  box-shadow: 0 0 10px rgba(52, 211, 153, 0.35);
+  background: linear-gradient(90deg, #22C55E, #4ADE80);
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.3);
 }
 .v-theme--dark .metric-bar-fill.fill-medium {
   background: linear-gradient(90deg, #D97706, #FBBF24);
-  box-shadow: 0 0 10px rgba(251, 191, 36, 0.35);
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.3);
 }
 .v-theme--dark .metric-bar-fill.fill-low {
   background: linear-gradient(90deg, #DC2626, #F87171);
-  box-shadow: 0 0 10px rgba(248, 113, 113, 0.35);
+  box-shadow: 0 0 10px rgba(248, 113, 113, 0.3);
 }
 
 .metric-bar-meta {
@@ -924,35 +929,37 @@ const serviceStyle = computed(() => {
   /* 暗色下加深类型底色透明度，保证可见 */
   background: linear-gradient(
     0deg,
-    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.12),
-    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.12)
-  ), rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.45);
+    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.10),
+    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.10)
+  ), linear-gradient(135deg, rgba(19, 22, 36, 0.95), rgba(28, 31, 51, 0.9));
+  border: 1px solid rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.35);
   box-shadow:
-    0 4px 24px rgba(0, 0, 0, 0.28),
-    0 1px 8px rgba(0, 0, 0, 0.18);
+    0 4px 24px rgba(0, 0, 0, 0.3),
+    0 1px 8px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .v-theme--dark .channel-card:not(.current-channel):hover {
-  border-color: rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.65);
+  border-color: rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.6);
   box-shadow:
     0 20px 40px rgba(0, 0, 0, 0.36),
-    0 8px 24px rgba(0, 0, 0, 0.24);
+    0 8px 24px rgba(0, 0, 0, 0.24),
+    0 0 30px rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.08);
 }
 
 .v-theme--dark .card-header-gradient {
   background: linear-gradient(135deg,
-    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.28) 0%,
-    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.16) 50%,
-    rgba(156, 39, 176, 0.18) 100%);
+    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.22) 0%,
+    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.12) 50%,
+    rgba(124, 58, 237, 0.10) 100%);
 }
 
 .v-theme--dark .service-icon-wrapper {
   background: linear-gradient(135deg,
-    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.25) 0%,
-    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.15) 100%);
+    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.22) 0%,
+    rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.12) 100%);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
-  border: 1px solid rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.35);
+  border: 1px solid rgba(var(--card-accent-rgb, var(--v-theme-primary)), 0.3);
 }
 
 .v-theme--dark .channel-card::before {
@@ -974,14 +981,14 @@ const serviceStyle = computed(() => {
 
 /* --- INDICATORS (DARK) --- */
 .v-theme--dark .status-badge {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: rgba(255, 255, 255, 0.08);
 }
-.v-theme--dark .status-badge.status-healthy { color: #b6e3be; background-color: rgba(52, 211, 153, 0.2); }
-.v-theme--dark .status-badge.status-error { color: #f4b4b4; background-color: rgba(248, 113, 113, 0.22); }
-.v-theme--dark .status-badge.status-unknown { color: #cbd5e1; background-color: rgba(148, 163, 184, 0.2); }
+.v-theme--dark .status-badge.status-healthy { color: #86EFAC; background-color: rgba(34, 197, 94, 0.18); }
+.v-theme--dark .status-badge.status-error { color: #FCA5A5; background-color: rgba(248, 113, 113, 0.2); }
+.v-theme--dark .status-badge.status-unknown { color: #CBD5E1; background-color: rgba(148, 163, 184, 0.18); }
 
-.v-theme--dark .latency-badge.latency-excellent { color: #b6e3be; background: rgba(52, 211, 153, 0.25); }
-.v-theme--dark .latency-badge.latency-good { color: #fde68a; background: rgba(251, 191, 36, 0.22); }
-.v-theme--dark .latency-badge.latency-fair { color: #fcd49b; background: rgba(251, 146, 60, 0.25); }
-.v-theme--dark .latency-badge.latency-poor { color: #f4b4b4; background: rgba(248, 113, 113, 0.28); }
+.v-theme--dark .latency-badge.latency-excellent { color: #86EFAC; background: rgba(34, 197, 94, 0.22); }
+.v-theme--dark .latency-badge.latency-good { color: #FDE68A; background: rgba(251, 191, 36, 0.2); }
+.v-theme--dark .latency-badge.latency-fair { color: #FCD49B; background: rgba(251, 146, 60, 0.22); }
+.v-theme--dark .latency-badge.latency-poor { color: #FCA5A5; background: rgba(248, 113, 113, 0.25); }
 </style>
