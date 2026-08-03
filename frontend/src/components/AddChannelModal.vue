@@ -291,7 +291,7 @@
                     variant="outlined"
                     density="comfortable"
                     clearable
-                    @focus="handleTargetModelClick"
+                    @focus="handleFetchModels"
                   />
                   <div v-if="fetchModelsError" class="text-error text-caption mt-2">
                     {{ fetchModelsError }}
@@ -302,127 +302,14 @@
 
             <!-- 模型重定向配置 -->
             <v-col v-if="form.serviceType && props.channelType !== 'chat'" cols="12">
-              <v-card variant="outlined" rounded="lg">
-                <v-card-title class="d-flex align-center justify-space-between pa-4 pb-2">
-                  <div class="d-flex align-center ga-2">
-                    <v-icon color="primary">mdi-swap-horizontal</v-icon>
-                    <span class="text-body-1 font-weight-bold">模型重定向 (可选)</span>
-                  </div>
-                  <v-chip size="small" color="secondary" variant="tonal"> 自动转换模型名称 </v-chip>
-                </v-card-title>
-
-                <v-card-text class="pt-2">
-                  <div class="text-body-2 text-medium-emphasis mb-4">
-                    {{ modelMappingHint }}
-                    <br/>
-                    <span class="text-caption text-primary">💡 点击目标模型输入框会自动获取上游支持的模型列表,每个 API Key 的检测状态会显示在密钥列表中</span>
-                  </div>
-
-                  <!-- 现有映射列表 -->
-                  <div v-if="Object.keys(form.modelMapping).length" class="mb-4">
-                    <v-list density="compact" class="bg-transparent">
-                      <v-list-item
-                        v-for="[source, targets] in Object.entries(form.modelMapping)"
-                        :key="source"
-                        class="mb-2"
-                        rounded="lg"
-                        variant="tonal"
-                        color="surface-variant"
-                      >
-                        <template #prepend>
-                          <v-icon size="small" color="primary">mdi-arrow-right</v-icon>
-                        </template>
-
-                        <v-list-item-title>
-                          <div class="d-flex flex-column ga-1">
-                            <div class="d-flex align-center ga-2">
-                              <code class="text-caption font-weight-bold">{{ source }}</code>
-                              <v-icon size="small" color="primary">mdi-arrow-right</v-icon>
-                              <v-chip size="x-small" color="info" variant="tonal">{{ targets.length }} 个备选</v-chip>
-                            </div>
-                            <div class="d-flex flex-wrap ga-1 mt-1">
-                              <v-chip
-                                v-for="target in targets"
-                                :key="`${source}:${target}`"
-                                size="x-small"
-                                closable
-                                @click:close.stop="removeModelMapping(source, target)"
-                              >
-                                <code class="text-caption">{{ target }}</code>
-                              </v-chip>
-                            </div>
-                          </div>
-                        </v-list-item-title>
-
-                        <template #append>
-                          <v-btn size="small" color="error" icon variant="text" title="删除所有映射" @click="removeModelMapping(source)">
-                            <v-icon size="small" color="error">mdi-delete</v-icon>
-                          </v-btn>
-                        </template>
-                      </v-list-item>
-                    </v-list>
-                  </div>
-
-                  <!-- 添加新映射 -->
-                  <div class="d-flex align-center ga-2 mb-3">
-                    <v-btn
-                      size="small"
-                      color="primary"
-                      variant="tonal"
-                      @click="newMapping.source = '*'"
-                    >
-                      使用 * 匹配任意源模型
-                    </v-btn>
-                    <span class="text-caption text-medium-emphasis">选择后，任何请求模型都会映射到右侧目标模型。</span>
-                  </div>
-                  <div class="d-flex align-center ga-2">
-                    <v-combobox
-                      v-model="newMapping.source"
-                      label="源模型名"
-                      :items="sourceModelOptions"
-                      item-title="title"
-                      item-value="value"
-                      variant="outlined"
-                      density="comfortable"
-                      hide-details
-                      class="flex-1-1"
-                      placeholder="选择或输入源模型名"
-                      clearable
-                      @keyup.enter="addModelMapping"
-                    />
-                    <v-icon color="primary">mdi-arrow-right</v-icon>
-                    <v-combobox
-                      v-model="newMapping.target"
-                      label="目标模型名"
-                      :placeholder="targetModelPlaceholder"
-                      :items="availableTargetModelOptions"
-                      :loading="fetchingModels"
-                      variant="outlined"
-                      density="comfortable"
-                      hide-details
-                      class="flex-1-1"
-                      clearable
-                      @focus="handleTargetModelClick"
-                      @keyup.enter="addModelMapping"
-                    />
-                    <v-btn
-                      color="secondary"
-                      variant="elevated"
-                      :disabled="!isMappingInputValid"
-                      @click="addModelMapping"
-                    >
-                      添加
-                    </v-btn>
-                  </div>
-                  <!-- 错误提示 -->
-                  <div v-if="fetchModelsError" class="text-error text-caption mt-2">
-                    {{ fetchModelsError }}
-                  </div>
-                  <div v-else-if="selectedMappingSource && existingTargetsForSelectedSource.length" class="text-caption text-medium-emphasis mt-2">
-                    当前源模型已配置 {{ existingTargetsForSelectedSource.length }} 个目标，可继续追加其他目标；相同目标不会重复添加。
-                  </div>
-                </v-card-text>
-              </v-card>
+              <ModelMappingEditor
+                v-model="form.modelMapping"
+                :hint="modelMappingHint"
+                :source-options="sourceModelOptions"
+                :target-options="targetModelOptions"
+                :target-placeholder="targetModelPlaceholder"
+                @fetch-models="handleFetchModels"
+              />
             </v-col>
 
             <!-- API密钥管理 -->
@@ -852,6 +739,7 @@ import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useTheme } from 'vuetify'
 import type { Channel, ChannelPool, ChannelStatus } from '../services/api'
 import { api, fetchUpstreamModels, channelApiByType, ApiError } from '../services/api'
+import ModelMappingEditor from './ModelMappingEditor.vue'
 import {
   isValidApiKey as _isValidApiKey,
   isValidUrl as _isValidQuickInputUrl,
@@ -1370,22 +1258,11 @@ const handleApiKeyInput = () => {
 // 复制功能相关状态
 const copiedKeyIndex = ref<number | null>(null)
 
-// 新模型映射输入
-const newMapping = reactive({
-  source: '',
-  target: ''
-})
+// 目标模型列表（从上游获取）
+  const targetModelOptions = ref<Array<{ title: string; value: string }>>([])
+  const fetchingModels = ref(false)
+  const fetchModelsError = ref('')
 
-const selectedMappingSource = computed(() => getStringValue(newMapping.source).trim())
-const selectedMappingTarget = computed(() => getStringValue(newMapping.target).trim())
-
-const existingTargetsForSelectedSource = computed(() => {
-  const source = selectedMappingSource.value
-  if (!source) return []
-  return form.modelMapping[source] || []
-})
-
-// 安全地获取字符串值（处理 v-select/v-combobox 可能返回对象的情况）
 const getStringValue = (val: unknown): string => {
   if (!val) return ''
   if (typeof val === 'string') return val
@@ -1395,24 +1272,6 @@ const getStringValue = (val: unknown): string => {
   }
   return ''
 }
-
-// 检查映射输入是否有效
-const isMappingInputValid = computed(() => {
-  const source = selectedMappingSource.value
-  const target = selectedMappingTarget.value
-  if (!source || !target) return false
-  return !existingTargetsForSelectedSource.value.includes(target)
-})
-
-// 目标模型列表（从上游获取）
-const targetModelOptions = ref<Array<{ title: string; value: string }>>([])
-const availableTargetModelOptions = computed(() => {
-  const existingTargets = new Set(existingTargetsForSelectedSource.value)
-  return targetModelOptions.value.filter(opt => !existingTargets.has(opt.value))
-})
-const fetchingModels = ref(false)
-const fetchModelsError = ref('')
-const hasTriedFetchModels = ref(false) // 标记是否已尝试获取过模型列表
 
 // API Key 的 models 状态管理
 interface KeyModelsStatus {
@@ -1642,9 +1501,7 @@ const resetForm = () => {
   form.modelMapping = {}
   form.defaultModel = ''
   newApiKey.value = ''
-  newMapping.source = ''
-  newMapping.target = ''
-
+    
   // 重置 baseUrlsText
   baseUrlsText.value = ''
 
@@ -1660,8 +1517,7 @@ const resetForm = () => {
   fetchingModels.value = false
   fetchModelsError.value = ''
   keyModelsStatus.value.clear()
-  hasTriedFetchModels.value = false
-
+  
   // 清除错误信息
   errors.name = ''
   errors.serviceType = ''
@@ -1721,16 +1577,13 @@ const loadChannelData = (channel: Channel) => {
   formBaseUrlPreview.value = channel.baseUrl
 
   // 清空模型映射输入框
-  newMapping.source = ''
-  newMapping.target = ''
-
+    
   // 清空模型缓存和状态（切换渠道时重置）
   targetModelOptions.value = []
   fetchingModels.value = false
   fetchModelsError.value = ''
   keyModelsStatus.value.clear()
-  hasTriedFetchModels.value = false
-}
+  }
 
 const cloneModelMapping = (mapping?: Record<string, string[]>): Record<string, string[]> => {
   const cloned: Record<string, string[]> = {}
@@ -1841,55 +1694,7 @@ const copyApiKey = async (key: string, index: number) => {
   }
 }
 
-const addModelMapping = () => {
-  const source = selectedMappingSource.value
-  const target = selectedMappingTarget.value
-
-  if (source && target) {
-    // 如果该源模型还没有映射，创建新数组
-    if (!form.modelMapping[source]) {
-      form.modelMapping[source] = []
-    }
-    // 如果目标模型不在列表中，添加它
-    if (!form.modelMapping[source].includes(target)) {
-      form.modelMapping[source].push(target)
-    }
-    // 清空输入，但保留源模型选择，方便连续添加多个目标
-    newMapping.target = ''
-  }
-}
-
-const removeModelMapping = (source: string, target?: string) => {
-  if (target) {
-    // 删除特定的目标模型
-    const targets = form.modelMapping[source]
-    if (targets) {
-      const index = targets.indexOf(target)
-      if (index > -1) {
-        targets.splice(index, 1)
-      }
-      // 如果目标列表为空，删除整个映射
-      if (targets.length === 0) {
-        delete form.modelMapping[source]
-      }
-    }
-  } else {
-    // 删除整个源模型的所有映射
-    delete form.modelMapping[source]
-  }
-}
-
-// 处理目标模型输入框点击事件(仅在首次或有新 key 时触发请求)
-const handleTargetModelClick = () => {
-  // 如果已经尝试过获取且正在加载中,不重复触发
-  if (hasTriedFetchModels.value || fetchingModels.value) {
-    return
-  }
-
-  // 标记已尝试获取
-  hasTriedFetchModels.value = true
-
-  // 调用获取模型列表(内部有缓存逻辑)
+const handleFetchModels = () => {
   fetchTargetModels()
 }
 

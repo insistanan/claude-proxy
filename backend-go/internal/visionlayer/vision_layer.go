@@ -1130,6 +1130,13 @@ func collectText(value interface{}, parts *[]string) {
 			}
 			return
 		}
+		// Gemini 格式: 无 type 字段, 直接 {"text": "..."}
+		if _, hasType := current["type"]; !hasType {
+			if text, ok := current["text"].(string); ok && strings.TrimSpace(text) != "" {
+				*parts = append(*parts, text)
+				return
+			}
+		}
 		if role, ok := current["role"].(string); ok {
 			if !strings.EqualFold(strings.TrimSpace(role), "user") {
 				return
