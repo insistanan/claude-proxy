@@ -372,9 +372,10 @@ func ProcessStreamEvent(
 		}
 	}
 
-	// Strip cache_* from client-facing Claude SSE so Cursor Conversation meter
-	// does not treat gateway cache_read (often 100k-300k) as full context after compact.
-	// Admin metrics already collected cache via CheckEventUsageStatus above.
+	// Strip cache_creation_* from client-facing Claude SSE to avoid meter jumps
+	// from gateway-side cache creation. Keep cache_read_input_tokens so Cursor
+	// can correctly perceive cached context size and trigger conversation compact.
+	// Admin metrics already collected all cache fields via CheckEventUsageStatus above.
 	eventToSend = StripCacheFieldsFromClaudeSSE(eventToSend)
 
 	// 转发给客户端
@@ -1443,7 +1444,9 @@ func truncateForLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// StripCacheFieldsFromClaudeSSE removes cache_read / cache_creation / cached_tokens
+// StripCacheFieldsFromClaudeSSE removes cache_creation_* fields from client-facing Claude SSE.
+// cache_read_input_tokens is preserved so clients (e.g. Cursor) can correctly assess
+// cached context size and trigger conversation compaction.
 // from Claude SSE usage payloads before they reach the client (Cursor).
 // Keeps input_tokens and output_tokens only so Conversation meter tracks new input,
 // not gateway prompt-cache occupancy. Admin metrics already collected usage earlier.
@@ -1451,8 +1454,10 @@ func StripCacheFieldsFromClaudeSSE(event string) string {
 	if event == "" {
 		return event
 	}
-	if !strings.Contains(event, "cache_read") && !strings.Contains(event, "cached_tokens") &&
-		!strings.Contains(event, "cache_creation") {
+	// Only check for cache_creation fields; cache_read_input_tokens is preserved
+	// so clients (e.g. Cursor) can correctly assess cached context for compaction.
+	if !strings.Contains(event, "cache_creation") &&
+		!strings.Contains(event, "cache_ttl") {
 		return event
 	}
 	lines := strings.Split(event, "\n")
@@ -1472,12 +1477,10 @@ func StripCacheFieldsFromClaudeSSE(event string) string {
 		changed := false
 		stripUsage := func(usage map[string]interface{}) {
 			for _, key := range []string{
-				"cache_read_input_tokens",
 				"cache_creation_input_tokens",
 				"cache_creation_5m_input_tokens",
 				"cache_creation_1h_input_tokens",
 				"cache_ttl",
-				"input_tokens_details",
 			} {
 				if _, exists := usage[key]; exists {
 					delete(usage, key)
