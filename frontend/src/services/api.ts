@@ -430,6 +430,7 @@ export interface ConversationEntry {
   prompts?: string[]
   stream: boolean
   isSending?: boolean
+  activeRequests?: number
   firstSeenAt: string
   lastSeenAt: string
   lastRequestAt?: string

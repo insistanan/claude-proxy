@@ -1,7 +1,7 @@
 <template>
   <div class="conversation-view">
-    <v-card class="mb-4 pa-4" rounded="lg">
-      <div class="d-flex flex-wrap ga-3 align-center">
+    <v-card class="conversation-toolbar mb-4 pa-4" rounded="lg">
+      <div class="conversation-filters">
         <v-text-field
           v-model="searchText"
           label="搜索对话"
@@ -9,7 +9,7 @@
           density="compact"
           prepend-inner-icon="mdi-magnify"
           hide-details
-          style="max-width: 320px;"
+          class="search-field"
           @keyup.enter="loadConversations()"
         />
 
@@ -20,7 +20,29 @@
           variant="outlined"
           density="compact"
           hide-details
-          style="max-width: 180px;"
+          class="filter-field"
+          clearable
+        />
+
+        <v-select
+          v-model="statusFilter"
+          :items="statusItems"
+          label="状态"
+          variant="outlined"
+          density="compact"
+          hide-details
+          class="filter-field"
+        />
+
+        <v-select
+          v-model="orderMode"
+          :items="orderItems"
+          label="排序"
+          variant="outlined"
+          density="compact"
+          hide-details
+          class="order-field"
+          prepend-inner-icon="mdi-sort"
         />
 
         <v-btn color="primary" prepend-icon="mdi-refresh" variant="tonal" :loading="loading" @click="loadConversations()">
@@ -31,10 +53,8 @@
           清空全部
         </v-btn>
 
-        <v-spacer />
-
-        <div class="text-body-2 text-medium-emphasis">
-          共 {{ conversations.length }} 条
+        <div class="conversation-count text-body-2 text-medium-emphasis">
+          显示 {{ filteredConversations.length }} / {{ conversations.length }} 条
         </div>
       </div>
     </v-card>
@@ -46,106 +66,112 @@
         :loading="loading"
         item-key="id"
         density="compact"
+        class="conversation-table"
       >
-        <template #[`item.id`]="{ item }">
-          <span class="clickable-id font-mono text-primary font-weight-bold" title="点击查看对话详情" @click="openDetailDialog(item)">
-            {{ item.id }}
-          </span>
+        <template #[`item.identity`]="{ item }">
+          <div class="conversation-identity">
+            <button type="button" class="conversation-title" title="查看对话详情" @click="openDetailDialog(item)">
+              {{ item.name || '未命名对话' }}
+            </button>
+            <div class="conversation-id-row">
+              <span class="conversation-id font-mono" :title="item.id">{{ formatConversationID(item.id) }}</span>
+              <v-btn
+                icon="mdi-content-copy"
+                size="x-small"
+                variant="text"
+                color="primary"
+                :aria-label="`复制对话 ID ${item.id}`"
+                title="复制完整 ID"
+                @click="copyText(item.id)"
+              />
+            </div>
+          </div>
         </template>
 
-        <template #[`item.name`]="{ item }">
-          <span v-if="item.name" class="clickable-prompt font-weight-medium" title="点击查看对话详情" @click="openDetailDialog(item)">
-            {{ item.name }}
-          </span>
-          <span v-else class="text-medium-emphasis">未命名</span>
-        </template>
-
-        <template #[`item.apiKind`]="{ item }">
-          <v-chip size="small" variant="tonal">{{ item.apiKind }}</v-chip>
-        </template>
-
-        <template #[`item.firstPrompt`]="{ item }">
+        <template #[`item.prompt`]="{ item }">
           <div v-if="conversationPrompts(item).length > 0" class="conversation-prompts clickable-prompt" title="点击查看对话详情" @click="openDetailDialog(item)">
-            <div
-              v-for="(prompt, idx) in conversationPrompts(item)"
-              :key="idx"
-              class="conversation-prompt-line"
-            >
-              <span class="prompt-index">{{ idx + 1 }}</span>
-              <span class="conversation-prompt-text">{{ prompt }}</span>
+            <div class="conversation-prompt-text">{{ conversationPrompts(item)[0] }}</div>
+            <div v-if="conversationPrompts(item).length > 1" class="prompt-count">
+              共 {{ conversationPrompts(item).length }} 条真实输入
             </div>
           </div>
           <span v-else class="text-medium-emphasis">--</span>
         </template>
 
-        <template #[`item.lastModel`]="{ item }">
-          <div class="model-chain">
+        <template #[`item.protocol`]="{ item }">
+          <div class="protocol-model">
+            <v-chip size="x-small" variant="tonal" class="text-uppercase">{{ item.apiKind }}</v-chip>
             <span class="model-name">{{ formatModelChain(item) }}</span>
           </div>
         </template>
 
         <template #[`item.activity`]="{ item }">
-          <v-chip
-            v-if="item.isSending"
-            size="small"
-            color="success"
-            variant="tonal"
-            prepend-icon="mdi-loading"
-            class="sending-chip"
-          >
-            发送中 {{ formatDurationSince(item.lastRequestAt || item.lastSeenAt) }}
-          </v-chip>
+          <div v-if="item.isSending" class="activity-active">
+            <v-chip
+              size="small"
+              color="success"
+              variant="tonal"
+              prepend-icon="mdi-loading"
+              class="sending-chip"
+            >
+              发送中 {{ formatDurationSince(item.lastRequestAt || item.lastSeenAt) }}
+            </v-chip>
+            <span v-if="(item.activeRequests || 0) > 1" class="text-caption text-medium-emphasis">
+              {{ item.activeRequests }} 个并发请求
+            </span>
+          </div>
           <span v-else class="text-caption text-medium-emphasis">
             {{ formatIdleText(item) }}
           </span>
         </template>
 
-        <template #[`item.routeOverride`]="{ item }">
-          <div v-if="item.routeOverride" class="resolved-channel">
-            <div>
-              {{ item.routeOverride.kind }} / #{{ item.routeOverride.channelIndex }}
-              <span v-if="item.routeOverride.channelName">({{ item.routeOverride.channelName }})</span>
-            </div>
-            <div v-if="formatRouteOverrideModel(item)" class="text-caption text-medium-emphasis">
-              {{ formatRouteOverrideModel(item) }}
-            </div>
+        <template #[`item.requests`]="{ item }">
+          <div class="request-stats">
+            <span><strong>{{ item.requestCount }}</strong> 请求</span>
+            <span :class="item.errorCount > 0 ? 'text-error' : 'text-medium-emphasis'">
+              <strong>{{ item.errorCount }}</strong> 错误
+            </span>
           </div>
-          <span v-else class="text-medium-emphasis">默认调度</span>
         </template>
 
-        <template #[`item.lastResolved`]="{ item }">
-          <div v-if="item.lastResolved" class="resolved-channel">
-            <div>
-              {{ item.lastResolved.kind }} / #{{ item.lastResolved.channelIndex }}
-              <span v-if="item.lastResolved.channelName">({{ item.lastResolved.channelName }})</span>
+        <template #[`item.routing`]="{ item }">
+          <div class="routing-summary">
+            <div v-if="item.lastResolved" class="routing-line">
+              <span class="routing-label">最近</span>
+              <span>#{{ item.lastResolved.channelIndex }} {{ item.lastResolved.channelName || item.lastResolved.kind }}</span>
             </div>
-            <div class="text-caption text-medium-emphasis">
-              {{ formatModelChain(item) }}
+            <div v-else class="text-medium-emphasis">尚未解析</div>
+            <div v-if="item.routeOverride" class="routing-line text-primary">
+              <span class="routing-label">固定</span>
+              <span>#{{ item.routeOverride.channelIndex }} {{ item.routeOverride.channelName || item.routeOverride.kind }}</span>
             </div>
+            <div v-else class="text-caption text-medium-emphasis">默认调度</div>
           </div>
-          <span v-else class="text-medium-emphasis">未解析</span>
+        </template>
+
+        <template #[`item.timestamps`]="{ item }">
+          <div class="timestamp-summary">
+            <span>{{ formatDateTime(item.firstSeenAt) }}</span>
+            <span class="text-caption text-medium-emphasis">活动 {{ formatDateTime(item.lastSeenAt) }}</span>
+          </div>
         </template>
 
         <template #[`item.actions`]="{ item }">
-          <v-btn size="small" variant="text" prepend-icon="mdi-pencil" @click="openNameDialog(item)">
-            命名
-          </v-btn>
-          <v-btn size="small" variant="text" prepend-icon="mdi-swap-horizontal" @click="openRouteDialog(item)">
-            固定渠道
-          </v-btn>
-          <v-btn
-            v-if="item.routeOverride"
-            size="small"
-            variant="text"
-            color="warning"
-            prepend-icon="mdi-close"
-            @click="clearRoute(item)"
-          >
-            清除
-          </v-btn>
-          <v-btn size="small" variant="text" color="error" prepend-icon="mdi-delete" @click="openDeleteDialog(item)">
-            删除
-          </v-btn>
+          <div class="conversation-actions">
+            <v-btn icon="mdi-pencil" size="small" variant="text" title="命名" aria-label="命名对话" @click="openNameDialog(item)" />
+            <v-btn icon="mdi-swap-horizontal" size="small" variant="text" title="固定渠道" aria-label="固定渠道" @click="openRouteDialog(item)" />
+            <v-btn
+              v-if="item.routeOverride"
+              icon="mdi-close"
+              size="small"
+              variant="text"
+              color="warning"
+              title="清除固定渠道"
+              aria-label="清除固定渠道"
+              @click="clearRoute(item)"
+            />
+            <v-btn icon="mdi-delete" size="small" variant="text" color="error" title="删除" aria-label="删除对话" @click="openDeleteDialog(item)" />
+          </div>
         </template>
       </v-data-table>
     </v-card>
@@ -240,10 +266,13 @@
     </v-dialog>
 
     <!-- 详情 Dialog -->
-    <v-dialog v-model="detailDialog" max-width="720">
-      <v-card rounded="lg" class="pa-2">
+    <v-dialog v-model="detailDialog" max-width="960" scrollable>
+      <v-card rounded="lg" class="detail-dialog-card pa-2">
         <v-card-title class="d-flex align-center justify-between border-b pb-2">
-          <span class="text-h6 font-weight-bold">💬 对话可观测详情</span>
+          <span class="text-h6 font-weight-bold d-flex align-center ga-2">
+            <v-icon icon="mdi-message-processing" color="primary" />
+            对话详情
+          </span>
           <v-spacer />
           <v-btn icon="mdi-close" variant="text" size="small" @click="detailDialog = false" />
         </v-card-title>
@@ -252,12 +281,17 @@
           <!-- ID & Meta -->
           <div class="d-flex flex-wrap align-center justify-space-between mb-4 ga-2">
             <div class="d-flex align-center ga-2">
-              <span class="text-subtitle-1 font-weight-bold font-mono">{{ selectedConversation?.id }}</span>
+              <div>
+                <div class="text-caption text-medium-emphasis">内部对话 ID</div>
+                <span class="text-subtitle-1 font-weight-bold font-mono conversation-detail-id">{{ selectedConversation?.id }}</span>
+              </div>
               <v-btn icon="mdi-content-copy" size="x-small" variant="text" color="primary" title="复制ID" @click="copyText(selectedConversation?.id || '')" />
             </div>
             <div class="d-flex align-center ga-2">
               <v-chip size="small" color="primary" variant="tonal" class="text-uppercase">{{ selectedConversation?.apiKind }}</v-chip>
-              <v-chip v-if="selectedConversation?.isSending" size="small" color="success" variant="tonal" prepend-icon="mdi-loading" class="sending-chip">发送中</v-chip>
+              <v-chip v-if="selectedConversation?.isSending" size="small" color="success" variant="tonal" prepend-icon="mdi-loading" class="sending-chip">
+                发送中<span v-if="(selectedConversation?.activeRequests || 0) > 1"> · {{ selectedConversation?.activeRequests }} 个请求</span>
+              </v-chip>
               <v-chip v-else size="small" color="grey" variant="tonal">已完成/空闲</v-chip>
             </div>
           </div>
@@ -315,6 +349,15 @@
                 </span>
               </div>
             </v-col>
+            <v-col v-if="selectedConversation?.clientFamily || selectedConversation?.identitySource" cols="12">
+              <div class="info-card info-card--horizontal">
+                <span class="info-label">客户端身份</span>
+                <span class="info-value font-mono">
+                  {{ selectedConversation?.clientFamily || '未知客户端' }}
+                  <span v-if="selectedConversation?.identitySource" class="text-medium-emphasis"> · {{ selectedConversation.identitySource }}</span>
+                </span>
+              </div>
+            </v-col>
           </v-row>
 
           <div class="mt-4">
@@ -356,11 +399,11 @@
               <span>对话提示词历史</span>
             </div>
             <div class="text-caption text-medium-emphasis mb-2">
-              最多保存该会话前 3 条不同的真实用户输入，以便快速识别会话内容
+              保存该会话前 3 条不同的真实用户输入；展示与复制均使用完整原文
             </div>
 
             <!-- 无提示词 -->
-            <div v-if="!selectedConversation || conversationPrompts(selectedConversation).length === 0" class="text-center py-4 border rounded text-medium-emphasis text-body-2 bg-grey-lighten-4">
+            <div v-if="!selectedConversation || conversationPrompts(selectedConversation).length === 0" class="prompt-empty text-center py-4 rounded text-medium-emphasis text-body-2">
               暂无提示词记录
             </div>
 
@@ -376,6 +419,7 @@
                     输入 #{{ idx + 1 }}
                   </v-chip>
                   <v-spacer />
+                  <span class="prompt-length text-caption text-medium-emphasis">{{ prompt.length.toLocaleString() }} 字符</span>
                   <v-btn
                     size="x-small"
                     variant="text"
@@ -423,20 +467,29 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api, type ConversationEntry, type ConversationKind, type ConversationRouteOptionChannel } from '@/services/api'
 
 const headers = [
-  { title: 'ID', key: 'id', sortable: false },
-  { title: '名称', key: 'name', sortable: false },
-  { title: '提示词', key: 'firstPrompt', sortable: false },
-  { title: '类型', key: 'apiKind', sortable: false },
-  { title: '模型', key: 'lastModel', sortable: false },
-  { title: '状态', key: 'activity', sortable: false },
-  { title: '请求数', key: 'requestCount', sortable: false },
-  { title: '错误数', key: 'errorCount', sortable: false },
-  { title: '固定渠道', key: 'routeOverride', sortable: false },
-  { title: '最近解析', key: 'lastResolved', sortable: false },
-  { title: '操作', key: 'actions', sortable: false }
+  { title: '对话', key: 'identity', sortable: false, width: 190 },
+  { title: '提示词摘要', key: 'prompt', sortable: false, width: 300 },
+  { title: '协议 / 模型', key: 'protocol', sortable: false, width: 220 },
+  { title: '活动状态', key: 'activity', sortable: false, width: 130 },
+  { title: '请求统计', key: 'requests', sortable: false, width: 100 },
+  { title: '渠道路由', key: 'routing', sortable: false, width: 210 },
+  { title: '创建 / 活动时间', key: 'timestamps', sortable: false, width: 170 },
+  { title: '操作', key: 'actions', sortable: false, width: 160 }
 ]
 
 const kindItems: ConversationKind[] = ['messages', 'responses', 'gemini', 'chat', 'images']
+type ConversationStatusFilter = 'all' | 'active' | 'idle'
+type ConversationOrderMode = 'created' | 'status'
+
+const statusItems: Array<{ title: string; value: ConversationStatusFilter }> = [
+  { title: '全部状态', value: 'all' },
+  { title: '正在活跃', value: 'active' },
+  { title: '已完成 / 空闲', value: 'idle' }
+]
+const orderItems: Array<{ title: string; value: ConversationOrderMode }> = [
+  { title: '按创建时间', value: 'created' },
+  { title: '按状态', value: 'status' }
+]
 type RouteSelectItem = {
   title: string
   value: number
@@ -448,6 +501,8 @@ const saving = ref(false)
 const conversations = ref<ConversationEntry[]>([])
 const searchText = ref('')
 const kindFilter = ref<ConversationKind | null>(null)
+const statusFilter = ref<ConversationStatusFilter>('all')
+const orderMode = ref<ConversationOrderMode>('created')
 const now = ref(Date.now())
 const routeDialog = ref(false)
 const editingConversation = ref<ConversationEntry | null>(null)
@@ -584,16 +639,32 @@ const filteredConversations = computed(() => {
   return conversations.value
     .filter(item => {
       if (kindFilter.value && item.apiKind !== kindFilter.value) return false
+      if (statusFilter.value === 'active' && !item.isSending) return false
+      if (statusFilter.value === 'idle' && item.isSending) return false
       if (!q) return true
       const promptMatch = item.prompts && item.prompts.some(p => p.toLowerCase().includes(q))
       return [item.id, item.name, item.firstPrompt, item.lastModel, item.lastResolvedModel, item.lastError, item.routeOverride?.channelName, item.lastResolved?.channelName]
         .filter(Boolean)
         .some(value => String(value).toLowerCase().includes(q)) || promptMatch
     })
-    // 固定按 ID 展示，避免轮询刷新或状态变化导致行位置跳动
     .slice()
-    .sort((a, b) => a.id.localeCompare(b.id))
+    .sort(compareConversations)
 })
+
+const compareConversations = (a: ConversationEntry, b: ConversationEntry): number => {
+  if (orderMode.value === 'status' && Boolean(a.isSending) !== Boolean(b.isSending)) {
+    return a.isSending ? -1 : 1
+  }
+  const createdDifference = timestampOf(b.firstSeenAt) - timestampOf(a.firstSeenAt)
+  if (createdDifference !== 0) return createdDifference
+  return a.id.localeCompare(b.id)
+}
+
+const timestampOf = (value?: string): number => {
+  if (!value) return 0
+  const timestamp = new Date(value).getTime()
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
 
 const conversationPrompts = (item?: ConversationEntry | null): string[] => {
   if (!item) return []
@@ -637,11 +708,12 @@ const loadRouteOptions = async () => {
 const loadConversations = async (silent = false) => {
   if (!silent) loading.value = true
   try {
-    const res = await api.getConversations({
-      q: searchText.value || undefined,
-      kind: kindFilter.value || undefined
-    })
+    const res = await api.getConversations()
     conversations.value = res.conversations
+    if (selectedConversation.value) {
+      selectedConversation.value = res.conversations.find(item => item.id === selectedConversation.value?.id) ?? null
+      if (!selectedConversation.value) detailDialog.value = false
+    }
   } finally {
     if (!silent) loading.value = false
   }
@@ -695,13 +767,6 @@ const formatRouteOptionTitle = (channel: ConversationRouteOptionChannel): string
   return modelPreview
     ? `#${channel.channelIndex} ${channel.channelName} · ${modelPreview}`
     : `#${channel.channelIndex} ${channel.channelName}`
-}
-
-const formatRouteOverrideModel = (item: ConversationEntry): string => {
-  const override = item.routeOverride
-  if (!override) return ''
-  const channel = routeOptions.value[override.kind]?.find(option => option.value === override.channelIndex)?.channel
-  return channel ? formatRouteChannelModelPreview(channel) : fallbackModelLabel(override.kind)
 }
 
 const formatRouteChannelModelPreview = (channel: ConversationRouteOptionChannel): string => {
@@ -773,6 +838,23 @@ const formatIdleText = (item: ConversationEntry): string => {
   return duration ? `${duration}未发送` : '--'
 }
 
+const formatConversationID = (id: string): string => {
+  if (id.length <= 15) return id
+  return `${id.slice(0, 9)}…${id.slice(-6)}`
+}
+
+const formatDateTime = (value?: string): string => {
+  const timestamp = timestampOf(value)
+  if (!timestamp) return '--'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(timestamp)
+}
+
 onMounted(async () => {
   await Promise.all([loadRouteOptions(), loadConversations()])
   clockTimer = setInterval(() => {
@@ -796,8 +878,99 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.conversation-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.search-field {
+  flex: 1 1 280px;
+  max-width: 380px;
+}
+
+.filter-field {
+  flex: 0 1 170px;
+}
+
+.order-field {
+  flex: 0 1 200px;
+}
+
+.conversation-count {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.conversation-table :deep(.v-table__wrapper) {
+  overflow-x: auto;
+}
+
+.conversation-table :deep(table) {
+  min-width: 1480px;
+  table-layout: fixed;
+}
+
+.conversation-table :deep(th) {
+  white-space: nowrap;
+}
+
+.conversation-table :deep(td) {
+  padding-top: 10px !important;
+  padding-bottom: 10px !important;
+  vertical-align: middle;
+}
+
+.conversation-identity,
+.protocol-model,
+.request-stats,
+.routing-summary,
+.timestamp-summary,
+.activity-active {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.conversation-title {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  color: rgb(var(--v-theme-on-surface));
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.conversation-title:hover,
+.conversation-title:focus-visible {
+  color: rgb(var(--v-theme-primary));
+  text-decoration: underline;
+}
+
+.conversation-id-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 24px;
+}
+
+.conversation-id {
+  overflow: hidden;
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conversation-prompts {
-  max-width: 420px;
+  max-width: 100%;
 }
 
 .image-fingerprint-list {
@@ -811,11 +984,16 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  border: 1px solid #dee2e6;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
   border-radius: 6px;
-  background: #f8f9fa;
+  background: rgba(var(--v-theme-on-surface), 0.035);
   font-size: 11px;
   overflow: hidden;
+}
+
+.prompt-empty {
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.2);
+  background: rgba(var(--v-theme-on-surface), 0.025);
 }
 
 .image-fingerprint-item > span {
@@ -825,44 +1003,20 @@ onUnmounted(() => {
   flex: 1;
 }
 
-.conversation-prompt-line {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  align-items: center;
-  gap: 6px;
-  min-height: 20px;
-}
-
-.conversation-prompt-line + .conversation-prompt-line {
-  margin-top: 2px;
-}
-
-.prompt-index {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  background: rgba(var(--v-theme-primary), 0.12);
-  color: rgb(var(--v-theme-primary));
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-}
-
 .conversation-prompt-text {
+  display: -webkit-box;
   overflow: hidden;
+  line-height: 1.45;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.clickable-id {
-  cursor: pointer;
-  text-decoration: underline dotted;
-}
-.clickable-id:hover {
-  opacity: 0.8;
+.prompt-count {
+  margin-top: 4px;
+  color: rgba(var(--v-theme-on-surface), 0.58);
+  font-size: 11px;
 }
 
 .clickable-prompt {
@@ -874,8 +1028,8 @@ onUnmounted(() => {
 }
 
 .info-card {
-  background: #f8f9fa;
-  border: 1px solid #e9ecef;
+  background: rgba(var(--v-theme-on-surface), 0.025);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 8px;
   padding: 10px 12px;
   display: flex;
@@ -883,9 +1037,16 @@ onUnmounted(() => {
   height: 100%;
 }
 
+.info-card--horizontal {
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .info-label {
   font-size: 11px;
-  color: #6c757d;
+  color: rgba(var(--v-theme-on-surface), 0.62);
   font-weight: 500;
   text-transform: uppercase;
   margin-bottom: 2px;
@@ -893,7 +1054,7 @@ onUnmounted(() => {
 
 .info-value {
   font-size: 13px;
-  color: #212529;
+  color: rgb(var(--v-theme-on-surface));
   font-weight: 600;
   word-break: break-all;
 }
@@ -909,10 +1070,10 @@ onUnmounted(() => {
 }
 
 .prompt-detail-card {
-  border: 1px solid #dee2e6;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
   border-radius: 8px;
   overflow: hidden;
-  background: #fff;
+  background: rgb(var(--v-theme-surface));
 }
 
 .prompt-section-marker {
@@ -925,11 +1086,16 @@ onUnmounted(() => {
 }
 
 .prompt-card-header {
-  background: #f8f9fa;
-  border-bottom: 1px solid #dee2e6;
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   padding: 6px 12px;
   display: flex;
   align-items: center;
+}
+
+.prompt-length {
+  margin-right: 4px;
+  white-space: nowrap;
 }
 
 .prompt-card-body {
@@ -937,27 +1103,60 @@ onUnmounted(() => {
   font-family: inherit;
   font-size: 13px;
   line-height: 1.6;
-  color: #333;
+  color: rgb(var(--v-theme-on-surface));
   white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 150px;
-  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 
-.model-chain {
-  max-width: 260px;
+.model-name {
+  display: block;
+  overflow: hidden;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-stats strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.routing-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.routing-line > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.model-name {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
-  font-size: 12px;
+.routing-label {
+  flex: 0 0 auto;
+  color: rgba(var(--v-theme-on-surface), 0.56);
+  font-size: 11px;
 }
 
-.resolved-channel {
-  min-width: 180px;
+.timestamp-summary {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.conversation-actions {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+}
+
+.conversation-detail-id {
+  overflow-wrap: anywhere;
+}
+
+.detail-dialog-card {
+  max-height: calc(100vh - 48px);
 }
 
 .sending-chip :deep(.v-icon) {
@@ -967,6 +1166,45 @@ onUnmounted(() => {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 960px) {
+  .search-field {
+    max-width: none;
+  }
+
+  .conversation-count {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .conversation-toolbar {
+    padding: 12px !important;
+  }
+
+  .search-field,
+  .filter-field,
+  .order-field {
+    flex: 1 1 100%;
+  }
+
+  .detail-dialog-card {
+    max-height: calc(100vh - 24px);
+  }
+
+  .info-card--horizontal {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sending-chip :deep(.v-icon) {
+    animation: none;
   }
 }
 </style>

@@ -113,6 +113,7 @@ func NewPersistentRegistry(dbPath string) (*Registry, error) {
 		if rec == nil || rec.ID == "" || rec.identityKey == "" {
 			continue
 		}
+		normalizeRecordPrompts(rec)
 		rec.IsSending = false
 		rec.ActiveRequests = 0
 		r.records[rec.ID] = rec
@@ -644,7 +645,7 @@ func firstPromptFromObservation(obs Observation) string {
 	if len(prompts) > 0 {
 		return prompts[0]
 	}
-	return truncate(obs.FirstPrompt, 300)
+	return ""
 }
 
 func promptsFromObservation(obs Observation) []string {
@@ -657,10 +658,30 @@ func promptsFromObservation(obs Observation) []string {
 }
 
 func appendPrompts(rec *Record, prompts ...string) {
-	if rec == nil || len(rec.Prompts) >= 3 {
+	if rec == nil {
 		return
 	}
-	for _, prompt := range cleanPromptList(prompts, 3) {
+	candidates := cleanPromptList(prompts, 3)
+	// 旧版本按 300 字节截断；再次看到同一条完整历史输入时原位修复。
+	for _, prompt := range candidates {
+		for index, current := range rec.Prompts {
+			if !strings.HasSuffix(current, "...") {
+				continue
+			}
+			prefix := strings.ToValidUTF8(strings.TrimSuffix(current, "..."), "")
+			if len(prefix) < 296 || !strings.HasPrefix(prompt, prefix) {
+				continue
+			}
+			rec.Prompts[index] = prompt
+			if index == 0 {
+				rec.FirstPrompt = prompt
+			}
+		}
+	}
+	if len(rec.Prompts) >= 3 {
+		return
+	}
+	for _, prompt := range candidates {
 		if len(rec.Prompts) >= 3 {
 			return
 		}
@@ -711,7 +732,7 @@ func cleanPromptList(values []string, limit int) []string {
 	result := make([]string, 0, limit)
 	seen := make(map[string]bool)
 	for _, value := range values {
-		prompt := truncate(value, 300)
+		prompt := NormalizeUserPrompt(value)
 		if prompt == "" || seen[prompt] {
 			continue
 		}
@@ -722,6 +743,21 @@ func cleanPromptList(values []string, limit int) []string {
 		}
 	}
 	return result
+}
+
+func normalizeRecordPrompts(rec *Record) {
+	if rec == nil {
+		return
+	}
+	values := make([]string, 0, len(rec.Prompts)+1)
+	values = append(values, rec.FirstPrompt)
+	values = append(values, rec.Prompts...)
+	rec.Prompts = cleanPromptList(values, 3)
+	if len(rec.Prompts) > 0 {
+		rec.FirstPrompt = rec.Prompts[0]
+	} else {
+		rec.FirstPrompt = ""
+	}
 }
 
 func truncate(value string, limit int) string {
