@@ -27,16 +27,16 @@ func Crud(cfgManager *config.ConfigManager, sch *scheduler.ChannelScheduler) *ch
 		GetClient: func(ch *config.UpstreamConfig, timeout time.Duration) (*http.Client, error) {
 			return httpclient.GetManager().GetStandardClientForUpstream(timeout, cfgManager, ch)
 		},
-		Add:           cfgManager.AddUpstreamWithResult,
-		Update:        cfgManager.UpdateUpstream,
-		Remove:        cfgManager.RemoveUpstream,
-		AddKey:        cfgManager.AddAPIKey,
-		RemoveKey:     cfgManager.RemoveAPIKey,
-		MoveKeyTop:    cfgManager.MoveAPIKeyToTop,
-		MoveKeyBottom: cfgManager.MoveAPIKeyToBottom,
-		Reorder:       cfgManager.ReorderUpstreams,
-		SetStatus:     cfgManager.SetChannelStatus,
-		SetPromotion:  cfgManager.SetChannelPromotion,
+		Add:            cfgManager.AddUpstreamWithResult,
+		Update:         cfgManager.UpdateUpstream,
+		Remove:         cfgManager.RemoveUpstream,
+		AddKey:         cfgManager.AddAPIKey,
+		RemoveKey:      cfgManager.RemoveAPIKey,
+		MoveKeyTop:     cfgManager.MoveAPIKeyToTop,
+		MoveKeyBottom:  cfgManager.MoveAPIKeyToBottom,
+		Reorder:        cfgManager.ReorderUpstreams,
+		SetStatus:      cfgManager.SetChannelStatus,
+		SetPromotion:   cfgManager.SetChannelPromotion,
 		SetLoadBalance: cfgManager.SetLoadBalance,
 	}, sch)
 }

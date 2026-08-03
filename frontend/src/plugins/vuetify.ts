@@ -271,8 +271,6 @@ const iconMap: Record<string, string> = {
   'test-tube': mdiTestTube,
   'account': mdiAccount,
   'send': mdiSend,
-  'image': mdiImage,
-  'translate': mdiTranslate,
 }
 
 // 自定义 SVG iconset
