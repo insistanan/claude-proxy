@@ -46,8 +46,15 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		}
 
 		var chatReq types.OpenAIRequest
-		if len(bodyBytes) == 0 || json.Unmarshal(bodyBytes, &chatReq) != nil {
+		if len(bodyBytes) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Chat Completions request body"})
+			return
+		}
+		if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":  "Invalid Chat Completions request body",
+				"detail": err.Error(),
+			})
 			return
 		}
 		if strings.TrimSpace(chatReq.Model) == "" {
@@ -479,9 +486,23 @@ func applyChatModelMapping(bodyBytes []byte, upstream *config.UpstreamConfig) ([
 		delete(payload, "prompt_cache_key")
 		delete(payload, "prompt_cache_retention")
 	}
+	stripChatRoutingMetadata(payload)
 	ensureChatStreamUsageOptions(payload)
 
 	return utils.MarshalJSONNoEscape(payload)
+}
+
+// stripChatRoutingMetadata removes proxy-only routing fields before forwarding
+// the request. Some OpenAI-compatible upstreams reject unknown top-level fields.
+func stripChatRoutingMetadata(payload map[string]interface{}) {
+	metadata, ok := payload["metadata"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	delete(metadata, "channel_index")
+	if len(metadata) == 0 {
+		delete(payload, "metadata")
+	}
 }
 
 func ensureChatStreamUsageOptions(payload map[string]interface{}) {
