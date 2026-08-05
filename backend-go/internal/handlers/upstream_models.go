@@ -15,20 +15,20 @@ func DiscoverUpstreamModels(cfgManager *config.ConfigManager) gin.HandlerFunc {
 		var req struct {
 			BaseURL            string   `json:"baseUrl" binding:"required"`
 			BaseURLs           []string `json:"baseUrls"`
-			APIKey             string   `json:"apiKey" binding:"required"`
+			APIKey             string   `json:"apiKey"`
 			ServiceType        string   `json:"serviceType"`
 			InsecureSkipVerify bool     `json:"insecureSkipVerify"`
 			ProxyMode          string   `json:"proxyMode"`
 			ProxyURL           string   `json:"proxyUrl"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "请提供有效的上游地址和 API Key"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请提供有效的上游地址"})
 			return
 		}
 		baseURL := strings.TrimSpace(req.BaseURL)
 		apiKey := strings.TrimSpace(req.APIKey)
-		if baseURL == "" || apiKey == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "上游地址和 API Key 不能为空"})
+		if baseURL == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "上游地址不能为空"})
 			return
 		}
 

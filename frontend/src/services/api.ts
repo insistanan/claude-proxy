@@ -203,7 +203,7 @@ export interface AppSettings {
   }
 }
 
-export type OpenCodeProtocol = 'chat' | 'responses' | 'messages' | 'custom'
+export type OpenCodeProtocol = 'chat' | 'responses' | 'messages' | 'gemini' | 'custom'
 
 export interface OpenCodeVariant {
   reasoningEffort: string
@@ -549,7 +549,7 @@ export interface ModelsResponse {
 export interface UpstreamModelsRequest {
   baseUrl: string
   baseUrls?: string[]
-  apiKey: string
+  apiKey?: string
   serviceType?: string
   insecureSkipVerify?: boolean
   proxyMode?: Channel['proxyMode']
@@ -1093,7 +1093,7 @@ export const api = new ApiService()
 
 export function fetchUpstreamModels(
   baseUrl: string,
-  apiKey: string,
+  apiKey: string = '',
   serviceType?: string,
   options: Omit<UpstreamModelsRequest, 'baseUrl' | 'apiKey' | 'serviceType'> = {}
 ): Promise<ModelsResponse> {

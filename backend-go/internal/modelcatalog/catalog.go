@@ -6,12 +6,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -19,8 +15,6 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/httpclient"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
 const (
@@ -33,6 +27,25 @@ var (
 	versionSuffixPattern = regexp.MustCompile(`/v\d+[a-z]*$`)
 	unsafeModelIDChars   = regexp.MustCompile(`[^A-Za-z0-9._:-]+`)
 	globalCache          = &catalogCache{}
+
+	// publicFamilyModelIDs 是对外稳定暴露的家族别名。
+	// 实际上游模型由渠道 modelMapping / defaultModel + 子池路由决定。
+	publicFamilyModelIDs = []string{
+		"opus",
+		"sonnet",
+		"gpt",
+		"gemini",
+		"chat",
+	}
+
+	// publicPoolKinds 决定从哪些协议收集子池并暴露为可选模型。
+	publicPoolKinds = []string{
+		"messages",
+		"responses",
+		"chat",
+		"gemini",
+		"images",
+	}
 )
 
 type ModelEntry struct {
@@ -71,32 +84,17 @@ type catalogCache struct {
 }
 
 func OpenAIModels(ctx context.Context, cfgManager *config.ConfigManager) ModelsResponse {
-	staticModels := staticFamilyModels()
-	chatModels, _, err := chatCatalog(ctx, cfgManager, false)
-	if err != nil {
-		log.Printf("[Models-Chat] 获取 Chat 模型列表失败，使用静态模型兜底: %v", err)
-	}
-
-	data := make([]ModelEntry, 0, len(staticModels)+len(chatModels))
-	data = append(data, staticModels...)
-	data = append(data, chatModels...)
-	return ModelsResponse{Object: "list", Data: data}
+	_ = ctx
+	return ModelsResponse{Object: "list", Data: publicModelEntries(cfgManager)}
 }
 
 func ModelDetail(ctx context.Context, cfgManager *config.ConfigManager, modelID string) (ModelEntry, bool) {
-	for _, model := range staticFamilyModels() {
-		if model.ID == modelID {
-			return model, true
-		}
-	}
-	if !looksLikeChatRouteAlias(modelID) {
+	_ = ctx
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
 		return ModelEntry{}, false
 	}
-	chatModels, _, err := chatCatalog(ctx, cfgManager, false)
-	if err != nil {
-		return ModelEntry{}, false
-	}
-	for _, model := range chatModels {
+	for _, model := range publicModelEntries(cfgManager) {
 		if model.ID == modelID {
 			return model, true
 		}
@@ -129,23 +127,87 @@ func looksLikeChatRouteAlias(modelID string) bool {
 }
 
 func staticFamilyModels() []ModelEntry {
-	ids := []string{
-		"opus",
-		"sonnet",
-		"haiku",
-		"fable",
-		"gpt",
-		"codex",
-		"gemini",
-	}
-	models := make([]ModelEntry, 0, len(ids))
-	for _, id := range ids {
+	models := make([]ModelEntry, 0, len(publicFamilyModelIDs))
+	for _, id := range publicFamilyModelIDs {
 		models = append(models, ModelEntry{
 			ID:      id,
 			Object:  "model",
 			Created: modelCreatedFallback,
-			OwnedBy: "claude-proxy",
+			OwnedBy: "api-proxy",
 		})
+	}
+	return models
+}
+
+// publicModelEntries 返回对外可见模型：固定家族别名 + 各协议子池捕获规则。
+// 不再暴露渠道级上游模型或 Chat 路由别名（如 model__c0__kxxxxxxxx）。
+func publicModelEntries(cfgManager *config.ConfigManager) []ModelEntry {
+	familyModels := staticFamilyModels()
+	seen := make(map[string]bool, len(familyModels)+16)
+	for _, model := range familyModels {
+		seen[model.ID] = true
+	}
+
+	poolModels := poolMatcherModels(cfgManager, seen)
+	data := make([]ModelEntry, 0, len(familyModels)+len(poolModels))
+	data = append(data, familyModels...)
+	data = append(data, poolModels...)
+	return data
+}
+
+// poolMatcherModels 把非通配符子池的 modelMatcher 暴露为可选模型 ID。
+// 客户端用该 ID 发请求时，调度器按 contains 最长匹配进入对应子池，再走渠道映射/故障转移。
+func poolMatcherModels(cfgManager *config.ConfigManager, seen map[string]bool) []ModelEntry {
+	if cfgManager == nil {
+		return nil
+	}
+
+	// matcher -> 出现过的协议种类（用于 owned_by）
+	matcherKinds := make(map[string][]string)
+	for _, kind := range publicPoolKinds {
+		pools := cfgManager.GetChannelPools(kind)
+		for _, pool := range pools {
+			matcher := strings.TrimSpace(pool.ModelMatcher)
+			if matcher == "" || matcher == "*" {
+				continue
+			}
+			// 对外模型 ID 保持与调度匹配规则一致（小写 contains）
+			matcher = strings.ToLower(matcher)
+			if seen[matcher] {
+				continue
+			}
+			kinds := matcherKinds[matcher]
+			alreadyListed := false
+			for _, existingKind := range kinds {
+				if existingKind == kind {
+					alreadyListed = true
+					break
+				}
+			}
+			if alreadyListed {
+				continue
+			}
+			matcherKinds[matcher] = append(kinds, kind)
+		}
+	}
+
+	matchers := make([]string, 0, len(matcherKinds))
+	for matcher := range matcherKinds {
+		matchers = append(matchers, matcher)
+	}
+	sort.Strings(matchers)
+
+	models := make([]ModelEntry, 0, len(matchers))
+	for _, matcher := range matchers {
+		kinds := matcherKinds[matcher]
+		sort.Strings(kinds)
+		models = append(models, ModelEntry{
+			ID:      matcher,
+			Object:  "model",
+			Created: modelCreatedFallback,
+			OwnedBy: "pool:" + strings.Join(kinds, ","),
+		})
+		seen[matcher] = true
 	}
 	return models
 }
@@ -350,31 +412,6 @@ func appendChatRoute(
 	})
 }
 
-func discoverModelsForKey(ctx context.Context, cfgManager *config.ConfigManager, upstream *config.UpstreamConfig, apiKey string, baseURLs []string) ([]string, string, string, error) {
-	methods := orderedDiscoveryMethods(upstream.ServiceType)
-	var lastErr error
-
-	for _, baseURL := range baseURLs {
-		for _, method := range methods {
-			models, err := fetchModelsByMethod(ctx, cfgManager, upstream, apiKey, baseURL, method)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			models = dedupeStrings(models)
-			if len(models) > 0 {
-				log.Printf("[Models-Chat] 渠道 %s key=%s baseURL=%s method=%s 获取模型 %d 个",
-					upstream.Name, keyFingerprint(apiKey), baseURL, method, len(models))
-				return models, baseURL, method, nil
-			}
-		}
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("models endpoint returned no models")
-	}
-	return nil, "", "", lastErr
-}
-
 // DiscoverUpstreamModels 为管理界面的渠道模型发现提供统一的后端出站路径。
 func DiscoverUpstreamModels(ctx context.Context, cfgManager *config.ConfigManager, upstream *config.UpstreamConfig, apiKey string) (ModelsResponse, error) {
 	if cfgManager == nil || upstream == nil {
@@ -384,9 +421,8 @@ func DiscoverUpstreamModels(ctx context.Context, cfgManager *config.ConfigManage
 	if len(baseURLs) == 0 {
 		return ModelsResponse{}, fmt.Errorf("缺少上游地址")
 	}
-	if strings.TrimSpace(apiKey) == "" {
-		return ModelsResponse{}, fmt.Errorf("缺少 API Key")
-	}
+	// API Key 允许为空：本地 Ollama 等上游通常无需密钥。
+	// 需要鉴权的上游会在探测阶段返回明确错误。
 
 	discoveryCtx, cancel := context.WithTimeout(ctx, modelsRequestTimeout)
 	defer cancel()
@@ -406,223 +442,6 @@ func DiscoverUpstreamModels(ctx context.Context, cfgManager *config.ConfigManage
 		})
 	}
 	return ModelsResponse{Object: "list", Data: entries}, nil
-}
-
-func orderedDiscoveryMethods(serviceType string) []string {
-	all := []string{"openai-v1", "openai-root", "anthropic", "gemini", "ollama"}
-	switch strings.ToLower(strings.TrimSpace(serviceType)) {
-	case "claude", "anthropic":
-		return []string{"anthropic", "openai-v1", "openai-root", "gemini", "ollama"}
-	case "gemini":
-		return []string{"gemini", "openai-v1", "openai-root", "anthropic", "ollama"}
-	default:
-		return all
-	}
-}
-
-func fetchModelsByMethod(ctx context.Context, cfgManager *config.ConfigManager, upstream *config.UpstreamConfig, apiKey, baseURL, method string) ([]string, error) {
-	reqURL := ""
-	switch method {
-	case "openai-v1":
-		reqURL = buildVersionedModelsURL(baseURL)
-	case "openai-root":
-		reqURL = buildRootModelsURL(baseURL)
-	case "anthropic":
-		reqURL = buildAnthropicModelsURL(baseURL)
-	case "gemini":
-		reqURL = buildGeminiModelsURL(baseURL, apiKey)
-	case "ollama":
-		reqURL = buildOllamaTagsURL(baseURL)
-	default:
-		return nil, fmt.Errorf("unknown discovery method: %s", method)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	applyModelsHeaders(req, apiKey, method)
-
-	client, err := httpclient.GetManager().GetStandardClientForUpstream(modelsRequestTimeout, cfgManager, upstream)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	body = utils.DecompressGzipIfNeeded(resp, body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s returned %d", method, resp.StatusCode)
-	}
-
-	switch method {
-	case "openai-v1", "openai-root":
-		return parseOpenAIModels(body)
-	case "anthropic":
-		return parseAnthropicModels(body)
-	case "gemini":
-		return parseGeminiModels(body)
-	case "ollama":
-		return parseOllamaModels(body)
-	default:
-		return nil, fmt.Errorf("unknown discovery method: %s", method)
-	}
-}
-
-func applyModelsHeaders(req *http.Request, apiKey, method string) {
-	req.Header.Set("Content-Type", "application/json")
-	switch method {
-	case "anthropic":
-		req.Header.Set("x-api-key", apiKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	case "gemini":
-		req.Header.Set("x-goog-api-key", apiKey)
-	default:
-		utils.SetAuthenticationHeader(req.Header, apiKey)
-	}
-}
-
-func parseOpenAIModels(body []byte) ([]string, error) {
-	var resp struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
-	}
-	models := make([]string, 0, len(resp.Data))
-	for _, item := range resp.Data {
-		if id := strings.TrimSpace(item.ID); id != "" {
-			models = append(models, id)
-		}
-	}
-	return models, nil
-}
-
-func parseAnthropicModels(body []byte) ([]string, error) {
-	var resp struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
-	}
-	models := make([]string, 0, len(resp.Data))
-	for _, item := range resp.Data {
-		if id := strings.TrimSpace(item.ID); id != "" {
-			models = append(models, id)
-		}
-	}
-	return models, nil
-}
-
-func parseGeminiModels(body []byte) ([]string, error) {
-	var resp struct {
-		Models []struct {
-			Name                       string   `json:"name"`
-			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
-	}
-
-	models := make([]string, 0, len(resp.Models))
-	for _, item := range resp.Models {
-		if !supportsGeminiGeneration(item.SupportedGenerationMethods) {
-			continue
-		}
-		id := strings.TrimPrefix(strings.TrimSpace(item.Name), "models/")
-		if id != "" {
-			models = append(models, id)
-		}
-	}
-	return models, nil
-}
-
-func parseOllamaModels(body []byte) ([]string, error) {
-	var resp struct {
-		Models []struct {
-			Name string `json:"name"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
-	}
-	models := make([]string, 0, len(resp.Models))
-	for _, item := range resp.Models {
-		if id := strings.TrimSpace(item.Name); id != "" {
-			models = append(models, id)
-		}
-	}
-	return models, nil
-}
-
-func supportsGeminiGeneration(methods []string) bool {
-	if len(methods) == 0 {
-		return true
-	}
-	for _, method := range methods {
-		switch method {
-		case "generateContent", "streamGenerateContent":
-			return true
-		}
-	}
-	return false
-}
-
-func buildVersionedModelsURL(baseURL string) string {
-	baseURL, skipVersionPrefix := normalizeBaseURL(baseURL)
-	endpoint := "/models"
-	if !skipVersionPrefix && !versionSuffixPattern.MatchString(baseURL) {
-		endpoint = "/v1" + endpoint
-	}
-	return baseURL + endpoint
-}
-
-func buildRootModelsURL(baseURL string) string {
-	baseURL, _ = normalizeBaseURL(baseURL)
-	return baseURL + "/models"
-}
-
-func buildAnthropicModelsURL(baseURL string) string {
-	return buildVersionedModelsURL(baseURL)
-}
-
-func buildGeminiModelsURL(baseURL, apiKey string) string {
-	baseURL, _ = normalizeBaseURL(baseURL)
-	if strings.HasSuffix(baseURL, "/v1") || strings.HasSuffix(baseURL, "/v1beta") {
-		baseURL = strings.TrimSuffix(baseURL, "/v1")
-		baseURL = strings.TrimSuffix(baseURL, "/v1beta")
-	}
-	u := baseURL + "/v1beta/models"
-	if apiKey == "" {
-		return u
-	}
-	return u + "?key=" + url.QueryEscape(apiKey)
-}
-
-func buildOllamaTagsURL(baseURL string) string {
-	baseURL, _ = normalizeBaseURL(baseURL)
-	return baseURL + "/api/tags"
-}
-
-func normalizeBaseURL(baseURL string) (string, bool) {
-	baseURL = strings.TrimSpace(baseURL)
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	return strings.TrimRight(baseURL, "/"), skipVersionPrefix
 }
 
 func uniqueAlias(model string, channelIndex int, keyID string, used map[string]bool) string {

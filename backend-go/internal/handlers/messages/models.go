@@ -12,7 +12,8 @@ import (
 )
 
 // ModelsHandler 处理 /v1/models 请求。
-// Claude/Codex/Gemini 暴露稳定家族别名，Chat 渠道动态发现并暴露可路由模型别名。
+// 对外仅暴露稳定家族别名（opus/sonnet/gpt/gemini/chat）以及各协议子池捕获规则。
+// 渠道级上游模型与 Chat 路由别名不再出现在公开列表中。
 func ModelsHandler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channelScheduler *scheduler.ChannelScheduler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		middleware.ProxyAuthMiddleware(envCfg)(c)

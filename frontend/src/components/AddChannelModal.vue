@@ -1699,14 +1699,17 @@ const handleFetchModels = () => {
 }
 
 const fetchTargetModels = async () => {
-  if (!form.baseUrl || form.apiKeys.length === 0) {
-    fetchModelsError.value = '请先填写 Base URL 和至少一个 API Key'
+  if (!form.baseUrl) {
+    fetchModelsError.value = '请先填写 Base URL'
     return
   }
 
+  // 无 API Key 时仍尝试一次空密钥探测（Ollama 等本地上游）
+  const keysToCheck = form.apiKeys.length > 0 ? form.apiKeys : ['']
+
   // 如果已经有模型列表且所有 key 都已检测过,直接返回(缓存)
   if (targetModelOptions.value.length > 0) {
-    const allKeysChecked = form.apiKeys.every(key => keyModelsStatus.value.has(key))
+    const allKeysChecked = keysToCheck.every(key => keyModelsStatus.value.has(key))
     if (allKeysChecked) {
       return
     }
@@ -1716,7 +1719,7 @@ const fetchTargetModels = async () => {
   fetchModelsError.value = ''
 
   // 仅为未检测过的 API Key 发起请求
-  const uncheckedKeys = form.apiKeys.filter(key => !keyModelsStatus.value.has(key))
+  const uncheckedKeys = keysToCheck.filter(key => !keyModelsStatus.value.has(key))
 
   if (uncheckedKeys.length === 0) {
     fetchingModels.value = false
@@ -1779,13 +1782,18 @@ const fetchTargetModels = async () => {
       .map(id => ({ title: id, value: id }))
 
     // 如果所有 key 都失败了,显示错误
-    const allFailed = form.apiKeys.every(key => {
+    const allFailed = keysToCheck.every(key => {
       const status = keyModelsStatus.value.get(key)
       return status && !status.success
     })
 
     if (allFailed) {
-      fetchModelsError.value = '所有 API Key 都无法获取模型列表,请检查 API 密钥列表中的错误信息'
+      const firstError = keysToCheck
+        .map(key => keyModelsStatus.value.get(key)?.error)
+        .find(Boolean)
+      fetchModelsError.value = firstError
+        ? `无法获取模型列表: ${firstError}`
+        : '所有 API Key 都无法获取模型列表,请检查 API 密钥列表中的错误信息'
     }
   } finally {
     fetchingModels.value = false
