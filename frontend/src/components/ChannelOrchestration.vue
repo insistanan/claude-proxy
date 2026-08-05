@@ -131,6 +131,7 @@
                 text="支持图片理解"
                 location="top"
                 :open-delay="150"
+                :open-on-focus="false"
               >
                 <template #activator="{ props: tooltipProps }">
                   <v-chip
@@ -178,13 +179,14 @@
                 size="x-small"
                 class="ml-auto expand-icon"
                 :color="expandedChannelIndex === element.index ? 'primary' : 'grey-lighten-1'"
+                @click.stop="toggleChannelChart(element.index)"
               >{{ expandedChannelIndex === element.index ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
             </div>
 
             <!-- 指标显示 — 视觉条 -->
             <div class="channel-metrics" @click.stop>
               <template v-if="getChannelMetrics(element.index)">
-                <v-tooltip location="top" :open-delay="200">
+                <v-tooltip location="top" :open-delay="200" :open-on-focus="false">
                   <template #activator="{ props: tooltipProps }">
                     <div v-bind="tooltipProps" class="metrics-visual">
                       <!-- 15分钟有请求时显示指标条，否则显示 -- -->
@@ -494,6 +496,7 @@
                 text="支持图片理解"
                 location="top"
                 :open-delay="150"
+                :open-on-focus="false"
               >
                 <template #activator="{ props: tooltipProps }">
                   <v-chip
@@ -1792,7 +1795,7 @@ defineExpose({
 
 <style scoped>
 /* ============================================================
-   Claude Proxy — 调度轨道
+   API Proxy — 调度轨道
    编号、状态边线、数据波形组成统一的设备语言
    ============================================================ */
 

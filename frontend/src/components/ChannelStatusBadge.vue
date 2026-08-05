@@ -1,6 +1,6 @@
 <template>
   <div class="status-badge" :class="[statusClass, { 'has-metrics': showMetrics }]">
-    <v-tooltip location="top" content-class="status-tooltip">
+    <v-tooltip location="top" content-class="status-tooltip" :open-on-focus="false">
       <template #activator="{ props: tooltipProps }">
         <div class="badge-content" v-bind="tooltipProps">
           <v-icon :size="iconSize" class="status-icon">{{ statusIcon }}</v-icon>

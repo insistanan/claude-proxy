@@ -28,6 +28,22 @@
           <v-card elevation="0" class="settings-card h-100">
             <v-card-title class="px-5 pt-5 pb-2 text-subtitle-1 font-weight-bold">代理连接</v-card-title>
             <v-card-text class="pa-5">
+              <v-select
+                v-model="selectedMessagesChannel"
+                label="从 Messages 渠道快速选择"
+                variant="outlined"
+                density="comfortable"
+                :items="messagesChannels"
+                item-title="name"
+                item-value="index"
+                :loading="channelsLoading"
+                clearable
+                no-data-text="暂无 Messages 渠道，请先在渠道管理中配置"
+                hint="选择渠道后将自动填充 Base URL 与密钥，仍可手动微调"
+                persistent-hint
+                @update:model-value="applyMessagesChannel"
+              />
+              <v-divider class="my-4" />
               <v-text-field v-model.trim="baseUrl" label="Anthropic Base URL" variant="outlined" density="comfortable" placeholder="例如 http://127.0.0.1:8080" hint="留空则使用 Claude Code 默认 Anthropic 端点" persistent-hint />
               <v-radio-group v-model="credentialKind" inline class="mt-2 mb-1" hide-details>
                 <v-radio label="认证令牌" value="authToken" />
@@ -86,7 +102,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { api, type ClaudeCodeModelDefault, type ClaudeCodeSettings } from '@/services/api'
+import { api, channelApiByType, type ClaudeCodeModelDefault, type ClaudeCodeSettings, type Channel } from '@/services/api'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -102,6 +118,11 @@ const model = ref('')
 const reasoningModel = ref('')
 const modelDefaults = ref<ClaudeCodeModelDefault[]>([])
 const notice = ref({ visible: false, type: 'success', message: '' })
+
+// 渠道快速选择
+const messagesChannels = ref<Channel[]>([])
+const channelsLoading = ref(false)
+const selectedMessagesChannel = ref<number | null>(null)
 
 const familyTitles: Record<string, string> = { fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' }
 const familyColors: Record<string, string> = { fable: 'primary', opus: 'warning', sonnet: 'success', haiku: 'info' }
@@ -123,10 +144,39 @@ const loadSettings = async () => {
     model.value = loaded.model
     reasoningModel.value = loaded.reasoningModel
     modelDefaults.value = loaded.modelDefaults.map(item => ({ ...item }))
+
+    // 加载 messages 渠道列表供快速选择
+    loadMessagesChannels()
   } catch (loadError) {
     error.value = loadError instanceof Error ? loadError.message : '加载 Claude Code 配置失败'
   } finally {
     loading.value = false
+  }
+}
+
+const loadMessagesChannels = async () => {
+  channelsLoading.value = true
+  try {
+    const result = await channelApiByType('messages').getChannels()
+    // 只显示有效的（非 deleted）渠道
+    messagesChannels.value = result.channels.filter(ch => ch.status !== 'deleted')
+  } catch {
+    messagesChannels.value = []
+  } finally {
+    channelsLoading.value = false
+  }
+}
+
+const applyMessagesChannel = (channelIndex: number | null) => {
+  if (channelIndex === null) return
+  const channel = messagesChannels.value.find(ch => ch.index === channelIndex)
+  if (!channel) return
+  // 复用渠道的上游地址与密钥，直连该渠道
+  baseUrl.value = channel.baseUrl
+  // 填入第一个密钥
+  if (channel.apiKeys.length > 0) {
+    credential.value = channel.apiKeys[0]
+    credentialAction.value = 'replace'
   }
 }
 

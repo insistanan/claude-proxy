@@ -72,6 +72,47 @@
             <v-divider />
 
             <v-card-text class="pa-5">
+              <!-- 从代理渠道快速选择 -->
+              <v-card variant="tonal" color="primary" class="mb-5 channel-quick-pick">
+                <v-card-title class="px-4 py-3 text-subtitle-2 font-weight-bold d-flex align-center ga-2">
+                  <v-icon size="18">mdi-lightning-bolt</v-icon>
+                  从渠道快速选择
+                </v-card-title>
+                <v-card-text class="pa-4 pt-0">
+                  <v-row>
+                    <v-col cols="12" sm="6">
+                      <v-select
+                        v-model="quickPickType"
+                        label="渠道类型"
+                        variant="outlined"
+                        density="comfortable"
+                        :items="quickPickTypeOptions"
+                        item-title="title"
+                        item-value="value"
+                      />
+                    </v-col>
+                    <v-col cols="12" sm="6">
+                      <v-select
+                        v-model="quickPickChannelIndex"
+                        label="渠道"
+                        variant="outlined"
+                        density="comfortable"
+                        :items="quickPickChannels"
+                        item-title="name"
+                        item-value="index"
+                        :loading="quickPickLoading"
+                        :disabled="!quickPickType"
+                        no-data-text="该类型下暂无渠道"
+                        clearable
+                      />
+                    </v-col>
+                  </v-row>
+                  <div class="text-caption text-medium-emphasis mt-1">
+                    选择渠道后将自动填充协议、Base URL 与密钥，仍可手动微调
+                  </div>
+                </v-card-text>
+              </v-card>
+
               <v-row>
                 <v-col cols="12" sm="6">
                   <v-text-field v-model.trim="selectedProvider.id" label="提供商标识" variant="outlined" density="comfortable" :disabled="providerIdInUse" hint="例如 deepseek；模型引用将使用 deepseek/模型标识" persistent-hint @update:model-value="selectedProviderId = $event" />
@@ -207,8 +248,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { api, type OpenCodeConfig, type OpenCodeProtocol, type OpenCodeProvider, type OpenCodeVariant, type SaveOpenCodeProvider } from '@/services/api'
+import { computed, onMounted, ref, watch } from 'vue'
+import { api, channelApiByType, type OpenCodeConfig, type OpenCodeProtocol, type OpenCodeProvider, type OpenCodeVariant, type SaveOpenCodeProvider, type Channel, type ApiTab } from '@/services/api'
 
 interface EditableVariant {
   name: string
@@ -248,6 +289,7 @@ const protocols: Array<{ title: string; value: OpenCodeProtocol }> = [
   { title: 'Chat Completions', value: 'chat' },
   { title: 'Responses', value: 'responses' },
   { title: 'Messages', value: 'messages' },
+  { title: 'Gemini', value: 'gemini' },
   { title: '自定义 SDK', value: 'custom' }
 ]
 
@@ -272,6 +314,59 @@ const config = ref<OpenCodeConfig | null>(null)
 const providers = ref<EditableProvider[]>([])
 const selectedProviderId = ref('')
 const notice = ref({ visible: false, type: 'success', message: '' })
+
+// 从渠道快速选择
+const quickPickTypeOptions: Array<{ title: string; value: ApiTab }> = [
+  { title: 'Messages', value: 'messages' },
+  { title: 'Responses', value: 'responses' },
+  { title: 'Gemini', value: 'gemini' },
+  { title: 'Chat', value: 'chat' }
+]
+const quickPickType = ref<ApiTab | null>(null)
+const quickPickChannels = ref<Channel[]>([])
+const quickPickLoading = ref(false)
+const quickPickChannelIndex = ref<number | null>(null)
+
+// 渠道类型 -> OpenCode 协议映射
+const protocolForChannelType: Record<ApiTab, OpenCodeProtocol> = {
+  messages: 'messages',
+  responses: 'responses',
+  gemini: 'gemini',
+  chat: 'chat',
+  images: 'chat'
+}
+
+watch(quickPickType, async (type) => {
+  quickPickChannelIndex.value = null
+  quickPickChannels.value = []
+  if (!type) return
+  quickPickLoading.value = true
+  try {
+    const result = await channelApiByType(type).getChannels()
+    quickPickChannels.value = result.channels.filter(ch => ch.status !== 'deleted')
+  } catch {
+    quickPickChannels.value = []
+  } finally {
+    quickPickLoading.value = false
+  }
+})
+
+watch(quickPickChannelIndex, (channelIndex) => {
+  if (channelIndex === null) return
+  const provider = selectedProvider.value
+  if (!provider) return
+  const channel = quickPickChannels.value.find(ch => ch.index === channelIndex)
+  if (!channel || !quickPickType.value) return
+  // 自动切换协议与 SDK 包
+  provider.protocol = protocolForChannelType[quickPickType.value]
+  applyProtocolNpm(provider)
+  // 复用渠道的上游地址与密钥
+  provider.baseUrl = channel.baseUrl
+  if (channel.apiKeys.length > 0) {
+    provider.apiKey = channel.apiKeys[0]
+    provider.apiKeyAction = 'replace'
+  }
+})
 
 const selectedProvider = computed(() => providers.value.find(provider => provider.id === selectedProviderId.value) ?? null)
 const providerIdInUse = computed(() => Boolean(selectedProvider.value && config.value?.providers.some(provider => provider.id === selectedProvider.value?.id)))
@@ -384,13 +479,14 @@ const applyProtocolNpm = (provider: EditableProvider) => {
   const npm: Record<Exclude<OpenCodeProtocol, 'custom'>, string> = {
     chat: '@ai-sdk/openai-compatible',
     responses: '@ai-sdk/openai',
-    messages: '@ai-sdk/anthropic'
+    messages: '@ai-sdk/anthropic',
+    gemini: '@ai-sdk/google'
   }
   if (provider.protocol !== 'custom') provider.npm = npm[provider.protocol]
 }
 
 const protocolLabel = (protocol: OpenCodeProtocol) => protocols.find(item => item.value === protocol)?.title ?? '自定义 SDK'
-const protocolColor = (protocol: OpenCodeProtocol) => ({ chat: 'info', responses: 'primary', messages: 'success', custom: 'warning' })[protocol]
+const protocolColor = (protocol: OpenCodeProtocol) => ({ chat: 'info', responses: 'primary', messages: 'success', gemini: 'deep-purple', custom: 'warning' })[protocol]
 
 const onAPIKeyInput = (provider: EditableProvider) => {
   if (provider.apiKey) provider.apiKeyAction = 'replace'

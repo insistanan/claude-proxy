@@ -199,7 +199,7 @@ func validateOpenCodeRequest(req saveOpenCodeConfigRequest) error {
 }
 
 func isOpenCodeProtocol(protocol string) bool {
-	return protocol == "chat" || protocol == "responses" || protocol == "messages" || protocol == "custom"
+	return protocol == "chat" || protocol == "responses" || protocol == "messages" || protocol == "gemini" || protocol == "custom"
 }
 
 func resolveOpenCodeConfigPath() string {
@@ -362,6 +362,8 @@ func npmForOpenCodeProtocol(protocol, configuredNPM string) string {
 		return "@ai-sdk/anthropic"
 	case "responses":
 		return "@ai-sdk/openai"
+	case "gemini":
+		return "@ai-sdk/google"
 	case "custom":
 		return strings.TrimSpace(configuredNPM)
 	default:
@@ -375,6 +377,8 @@ func protocolForNPM(npm string) string {
 		return "messages"
 	case "@ai-sdk/openai":
 		return "responses"
+	case "@ai-sdk/google":
+		return "gemini"
 	default:
 		if npm == "" || npm == "@ai-sdk/openai-compatible" {
 			return "chat"
