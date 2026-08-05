@@ -114,6 +114,10 @@
           <router-link to="/claude-code" class="api-type-text" :class="{ active: topNavActive === 'claude-code' }">
             Claude Code
           </router-link>
+          <span class="api-type-text separator">/</span>
+          <router-link to="/pi-agent" class="api-type-text" :class="{ active: topNavActive === 'pi-agent' }">
+            pi-agent
+          </router-link>
         </div>
       </div>
 
@@ -459,8 +463,9 @@ const isLogsPage = computed(() => route.name === 'request-logs')
 const isSkillsPage = computed(() => route.name === 'skills')
 const isOpenCodePage = computed(() => route.name === 'opencode')
 const isClaudeCodePage = computed(() => route.name === 'claude-code')
+const isPiAgentPage = computed(() => route.name === 'pi-agent')
 const isSettingsPage = computed(() => route.name === 'settings')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isSettingsPage.value)
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isSettingsPage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -495,6 +500,9 @@ const topNavActive = computed(() => {
   }
   if (isClaudeCodePage.value) {
     return 'claude-code'
+  }
+  if (isPiAgentPage.value) {
+    return 'pi-agent'
   }
   if (isSettingsPage.value) {
     return 'settings'

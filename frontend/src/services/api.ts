@@ -266,6 +266,121 @@ export interface ClaudeCodeSettings {
   modelDefaults: ClaudeCodeModelDefault[]
 }
 
+// ============== pi-agent 配置管理类型 ==============
+
+export type PiAgentFileKind = 'models.json' | 'auth.json' | 'settings.json'
+
+export interface PiAgentFileStatus {
+  path: string
+  exists: boolean
+  writable: boolean
+  revision: string
+}
+
+export interface PiAgentStatus {
+  configDir: string
+  exists: boolean
+  writable: boolean
+  files: Record<PiAgentFileKind, PiAgentFileStatus>
+}
+
+export interface PiAgentModelCost {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
+export interface PiAgentModel {
+  id: string
+  name?: string
+  api?: string
+  baseUrl?: string
+  reasoning?: boolean | null
+  thinkingLevelMap?: Record<string, string | null>
+  input?: string[]
+  contextWindow?: number | null
+  maxTokens?: number | null
+  cost?: PiAgentModelCost
+  headers?: Record<string, string>
+  compat?: Record<string, unknown>
+}
+
+export interface PiAgentProvider {
+  id: string
+  name?: string
+  api?: string
+  baseUrl?: string
+  authHeader?: boolean | null
+  headers?: Record<string, string>
+  compat?: Record<string, unknown>
+  models?: PiAgentModel[]
+  modelOverrides?: Record<string, unknown>
+  hasOAuth?: boolean
+  apiKeyMasked?: string
+  apiKeyPresent?: boolean
+}
+
+export interface PiAgentProvidersResponse {
+  revision: string
+  providers: PiAgentProvider[]
+  rawExists: boolean
+}
+
+export interface PiAgentCredential {
+  id: string
+  type: 'api_key' | 'oauth' | 'unknown'
+  keyMasked: string
+  keyPresent: boolean
+  hasOAuth: boolean
+  envMasked: Record<string, string>
+  hasEnvValues: boolean
+}
+
+export interface PiAgentCredentialsResponse {
+  revision: string
+  credentials: PiAgentCredential[]
+}
+
+export interface PiAgentModelSettings {
+  defaultProvider: string
+  defaultModel: string
+  defaultThinkingLevel: string
+  enabledModels: string[]
+}
+
+export interface PiAgentModelSettingsResponse {
+  revision: string
+  settings: PiAgentModelSettings
+}
+
+export interface PiAgentBackup {
+  id: string
+  file: string
+  size: number
+  created: string
+  revision: string
+  sensitive: boolean
+}
+
+export interface PiAgentBackupsResponse {
+  backups: PiAgentBackup[]
+}
+
+export interface PiAgentProbeResult {
+  success: boolean
+  latencyMs?: number
+  statusCode?: number
+  error?: string
+}
+
+export interface PiAgentDiscoverResult {
+  success: boolean
+  models?: string[]
+  method?: string
+  error?: string
+}
+
 export interface SaveClaudeCodeSettings extends Pick<ClaudeCodeSettings, 'baseUrl' | 'credentialKind' | 'model' | 'reasoningModel' | 'modelDefaults'> {
   credentialAction: 'keep' | 'replace' | 'remove'
   credential?: string
@@ -921,6 +1036,104 @@ class ApiService {
     return this.request('/settings/claude-code', {
       method: 'PUT',
       body: JSON.stringify(settings)
+    })
+  }
+
+  // ============== pi-agent 配置管理 API ==============
+
+  async getPiAgentStatus(): Promise<PiAgentStatus> {
+    return this.request('/settings/pi-agent')
+  }
+
+  async getPiAgentProviders(): Promise<PiAgentProvidersResponse> {
+    return this.request('/settings/pi-agent/providers')
+  }
+
+  async createPiAgentProvider(payload: Record<string, unknown>): Promise<{ success: boolean; revision: string }> {
+    return this.request('/settings/pi-agent/providers', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  async updatePiAgentProvider(id: string, payload: Record<string, unknown>): Promise<{ success: boolean; revision: string }> {
+    return this.request(`/settings/pi-agent/providers/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  async deletePiAgentProvider(id: string, revision: string): Promise<{ success: boolean; revision: string }> {
+    return this.request(`/settings/pi-agent/providers/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ revision })
+    })
+  }
+
+  async validatePiAgentProvider(payload: { id: string; provider: Partial<PiAgentProvider> }): Promise<{ valid: boolean; errors: string[] }> {
+    return this.request('/settings/pi-agent/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  async testPiAgentProvider(id: string, payload: { baseUrl?: string; apiKey?: string; api?: string }): Promise<PiAgentProbeResult> {
+    return this.request(`/settings/pi-agent/providers/${encodeURIComponent(id)}/test`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  async discoverPiAgentModels(id: string, payload: { baseUrl?: string; apiKey?: string; api?: string }): Promise<PiAgentDiscoverResult> {
+    return this.request(`/settings/pi-agent/providers/${encodeURIComponent(id)}/discover-models`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  async getPiAgentCredentials(): Promise<PiAgentCredentialsResponse> {
+    return this.request('/settings/pi-agent/credentials')
+  }
+
+  async updatePiAgentCredential(id: string, payload: { revision: string; action: 'keep' | 'replace' | 'remove'; key?: string }): Promise<{ success: boolean; revision: string }> {
+    return this.request(`/settings/pi-agent/credentials/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  async deletePiAgentCredential(id: string, revision: string): Promise<{ success: boolean; revision: string }> {
+    return this.request(`/settings/pi-agent/credentials/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ revision })
+    })
+  }
+
+  async getPiAgentModelSettings(): Promise<PiAgentModelSettingsResponse> {
+    return this.request('/settings/pi-agent/model-settings')
+  }
+
+  async updatePiAgentModelSettings(payload: { revision: string; settings: Partial<PiAgentModelSettings> }): Promise<{ success: boolean; revision: string }> {
+    return this.request('/settings/pi-agent/model-settings', {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  async getPiAgentBackups(): Promise<PiAgentBackupsResponse> {
+    return this.request('/settings/pi-agent/backups')
+  }
+
+  async createPiAgentBackup(file: PiAgentFileKind): Promise<{ success: boolean; backup: PiAgentBackup }> {
+    return this.request('/settings/pi-agent/backups', {
+      method: 'POST',
+      body: JSON.stringify({ file })
+    })
+  }
+
+  async restorePiAgentBackup(id: string): Promise<{ success: boolean; revision: string; backup: string }> {
+    return this.request(`/settings/pi-agent/backups/${encodeURIComponent(id)}/restore`, {
+      method: 'POST'
     })
   }
 
