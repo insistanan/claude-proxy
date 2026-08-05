@@ -409,7 +409,7 @@ func fetchJSON(ctx context.Context, endpoint string, maxBytes int64, target inte
 		return err
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("User-Agent", "claude-proxy-skill-manager")
+	request.Header.Set("User-Agent", "api-proxy-skill-manager")
 	client := &http.Client{Timeout: remoteSkillHTTPTimeout}
 	response, err := client.Do(request)
 	if err != nil {
@@ -441,7 +441,7 @@ func fetchRemoteFile(ctx context.Context, owner, repository, branch, filePath st
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", "claude-proxy-skill-manager")
+	request.Header.Set("User-Agent", "api-proxy-skill-manager")
 	client := &http.Client{Timeout: remoteSkillHTTPTimeout}
 	response, err := client.Do(request)
 	if err != nil {

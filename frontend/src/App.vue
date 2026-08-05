@@ -17,7 +17,7 @@
     <!-- 认证界面 -->
     <v-dialog v-model="showAuthDialog" persistent max-width="500">
       <v-card class="pa-4">
-        <v-card-title class="text-h5 text-center mb-4"> 🔐 Claude Proxy 管理界面 </v-card-title>
+        <v-card-title class="text-h5 text-center mb-4"> 🔐 API Proxy 管理界面 </v-card-title>
 
         <v-card-text>
           <v-alert v-if="authStore.authError" type="error" variant="tonal" class="mb-4">
@@ -114,7 +114,6 @@
           <router-link to="/claude-code" class="api-type-text" :class="{ active: topNavActive === 'claude-code' }">
             Claude Code
           </router-link>
-          <span class="brand-text d-none d-sm-inline">Proxy</span>
         </div>
       </div>
 
@@ -1011,7 +1010,7 @@ onUnmounted(() => {
 
 <style scoped>
 /* ============================================================
-   Claude Proxy — 清晰、克制的控制台视觉系统
+   API Proxy — 清晰、克制的控制台视觉系统
    辨识度来自网格、排版和局部色轨
    ============================================================ */
 
@@ -1104,16 +1103,6 @@ a.api-type-text { display: inline-block; }
 }
 
 .separator { opacity: 0.25; margin: 0 1px; cursor: default; padding: 0; font-weight: 800; }
-.brand-text {
-  margin-left: 8px;
-  color: rgb(var(--v-theme-primary));
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  font-weight: 700;
-  font-size: 0.72rem;
-  opacity: 0.85;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
 
 .header-btn {
   margin-left: 2px;
@@ -1434,7 +1423,6 @@ a.api-type-text { display: inline-block; }
   .app-header { padding: 0 12px !important; }
   .app-logo { width: 28px; height: 28px; margin-right: 6px; }
   .api-type-text { padding: 2px 6px; font-size: 0.72rem; }
-  .brand-text { display: none; }
   .stat-card { padding: 16px 14px; gap: 12px; min-height: 84px; box-shadow: 0 2px 7px rgba(24, 28, 38, 0.05); }
   .stat-card-icon { width: 38px; height: 38px; }
   .stat-card-icon .v-icon { font-size: 18px !important; }

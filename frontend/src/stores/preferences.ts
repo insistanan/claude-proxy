@@ -93,7 +93,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
 }, {
   // 持久化配置
   persist: {
-    key: 'claude-proxy-preferences',
+    key: 'api-proxy-preferences',
     // 使用条件判断避免在非浏览器环境（SSR、Node 测试）中崩溃
     storage: typeof window !== 'undefined' ? localStorage : undefined,
   },

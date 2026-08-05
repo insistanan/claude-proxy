@@ -1,4 +1,4 @@
-# Claude Proxy Makefile
+# API Proxy Makefile
 
 GREEN=\033[0;32m
 YELLOW=\033[0;33m
@@ -7,7 +7,7 @@ NC=\033[0m
 .PHONY: help dev run build clean frontend-dev frontend-build embed-frontend
 
 help:
-	@echo "$(GREEN)Claude Proxy - 可用命令:$(NC)"
+	@echo "$(GREEN)API Proxy - 可用命令:$(NC)"
 	@echo ""
 	@echo "$(YELLOW)开发:$(NC)"
 	@echo "  make dev            - Go 后端热重载开发(不含前端)"

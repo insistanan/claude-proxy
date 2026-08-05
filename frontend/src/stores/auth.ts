@@ -141,7 +141,7 @@ export const useAuthStore = defineStore('auth', () => {
 }, {
   // 持久化配置
   persist: {
-    key: 'claude-proxy-auth',
+    key: 'api-proxy-auth',
     storage: localStorage,
     // 仅持久化必要字段，排除瞬态 UI 状态和敏感输入
     pick: ['apiKey', 'authAttempts', 'authLockoutTime'],

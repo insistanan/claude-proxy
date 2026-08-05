@@ -324,7 +324,7 @@ func main() {
 		// 纯 API 模式
 		r.GET("/", func(c *gin.Context) {
 			c.JSON(200, gin.H{
-				"name":    "Claude API Proxy",
+				"name":    "API Proxy",
 				"mode":    "API Only",
 				"version": Version,
 				"endpoints": gin.H{
@@ -343,7 +343,7 @@ func main() {
 
 	// 启动服务器
 	addr := fmt.Sprintf(":%d", envCfg.Port)
-	fmt.Printf("\n[Server-Startup] Claude API代理服务器已启动\n")
+	fmt.Printf("\n[Server-Startup] API代理服务器已启动\n")
 	fmt.Printf("[Server-Info] 版本: %s\n", Version)
 	if BuildTime != "unknown" {
 		fmt.Printf("[Server-Info] 构建时间: %s\n", BuildTime)

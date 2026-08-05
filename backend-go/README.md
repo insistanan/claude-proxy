@@ -451,4 +451,4 @@ MIT License
 
 ---
 
-**注意**: 这是 Claude Proxy 的 Go 语言重写版本，完整实现了原 TypeScript 版本的所有功能，并提供了更好的性能和部署体验。
+**注意**: 这是 API Proxy 的 Go 语言重写版本，完整实现了原 TypeScript 版本的所有功能，并提供了更好的性能和部署体验。

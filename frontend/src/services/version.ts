@@ -3,7 +3,7 @@
  * 参考 gpt-load 项目实现
  */
 
-const CACHE_KEY = 'claude-proxy-version-info'
+const CACHE_KEY = 'api-proxy-version-info'
 const CACHE_DURATION = 30 * 60 * 1000 // 30分钟缓存
 const ERROR_CACHE_DURATION = 5 * 60 * 1000 // 错误状态缓存5分钟，避免频繁请求
 const GITHUB_API_TIMEOUT = 10000 // 10秒超时

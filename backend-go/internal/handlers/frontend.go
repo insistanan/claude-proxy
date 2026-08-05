@@ -96,7 +96,7 @@ func setFrontendEntryNoCache(c *gin.Context) {
 func isAPIPath(path string) bool {
 	// API 路由前缀列表
 	apiPrefixes := []string{
-		"/v1/",    // Claude API 代理端点
+		"/v1/",    // 代理 API 端点
 		"/api/",   // Web 管理界面 API
 		"/admin/", // 管理端点
 	}
@@ -162,7 +162,7 @@ func getErrorPage() string {
 	return `<!DOCTYPE html>
 <html>
 <head>
-  <title>Claude Proxy - 配置错误</title>
+  <title>API Proxy - 配置错误</title>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>

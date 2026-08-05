@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Claude Proxy Go 版本构建脚本
+# API Proxy Go 版本构建脚本
 
 set -e
 
@@ -12,7 +12,7 @@ GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 # 构建标志
 LDFLAGS="-X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME} -X main.GitCommit=${GIT_COMMIT}"
 
-echo "🚀 开始构建 Claude Proxy Go 版本..."
+echo "🚀 开始构建 API Proxy Go 版本..."
 echo "📌 版本: ${VERSION}"
 echo "🕐 构建时间: ${BUILD_TIME}"
 echo "🔖 Git提交: ${GIT_COMMIT}"
