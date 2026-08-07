@@ -268,12 +268,38 @@ func (s *ChannelScheduler) SelectChannel(
 	registry := s.conversationRegistry
 	s.mu.RUnlock()
 
-	pool, err := config.SelectChannelPool(s.getChannelPools(kind), requestedModel)
+	poolRoute, err := config.SelectChannelPoolRoute(s.getChannelPools(kind), requestedModel)
 	if err != nil {
-		return nil, fmt.Errorf("选择 %s 子池失败: %w", kind, err)
+		return nil, fmt.Errorf("选择 %s 分组失败: %w", kind, err)
 	}
-	// 常规情况下先按模型路由到子池；默认子池中的促销渠道会在此路由前全局抢优。
-	activeChannels := s.getActiveChannels(kind, pool.ID)
+
+	// 严格按“命中分组 -> 兜底分组”的顺序选择。只有前一分组没有可实际尝试的渠道时，
+	// 才进入下一分组，避免兜底分组中的促销或低负载渠道抢占正常模型路由。
+	poolIDs := make([]string, 0, len(poolRoute))
+	for _, pool := range poolRoute {
+		poolIDs = append(poolIDs, pool.ID)
+	}
+	channelsByPool := s.getActiveChannelsByPool(kind, poolIDs)
+	selectedPool := poolRoute[len(poolRoute)-1]
+	var activeChannels []ChannelInfo
+	var routedChannels []ChannelInfo
+	foundAttemptableGroup := false
+	for _, pool := range poolRoute {
+		channels := channelsByPool[pool.ID]
+		routedChannels = append(routedChannels, channels...)
+		if !foundAttemptableGroup && s.hasAttemptableChannel(channels, failedChannels, kind, requestedModel) {
+			selectedPool = pool
+			activeChannels = channels
+			foundAttemptableGroup = true
+		}
+	}
+	if !foundAttemptableGroup {
+		activeChannels = channelsByPool[selectedPool.ID]
+	}
+	if len(poolRoute) > 1 && selectedPool.ID == config.DefaultChannelPoolID {
+		prefix := kindSchedulerLogPrefix(kind)
+		log.Printf("[%s-GroupFallback] 命中分组已无可用渠道，切换到兜底分组", prefix)
+	}
 
 	// 图片不再改变最终回答渠道的选择。是否直接处理图片或启用图片理解层，
 	// 由选中的渠道配置在请求发送前决定。
@@ -287,7 +313,7 @@ func (s *ChannelScheduler) SelectChannel(
 			if override.Kind != string(kind) {
 				return nil, fmt.Errorf("该对话已固定到 %s 渠道池，当前请求为 %s", override.Kind, kind)
 			}
-			for _, ch := range activeChannels {
+			for _, ch := range routedChannels {
 				if ch.Index != override.ChannelIndex {
 					continue
 				}
@@ -313,22 +339,15 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 1. 默认子池的促销渠道具有全局最高优先级。它们不受模型子池匹配限制，
-	// 失败后再回落到本次请求命中的子池继续故障转移。
-	if pool.ID != config.DefaultChannelPoolID {
-		defaultChannels := s.getActiveChannels(kind, config.DefaultChannelPoolID)
-		if selected := s.selectPromotedChannel(defaultChannels, failedChannels, kind, "default_pool_promotion_priority"); selected != nil {
-			return s.reserveAndReturn(selected, kind), nil
-		}
-	}
-
-	// 2. 检查请求命中子池的促销渠道（促销期优先，忽略 Trace 亲和性；同优先级内按在途负载分摊）
+	// 1. 检查当前分组的促销渠道（促销期优先，忽略 Trace 亲和性；同优先级内按在途负载分摊）
 	if selected := s.selectPromotedChannel(activeChannels, failedChannels, kind, "promotion_priority"); selected != nil {
 		return s.reserveAndReturn(selected, kind), nil
 	}
 
 	if len(activeChannels) == 0 {
 		switch kind {
+		case ChannelKindMessages:
+			return nil, fmt.Errorf("没有可用的活跃 Messages 渠道")
 		case ChannelKindGemini:
 			return nil, fmt.Errorf("没有可用的活跃 Gemini 渠道")
 		case ChannelKindResponses:
@@ -342,7 +361,7 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 3. 检查 Trace 亲和性（仅在无促销渠道时生效，保证同一会话连续性）
+	// 2. 检查 Trace 亲和性（仅在无促销渠道时生效，保证同一会话连续性）
 	if userID != "" {
 		if preferredIdx, ok := s.traceAffinity.GetPreferredChannelForKind(string(kind), userID); ok {
 			foundPreferredChannel := false
@@ -395,7 +414,7 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 	}
 
-	// 4. 尝试使用自适应调度器（基于性能画像 + 在途预留）
+	// 3. 尝试使用自适应调度器（基于性能画像 + 在途预留）
 	s.mu.RLock()
 	adaptiveScheduler := s.adaptiveScheduler
 	s.mu.RUnlock()
@@ -420,7 +439,7 @@ func (s *ChannelScheduler) SelectChannel(
 		log.Printf("[%s-Adaptive] 自适应调度未找到可用渠道，降级到优先级调度", prefix)
 	}
 
-	// 5. 按优先级遍历活跃渠道（降级方案）
+	// 4. 按优先级遍历活跃渠道（降级方案）
 	// 同优先级内收集候选，再按 in-flight 选负载最低者，避免并发新对话全打到第一家供应商。
 	type priorityCandidate struct {
 		channel  ChannelInfo
@@ -492,12 +511,37 @@ func (s *ChannelScheduler) SelectChannel(
 		}, kind), nil
 	}
 
-	// 6. 所有健康渠道都失败，选择失败率最低的作为降级
+	// 5. 当前分组所有健康渠道都失败，选择失败率最低的作为降级
 	fallback, err := s.selectFallbackChannel(activeChannels, failedChannels, kind)
 	if err != nil {
 		return nil, err
 	}
 	return s.reserveAndReturn(fallback, kind), nil
+}
+
+// hasAttemptableChannel 判断当前分组是否仍有渠道值得在本次请求中尝试。
+// 健康度不在这里过滤：调度器会先跳过不健康渠道，但仍保留一次组内降级尝试；
+// 真正请求失败后 failedChannels 会确保下一次选择进入后续分组。
+func (s *ChannelScheduler) hasAttemptableChannel(
+	channels []ChannelInfo,
+	failedChannels map[int]bool,
+	kind ChannelKind,
+	requestedModel string,
+) bool {
+	for _, channel := range channels {
+		if failedChannels[channel.Index] || channel.Status != config.ChannelStatusActive {
+			continue
+		}
+		upstream := s.getUpstreamByIndex(channel.Index, kind)
+		if upstream == nil || len(upstream.APIKeys) == 0 {
+			continue
+		}
+		if requestedModel != "" && len(config.ResolveUpstreamModelList(requestedModel, upstream)) == 0 {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (s *ChannelScheduler) selectPromotedChannel(
@@ -667,6 +711,20 @@ func (s *ChannelScheduler) calculateChannelScore(upstream *config.UpstreamConfig
 // getActiveChannels 获取故障转移序列（按配置优先级排序）。
 // 动态分数只用于同优先级渠道，不能越过用户配置的 failover 顺序。
 func (s *ChannelScheduler) getActiveChannels(kind ChannelKind, poolIDs ...string) []ChannelInfo {
+	channelsByPool := s.getActiveChannelsByPool(kind, poolIDs)
+	if len(poolIDs) == 0 {
+		return channelsByPool[""]
+	}
+	var activeChannels []ChannelInfo
+	for _, poolID := range poolIDs {
+		activeChannels = append(activeChannels, channelsByPool[poolID]...)
+	}
+	return activeChannels
+}
+
+// getActiveChannelsByPool 从同一份配置快照中收集多个分组的故障转移序列，
+// 避免一次选渠为了命中分组和兜底分组重复深拷贝完整配置。
+func (s *ChannelScheduler) getActiveChannelsByPool(kind ChannelKind, poolIDs []string) map[string][]ChannelInfo {
 	cfg := s.configManager.GetConfig()
 
 	var upstreams []config.UpstreamConfig
@@ -682,15 +740,23 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind, poolIDs ...string
 	case ChannelKindImages:
 		upstreams = cfg.ImagesUpstream
 	default:
-		return nil
+		return map[string][]ChannelInfo{}
 	}
 
-	poolID := ""
-	if len(poolIDs) > 0 {
-		poolID = poolIDs[0]
+	requestedPools := make(map[string]struct{}, len(poolIDs))
+	for _, poolID := range poolIDs {
+		requestedPools[poolID] = struct{}{}
 	}
-	// 筛选活跃渠道
-	var activeChannels []ChannelInfo
+	channelsByPool := make(map[string][]ChannelInfo, len(poolIDs)+1)
+	if len(poolIDs) == 0 {
+		channelsByPool[""] = nil
+	} else {
+		for _, poolID := range poolIDs {
+			channelsByPool[poolID] = nil
+		}
+	}
+
+	// 筛选故障转移序列中的渠道。
 	for i, upstream := range upstreams {
 		status := upstream.Status
 		if status == "" {
@@ -702,39 +768,53 @@ func (s *ChannelScheduler) getActiveChannels(kind ChannelKind, poolIDs ...string
 		if upstreamPoolID == "" {
 			upstreamPoolID = config.DefaultChannelPoolID
 		}
-		if config.IsChannelSchedulable(&upstream) && !upstream.ExcludeFromConversation &&
-			(poolID == "" || upstreamPoolID == poolID) {
-			priority := upstream.Priority
-			if priority == 0 {
-				priority = i + 1
+		if !config.IsChannelSchedulable(&upstream) || upstream.ExcludeFromConversation {
+			continue
+		}
+		if len(requestedPools) > 0 {
+			if _, requested := requestedPools[upstreamPoolID]; !requested {
+				continue
 			}
+		}
 
-			// 计算渠道动态分数
-			upstreamCopy := upstream
-			score := s.calculateChannelScore(&upstreamCopy, kind)
+		priority := upstream.Priority
+		if priority == 0 {
+			priority = i + 1
+		}
 
-			activeChannels = append(activeChannels, ChannelInfo{
-				Index:    i,
-				Name:     upstream.Name,
-				Priority: priority,
-				Status:   status,
-				Score:    score,
-			})
+		// 计算渠道动态分数
+		upstreamCopy := upstream
+		score := s.calculateChannelScore(&upstreamCopy, kind)
+		channel := ChannelInfo{
+			Index:    i,
+			Name:     upstream.Name,
+			Priority: priority,
+			Status:   status,
+			Score:    score,
+		}
+		if len(requestedPools) == 0 {
+			channelsByPool[""] = append(channelsByPool[""], channel)
+		} else {
+			channelsByPool[upstreamPoolID] = append(channelsByPool[upstreamPoolID], channel)
 		}
 	}
 
-	// 配置优先级是主顺序；同优先级时再参考动态分数和稳定索引。
-	sort.Slice(activeChannels, func(i, j int) bool {
-		if activeChannels[i].Priority != activeChannels[j].Priority {
-			return activeChannels[i].Priority < activeChannels[j].Priority
-		}
-		if activeChannels[i].Score != activeChannels[j].Score {
-			return activeChannels[i].Score > activeChannels[j].Score
-		}
-		return activeChannels[i].Index < activeChannels[j].Index
-	})
+	for poolID := range channelsByPool {
+		channels := channelsByPool[poolID]
+		// 配置优先级是主顺序；同优先级时再参考动态分数和稳定索引。
+		sort.Slice(channels, func(i, j int) bool {
+			if channels[i].Priority != channels[j].Priority {
+				return channels[i].Priority < channels[j].Priority
+			}
+			if channels[i].Score != channels[j].Score {
+				return channels[i].Score > channels[j].Score
+			}
+			return channels[i].Index < channels[j].Index
+		})
+		channelsByPool[poolID] = channels
+	}
 
-	return activeChannels
+	return channelsByPool
 }
 
 func (s *ChannelScheduler) getChannelPools(kind ChannelKind) []config.ChannelPool {
@@ -833,7 +913,7 @@ func (s *ChannelScheduler) SelectVisionChannel(ctx context.Context, kind Channel
 			targetPoolID = config.DefaultChannelPoolID
 		}
 		if !upstream.ExcludeFromConversation && targetPoolID != ownerPoolID {
-			return nil, fmt.Errorf("图片理解渠道 %q 不在当前子池或公用纯图片理解池", upstream.Name)
+			return nil, fmt.Errorf("图片理解渠道 %q 不在当前分组或公用纯图片理解池", upstream.Name)
 		}
 		if config.GetChannelStatus(upstream) != config.ChannelStatusActive || len(upstream.APIKeys) == 0 {
 			return nil, fmt.Errorf("图片理解渠道 %q 当前不可用", upstream.Name)
@@ -1129,18 +1209,23 @@ func (s *ChannelScheduler) GetActiveChannelCount(kind ChannelKind) int {
 	return len(s.getActiveChannels(kind))
 }
 
-// GetActiveChannelCountForModel 返回指定模型可参与故障转移的渠道数。
-// 当模型命中非默认子池时，还包括默认子池中全局抢优的促销渠道。
+// GetActiveChannelCountForModel 返回指定模型可参与故障转移的渠道数，
+// 包括命中分组及其后的兜底分组。
 func (s *ChannelScheduler) GetActiveChannelCountForModel(kind ChannelKind, model string) int {
-	pool, err := config.SelectChannelPool(s.getChannelPools(kind), model)
+	poolRoute, err := config.SelectChannelPoolRoute(s.getChannelPools(kind), model)
 	if err != nil {
 		return 0
 	}
-	count := len(s.getActiveChannels(kind, pool.ID))
-	if pool.ID == config.DefaultChannelPoolID {
-		return count
+	poolIDs := make([]string, 0, len(poolRoute))
+	for _, pool := range poolRoute {
+		poolIDs = append(poolIDs, pool.ID)
 	}
-	return count + len(s.findPromotedChannels(s.getActiveChannels(kind, config.DefaultChannelPoolID), kind))
+	channelsByPool := s.getActiveChannelsByPool(kind, poolIDs)
+	count := 0
+	for _, pool := range poolRoute {
+		count += len(channelsByPool[pool.ID])
+	}
+	return count
 }
 
 // IsMultiChannelMode 判断是否为多渠道模式
@@ -1149,14 +1234,7 @@ func (s *ChannelScheduler) IsMultiChannelMode(kind ChannelKind) bool {
 }
 
 func (s *ChannelScheduler) IsMultiChannelModeForModel(kind ChannelKind, model string) bool {
-	pool, err := config.SelectChannelPool(s.getChannelPools(kind), model)
-	if err != nil {
-		return false
-	}
-	if pool.ID != config.DefaultChannelPoolID && len(s.findPromotedChannels(s.getActiveChannels(kind, config.DefaultChannelPoolID), kind)) > 0 {
-		return true
-	}
-	return len(s.getActiveChannels(kind, pool.ID)) > 1
+	return s.GetActiveChannelCountForModel(kind, model) > 1
 }
 
 // maskUserID 掩码 user_id（保护隐私）

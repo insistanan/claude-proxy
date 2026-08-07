@@ -18,7 +18,7 @@ import (
 // UpstreamConfig 上游配置
 type UpstreamConfig struct {
 	ID                 string              `json:"id,omitempty"`     // 稳定渠道标识，避免数组位置变化影响关联状态
-	PoolID             string              `json:"poolId,omitempty"` // 所属对话子池；空值迁移到默认子池
+	PoolID             string              `json:"poolId,omitempty"` // 所属渠道分组；空值迁移到兜底分组
 	BaseURL            string              `json:"baseUrl"`
 	BaseURLs           []string            `json:"baseUrls,omitempty"` // 多 BaseURL 支持（failover 模式）
 	APIKeys            []string            `json:"apiKeys"`

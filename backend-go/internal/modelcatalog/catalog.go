@@ -29,7 +29,7 @@ var (
 	globalCache          = &catalogCache{}
 
 	// publicFamilyModelIDs 是对外稳定暴露的家族别名。
-	// 实际上游模型由渠道 modelMapping / defaultModel + 子池路由决定。
+	// 实际上游模型由渠道 modelMapping / defaultModel + 分组路由决定。
 	publicFamilyModelIDs = []string{
 		"opus",
 		"sonnet",
@@ -38,7 +38,7 @@ var (
 		"chat",
 	}
 
-	// publicPoolKinds 决定从哪些协议收集子池并暴露为可选模型。
+	// publicPoolKinds 决定从哪些协议收集分组并暴露为可选模型。
 	publicPoolKinds = []string{
 		"messages",
 		"responses",
@@ -139,7 +139,7 @@ func staticFamilyModels() []ModelEntry {
 	return models
 }
 
-// publicModelEntries 返回对外可见模型：固定家族别名 + 各协议子池捕获规则。
+// publicModelEntries 返回对外可见模型：固定家族别名 + 各协议分组捕获规则。
 // 不再暴露渠道级上游模型或 Chat 路由别名（如 model__c0__kxxxxxxxx）。
 func publicModelEntries(cfgManager *config.ConfigManager) []ModelEntry {
 	familyModels := staticFamilyModels()
@@ -155,8 +155,8 @@ func publicModelEntries(cfgManager *config.ConfigManager) []ModelEntry {
 	return data
 }
 
-// poolMatcherModels 把非通配符子池的 modelMatcher 暴露为可选模型 ID。
-// 客户端用该 ID 发请求时，调度器按 contains 最长匹配进入对应子池，再走渠道映射/故障转移。
+// poolMatcherModels 把非通配符分组的 modelMatcher 暴露为可选模型 ID。
+// 客户端用该 ID 发请求时，调度器按 contains 最长匹配进入对应分组，再走渠道映射/故障转移。
 func poolMatcherModels(cfgManager *config.ConfigManager, seen map[string]bool) []ModelEntry {
 	if cfgManager == nil {
 		return nil

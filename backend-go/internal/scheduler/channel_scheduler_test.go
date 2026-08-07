@@ -140,7 +140,7 @@ func TestSchedulerScopesChannelCountAndSelectionToModelPool(t *testing.T) {
 	cfg := config.Config{
 		MessagePools: []config.ChannelPool{
 			{ID: "sonnet", Name: "Sonnet", ModelMatcher: "sonnet", Priority: 1},
-			{ID: config.DefaultChannelPoolID, Name: "默认子池", ModelMatcher: "*", Priority: 2},
+			{ID: config.DefaultChannelPoolID, Name: "兜底分组", ModelMatcher: "*", Priority: 2},
 		},
 		Upstream: []config.UpstreamConfig{
 			{ID: "default", Name: "default", PoolID: config.DefaultChannelPoolID, BaseURL: "https://default.example.com", APIKeys: []string{"sk-default"}, Status: "active", Priority: 1},
@@ -152,8 +152,8 @@ func TestSchedulerScopesChannelCountAndSelectionToModelPool(t *testing.T) {
 	scheduler, cleanup := createTestScheduler(t, cfg)
 	defer cleanup()
 
-	if got := scheduler.GetActiveChannelCountForModel(ChannelKindMessages, "claude-sonnet-4"); got != 2 {
-		t.Fatalf("sonnet channel count = %d, want 2", got)
+	if got := scheduler.GetActiveChannelCountForModel(ChannelKindMessages, "claude-sonnet-4"); got != 3 {
+		t.Fatalf("sonnet channel count = %d, want 3", got)
 	}
 	if got := scheduler.GetActiveChannelCountForModel(ChannelKindMessages, "claude-opus-4"); got != 1 {
 		t.Fatalf("default channel count = %d, want 1", got)
@@ -169,12 +169,12 @@ func TestSchedulerScopesChannelCountAndSelectionToModelPool(t *testing.T) {
 	}
 }
 
-func TestDefaultPoolPromotionPrecedesMatchedPoolAndFallsBackAfterFailure(t *testing.T) {
+func TestMatchedGroupPrecedesFallbackGroupAndFallsBackAfterFailure(t *testing.T) {
 	promotionUntil := time.Now().Add(5 * time.Minute)
 	cfg := config.Config{
 		MessagePools: []config.ChannelPool{
 			{ID: "deepseek", Name: "DeepSeek", ModelMatcher: "deepseek", Priority: 1},
-			{ID: config.DefaultChannelPoolID, Name: "默认子池", ModelMatcher: "*", Priority: 2},
+			{ID: config.DefaultChannelPoolID, Name: "兜底分组", ModelMatcher: "*", Priority: 2},
 		},
 		Upstream: []config.UpstreamConfig{
 			{ID: "default-promoted", Name: "default-promoted", PoolID: config.DefaultChannelPoolID, BaseURL: "https://default.example.com", APIKeys: []string{"sk-default"}, Status: "active", Priority: 2, PromotionUntil: &promotionUntil},
@@ -192,18 +192,42 @@ func TestDefaultPoolPromotionPrecedesMatchedPoolAndFallsBackAfterFailure(t *test
 	if err != nil {
 		t.Fatalf("首次选择渠道失败: %v", err)
 	}
-	if first.ChannelIndex != 0 || first.Reason != "default_pool_promotion_priority" {
-		t.Fatalf("首次应选择默认子池抢优渠道，got index=%d reason=%s", first.ChannelIndex, first.Reason)
+	if first.ChannelIndex != 1 || first.Reason != "promotion_priority" {
+		t.Fatalf("首次应选择命中分组渠道，got index=%d reason=%s", first.ChannelIndex, first.Reason)
 	}
 	scheduler.ReleaseChannelReservation(first.Kind, first.ChannelIndex)
 
 	second, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{first.ChannelIndex: true}, ChannelKindMessages, "deepseek-chat", false)
 	if err != nil {
-		t.Fatalf("默认子池抢优渠道失败后的选择失败: %v", err)
+		t.Fatalf("命中分组渠道失败后的兜底选择失败: %v", err)
 	}
 	defer scheduler.ReleaseChannelReservation(second.Kind, second.ChannelIndex)
-	if second.ChannelIndex != 1 || second.Reason != "promotion_priority" {
-		t.Fatalf("应回落到命中子池的抢优渠道，got index=%d reason=%s", second.ChannelIndex, second.Reason)
+	if second.ChannelIndex != 0 || second.Reason != "promotion_priority" {
+		t.Fatalf("命中分组失败后应进入兜底分组，got index=%d reason=%s", second.ChannelIndex, second.Reason)
+	}
+}
+
+func TestSchedulerUsesFallbackGroupWhenMatchedGroupHasNoActiveChannel(t *testing.T) {
+	cfg := config.Config{
+		MessagePools: []config.ChannelPool{
+			{ID: "sonnet", Name: "Sonnet", ModelMatcher: "sonnet", Priority: 1},
+			{ID: config.DefaultChannelPoolID, Name: "兜底分组", ModelMatcher: "*", Priority: 2},
+		},
+		Upstream: []config.UpstreamConfig{
+			{ID: "fallback", Name: "fallback", PoolID: config.DefaultChannelPoolID, BaseURL: "https://fallback.example.com", APIKeys: []string{"sk-fallback"}, Status: "active", Priority: 1},
+			{ID: "sonnet", Name: "sonnet", PoolID: "sonnet", BaseURL: "https://sonnet.example.com", APIKeys: []string{"sk-sonnet"}, Status: "suspended", Priority: 1},
+		},
+	}
+	scheduler, cleanup := createTestScheduler(t, cfg)
+	defer cleanup()
+
+	selected, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{}, ChannelKindMessages, "claude-sonnet-4", false)
+	if err != nil {
+		t.Fatalf("SelectChannel() error = %v", err)
+	}
+	defer scheduler.ReleaseChannelReservation(selected.Kind, selected.ChannelIndex)
+	if selected.ChannelIndex != 0 || selected.Upstream.PoolID != config.DefaultChannelPoolID {
+		t.Fatalf("selected upstream = %#v", selected.Upstream)
 	}
 }
 

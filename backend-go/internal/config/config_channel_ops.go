@@ -237,7 +237,7 @@ func upstreamPriorityScope(upstream *UpstreamConfig) string {
 	return poolID
 }
 
-// normalizeUpstreamPriorities 为每个模型路由子池分别建立连续优先级。
+// normalizeUpstreamPriorities 为每个渠道分组分别建立连续优先级。
 func normalizeUpstreamPriorities(upstreams []UpstreamConfig) bool {
 	if len(upstreams) == 0 {
 		return false
@@ -528,7 +528,7 @@ func validateVisionLayerConfig(upstreams []UpstreamConfig, ownerIndex int) error
 			return fmt.Errorf("所选渠道 %q 未标记为支持图片理解", target.Name)
 		}
 		if !target.ExcludeFromConversation && target.PoolID != owner.PoolID {
-			return fmt.Errorf("图片理解渠道必须位于当前子池或公用纯图片理解池")
+			return fmt.Errorf("图片理解渠道必须位于当前分组或公用纯图片理解池")
 		}
 		return nil
 	}

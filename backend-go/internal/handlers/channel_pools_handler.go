@@ -35,7 +35,7 @@ func UpdateChannelPool(cfgManager *config.ConfigManager, kind string) gin.Handle
 		id := strings.TrimSpace(c.Param("id"))
 		var update config.ChannelPoolUpdate
 		if id == "" || c.ShouldBindJSON(&update) != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的子池配置"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的分组配置"})
 			return
 		}
 		if err := cfgManager.UpdateChannelPool(kind, id, update); err != nil {
@@ -62,7 +62,7 @@ func SaveChannelPoolLayout(cfgManager *config.ConfigManager, kind string) gin.Ha
 			Pools []config.ChannelPoolLayout `json:"pools"`
 		}
 		if err := c.ShouldBindJSON(&request); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的子池布局"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的分组布局"})
 			return
 		}
 		if err := cfgManager.SaveChannelPoolLayout(kind, request.Pools); err != nil {

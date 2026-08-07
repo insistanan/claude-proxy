@@ -277,7 +277,7 @@ func lookupChannelName(cfgManager *config.ConfigManager, kind scheduler.ChannelK
 	if upstream.ExcludeFromConversation || config.GetChannelStatus(upstream) == config.ChannelStatusDeleted {
 		return "", false
 	}
-	pool, err := config.SelectChannelPool(getConfigPools(cfg, kind), model)
+	poolRoute, err := config.SelectChannelPoolRoute(getConfigPools(cfg, kind), model)
 	if err != nil {
 		return "", false
 	}
@@ -285,10 +285,12 @@ func lookupChannelName(cfgManager *config.ConfigManager, kind scheduler.ChannelK
 	if poolID == "" {
 		poolID = config.DefaultChannelPoolID
 	}
-	if poolID != pool.ID {
-		return "", false
+	for _, pool := range poolRoute {
+		if poolID == pool.ID {
+			return upstream.Name, true
+		}
 	}
-	return upstream.Name, true
+	return "", false
 }
 
 func getConfigUpstreams(cfg config.Config, kind scheduler.ChannelKind) []config.UpstreamConfig {

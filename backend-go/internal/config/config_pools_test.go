@@ -21,33 +21,59 @@ func TestSelectChannelPoolUsesLongestMatcher(t *testing.T) {
 	}
 }
 
-func TestSelectChannelPoolUsesWildcardOnlyAsFallback(t *testing.T) {
+func TestSelectChannelPoolUsesDefaultGroupAsFallback(t *testing.T) {
 	pools := []ChannelPool{
-		{ID: DefaultChannelPoolID, Name: "GPT", ModelMatcher: "gpt", Priority: 1},
-		{ID: "fallback", Name: "Fallback", ModelMatcher: "*", Priority: 2},
+		{ID: "gpt", Name: "GPT", ModelMatcher: "gpt", Priority: 1},
+		{ID: DefaultChannelPoolID, Name: "默认子池", ModelMatcher: "legacy", Priority: 2},
 	}
 
 	selected, err := SelectChannelPool(pools, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("SelectChannelPool() error = %v", err)
 	}
-	if selected.ID != DefaultChannelPoolID {
-		t.Fatalf("SelectChannelPool() ID = %q, want %q", selected.ID, DefaultChannelPoolID)
+	if selected.ID != "gpt" {
+		t.Fatalf("SelectChannelPool() ID = %q, want gpt", selected.ID)
 	}
 
 	selected, err = SelectChannelPool(pools, "claude-sonnet")
 	if err != nil {
 		t.Fatalf("SelectChannelPool() fallback error = %v", err)
 	}
-	if selected.ID != "fallback" {
-		t.Fatalf("SelectChannelPool() fallback ID = %q, want fallback", selected.ID)
+	if selected.ID != DefaultChannelPoolID || selected.Name != FallbackChannelPoolName || selected.ModelMatcher != "*" {
+		t.Fatalf("SelectChannelPool() fallback = %#v", selected)
 	}
 }
 
-func TestSelectChannelPoolWithoutWildcardReturnsError(t *testing.T) {
-	pools := []ChannelPool{{ID: DefaultChannelPoolID, Name: "GPT", ModelMatcher: "gpt", Priority: 1}}
-	if _, err := SelectChannelPool(pools, "claude-sonnet"); err == nil {
-		t.Fatal("SelectChannelPool() error = nil")
+func TestSelectChannelPoolRouteReturnsMatchedThenFallback(t *testing.T) {
+	pools := []ChannelPool{
+		{ID: "gpt", Name: "GPT", ModelMatcher: "gpt", Priority: 1},
+		defaultChannelPool(),
+	}
+
+	route, err := SelectChannelPoolRoute(pools, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("SelectChannelPoolRoute() error = %v", err)
+	}
+	if len(route) != 2 || route[0].ID != "gpt" || route[1].ID != DefaultChannelPoolID {
+		t.Fatalf("SelectChannelPoolRoute() = %#v", route)
+	}
+
+	route, err = SelectChannelPoolRoute(pools, "claude-sonnet")
+	if err != nil {
+		t.Fatalf("SelectChannelPoolRoute() fallback error = %v", err)
+	}
+	if len(route) != 1 || route[0].ID != DefaultChannelPoolID {
+		t.Fatalf("SelectChannelPoolRoute() fallback = %#v", route)
+	}
+}
+
+func TestNormalizeChannelPoolsRejectsWildcardOutsideFallbackGroup(t *testing.T) {
+	pools := []ChannelPool{
+		defaultChannelPool(),
+		{ID: "other", Name: "Other", ModelMatcher: "*", Priority: 2},
+	}
+	if _, err := normalizeChannelPools(pools); err == nil {
+		t.Fatal("normalizeChannelPools() error = nil")
 	}
 }
 
@@ -132,8 +158,39 @@ func TestEnsurePoolsAndAssignmentsReportsNormalization(t *testing.T) {
 	if normalized[0].ID != "sonnet" || normalized[0].ModelMatcher != "claude-sonnet" || normalized[0].Priority != 1 {
 		t.Fatalf("normalized custom pool = %#v", normalized[0])
 	}
+	if normalized[1].ID != DefaultChannelPoolID || normalized[1].Name != FallbackChannelPoolName || normalized[1].ModelMatcher != "*" {
+		t.Fatalf("normalized fallback pool = %#v", normalized[1])
+	}
 	if upstreams[0].PoolID != DefaultChannelPoolID {
 		t.Fatalf("default upstream pool = %q", upstreams[0].PoolID)
+	}
+}
+
+func TestEnsurePoolsAndAssignmentsMigratesLegacyWildcardGroup(t *testing.T) {
+	pools := []ChannelPool{
+		{ID: DefaultChannelPoolID, Name: "GPT", ModelMatcher: "gpt", Priority: 1},
+		{ID: "legacy-fallback", Name: "旧兜底", ModelMatcher: "*", Priority: 2},
+	}
+	upstreams := []UpstreamConfig{
+		{Name: "gpt-channel", PoolID: DefaultChannelPoolID},
+		{Name: "fallback-channel", PoolID: "legacy-fallback"},
+	}
+
+	normalized, changed, err := ensurePoolsAndAssignments(pools, upstreams)
+	if err != nil {
+		t.Fatalf("ensurePoolsAndAssignments() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("ensurePoolsAndAssignments() changed = false, want true")
+	}
+	if normalized[0].ID != "legacy-fallback" || normalized[0].Name != "GPT" || normalized[0].ModelMatcher != "gpt" {
+		t.Fatalf("migrated matched group = %#v", normalized[0])
+	}
+	if normalized[1].ID != DefaultChannelPoolID || normalized[1].Name != FallbackChannelPoolName || normalized[1].ModelMatcher != "*" {
+		t.Fatalf("migrated fallback group = %#v", normalized[1])
+	}
+	if upstreams[0].PoolID != "legacy-fallback" || upstreams[1].PoolID != DefaultChannelPoolID {
+		t.Fatalf("migrated assignments = %#v", upstreams)
 	}
 }
 
