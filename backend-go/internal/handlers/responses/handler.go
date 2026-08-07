@@ -691,6 +691,34 @@ func responsesStreamEventError(event string) error {
 	return nil
 }
 
+// hasDeliveredResponsesToolCall 判断事件是否已完整交付一个客户端可执行的工具调用。
+// Codex 收到 output_item.done 后会立即进入工具执行阶段，并可能主动结束当前 SSE 连接；
+// 这种终止代表本轮代理目标已经完成，不应记为普通客户端取消。
+func hasDeliveredResponsesToolCall(event string) bool {
+	for _, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(payload), &data); err != nil {
+			continue
+		}
+		if eventType, _ := data["type"].(string); eventType != "response.output_item.done" {
+			continue
+		}
+		item, _ := data["item"].(map[string]interface{})
+		itemType, _ := item["type"].(string)
+		if itemType == "function_call" || itemType == "custom_tool_call" {
+			return true
+		}
+	}
+	return false
+}
+
 // handleStreamSuccess 处理流式响应。
 // 返回 error 仅在"空响应未写入客户端"场景下非 nil（ErrEmptyStreamResponse），
 // 使上层 TryUpstreamWithAllKeys 可以安全 failover。
@@ -748,6 +776,7 @@ func handleStreamSuccess(
 	hasUsage := false
 	needTokenPatch := false
 	clientGone := false
+	toolCallDelivered := false
 	var streamResponseID string
 
 	// ---- 空响应检测：缓冲阶段 ----
@@ -758,9 +787,9 @@ func handleStreamSuccess(
 	bufferedBytes := 0
 	const maxBufferedEventBytes = 256 * 1024
 	buffering := true
-	writeEvent := func(event string) {
+	writeEvent := func(event string) bool {
 		if clientGone {
-			return
+			return false
 		}
 		startStream()
 		common.MarkRequestLogFirstToken(c)
@@ -769,15 +798,18 @@ func handleStreamSuccess(
 			if !isClientDisconnectError(err) {
 				log.Printf("[Responses-Stream] 警告: 流式响应传输错误: %v", err)
 			}
-			return
+			return false
 		}
 		if flusher != nil {
 			flusher.Flush()
 		}
+		return true
 	}
 	flushBufferedEvents := func() {
 		for _, buffered := range bufferedEvents {
-			writeEvent(buffered)
+			if !writeEvent(buffered) {
+				break
+			}
 		}
 		bufferedEvents = nil
 		bufferedBytes = 0
@@ -900,7 +932,9 @@ func handleStreamSuccess(
 			}
 
 			// 正常（已退出缓冲阶段）转发给客户端
-			writeEvent(eventToSend)
+			if writeEvent(eventToSend) && hasDeliveredResponsesToolCall(eventToSend) {
+				toolCallDelivered = true
+			}
 		}
 
 		if readErr != nil {
@@ -911,11 +945,16 @@ func handleStreamSuccess(
 		}
 	}
 
-	if err := c.Request.Context().Err(); err != nil {
-		return nil, err
+	contextErr := c.Request.Context().Err()
+	toolCallCompletedCancellation := toolCallDelivered && errors.Is(contextErr, context.Canceled)
+	if contextErr != nil && !toolCallCompletedCancellation {
+		return nil, contextErr
 	}
-	if streamReadErr != nil {
+	if streamReadErr != nil && !toolCallCompletedCancellation {
 		return nil, streamReadErr
+	}
+	if toolCallCompletedCancellation && envCfg.ShouldLog("info") {
+		log.Printf("[Responses-Stream] 工具调用已完整交付，客户端结束当前流，按成功回合记录")
 	}
 
 	// 流正常结束但没有内容时才按瞬时空响应重试；不要覆盖转换或读取错误。

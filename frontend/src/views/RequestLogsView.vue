@@ -42,7 +42,7 @@
             <th>Token I/O</th>
             <th>缓存 C/R</th>
             <th>TPM</th>
-            <th>失败日志</th>
+            <th>终止/失败原因</th>
           </tr>
         </thead>
         <tbody>
@@ -69,7 +69,7 @@
               <v-chip size="x-small" :color="statusColor(log.status)" variant="tonal">
                 {{ formatStatus(log) }}
               </v-chip>
-              <div class="text-caption text-medium-emphasis">{{ log.stream ? 'stream' : 'normal' }}</div>
+              <div class="text-caption text-medium-emphasis">{{ formatStatusMeta(log) }}</div>
             </td>
             <td class="model-cell">
               <div>{{ log.transform || log.resolvedModel || log.model || '--' }}</div>
@@ -94,7 +94,7 @@
             <td class="text-no-wrap">{{ formatTPM(log.tpm) }}</td>
             <td class="error-cell">
               <template v-if="log.errorType || log.errorMessage">
-                <div class="font-weight-medium">{{ log.errorType || 'error' }}</div>
+                <div class="font-weight-medium">{{ formatErrorType(log.errorType) }}</div>
                 <div class="text-caption text-medium-emphasis">{{ log.errorMessage }}</div>
               </template>
               <span v-else class="text-medium-emphasis">--</span>
@@ -173,9 +173,17 @@ const statusColor = (status: string) => {
 }
 
 const formatStatus = (log: RequestLogEntry) => {
-  const label = log.status === 'completed' ? '成功' : log.status === 'cancelled' ? '取消' : '失败'
+  if (log.status === 'cancelled') return '客户端中止'
+  const label = log.status === 'completed' ? '成功' : '失败'
   return log.statusCode ? `${label} ${log.statusCode}` : label
 }
+
+const formatStatusMeta = (log: RequestLogEntry) => {
+  const parts = [log.statusCode && log.status === 'cancelled' ? `上游 ${log.statusCode}` : '', log.stream ? 'stream' : 'normal']
+  return parts.filter(Boolean).join(' · ')
+}
+
+const formatErrorType = (value?: string) => value === 'client_cancelled' ? '客户端已中止' : value || 'error'
 
 const formatTime = (value?: string) => {
   if (!value) return '--'
@@ -189,7 +197,10 @@ const formatNumber = (value?: number) => {
   return new Intl.NumberFormat().format(value)
 }
 
-const formatPair = (left?: number, right?: number) => `${formatNumber(left)} / ${formatNumber(right)}`
+const formatPair = (left?: number, right?: number) => {
+  if (typeof left !== 'number' && typeof right !== 'number') return '--'
+  return `${formatNumber(left)} / ${formatNumber(right)}`
+}
 const formatPairPercent = (left?: number, right?: number, leftLabel = 'L', rightLabel = 'R') => {
   const leftValue = left || 0
   const rightValue = right || 0
