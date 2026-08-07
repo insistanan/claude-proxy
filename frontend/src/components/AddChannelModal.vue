@@ -179,15 +179,15 @@
               />
             </v-col>
 
-            <!-- 模型路由子池 -->
+            <!-- 渠道分组 -->
             <v-col cols="12" :md="isEditing ? 6 : 12">
               <v-select
                 v-model="form.poolId"
-                label="模型路由子池"
+                label="渠道分组"
                 :items="poolOptions"
                 :loading="poolsLoading"
                 :error-messages="poolLoadError"
-                hint="该渠道将在所选子池内参与故障转移"
+                hint="该渠道在所选分组内参与故障转移；兜底分组仅在未匹配或命中分组不可用时使用"
                 persistent-hint
                 variant="outlined"
                 density="comfortable"
@@ -1383,7 +1383,10 @@ const visionChannelsLoading = ref(false)
 const pools = ref<ChannelPool[]>([])
 const poolsLoading = ref(false)
 const poolLoadError = ref('')
-const poolOptions = computed(() => pools.value.map(pool => ({ title: `${pool.name}（${pool.modelMatcher}）`, value: pool.id })))
+const poolOptions = computed(() => pools.value.map(pool => ({
+  title: pool.id === 'default' ? pool.name : `${pool.name}（匹配 ${pool.modelMatcher}）`,
+  value: pool.id
+})))
 
 const visionChannelOptions = computed(() => {
   const currentChannelID = props.channel?.id
@@ -1422,7 +1425,7 @@ const loadPools = async () => {
 		if (!pools.value.some(pool => pool.id === form.poolId)) form.poolId = 'default'
 	} catch (error) {
 		pools.value = []
-		poolLoadError.value = error instanceof Error ? error.message : '加载子池失败'
+		poolLoadError.value = error instanceof Error ? error.message : '加载分组失败'
 	} finally {
     poolsLoading.value = false
   }

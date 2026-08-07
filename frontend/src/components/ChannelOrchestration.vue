@@ -316,122 +316,29 @@
                 <v-icon size="small">mdi-refresh</v-icon>
               </v-btn>
 
-              <v-menu>
-                <template #activator="{ props: menuProps }">
-                  <v-btn icon size="x-small" variant="text" v-bind="menuProps">
-                    <v-icon size="small">mdi-dots-vertical</v-icon>
-                  </v-btn>
-                </template>
-                <v-list density="compact">
-                  <v-list-item @click="$emit('edit', element)">
-                    <template #prepend>
-                      <v-icon size="small">mdi-pencil</v-icon>
-                    </template>
-                    <v-list-item-title>编辑</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="duplicateChannel(element.index)">
-                    <template #prepend>
-                      <v-icon size="small">mdi-content-copy</v-icon>
-                    </template>
-                    <v-list-item-title>复制渠道</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item v-if="supportsVisionCapability" @click="toggleVisionCapability(element)">
-                    <template #prepend>
-                      <v-icon size="small" :color="element.visionCapable ? 'success' : 'primary'">
-                        {{ element.visionCapable ? 'mdi-check-circle' : 'mdi-image-search-outline' }}
-                      </v-icon>
-                    </template>
-                    <v-list-item-title>
-                      {{ element.visionCapable ? '取消支持图片理解' : '设为支持图片理解' }}
-                    </v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="copyChannelConfig(element)">
-                    <template #prepend>
-                      <v-icon size="small" :color="copiedChannelIndex === element.index ? 'success' : 'primary'">
-                        {{ copiedChannelIndex === element.index ? 'mdi-check' : 'mdi-content-copy' }}
-                      </v-icon>
-                    </template>
-                    <v-list-item-title>
-                      {{ copiedChannelIndex === element.index ? '已复制配置' : '复制配置' }}
-                    </v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="handleQuickTest(element)">
-                    <template #prepend>
-                      <v-icon size="small" color="success">mdi-test-tube</v-icon>
-                    </template>
-                    <v-list-item-title>快捷测试</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="$emit('ping', element.index)">
-                    <template #prepend>
-                      <v-icon size="small">mdi-speedometer</v-icon>
-                    </template>
-                    <v-list-item-title>测试延迟</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="openLogsDialog(element)">
-                    <template #prepend>
-                      <v-icon size="small">mdi-text-box-search-outline</v-icon>
-                    </template>
-                    <v-list-item-title>请求日志</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="openPromotionDialog(element)">
-                    <template #prepend>
-                      <v-icon size="small" color="info">mdi-rocket-launch</v-icon>
-                    </template>
-                    <v-list-item-title>抢优先级</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item v-if="index > 0" @click="move_to_top()">
-                    <template #prepend>
-                      <v-icon size="small" color="primary">mdi-arrow-collapse-up</v-icon>
-                    </template>
-                    <v-list-item-title>置顶</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item v-if="index < pool.channels.length - 1" @click="move_to_bottom()">
-                    <template #prepend>
-                      <v-icon size="small" color="primary">mdi-arrow-collapse-down</v-icon>
-                    </template>
-                    <v-list-item-title>置底</v-list-item-title>
-                  </v-list-item>
-                  <v-divider />
-                  <v-list-item v-if="element.status === 'suspended'" @click="resumeChannel(element.index)">
-                    <template #prepend>
-                      <v-icon size="small" color="success">mdi-play-circle</v-icon>
-                    </template>
-                    <v-list-item-title>恢复 (重置指标)</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item
-                    v-if="element.status !== 'suspended'"
-                    @click="setChannelStatus(element.index, 'suspended')"
-                  >
-                    <template #prepend>
-                      <v-icon size="small" color="warning">mdi-pause-circle</v-icon>
-                    </template>
-                    <v-list-item-title>暂停</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="setChannelStatus(element.index, 'disabled')">
-                    <template #prepend>
-                      <v-icon size="small" color="error">mdi-stop-circle</v-icon>
-                    </template>
-                    <v-list-item-title>移至备用池</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="setChannelStatus(element.index, 'deprecated')">
-                    <template #prepend>
-                      <v-icon size="small" color="grey">mdi-archive-clock-outline</v-icon>
-                    </template>
-                    <v-list-item-title>移至弃用池</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item :disabled="!canDeleteChannel(element)" @click="handleDeleteChannel(element)">
-                    <template #prepend>
-                      <v-icon size="small" :color="canDeleteChannel(element) ? 'error' : 'grey'">mdi-delete</v-icon>
-                    </template>
-                    <v-list-item-title>
-                      删除
-                      <span v-if="!canDeleteChannel(element)" class="text-caption text-disabled ml-1">
-                        (至少保留一个)
-                      </span>
-                    </v-list-item-title>
-                  </v-list-item>
-                </v-list>
-              </v-menu>
+              <ChannelQuickMenu
+                :channel="element"
+                :position="index"
+                :total="pool.channels.length"
+                :copied="copiedChannelIndex === element.index"
+                :supports-vision-capability="supportsVisionCapability"
+                :can-delete="canDeleteChannel(element)"
+                @edit="$emit('edit', element)"
+                @duplicate="duplicateChannel(element.index)"
+                @toggle-vision="toggleVisionCapability(element)"
+                @copy-config="copyChannelConfig(element)"
+                @quick-test="handleQuickTest(element)"
+                @ping="$emit('ping', element.index)"
+                @logs="openLogsDialog(element)"
+                @promotion="openPromotionDialog(element)"
+                @move-top="move_to_top()"
+                @move-bottom="move_to_bottom()"
+                @resume="resumeChannel(element.index)"
+                @suspend="setChannelStatus(element.index, 'suspended')"
+                @disable="setChannelStatus(element.index, 'disabled')"
+                @deprecate="setChannelStatus(element.index, 'deprecated')"
+                @delete="handleDeleteChannel(element)"
+              />
             </div>
               </div><!-- .channel-row-content -->
           </div><!-- .channel-row -->
@@ -448,6 +355,28 @@
             </div>
           </v-expand-transition>
           </div>
+      </template>
+
+      <template #vision-actions="{ channel }">
+        <ChannelQuickMenu
+          :channel="channel"
+          :copied="copiedChannelIndex === channel.index"
+          :supports-vision-capability="supportsVisionCapability"
+          :allow-reorder="false"
+          @edit="$emit('edit', channel)"
+          @duplicate="duplicateChannel(channel.index)"
+          @toggle-vision="toggleVisionCapability(channel)"
+          @copy-config="copyChannelConfig(channel)"
+          @quick-test="handleQuickTest(channel)"
+          @ping="$emit('ping', channel.index)"
+          @logs="openLogsDialog(channel)"
+          @promotion="openPromotionDialog(channel)"
+          @resume="resumeChannel(channel.index)"
+          @suspend="setChannelStatus(channel.index, 'suspended')"
+          @disable="setChannelStatus(channel.index, 'disabled')"
+          @deprecate="setChannelStatus(channel.index, 'deprecated')"
+          @delete="$emit('delete', channel.index)"
+        />
       </template>
     </ChannelPoolGrid>
 
@@ -820,6 +749,7 @@ import type { ApexOptions } from 'apexcharts'
 import { api, channelApiByType, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
 import ChannelPoolGrid from './ChannelPoolGrid.vue'
+import ChannelQuickMenu from './ChannelQuickMenu.vue'
 import KeyTrendChart from './KeyTrendChart.vue'
 import QuickTestModal from './QuickTestModal.vue'
 
@@ -1735,7 +1665,7 @@ const confirmPromotion = async () => {
 }
 
 // 判断渠道是否可以删除
-// 规则：当前模型路由子池中至少要保留一个 active 状态的渠道
+// 规则：当前渠道分组中至少要保留一个 active 状态的渠道
 const canDeleteChannel = (channel: Channel): boolean => {
   // 统计当前 active 状态的渠道数量
   const poolID = channel.poolId || 'default'
@@ -1756,7 +1686,7 @@ const canDeleteChannel = (channel: Channel): boolean => {
 // 处理删除渠道
 const handleDeleteChannel = (channel: Channel) => {
   if (!canDeleteChannel(channel)) {
-    emit('error', '无法删除：当前模型路由子池中至少需要保留一个活跃渠道')
+    emit('error', '无法删除：当前渠道分组中至少需要保留一个活跃渠道')
     return
   }
   emit('delete', channel.index)

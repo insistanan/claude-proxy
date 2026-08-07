@@ -2,11 +2,11 @@
   <section class="pool-section">
     <header class="section-header">
       <div>
-        <div class="text-subtitle-2 font-weight-bold">模型路由子池</div>
-        <div class="text-caption text-medium-emphasis">按最长模型名称匹配选择子池，再在池内执行故障转移</div>
+        <div class="text-subtitle-2 font-weight-bold">渠道分组</div>
+        <div class="text-caption text-medium-emphasis">优先使用模型匹配分组，未匹配或分组不可用时转入兜底分组</div>
       </div>
       <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="openCreateDialog">
-        新建子池
+        新建分组
       </v-btn>
     </header>
 
@@ -22,11 +22,14 @@
         <header class="pool-card-header">
           <div class="min-width-0">
             <div class="pool-name">{{ pool.name }}</div>
-            <div class="pool-rule">匹配：{{ pool.modelMatcher }}</div>
+            <div class="pool-rule">
+              <template v-if="pool.id === 'default'">未匹配或命中分组不可用时使用</template>
+              <template v-else>匹配：{{ pool.modelMatcher }}</template>
+            </div>
           </div>
           <div class="d-flex align-center ga-1">
             <v-chip size="x-small" color="primary" variant="tonal">{{ pool.channels.length }}</v-chip>
-            <v-btn icon size="x-small" variant="text" title="编辑子池" @click="openEditDialog(pool)">
+            <v-btn v-if="pool.id !== 'default'" icon size="x-small" variant="text" title="编辑分组" @click="openEditDialog(pool)">
               <v-icon size="small">mdi-pencil</v-icon>
             </v-btn>
             <v-btn
@@ -35,7 +38,7 @@
               size="x-small"
               color="error"
               variant="text"
-              title="删除子池"
+              title="删除分组"
               :disabled="hasAssignedChannels(pool.id)"
               @click="openDeletePoolDialog(pool)"
             >
@@ -83,7 +86,7 @@
             </div>
           </template>
         </draggable>
-        <div v-if="pool.channels.length === 0" class="pool-empty">暂无渠道，可从其他子池拖入</div>
+        <div v-if="pool.channels.length === 0" class="pool-empty">暂无渠道，可从其他分组拖入</div>
       </section>
       </div>
     </div>
@@ -118,9 +121,12 @@
         <v-chip size="x-small" variant="outlined">
           <v-icon start size="x-small">mdi-key</v-icon>{{ channel.apiKeys?.length || 0 }}
         </v-chip>
-        <v-btn icon size="x-small" color="error" variant="text" title="删除渠道" @click.stop="emit('delete', channel.index)">
-          <v-icon size="small">mdi-delete</v-icon>
-        </v-btn>
+        <div class="vision-channel-actions" @click.stop>
+          <slot name="vision-actions" :channel="channel" />
+          <v-btn icon size="x-small" color="error" variant="text" title="删除渠道" @click="emit('delete', channel.index)">
+            <v-icon size="small">mdi-delete</v-icon>
+          </v-btn>
+        </div>
       </div>
       <div v-if="visionChannels.length === 0" class="pool-empty">暂无公用图片理解渠道</div>
     </div>
@@ -128,7 +134,7 @@
 
   <v-dialog v-model="poolDialog" max-width="460">
     <v-card rounded="lg">
-      <v-card-title>{{ editingPool ? '编辑子池' : '新建子池' }}</v-card-title>
+      <v-card-title>{{ editingPool ? '编辑分组' : '新建分组' }}</v-card-title>
       <v-card-text class="pt-3">
         <v-text-field v-model="poolName" label="名称" variant="outlined" density="compact" autofocus />
         <v-combobox
@@ -152,8 +158,8 @@
 
   <v-dialog v-model="deletePoolDialog" max-width="460">
     <v-card rounded="lg">
-      <v-card-title>删除子池</v-card-title>
-      <v-card-text>确定删除“{{ deletingPool?.name }}”吗？只有空子池可以删除。</v-card-text>
+      <v-card-title>删除分组</v-card-title>
+      <v-card-text>确定删除“{{ deletingPool?.name }}”吗？只有空分组可以删除。</v-card-text>
       <v-card-actions>
         <v-spacer />
         <v-btn variant="text" @click="deletePoolDialog = false">取消</v-btn>
@@ -207,7 +213,7 @@ const loadPools = async () => {
     pools.value = response.pools || []
   } catch (error) {
     pools.value = []
-    emit('error', `加载渠道子池失败：${errorMessage(error)}`)
+    emit('error', `加载渠道分组失败：${errorMessage(error)}`)
   } finally {
     loading.value = false
   }
@@ -242,10 +248,10 @@ const canToggleVisionStatus = (channel: Channel) => ['active', 'suspended'].incl
 const hasAssignedChannels = (poolId: string) => props.channels.some(channel => channel.status !== 'deleted' && (channel.poolId || 'default') === poolId)
 
 const matcherOptions = computed(() => {
-  if (props.channelType === 'messages') return ['*', 'claude']
-  if (props.channelType === 'responses') return ['*', 'gpt']
-  if (props.channelType === 'gemini') return ['*', 'gemini']
-  return ['*']
+  if (props.channelType === 'messages') return ['claude']
+  if (props.channelType === 'responses') return ['gpt']
+  if (props.channelType === 'gemini') return ['gemini']
+  return []
 })
 
 const saveLayout = async () => {
@@ -266,11 +272,11 @@ const saveLayout = async () => {
     }))
     await api.saveChannelPoolLayout(props.channelType, layout)
     saved = true
-    emit('success', '子池故障转移顺序已保存')
+    emit('success', '分组故障转移顺序已保存')
   } catch (error) {
     failed = true
     syncPoolViews()
-    emit('error', `保存子池布局失败：${errorMessage(error)}`)
+    emit('error', `保存分组布局失败：${errorMessage(error)}`)
   } finally {
     layoutSaving.value = false
     if (failed) {
@@ -312,6 +318,7 @@ const openCreateDialog = () => {
 }
 
 const openEditDialog = (pool: ChannelPool) => {
+  if (pool.id === 'default') return
   editingPool.value = pool
   poolName.value = pool.name
   poolMatcher.value = pool.modelMatcher
@@ -326,15 +333,15 @@ const savePool = async () => {
   try {
     if (editingPool.value) {
       await api.updateChannelPool(props.channelType, editingPool.value.id, { name, modelMatcher })
-      emit('success', '子池配置已更新')
+      emit('success', '分组配置已更新')
     } else {
       await api.createChannelPool(props.channelType, { name, modelMatcher })
-      emit('success', '子池已创建')
+      emit('success', '分组已创建')
     }
     poolDialog.value = false
     await loadPools()
   } catch (error) {
-    emit('error', `保存子池失败：${errorMessage(error)}`)
+    emit('error', `保存分组失败：${errorMessage(error)}`)
   } finally {
     saving.value = false
   }
@@ -351,10 +358,10 @@ const deletePool = async () => {
   try {
     await api.deleteChannelPool(props.channelType, deletingPool.value.id)
     deletePoolDialog.value = false
-    emit('success', '子池已删除')
+    emit('success', '分组已删除')
     await loadPools()
   } catch (error) {
-    emit('error', `删除子池失败：${errorMessage(error)}`)
+    emit('error', `删除分组失败：${errorMessage(error)}`)
   } finally {
     saving.value = false
   }
@@ -401,7 +408,7 @@ const deletePool = async () => {
   background: rgba(var(--v-theme-surface-variant), 0.6);
   position: relative;
 }
-/* 子池左侧刻度色轨 */
+/* 分组左侧刻度色轨 */
 .pool-card-header::before {
   content: '';
   position: absolute;
@@ -446,6 +453,7 @@ const deletePool = async () => {
   border-color: rgb(var(--v-theme-primary));
   transform: translateX(3px);
 }
+.vision-channel-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
 .pool-index {
   display: inline-grid; place-items: center;
   width: 22px; height: 22px; flex: 0 0 auto;
