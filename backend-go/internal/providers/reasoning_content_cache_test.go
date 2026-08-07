@@ -51,7 +51,7 @@ func TestReasoningContentCache_EvictsOldest(t *testing.T) {
 }
 
 // TestReasoningContentRoundTrip_NonStream 覆盖非流式链路：
-// 上游返回 reasoning_content → 代理转 Claude thinking → 客户端回传历史丢失明文 thinking
+// 上游返回 reasoning_content → 代理隐藏思考并缓存 → 客户端回传历史丢失明文 thinking
 // → messages→chat 转换时自动补回 reasoning_content。
 func TestReasoningContentRoundTrip_NonStream(t *testing.T) {
 	clearReasoningContentCacheForTest()
@@ -72,7 +72,7 @@ func TestReasoningContentRoundTrip_NonStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConvertToClaudeResponse() err = %v", err)
 	}
-	if len(claudeResp.Content) != 2 || claudeResp.Content[0].Type != "thinking" {
+	if len(claudeResp.Content) != 1 || claudeResp.Content[0].Type != "text" {
 		t.Fatalf("claude content = %#v", claudeResp.Content)
 	}
 

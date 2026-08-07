@@ -37,11 +37,12 @@ type SessionManager struct {
 	maxTokens   int           // 单会话 Token 上限，<= 0 表示不限制
 
 	// 资源限制
-	maxSessions int // 全局最大 session 数，0 表示不限制
-	store       *sqliteStore
-	stopCh      chan struct{}
-	doneCh      chan struct{}
-	stopOnce    sync.Once
+	maxSessions       int // 全局最大 session 数，0 表示不限制
+	maxLoadedSessions int // 内存缓存上限；持久化历史通过 response ID 按需恢复
+	store             *sqliteStore
+	stopCh            chan struct{}
+	doneCh            chan struct{}
+	stopOnce          sync.Once
 }
 
 func NewPersistentSessionManager(path string, maxAge time.Duration, maxMessages int, maxTokens int) (*SessionManager, error) {
@@ -50,29 +51,22 @@ func NewPersistentSessionManager(path string, maxAge time.Duration, maxMessages 
 		return nil, err
 	}
 	sm := newSessionManager(maxAge, maxMessages, maxTokens, store)
-	sessions, mappings, err := store.load()
-	if err != nil {
-		_ = store.close()
-		return nil, err
-	}
-	sm.sessions = sessions
-	sm.responseMapping = mappings
-	sm.cleanup()
 	go sm.cleanupLoop()
 	return sm, nil
 }
 
 func newSessionManager(maxAge time.Duration, maxMessages int, maxTokens int, store *sqliteStore) *SessionManager {
 	return &SessionManager{
-		sessions:        make(map[string]*Session),
-		responseMapping: make(map[string]string),
-		maxAge:          maxAge,
-		maxMessages:     maxMessages,
-		maxTokens:       maxTokens,
-		maxSessions:     0, // 默认不限制，由调用方按需设置
-		store:           store,
-		stopCh:          make(chan struct{}),
-		doneCh:          make(chan struct{}),
+		sessions:          make(map[string]*Session),
+		responseMapping:   make(map[string]string),
+		maxAge:            maxAge,
+		maxMessages:       maxMessages,
+		maxTokens:         maxTokens,
+		maxSessions:       0, // 默认不限制，由调用方按需设置
+		maxLoadedSessions: 128,
+		store:             store,
+		stopCh:            make(chan struct{}),
+		doneCh:            make(chan struct{}),
 	}
 }
 
@@ -120,15 +114,34 @@ func (sm *SessionManager) GetOrCreateSessionForConversation(previousResponseID s
 					return nil, err
 				}
 				session.LastAccessAt = time.Now()
-				if err := sm.persistSessionLocked(session); err != nil {
-					session.ConversationID = previousConversationID
+				if sm.store != nil {
+					if err := sm.store.touchSession(session, previousConversationID != session.ConversationID); err != nil {
+						session.ConversationID = previousConversationID
+						return nil, err
+					}
+				}
+				return session, nil
+			}
+		}
+		if sm.store != nil {
+			session, found, err := sm.store.loadByResponseID(previousResponseID, sm.maxAge)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				sm.cacheLoadedSessionLocked(session, previousResponseID)
+				previousConversationID := session.ConversationID
+				if err := bindConversation(session, conversationID); err != nil {
+					sm.removeCachedSessionLocked(session.ID)
+					return nil, err
+				}
+				session.LastAccessAt = time.Now()
+				if err := sm.store.touchSession(session, previousConversationID != session.ConversationID); err != nil {
 					return nil, err
 				}
 				return session, nil
 			}
 		}
-		// 兼容升级前只保存在内存、重启后已经丢失的 Responses 链。
-		// 无法恢复旧消息内容，但允许从当前输入继续，避免所有渠道构建请求失败并返回 503。
 		log.Printf("[Session-Recovery] previous_response_id %s 未找到持久化会话，将从当前输入恢复为空会话", previousResponseID)
 		return sm.createSessionLocked(previousResponseID, conversationID)
 	}
@@ -137,7 +150,9 @@ func (sm *SessionManager) GetOrCreateSessionForConversation(previousResponseID s
 }
 
 func (sm *SessionManager) createSessionLocked(previousResponseID string, conversationID string) (*Session, error) {
-	sm.evictIfNeededLocked()
+	if err := sm.evictIfNeededLocked(); err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	session := &Session{
 		ID:             generateID("sess"),
@@ -186,8 +201,22 @@ func bindConversation(session *Session, conversationID string) error {
 
 // evictIfNeededLocked 当 session 数达到上限时，淘汰最久未访问的 session
 // 调用方必须持有写锁
-func (sm *SessionManager) evictIfNeededLocked() {
-	if sm.maxSessions <= 0 || len(sm.sessions) < sm.maxSessions {
+func (sm *SessionManager) evictIfNeededLocked() error {
+	if sm.maxSessions > 0 && sm.store != nil {
+		ids, err := sm.store.pruneToLimit(sm.maxSessions - 1)
+		if err != nil {
+			return fmt.Errorf("清理 Responses 会话容量失败: %w", err)
+		}
+		for _, id := range ids {
+			sm.removeCachedSessionLocked(id)
+		}
+	}
+	sm.evictLoadedSessionLocked()
+	return nil
+}
+
+func (sm *SessionManager) evictLoadedSessionLocked() {
+	if sm.maxLoadedSessions <= 0 || len(sm.sessions) < sm.maxLoadedSessions {
 		return
 	}
 
@@ -202,23 +231,29 @@ func (sm *SessionManager) evictIfNeededLocked() {
 	}
 
 	if oldestID != "" {
-		session := sm.sessions[oldestID]
-		log.Printf("[Session-Evict] 会话数已达上限 (%d)，淘汰最久未访问会话: %s (最后访问: %v 前)",
-			sm.maxSessions, oldestID, time.Since(oldestTime))
-		// 清理关联的 responseMapping
-		for respID, sessID := range sm.responseMapping {
-			if sessID == oldestID {
-				delete(sm.responseMapping, respID)
-			}
+		log.Printf("[Session-Cache] 内存会话缓存已达上限 (%d)，释放最久未访问会话: %s (最后访问: %v 前)",
+			sm.maxLoadedSessions, oldestID, time.Since(oldestTime))
+		sm.removeCachedSessionLocked(oldestID)
+	}
+}
+
+func (sm *SessionManager) cacheLoadedSessionLocked(session *Session, responseID string) {
+	if session == nil {
+		return
+	}
+	sm.evictLoadedSessionLocked()
+	sm.sessions[session.ID] = session
+	if responseID != "" {
+		sm.responseMapping[responseID] = session.ID
+	}
+}
+
+func (sm *SessionManager) removeCachedSessionLocked(sessionID string) {
+	delete(sm.sessions, sessionID)
+	for responseID, mappedID := range sm.responseMapping {
+		if mappedID == sessionID {
+			delete(sm.responseMapping, responseID)
 		}
-		delete(sm.sessions, oldestID)
-		if sm.store != nil {
-			if err := sm.store.deleteSession(oldestID); err != nil {
-				log.Printf("[Session-Evict] 删除持久化会话失败: %v", err)
-			}
-		}
-		// 标记 session 对象可被 GC 回收
-		_ = session
 	}
 }
 
@@ -249,6 +284,20 @@ func (sm *SessionManager) GetSessionByResponseID(responseID string) (*Session, e
 
 	sessionID, ok := sm.responseMapping[responseID]
 	if !ok {
+		if sm.store != nil {
+			session, found, err := sm.store.loadByResponseID(responseID, sm.maxAge)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				sm.cacheLoadedSessionLocked(session, responseID)
+				session.LastAccessAt = time.Now()
+				if err := sm.store.touchSession(session, false); err != nil {
+					return nil, err
+				}
+				return session, nil
+			}
+		}
 		return nil, fmt.Errorf("无效的 previous_response_id: %s", responseID)
 	}
 
@@ -258,8 +307,10 @@ func (sm *SessionManager) GetSessionByResponseID(responseID string) (*Session, e
 	}
 
 	session.LastAccessAt = time.Now()
-	if err := sm.persistSessionLocked(session); err != nil {
-		return nil, err
+	if sm.store != nil {
+		if err := sm.store.touchSession(session, false); err != nil {
+			return nil, err
+		}
 	}
 	return session, nil
 }
@@ -280,7 +331,60 @@ func (sm *SessionManager) AppendMessage(sessionID string, item types.ResponsesIt
 	if utils.ResponsesItemHasVisionContent(item) {
 		session.HasVisionContent = true
 	}
+	if sm.store == nil {
+		return nil
+	}
 	return sm.persistSessionLocked(session)
+}
+
+// CommitTurn 一次性持久化一轮请求，避免输入、输出、response ID 分别把完整
+// messages_json 重写多次。它还确保会话正文和 response 映射在同一事务中提交。
+func (sm *SessionManager) CommitTurn(sessionID string, items []types.ResponsesItem, tokensUsed int, hasVision bool, responseID string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	session, exists := sm.sessions[sessionID]
+	if !exists {
+		return fmt.Errorf("会话不存在: %s", sessionID)
+	}
+	previousMessageCount := len(session.Messages)
+	previousTokens := session.TotalTokens
+	previousResponseID := session.LastResponseID
+	previousLastAccess := session.LastAccessAt
+	previousVision := session.HasVisionContent
+	if len(items) > 0 {
+		session.Messages = append(session.Messages, items...)
+		for _, item := range items {
+			if utils.ResponsesItemHasVisionContent(item) {
+				session.HasVisionContent = true
+			}
+		}
+	}
+	session.TotalTokens += tokensUsed
+	if responseID != "" {
+		session.LastResponseID = responseID
+	}
+	session.LastAccessAt = time.Now()
+	if hasVision {
+		session.HasVisionContent = true
+	}
+	if sm.store == nil {
+		if responseID != "" {
+			sm.responseMapping[responseID] = sessionID
+		}
+		return nil
+	}
+	if err := sm.store.upsertSessionAndMapping(session, responseID); err != nil {
+		session.Messages = session.Messages[:previousMessageCount]
+		session.TotalTokens = previousTokens
+		session.LastResponseID = previousResponseID
+		session.LastAccessAt = previousLastAccess
+		session.HasVisionContent = previousVision
+		return err
+	}
+	if responseID != "" {
+		sm.responseMapping[responseID] = sessionID
+	}
+	return nil
 }
 
 // MarkSessionHasVisionContent 显式标记会话历史含图
@@ -295,7 +399,10 @@ func (sm *SessionManager) MarkSessionHasVisionContent(sessionID string) error {
 
 	session.HasVisionContent = true
 	session.LastAccessAt = time.Now()
-	return sm.persistSessionLocked(session)
+	if sm.store == nil {
+		return nil
+	}
+	return sm.store.markVisionContent(session)
 }
 
 // UpdateLastResponseID 更新会话的最后一个 responseID
@@ -310,7 +417,10 @@ func (sm *SessionManager) UpdateLastResponseID(sessionID, responseID string) err
 
 	session.LastResponseID = responseID
 	session.LastAccessAt = time.Now()
-	return sm.persistSessionLocked(session)
+	if sm.store == nil {
+		return nil
+	}
+	return sm.store.updateLastResponseID(session)
 }
 
 // GetSession 获取会话（只读）

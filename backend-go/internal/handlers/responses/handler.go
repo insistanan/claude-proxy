@@ -26,6 +26,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// ErrEmptyStreamResponse 表示上游返回 HTTP 200，但没有产出任何 output。
+var ErrEmptyStreamResponse = errors.New("upstream returned empty stream response (model at capacity)")
+
 // Handler Responses API 代理处理器
 // 支持多渠道调度：当配置多个渠道时自动启用
 func Handler(
@@ -361,7 +364,7 @@ func handleSuccess(
 	}
 
 	if isStream {
-		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, hasImage, channelScheduler, conversationID), nil
+		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, hasImage, channelScheduler, conversationID)
 	}
 
 	// 非流式响应处理
@@ -405,6 +408,14 @@ func handleSuccess(
 		return nil, err
 	}
 
+	// 容量错误有时会以 HTTP 200 的空结果返回。此时尚未写客户端，可安全地
+	// 使用同一候选重试；该信号不会被上层计入 Key 熔断。
+	if (len(responsesResp.Output) == 0 && responsesResp.Usage.OutputTokens == 0) ||
+		(common.IsUpstreamModelCapacityError(bodyBytes) && responsesResp.Usage.OutputTokens == 0) {
+		log.Printf("[Responses] 检测到空响应 (非流式, output 为空), 尝试 failover")
+		return nil, common.NewRetrySameCandidateError(ErrEmptyStreamResponse)
+	}
+
 	// Token 补全逻辑
 	patchResponsesUsage(responsesResp, originalRequestJSON, envCfg)
 	common.AssociateConversationExternalID(channelScheduler, conversationID, scheduler.ChannelKindResponses, responsesResp.ID)
@@ -415,20 +426,11 @@ func handleSuccess(
 		if err == nil {
 			previousResponseID := sess.LastResponseID
 			inputItems, _ := parseInputToItems(originalReq.Input)
-			for _, item := range inputItems {
-				sessionManager.AppendMessage(sess.ID, item, 0)
-			}
-
-			for _, item := range responsesResp.Output {
-				sessionManager.AppendMessage(sess.ID, item, responsesResp.Usage.TotalTokens)
-			}
-			if hasImage {
-				_ = sessionManager.MarkSessionHasVisionContent(sess.ID)
-			}
-
-			sessionManager.UpdateLastResponseID(sess.ID, responsesResp.ID)
-			if err := sessionManager.RecordResponseMapping(responsesResp.ID, sess.ID); err != nil {
-				log.Printf("[Session-Mapping] 持久化响应映射失败: %v", err)
+			turnItems := make([]types.ResponsesItem, 0, len(inputItems)+len(responsesResp.Output))
+			turnItems = append(turnItems, inputItems...)
+			turnItems = append(turnItems, responsesResp.Output...)
+			if err := sessionManager.CommitTurn(sess.ID, turnItems, responsesResp.Usage.TotalTokens, hasImage, responsesResp.ID); err != nil {
+				log.Printf("[Session] 持久化 Responses 会话轮次失败: %v", err)
 			}
 
 			if previousResponseID != "" {
@@ -622,7 +624,78 @@ func estimateResponsesOutputFromItems(output []types.ResponsesItem) int {
 	return total
 }
 
-// handleStreamSuccess 处理流式响应
+// hasResponsesContent 判断 SSE 事件是否包含实际 output。兼容只在
+// response.completed 中返回完整 output、没有逐段 delta 的上游。
+func hasResponsesContent(event string) bool {
+	for _, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if jsonStr == "" || jsonStr == "[DONE]" {
+			continue
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+			continue
+		}
+		eventType, _ := data["type"].(string)
+		if eventType == "response.completed" {
+			if response, ok := data["response"].(map[string]interface{}); ok {
+				if output, ok := response["output"].([]interface{}); ok && len(output) > 0 {
+					return true
+				}
+			}
+		}
+		switch eventType {
+		case "response.output_text.delta",
+			"response.function_call_arguments.delta",
+			"response.reasoning_summary_text.delta",
+			"response.output_json.delta",
+			"response.content_part.delta",
+			"response.audio.delta",
+			"response.audio_transcript.delta",
+			"response.output_item.added",
+			"response.output_text.done",
+			"response.reasoning_summary_text.done",
+			"response.function_call_arguments.done",
+			"response.output_item.done":
+			return true
+		}
+	}
+	return false
+}
+
+func responsesStreamEventError(event string) error {
+	for _, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(payload), &data); err != nil {
+			continue
+		}
+		eventType, _ := data["type"].(string)
+		if eventType != "response.failed" && eventType != "error" {
+			continue
+		}
+		if common.IsUpstreamModelCapacityError([]byte(payload)) {
+			return common.NewRetrySameCandidateError(ErrEmptyStreamResponse)
+		}
+		return fmt.Errorf("upstream stream failed: %s", payload)
+	}
+	return nil
+}
+
+// handleStreamSuccess 处理流式响应。
+// 返回 error 仅在"空响应未写入客户端"场景下非 nil（ErrEmptyStreamResponse），
+// 使上层 TryUpstreamWithAllKeys 可以安全 failover。
+// 在缓冲阶段（尚未收到内容 delta 前），所有 SSE 事件只缓冲不 flush；
+// 若最终 response.completed 时 output 为空，则返回 ErrEmptyStreamResponse。
 func handleStreamSuccess(
 	c *gin.Context,
 	resp *http.Response,
@@ -635,18 +708,11 @@ func handleStreamSuccess(
 	hasImage bool,
 	channelScheduler *scheduler.ChannelScheduler,
 	conversationID string,
-) *types.Usage {
+) (*types.Usage, error) {
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
 		log.Printf("[Responses-Stream] Responses 流式响应开始: %dms, 状态: %d", responseTime, resp.StatusCode)
 	}
-
-	utils.ForwardResponseHeaders(resp.Header, c.Writer)
-
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
 
 	var synthesizer *utils.StreamSynthesizer
 	var logBuffer bytes.Buffer
@@ -658,8 +724,20 @@ func handleStreamSuccess(
 
 	var converterState any
 
-	c.Status(resp.StatusCode)
 	flusher, _ := c.Writer.(http.Flusher)
+	streamStarted := false
+	startStream := func() {
+		if streamStarted {
+			return
+		}
+		utils.ForwardResponseHeaders(resp.Header, c.Writer)
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(resp.StatusCode)
+		streamStarted = true
+	}
 
 	reader := bufio.NewReaderSize(resp.Body, 64*1024)
 
@@ -671,6 +749,39 @@ func handleStreamSuccess(
 	needTokenPatch := false
 	clientGone := false
 	var streamResponseID string
+
+	// ---- 空响应检测：缓冲阶段 ----
+	// 在收到第一个包含实际内容的事件前，所有事件暂存到 bufferedEvents，
+	// 不调用 c.Writer.Write / flusher.Flush，确保 c.Writer.Written() == false。
+	// 这样若最终发现是空响应（如 model at capacity），上层可安全 failover。
+	bufferedEvents := make([]string, 0, 64)
+	bufferedBytes := 0
+	const maxBufferedEventBytes = 256 * 1024
+	buffering := true
+	writeEvent := func(event string) {
+		if clientGone {
+			return
+		}
+		startStream()
+		common.MarkRequestLogFirstToken(c)
+		if _, err := c.Writer.Write([]byte(event)); err != nil {
+			clientGone = true
+			if !isClientDisconnectError(err) {
+				log.Printf("[Responses-Stream] 警告: 流式响应传输错误: %v", err)
+			}
+			return
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	flushBufferedEvents := func() {
+		for _, buffered := range bufferedEvents {
+			writeEvent(buffered)
+		}
+		bufferedEvents = nil
+		bufferedBytes = 0
+	}
 
 	var streamReadErr error
 	for {
@@ -704,11 +815,15 @@ func handleStreamSuccess(
 		)
 		if err != nil {
 			log.Printf("[Responses-Stream] 流式响应转换失败: %v", err)
+			streamReadErr = fmt.Errorf("转换上游流式响应失败: %w", err)
 			break
 		}
 		eventsToProcess = events
 
 		for _, event := range eventsToProcess {
+			if eventErr := responsesStreamEventError(event); eventErr != nil {
+				return nil, eventErr
+			}
 			// 提取文本内容用于估算（限制缓冲区大小）
 			if outputTextBuffer.Len() < maxOutputBufferSize {
 				extractResponsesTextFromEvent(event, &outputTextBuffer)
@@ -750,21 +865,42 @@ func handleStreamSuccess(
 				streamResponseID = extractResponsesCompletedID(eventToSend)
 			}
 
-			// 转发给客户端
-			if !clientGone {
-				common.MarkRequestLogFirstToken(c)
-				_, err := c.Writer.Write([]byte(eventToSend))
-				if err != nil {
-					clientGone = true
-					if !isClientDisconnectError(err) {
-						log.Printf("[Responses-Stream] 警告: 流式响应传输错误: %v", err)
-					} else if envCfg.ShouldLog("info") {
-						log.Printf("[Responses-Stream] 客户端中断连接 (正常行为)，继续接收上游数据...")
+			// ---- 缓冲阶段逻辑 ----
+			if buffering {
+				if hasResponsesContent(eventToSend) {
+					// 收到第一个内容 delta，退出缓冲阶段
+					// 先 flush 所有已缓冲事件（包括 response.created, response.in_progress 等）
+					flushBufferedEvents()
+					buffering = false
+				} else {
+					// 仍在缓冲阶段，暂存事件
+					bufferedEvents = append(bufferedEvents, eventToSend)
+					bufferedBytes += len(eventToSend)
+
+					// 如果是 response.completed 且仍在缓冲阶段，说明是空响应
+					// （没有收到任何内容 delta 就完成了）
+					if isResponsesCompletedEvent(eventToSend) {
+						log.Printf("[Responses-Stream] 检测到空响应 (model at capacity)，buffered=%d, written=%v",
+							len(bufferedEvents), c.Writer.Written())
+						// 不写入任何数据，返回 error 让上层 failover
+						if envCfg.EnableResponseLogs {
+							logBuffer.WriteString(eventToSend)
+						}
+						// 跳出循环，返回 ErrEmptyStreamResponse
+						// 直接返回，不 flush 任何缓冲事件
+						return nil, common.NewRetrySameCandidateError(ErrEmptyStreamResponse)
 					}
-				} else if flusher != nil {
-					flusher.Flush()
+					if bufferedBytes > maxBufferedEventBytes {
+						log.Printf("[Responses-Stream] 首个内容事件前的元数据超过 %d 字节，停止缓冲", maxBufferedEventBytes)
+						flushBufferedEvents()
+						buffering = false
+					}
+					continue // 缓冲阶段不执行下方 write 逻辑
 				}
 			}
+
+			// 正常（已退出缓冲阶段）转发给客户端
+			writeEvent(eventToSend)
 		}
 
 		if readErr != nil {
@@ -775,8 +911,17 @@ func handleStreamSuccess(
 		}
 	}
 
+	if err := c.Request.Context().Err(); err != nil {
+		return nil, err
+	}
 	if streamReadErr != nil {
-		log.Printf("[Responses-Stream] 警告: 流式响应读取错误: %v", streamReadErr)
+		return nil, streamReadErr
+	}
+
+	// 流正常结束但没有内容时才按瞬时空响应重试；不要覆盖转换或读取错误。
+	if buffering && !c.Writer.Written() {
+		log.Printf("[Responses-Stream] 流结束仍无内容，判定为空响应 (buffered=%d)", len(bufferedEvents))
+		return nil, common.NewRetrySameCandidateError(ErrEmptyStreamResponse)
 	}
 
 	if envCfg.EnableResponseLogs {
@@ -811,27 +956,17 @@ func handleStreamSuccess(
 	if originalReq != nil {
 		if sess, err := sessionManager.GetOrCreateSessionForConversation(originalReq.PreviousResponseID, conversationID); err == nil {
 			inputItems, _ := parseInputToItems(originalReq.Input)
-			for _, item := range inputItems {
-				_ = sessionManager.AppendMessage(sess.ID, item, 0)
-			}
-
+			turnItems := make([]types.ResponsesItem, 0, len(inputItems)+1)
+			turnItems = append(turnItems, inputItems...)
 			if outputText := strings.TrimSpace(outputTextBuffer.String()); outputText != "" {
-				_ = sessionManager.AppendMessage(sess.ID, types.ResponsesItem{
+				turnItems = append(turnItems, types.ResponsesItem{
 					Type:    "text",
 					Role:    "assistant",
 					Content: outputText,
-				}, collectedUsage.TotalTokens)
+				})
 			}
-
-			if hasImage {
-				_ = sessionManager.MarkSessionHasVisionContent(sess.ID)
-			}
-
-			if streamResponseID != "" {
-				_ = sessionManager.UpdateLastResponseID(sess.ID, streamResponseID)
-				if err := sessionManager.RecordResponseMapping(streamResponseID, sess.ID); err != nil {
-					log.Printf("[Session-Mapping] 持久化流式响应映射失败: %v", err)
-				}
+			if err := sessionManager.CommitTurn(sess.ID, turnItems, collectedUsage.TotalTokens, hasImage, streamResponseID); err != nil {
+				log.Printf("[Session] 持久化 Responses 流式会话轮次失败: %v", err)
 			}
 		} else {
 			log.Printf("[Session] 保存 Responses 流式会话失败: %v", err)
@@ -848,7 +983,7 @@ func handleStreamSuccess(
 		CacheCreation5mInputTokens: collectedUsage.CacheCreation5mInputTokens,
 		CacheCreation1hInputTokens: collectedUsage.CacheCreation1hInputTokens,
 		CacheTTL:                   collectedUsage.CacheTTL,
-	}
+	}, nil
 }
 
 // responsesStreamUsage 流式响应 usage 收集结构

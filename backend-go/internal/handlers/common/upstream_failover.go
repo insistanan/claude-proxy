@@ -47,6 +47,43 @@ type DeprioritizeKeyFunc func(apiKey string)
 // 注意：实现方需要自行关闭 resp.Body（与现有 handlers 保持一致）。
 type HandleSuccessFunc func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error)
 
+// RetrySameCandidateError 表示响应已成功到达代理，但模型暂时无法产出内容。
+// 这类错误属于模型容量状态，不应污染 API Key、BaseURL 或渠道的失败指标。
+type RetrySameCandidateError struct {
+	err error
+}
+
+func (e *RetrySameCandidateError) Error() string {
+	if e == nil || e.err == nil {
+		return "upstream model is temporarily unavailable"
+	}
+	return e.err.Error()
+}
+
+func (e *RetrySameCandidateError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func NewRetrySameCandidateError(err error) error {
+	return &RetrySameCandidateError{err: err}
+}
+
+func isRetrySameCandidateError(err error) bool {
+	var target *RetrySameCandidateError
+	return errors.As(err, &target)
+}
+
+// IsUpstreamModelCapacityError 仅匹配已知的明确容量错误，避免用裸 capacity
+// 误判业务正文或其他含义不同的错误。
+func IsUpstreamModelCapacityError(body []byte) bool {
+	message := strings.ToLower(string(body))
+	return strings.Contains(message, "selected model is at capacity") ||
+		strings.Contains(message, "model is at capacity")
+}
+
 type AttemptLogContext struct {
 	ChannelIndex                      int
 	Model                             string
@@ -324,7 +361,9 @@ func TryUpstreamWithAllKeys(
 		currentBaseURL := urlResult.URL
 		originalIdx := urlResult.OriginalIdx // 原始索引用于指标记录
 		failedKeys := make(map[string]bool)  // 每个 BaseURL 重置失败 Key 列表
-		maxRetries := len(upstream.APIKeys)
+		const maxSameCandidateRetries = 1
+		sameCandidateRetries := make(map[string]int)
+		maxRetries := len(upstream.APIKeys) * (maxSameCandidateRetries + 1)
 
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			RestoreRequestBody(c, requestBody)
@@ -444,6 +483,27 @@ func TryUpstreamWithAllKeys(
 				resp.Body.Close()
 				respBodyBytes = utils.DecompressGzipIfNeeded(resp, respBodyBytes)
 				retrySucceeded := false
+
+				if IsUpstreamModelCapacityError(respBodyBytes) {
+					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					if pm := channelScheduler.GetProfileManager(); pm != nil {
+						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
+					}
+
+					lastError = fmt.Errorf("上游模型暂时满载")
+					lastFailoverError = &FailoverError{Status: resp.StatusCode, Body: respBodyBytes}
+					candidate := currentBaseURL + "\x00" + apiKey
+					canRetry := sameCandidateRetries[candidate] < maxSameCandidateRetries && c.Request.Context().Err() == nil
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "model_capacity", string(respBodyBytes), canRetry, isStream, nil)
+					if canRetry {
+						sameCandidateRetries[candidate]++
+						log.Printf("[%s-Capacity] 模型暂时满载，使用同一 BaseURL 和 Key 重试 (%d/%d)", apiType, sameCandidateRetries[candidate], maxSameCandidateRetries)
+						continue
+					}
+					failedKeys[apiKey] = true
+					continue
+				}
 
 				// 兼容部分严格的 OpenAI 协议网关：首次明确拒绝 prompt_cache_key 时，
 				// 使用同一渠道、BaseURL 和 API key 移除该字段后重试一次，并记住能力。
@@ -644,10 +704,6 @@ func TryUpstreamWithAllKeys(
 				}
 			}
 
-			if markURLSuccess != nil {
-				markURLSuccess(currentBaseURL)
-			}
-
 			usage, err = handleSuccess(c, resp, upstreamCopy, apiKey)
 			if err != nil {
 				lastError = err
@@ -661,6 +717,26 @@ func TryUpstreamWithAllKeys(
 					}
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", resp.StatusCode, false, attemptStart, "client_cancelled", err.Error(), false, isStream, usage)
 					log.Printf("[%s-Cancel] 请求已取消，停止渠道 failover", apiType)
+				} else if isRetrySameCandidateError(err) && !c.Writer.Written() {
+					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					if pm := channelScheduler.GetProfileManager(); pm != nil {
+						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
+					}
+
+					candidate := currentBaseURL + "\x00" + apiKey
+					canRetry := sameCandidateRetries[candidate] < maxSameCandidateRetries && c.Request.Context().Err() == nil
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "model_capacity", err.Error(), canRetry, isStream, usage)
+					if canRetry {
+						sameCandidateRetries[candidate]++
+						log.Printf("[%s-Capacity] 上游未产出内容，使用同一 BaseURL 和 Key 重试 (%d/%d)", apiType, sameCandidateRetries[candidate], maxSameCandidateRetries)
+						continue
+					}
+
+					// 仅在本次请求内排除该 Key，继续其他候选；不写入 Key 熔断和失败率。
+					failedKeys[apiKey] = true
+					lastFailoverError = &FailoverError{Status: http.StatusServiceUnavailable, Body: []byte(err.Error())}
+					continue
 				} else {
 					// 真实渠道故障：计入失败指标
 					cfgManager.MarkKeyAsFailed(apiKey, apiType)
@@ -685,6 +761,10 @@ func TryUpstreamWithAllKeys(
 					}
 				}
 				return true, "", 0, nil, usage, err
+			}
+
+			if markURLSuccess != nil {
+				markURLSuccess(currentBaseURL)
 			}
 
 			metricsManager.RecordRequestFinalizeSuccess(currentBaseURL, apiKey, requestID, usage)

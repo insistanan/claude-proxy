@@ -315,6 +315,7 @@ func classifyMessage(msg string) (bool, bool) {
 		"timeout", "timed out", "temporarily",
 		"overloaded", "unavailable", "retry",
 		"server error", "internal error",
+		"selected model is at capacity", "model is at capacity",
 		"超时", "暂时", "重试",
 	}
 	for _, keyword := range transientKeywords {

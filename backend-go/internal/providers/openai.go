@@ -424,22 +424,29 @@ func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 	if len(openaiResp.Choices) > 0 {
 		choice := openaiResp.Choices[0]
 		msg := choice.Message
+		visibleContent := ""
+		if content, ok := msg.Content.(string); ok {
+			visibleContent, embeddedReasoning := splitEmbeddedReasoning(content)
+			if embeddedReasoning != "" {
+				cacheMessage := msg
+				cacheMessage.Content = visibleContent
+				reasoning := msg.ReasoningContent + embeddedReasoning
+				storeReasoningForAssistantMessage(cacheMessage, reasoning)
+			}
+		}
 
-		// Chat 推理模型会要求下一轮回传 reasoning_content；将其保存为 Claude thinking，
-		// 同时缓存完整 assistant 消息，供客户端回传历史丢失明文 thinking 时自动补回。
+		// Chat 推理模型会要求下一轮回传 reasoning_content。只在代理内部缓存，
+		// 不向 Messages 客户端发送 thinking：Cursor 会把它写入本地历史并在每轮重发，
+		// 既泄漏思考过程，也会快速占满上下文。
 		if msg.ReasoningContent != "" {
-			claudeResp.Content = append(claudeResp.Content, types.ClaudeContent{
-				Type:     "thinking",
-				Thinking: msg.ReasoningContent,
-			})
 			storeReasoningForAssistantMessage(msg, msg.ReasoningContent)
 		}
 
 		// 添加文本内容
-		if str, ok := msg.Content.(string); ok && str != "" {
+		if visibleContent != "" {
 			claudeResp.Content = append(claudeResp.Content, types.ClaudeContent{
 				Type: "text",
-				Text: str,
+				Text: visibleContent,
 			})
 		}
 
@@ -532,15 +539,12 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		textBlockStarted := false
 		textBlockIndex := -1
 
-		// thinking 块状态跟踪
-		thinkingBlockStarted := false
-		thinkingBlockIndex := -1
-
 		// reasoning_content / 文本累积器：用于缓存 (assistant 文本 → reasoning)，
 		// 供客户端回传历史丢失明文 thinking 时自动补回（Chat 推理模型要求回传）。
 		// 注意：assistantTextBuffer 刻意不复用 textDeltaBuffer（后者在 closeTextBlock 时会 Reset）。
 		var reasoningDeltaBuffer strings.Builder
 		var assistantTextBuffer strings.Builder
+		embeddedReasoningMode := false
 
 		// message_start 事件状态
 		messageStartEmitted := false
@@ -564,34 +568,6 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			}
 			send(buildOpenAIMessageDeltaEvent(stopReason, streamUsage, hasStreamUsage))
 			messageDeltaEmitted = true
-		}
-
-		// 关闭 thinking 块的辅助函数
-		closeThinkingBlock := func() {
-			if !thinkingBlockStarted {
-				return
-			}
-			// 发送 signature_delta（空签名字段，非 Claude 原生不支持真实签名）
-			sigEvent := map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": thinkingBlockIndex,
-				"delta": map[string]string{
-					"type":      "signature_delta",
-					"signature": "",
-				},
-			}
-			sigJSON, _ := json.Marshal(sigEvent)
-			send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", sigJSON))
-
-			// 发送 content_block_stop
-			stopEvent := map[string]interface{}{
-				"type":  "content_block_stop",
-				"index": thinkingBlockIndex,
-			}
-			stopJSON, _ := json.Marshal(stopEvent)
-			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
-			thinkingBlockStarted = false
-			thinkingBlockIndex = -1
 		}
 
 		emitTextDelta := func(text string) {
@@ -746,7 +722,6 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 					ToolCalls: snapshotAssistantToolCalls(),
 				}, reasoningDeltaBuffer.String())
 			}
-			closeThinkingBlock()
 			closeTextBlock()
 			closeAllToolCalls()
 			if pendingStopReason == "" && messageStartEmitted {
@@ -829,72 +804,47 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				continue
 			}
 
-			// 将上游 reasoning_content 映射为 Claude thinking，供下一轮原样回传。
+			// reasoning_content 只缓存、不下发。下一轮若上游要求原样回传，
+			// finishStream 会按最终正文/工具调用指纹从代理缓存中补齐。
 			if reasoningContent := extractOpenAIReasoningContent(delta); reasoningContent != "" {
 				reasoningDeltaBuffer.WriteString(reasoningContent)
-				closeTextBlock()
-				if !thinkingBlockStarted {
-					thinkingBlockIndex = nextBlockIndex
-					nextBlockIndex++
-					startEvent := map[string]interface{}{
-						"type":  "content_block_start",
-						"index": thinkingBlockIndex,
-						"content_block": map[string]string{
-							"type":      "thinking",
-							"thinking":  "",
-							"signature": "",
-						},
-					}
-					startJSON, _ := json.Marshal(startEvent)
-					send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
-					thinkingBlockStarted = true
-				}
-				deltaEvent := map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": thinkingBlockIndex,
-					"delta": map[string]string{
-						"type":     "thinking_delta",
-						"thinking": reasoningContent,
-					},
-				}
-				deltaJSON, _ := json.Marshal(deltaEvent)
-				send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
 			}
 
 			// 处理文本内容
 			if content, ok := delta["content"].(string); ok && content != "" {
-				assistantTextBuffer.WriteString(content)
-				// 如果有 thinking 块正在进行，先关闭它
-				closeThinkingBlock()
-
-				// 如果是第一个文本块,发送 content_block_start
-				if !textBlockStarted {
-					textBlockIndex = nextBlockIndex
-					nextBlockIndex++
-					startEvent := map[string]interface{}{
-						"type":  "content_block_start",
-						"index": textBlockIndex,
-						"content_block": map[string]string{
-							"type": "text",
-							"text": "",
-						},
-					}
-					startJSON, _ := json.Marshal(startEvent)
-					send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
-					textBlockStarted = true
+				visibleContent, embeddedReasoning := splitEmbeddedReasoningDelta(content, &embeddedReasoningMode)
+				if embeddedReasoning != "" {
+					reasoningDeltaBuffer.WriteString(embeddedReasoning)
 				}
+				if visibleContent != "" {
+					assistantTextBuffer.WriteString(visibleContent)
+					// 如果是第一个文本块,发送 content_block_start
+					if !textBlockStarted {
+						textBlockIndex = nextBlockIndex
+						nextBlockIndex++
+						startEvent := map[string]interface{}{
+							"type":  "content_block_start",
+							"index": textBlockIndex,
+							"content_block": map[string]string{
+								"type": "text",
+								"text": "",
+							},
+						}
+						startJSON, _ := json.Marshal(startEvent)
+						send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
+						textBlockStarted = true
+					}
 
-				textDeltaBuffer.WriteString(content)
-				if shouldFlushOpenAITextDelta(textDeltaBuffer.String(), content) {
-					flushTextDelta()
+					textDeltaBuffer.WriteString(visibleContent)
+					if shouldFlushOpenAITextDelta(textDeltaBuffer.String(), visibleContent) {
+						flushTextDelta()
+					}
 				}
 			}
 
 			// 处理工具调用。部分 OpenAI 兼容上游会在普通文本 delta 中携带空 tool_calls: []，
 			// 不能因此关闭文本块，否则 Claude Code 会把连续文本拆成多个 content block 显示。
 			if toolCalls, ok := delta["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
-				// 如果有 thinking/文本块正在进行,先关闭它们
-				closeThinkingBlock()
 				closeTextBlock()
 
 				for _, tc := range toolCalls {
@@ -945,7 +895,6 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			// 处理结束原因
 			if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" && finishReason != "none" && finishReason != "null" {
 				// 关闭所有未关闭的块
-				closeThinkingBlock()
 				closeTextBlock()
 				closeAllToolCalls()
 
@@ -1417,6 +1366,80 @@ func extractOpenAIReasoningContent(fields map[string]interface{}) string {
 		}
 	}
 	return ""
+}
+
+// splitEmbeddedReasoning 隐藏部分 Chat 网关把推理直接塞进 content 的常见标签格式。
+// 没有标签时原样返回，避免误伤普通回答文本。
+func splitEmbeddedReasoning(content string) (visible, reasoning string) {
+	visibleBuilder := strings.Builder{}
+	reasoningBuilder := strings.Builder{}
+	reasoningMode := false
+	visible, reasoning = splitEmbeddedReasoningDelta(content, &reasoningMode)
+	visibleBuilder.WriteString(visible)
+	reasoningBuilder.WriteString(reasoning)
+	return visibleBuilder.String(), reasoningBuilder.String()
+}
+
+func splitEmbeddedReasoningDelta(content string, reasoningMode *bool) (visible, reasoning string) {
+	if content == "" {
+		return "", ""
+	}
+	if reasoningMode == nil {
+		return content, ""
+	}
+
+	lower := strings.ToLower(content)
+	visibleBuilder := strings.Builder{}
+	reasoningBuilder := strings.Builder{}
+	for len(content) > 0 {
+		if *reasoningMode {
+			closeIndex, closeLength := findEmbeddedReasoningClose(lower)
+			if closeIndex < 0 {
+				reasoningBuilder.WriteString(content)
+				break
+			}
+			reasoningBuilder.WriteString(content[:closeIndex])
+			content = content[closeIndex+closeLength:]
+			lower = lower[closeIndex+closeLength:]
+			*reasoningMode = false
+			continue
+		}
+
+		openIndex, openLength := findEmbeddedReasoningOpen(lower)
+		if openIndex < 0 {
+			visibleBuilder.WriteString(content)
+			break
+		}
+		visibleBuilder.WriteString(content[:openIndex])
+		content = content[openIndex+openLength:]
+		lower = lower[openIndex+openLength:]
+		*reasoningMode = true
+	}
+	return visibleBuilder.String(), reasoningBuilder.String()
+}
+
+func findEmbeddedReasoningOpen(value string) (int, int) {
+	thinkIndex := strings.Index(value, "<think>")
+	thinkingIndex := strings.Index(value, "<thinking>")
+	if thinkIndex < 0 {
+		return thinkingIndex, len("<thinking>")
+	}
+	if thinkingIndex < 0 || thinkIndex < thinkingIndex {
+		return thinkIndex, len("<think>")
+	}
+	return thinkingIndex, len("<thinking>")
+}
+
+func findEmbeddedReasoningClose(value string) (int, int) {
+	thinkIndex := strings.Index(value, "</think>")
+	thinkingIndex := strings.Index(value, "</thinking>")
+	if thinkIndex < 0 {
+		return thinkingIndex, len("</thinking>")
+	}
+	if thinkingIndex < 0 || thinkIndex < thinkingIndex {
+		return thinkIndex, len("</think>")
+	}
+	return thinkingIndex, len("</thinking>")
 }
 
 func populateOpenAIReasoningContent(response *types.OpenAIResponse, body []byte) {

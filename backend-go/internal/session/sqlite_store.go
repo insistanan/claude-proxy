@@ -57,71 +57,79 @@ func (s *sqliteStore) initSchema() error {
 	)`); err != nil {
 		return err
 	}
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS response_session_access (
+		session_id TEXT PRIMARY KEY,
+		last_access_at INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	// 会话删除需要通过 Responses 外部 ID 解析共享对话别名；对仅启用
+	// Responses 的测试/部署也先建立兼容表，正式对话组件会复用它。
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS conversation_aliases (
+		alias_key TEXT PRIMARY KEY,
+		conversation_id TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec("CREATE INDEX IF NOT EXISTS idx_response_sessions_conversation_id ON response_sessions(conversation_id)"); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec("CREATE INDEX IF NOT EXISTS idx_response_session_mappings_session_id ON response_session_mappings(session_id)"); err != nil {
 		return err
 	}
-	return s.backfillConversationIDs()
+	return nil
 }
 
-func (s *sqliteStore) load() (map[string]*Session, map[string]string, error) {
-	sessions := make(map[string]*Session)
-	rows, err := s.db.Query(`SELECT id, conversation_id, messages_json, last_response_id, created_at, last_access_at,
-		total_tokens, has_vision_content FROM response_sessions`)
-	if err != nil {
-		return nil, nil, err
-	}
-	for rows.Next() {
-		var session Session
-		var messagesJSON string
-		var createdAt, lastAccessAt int64
-		var hasVision int
-		if err := rows.Scan(&session.ID, &session.ConversationID, &messagesJSON, &session.LastResponseID, &createdAt, &lastAccessAt, &session.TotalTokens, &hasVision); err != nil {
-			_ = rows.Close()
-			return nil, nil, err
-		}
-		if err := json.Unmarshal([]byte(messagesJSON), &session.Messages); err != nil {
-			_ = rows.Close()
-			return nil, nil, fmt.Errorf("解析 Responses 会话 %s 失败: %w", session.ID, err)
-		}
-		session.CreatedAt = time.Unix(createdAt, 0)
-		session.LastAccessAt = time.Unix(lastAccessAt, 0)
-		session.HasVisionContent = hasVision != 0
-		sessions[session.ID] = &session
-	}
-	if err := rows.Close(); err != nil {
-		return nil, nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, err
-	}
+// loadByResponseID 按需恢复单条会话链。messages_json 可能很大，启动时禁止全表读取。
+func (s *sqliteStore) loadByResponseID(responseID string, maxAge time.Duration) (*Session, bool, error) {
+	row := s.db.QueryRow(`SELECT rs.id, rs.conversation_id, rs.messages_json, rs.last_response_id,
+		rs.created_at, COALESCE(rsa.last_access_at, rs.last_access_at), rs.total_tokens, rs.has_vision_content
+		FROM response_session_mappings AS rsm
+		JOIN response_sessions AS rs ON rs.id = rsm.session_id
+		LEFT JOIN response_session_access AS rsa ON rsa.session_id = rs.id
+		WHERE rsm.response_id = ?`, responseID)
 
-	mappings := make(map[string]string)
-	mappingRows, err := s.db.Query("SELECT response_id, session_id FROM response_session_mappings")
-	if err != nil {
-		return nil, nil, err
-	}
-	defer mappingRows.Close()
-	for mappingRows.Next() {
-		var responseID, sessionID string
-		if err := mappingRows.Scan(&responseID, &sessionID); err != nil {
-			return nil, nil, err
+	var session Session
+	var messagesJSON string
+	var createdAt, lastAccessAt int64
+	var hasVision int
+	if err := row.Scan(&session.ID, &session.ConversationID, &messagesJSON, &session.LastResponseID,
+		&createdAt, &lastAccessAt, &session.TotalTokens, &hasVision); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false, nil
 		}
-		if _, ok := sessions[sessionID]; ok {
-			mappings[responseID] = sessionID
-		}
+		return nil, false, err
 	}
-	return sessions, mappings, mappingRows.Err()
+	session.CreatedAt = time.Unix(createdAt, 0)
+	session.LastAccessAt = time.Unix(lastAccessAt, 0)
+	if maxAge > 0 && time.Since(session.LastAccessAt) > maxAge {
+		if err := s.deleteSession(session.ID); err != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+	if err := json.Unmarshal([]byte(messagesJSON), &session.Messages); err != nil {
+		return nil, false, fmt.Errorf("解析 Responses 会话 %s 失败: %w", session.ID, err)
+	}
+	session.HasVisionContent = hasVision != 0
+	return &session, true, nil
 }
 
 func (s *sqliteStore) upsertSession(session *Session) error {
+	return s.upsertSessionAndMapping(session, "")
+}
+
+func (s *sqliteStore) upsertSessionAndMapping(session *Session, responseID string) error {
 	messages, err := json.Marshal(session.Messages)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO response_sessions (
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.Exec(`INSERT INTO response_sessions (
 		id, conversation_id, messages_json, last_response_id, created_at, last_access_at, total_tokens, has_vision_content
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
@@ -132,8 +140,92 @@ func (s *sqliteStore) upsertSession(session *Session) error {
 		total_tokens = excluded.total_tokens,
 		has_vision_content = excluded.has_vision_content`,
 		session.ID, session.ConversationID, string(messages), session.LastResponseID, session.CreatedAt.Unix(), session.LastAccessAt.Unix(),
-		session.TotalTokens, boolToInt(session.HasVisionContent))
+		session.TotalTokens, boolToInt(session.HasVisionContent)); err != nil {
+		return err
+	}
+	if responseID != "" {
+		if _, err = tx.Exec(`INSERT INTO response_session_mappings (response_id, session_id) VALUES (?, ?)
+			ON CONFLICT(response_id) DO UPDATE SET session_id = excluded.session_id`, responseID, session.ID); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(`INSERT INTO response_session_access (session_id, last_access_at) VALUES (?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET last_access_at = excluded.last_access_at`, session.ID, session.LastAccessAt.Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *sqliteStore) touchSession(session *Session, updateConversation bool) error {
+	if updateConversation {
+		if _, err := s.db.Exec(`UPDATE response_sessions SET conversation_id = ? WHERE id = ?`, session.ConversationID, session.ID); err != nil {
+			return err
+		}
+	}
+	return s.upsertSessionAccess(session.ID, session.LastAccessAt)
+}
+
+func (s *sqliteStore) upsertSessionAccess(sessionID string, lastAccessAt time.Time) error {
+	_, err := s.db.Exec(`INSERT INTO response_session_access (session_id, last_access_at) VALUES (?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET last_access_at = excluded.last_access_at`, sessionID, lastAccessAt.Unix())
 	return err
+}
+
+func (s *sqliteStore) markVisionContent(session *Session) error {
+	if _, err := s.db.Exec(`UPDATE response_sessions SET has_vision_content = 1 WHERE id = ?`, session.ID); err != nil {
+		return err
+	}
+	return s.upsertSessionAccess(session.ID, session.LastAccessAt)
+}
+
+func (s *sqliteStore) updateLastResponseID(session *Session) error {
+	if _, err := s.db.Exec(`UPDATE response_sessions SET last_response_id = ? WHERE id = ?`, session.LastResponseID, session.ID); err != nil {
+		return err
+	}
+	return s.upsertSessionAccess(session.ID, session.LastAccessAt)
+}
+
+// pruneToLimit 为新会话腾出持久化容量，并返回被删除的会话 ID。
+func (s *sqliteStore) pruneToLimit(limit int) ([]string, error) {
+	if limit < 0 {
+		return nil, nil
+	}
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM response_sessions").Scan(&count); err != nil {
+		return nil, err
+	}
+	removeCount := count - limit
+	if removeCount <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT rs.id FROM response_sessions AS rs
+		LEFT JOIN response_session_access AS rsa ON rsa.session_id = rs.id
+		ORDER BY CASE WHEN rsa.last_access_at IS NULL THEN 0 ELSE 1 END,
+			rsa.last_access_at ASC, rs.rowid ASC LIMIT ?`, removeCount)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if err := s.deleteSession(id); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
 }
 
 func (s *sqliteStore) upsertMapping(responseID string, sessionID string) error {
@@ -151,6 +243,9 @@ func (s *sqliteStore) deleteSession(sessionID string) error {
 	if _, err := tx.Exec("DELETE FROM response_session_mappings WHERE session_id = ?", sessionID); err != nil {
 		return err
 	}
+	if _, err := tx.Exec("DELETE FROM response_session_access WHERE session_id = ?", sessionID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec("DELETE FROM response_sessions WHERE id = ?", sessionID); err != nil {
 		return err
 	}
@@ -163,12 +258,33 @@ func (s *sqliteStore) deleteConversationSessions(conversationID string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`DELETE FROM response_session_mappings WHERE session_id IN (
-		SELECT id FROM response_sessions WHERE conversation_id = ?
-	)`, conversationID); err != nil {
+	if _, err := tx.Exec(`CREATE TEMP TABLE response_session_delete_ids (id TEXT PRIMARY KEY)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec("DELETE FROM response_sessions WHERE conversation_id = ?", conversationID); err != nil {
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO response_session_delete_ids (id)
+		SELECT id FROM response_sessions WHERE conversation_id = ?
+		UNION
+		SELECT rsm.session_id FROM response_session_mappings AS rsm
+		JOIN conversation_aliases AS ca ON ca.alias_key = lower('responses|' || rsm.response_id)
+		WHERE ca.conversation_id = ?`, conversationID, conversationID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM response_session_mappings WHERE session_id IN (
+		SELECT id FROM response_session_delete_ids
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM response_session_access WHERE session_id IN (
+		SELECT id FROM response_session_delete_ids
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM response_sessions WHERE id IN (
+		SELECT id FROM response_session_delete_ids
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DROP TABLE response_session_delete_ids"); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -184,6 +300,9 @@ func (s *sqliteStore) deleteAllSessions() error {
 		return err
 	}
 	if _, err := tx.Exec("DELETE FROM response_sessions"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM response_session_access"); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -217,31 +336,6 @@ func (s *sqliteStore) ensureColumn(tableName string, columnName string, declarat
 		return nil
 	}
 	_, err = s.db.Exec("ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + declaration)
-	return err
-}
-
-func (s *sqliteStore) backfillConversationIDs() error {
-	var aliasesTableExists int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation_aliases'`).Scan(&aliasesTableExists); err != nil {
-		return err
-	}
-	if aliasesTableExists == 0 {
-		return nil
-	}
-	_, err := s.db.Exec(`UPDATE response_sessions
-	SET conversation_id = (
-		SELECT ca.conversation_id
-		FROM response_session_mappings AS rsm
-		JOIN conversation_aliases AS ca ON ca.alias_key = lower('responses|' || rsm.response_id)
-		WHERE rsm.session_id = response_sessions.id
-		LIMIT 1
-	)
-	WHERE conversation_id = '' AND EXISTS (
-		SELECT 1
-		FROM response_session_mappings AS rsm
-		JOIN conversation_aliases AS ca ON ca.alias_key = lower('responses|' || rsm.response_id)
-		WHERE rsm.session_id = response_sessions.id
-	)`)
 	return err
 }
 

@@ -17,23 +17,26 @@ import (
 // （"The reasoning_content in the thinking mode must be passed back to the API."，
 // Claude 兼容网关则报 "The content[].thinking in the thinking mode must be passed back..."）。
 //
-// 代理把上游 reasoning_content 转成 Claude thinking 块返回客户端后，
-// 客户端（Claude Code / Cursor）回传历史时往往把明文 thinking 转成 redacted_thinking
-// 或直接丢弃，导致 messages→chat 转换时无法回传 reasoning_content。
+// 代理不把上游 reasoning_content 暴露给 Messages 客户端；客户端历史中没有明文
+// thinking 时，messages→chat 转换仍需要从缓存回填 reasoning_content。
 // 该缓存把每条 assistant 响应的（消息指纹 → reasoning_content）暂存，
 // 在下一轮转换 assistant 历史消息缺失明文 thinking 时自动补回。缓存对所有
 // 上游协议共用，使故障转移到严格 Chat 渠道时仍可回放前一渠道的 thinking。
 type reasoningContentCache struct {
-	mu      sync.RWMutex
-	entries map[string]string
-	order   []string // 插入顺序，用于容量淘汰（FIFO）
-	max     int
+	mu        sync.RWMutex
+	entries   map[string]string
+	order     []string // 插入顺序，用于容量淘汰（FIFO）
+	max       int
+	maxBytes  int
+	usedBytes int
 }
 
 // reasoningCache 全局缓存实例。GetProvider 每次返回新的 OpenAIProvider 实例，
 // 因此缓存必须挂在包级，不能放在 provider 实例上。工具调用会同时写入完整
 // 消息键和 ID 回退键，容量相应提高以覆盖长时间 Claude Code 会话。
 var reasoningCache = newReasoningContentCache(2048)
+
+const maxReasoningCacheBytes = 32 * 1024 * 1024
 
 // missingReasoningContentFallback 用于历史工具调用的最后一道兼容兜底。
 //
@@ -49,8 +52,9 @@ func newReasoningContentCache(max int) *reasoningContentCache {
 		max = 2048
 	}
 	return &reasoningContentCache{
-		entries: make(map[string]string),
-		max:     max,
+		entries:  make(map[string]string),
+		max:      max,
+		maxBytes: maxReasoningCacheBytes,
 	}
 }
 
@@ -60,14 +64,23 @@ func (c *reasoningContentCache) put(key, value string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, exists := c.entries[key]; !exists {
+	if len(key)+len(value) > c.maxBytes {
+		return
+	}
+	if old, exists := c.entries[key]; exists {
+		c.usedBytes -= len(key) + len(old)
+	} else {
 		c.order = append(c.order, key)
 	}
 	c.entries[key] = value
-	for len(c.order) > c.max {
+	c.usedBytes += len(key) + len(value)
+	for len(c.order) > c.max || c.usedBytes > c.maxBytes {
 		oldest := c.order[0]
 		c.order = c.order[1:]
-		delete(c.entries, oldest)
+		if old, exists := c.entries[oldest]; exists {
+			c.usedBytes -= len(oldest) + len(old)
+			delete(c.entries, oldest)
+		}
 	}
 }
 
@@ -89,6 +102,7 @@ func (c *reasoningContentCache) reset() {
 	defer c.mu.Unlock()
 	c.entries = make(map[string]string)
 	c.order = nil
+	c.usedBytes = 0
 }
 
 // reasoningFingerprint 生成缓存键的指纹。
