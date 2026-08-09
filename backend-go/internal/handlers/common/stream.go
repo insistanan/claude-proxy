@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sort"
@@ -548,6 +549,17 @@ func HandleStreamResponse(
 	requestModel string,
 ) (*types.Usage, error) {
 	defer resp.Body.Close()
+
+	// 校验上游 Content-Type：如果不是 event-stream，说明上游返回了非流式错误内容。
+	// 此时还未写响应头，返回 error 可触发 failover。
+	if !IsEventStreamResponse(resp) {
+		bodySnippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		snippet := strings.TrimSpace(string(bodySnippet))
+		log.Printf("[Messages-Stream] 上游返回非 event-stream Content-Type: %s, body: %s",
+			resp.Header.Get("Content-Type"), snippet)
+		return nil, fmt.Errorf("upstream returned non-stream response (Content-Type: %s): %s",
+			resp.Header.Get("Content-Type"), snippet)
+	}
 
 	// 使用带 ctx 的流式方法：客户端断连时 ctx 取消，
 	// provider goroutine 在向 eventChan 发送事件时 select ctx.Done() 立即退出，
