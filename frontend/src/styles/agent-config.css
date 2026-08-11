@@ -1,0 +1,200 @@
+.agent-config-page {
+  width: 100%;
+  max-width: 1480px;
+  margin: 0 auto;
+  padding-bottom: 40px;
+}
+
+.agent-config-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 64px;
+  margin-bottom: 20px;
+}
+
+.agent-config-header__copy {
+  min-width: 0;
+}
+
+.agent-config-header__copy h1 {
+  margin: 0;
+  color: rgb(var(--v-theme-on-background));
+  font-size: 1.5rem;
+  font-weight: 750;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.agent-config-header__copy p {
+  margin: 5px 0 0;
+  color: rgba(var(--v-theme-on-background), 0.62);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.agent-config-header__actions,
+.agent-config-panel-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-config-location {
+  margin-bottom: 20px;
+}
+
+.agent-config-location :is(.v-alert__content, .agent-config-location__content) {
+  min-width: 0;
+  width: 100%;
+}
+
+.agent-config-location__content {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-config-location__label {
+  color: rgb(var(--v-theme-info));
+  font-weight: 650;
+}
+
+.agent-config-location code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.agent-config-page .agent-config-panel,
+.agent-config-page .provider-list-card,
+.agent-config-page .provider-editor-card,
+.agent-config-page .settings-card,
+.agent-config-page .empty-editor {
+  overflow: hidden;
+  border-color: rgba(var(--v-theme-outline), 0.72) !important;
+}
+
+.agent-config-page .provider-list-card {
+  min-height: 360px;
+}
+
+.agent-config-page .provider-list-card .v-list-item {
+  min-height: 58px;
+  margin: 2px 8px;
+}
+
+.agent-config-page .provider-list-card .v-list-item--active {
+  border: 1px solid rgba(var(--v-theme-primary), 0.28);
+}
+
+.agent-config-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 68px;
+  padding: 14px 20px;
+}
+
+.agent-config-panel-title {
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  font-size: 1rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.agent-config-panel-subtitle {
+  margin-top: 3px;
+  color: rgba(var(--v-theme-on-surface), 0.58);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.agent-config-callout {
+  padding: 14px 16px 16px;
+  background: rgba(var(--v-theme-primary), 0.07);
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs);
+}
+
+.agent-config-callout__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: rgb(var(--v-theme-primary));
+  font-size: 0.875rem;
+  font-weight: 750;
+}
+
+.agent-config-page .empty-editor {
+  min-height: 390px;
+}
+
+.agent-config-page .empty-providers,
+.agent-config-page .empty-models {
+  border: 1px dashed rgba(var(--v-theme-outline), 0.65);
+  border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs);
+}
+
+.agent-config-page .model-panels .v-expansion-panel {
+  margin-bottom: 8px;
+  border-color: rgba(var(--v-theme-outline), 0.6) !important;
+}
+
+.agent-config-tabs {
+  margin-bottom: 20px;
+  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.5);
+}
+
+.agent-config-tabs .v-tab {
+  min-height: 48px;
+  font-weight: 700;
+}
+
+@media (max-width: 600px) {
+  .agent-config-page {
+    padding-bottom: 24px;
+  }
+
+  .agent-config-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .agent-config-header__copy h1 {
+    font-size: 1.3rem;
+  }
+
+  .agent-config-header__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .agent-config-location {
+    margin-bottom: 16px;
+  }
+
+  .agent-config-panel-header {
+    align-items: flex-start;
+    flex-direction: column;
+    min-height: auto;
+    padding: 14px 16px;
+  }
+
+  .agent-config-panel-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .agent-config-tabs {
+    overflow-x: auto;
+  }
+}

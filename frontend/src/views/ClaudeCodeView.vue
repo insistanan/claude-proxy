@@ -1,32 +1,30 @@
 <template>
-  <div class="claude-code-page">
-    <div class="page-heading mb-5">
-      <div>
-        <div class="text-h5 font-weight-bold">Claude Code 配置</div>
-        <div class="text-body-2 text-medium-emphasis mt-1">管理当前服务运行用户的 Claude Code 代理和模型映射</div>
-      </div>
-      <div class="d-flex align-center ga-2">
+  <div class="agent-config-page claude-code-page">
+    <AgentConfigHeader title="Claude Code 配置" subtitle="管理当前服务运行用户的 Claude Code 代理和模型映射">
+      <template #default>
         <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="loadSettings">刷新</v-btn>
-        <v-btn color="primary" prepend-icon="mdi-content-copy" :loading="saving" :disabled="loading" @click="saveSettings">保存配置</v-btn>
-      </div>
-    </div>
+        <v-btn color="primary" prepend-icon="mdi-content-save" :loading="saving" :disabled="loading" @click="saveSettings">保存配置</v-btn>
+      </template>
+    </AgentConfigHeader>
 
     <v-alert v-if="error" type="error" variant="tonal" class="mb-5" closable @click:close="error = ''">{{ error }}</v-alert>
     <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-5" />
 
     <template v-else>
-      <v-alert type="info" variant="tonal" density="compact" class="mb-5 config-path-alert">
-        <div class="d-flex flex-wrap align-center ga-2">
-          <span>{{ settings?.exists ? '当前配置文件' : '首次保存将创建配置文件' }}</span>
-          <code>{{ settings?.path }}</code>
-          <v-chip v-if="settings?.jsonc" size="x-small" label>JSONC 将在保存后规范化为 JSON</v-chip>
-        </div>
-      </v-alert>
+      <AgentConfigLocation
+        :label="settings?.exists ? '当前配置文件' : '首次保存将创建配置文件'"
+        :path="settings?.path"
+      >
+        <v-chip v-if="settings?.jsonc" size="x-small" label>JSONC 将在保存后规范化为 JSON</v-chip>
+      </AgentConfigLocation>
 
       <v-row>
         <v-col cols="12" lg="7">
-          <v-card elevation="0" class="settings-card h-100">
-            <v-card-title class="px-5 pt-5 pb-2 text-subtitle-1 font-weight-bold">代理连接</v-card-title>
+          <v-card elevation="0" class="settings-card agent-config-panel h-100">
+            <div class="agent-config-panel-header">
+              <div class="agent-config-panel-title">代理连接</div>
+            </div>
+            <v-divider />
             <v-card-text class="pa-5">
               <v-select
                 v-model="selectedMessagesChannel"
@@ -67,8 +65,11 @@
         </v-col>
 
         <v-col cols="12" lg="5">
-          <v-card elevation="0" class="settings-card h-100">
-            <v-card-title class="px-5 pt-5 pb-2 text-subtitle-1 font-weight-bold">会话模型覆盖</v-card-title>
+          <v-card elevation="0" class="settings-card agent-config-panel h-100">
+            <div class="agent-config-panel-header">
+              <div class="agent-config-panel-title">会话模型覆盖</div>
+            </div>
+            <v-divider />
             <v-card-text class="pa-5">
               <v-text-field v-model.trim="model" label="主模型覆盖" variant="outlined" density="comfortable" placeholder="例如 sonnet 或完整模型 ID" hint="留空则使用 Claude Code 默认模型" persistent-hint />
               <v-text-field v-model.trim="reasoningModel" label="推理模型覆盖" variant="outlined" density="comfortable" placeholder="可选" hint="留空则保持 Claude Code 默认推理选择" persistent-hint />
@@ -77,10 +78,15 @@
         </v-col>
       </v-row>
 
-      <v-card elevation="0" class="settings-card mt-5">
-        <v-card-title class="px-5 pt-5 pb-1 text-subtitle-1 font-weight-bold">默认模型标识</v-card-title>
-        <v-card-subtitle class="px-5 pb-3">为空时不会写入对应环境变量，Claude Code 将使用自身默认模型。</v-card-subtitle>
-        <v-card-text class="pa-5 pt-2">
+      <v-card elevation="0" class="settings-card agent-config-panel mt-5">
+        <div class="agent-config-panel-header">
+          <div>
+            <div class="agent-config-panel-title">默认模型标识</div>
+            <div class="agent-config-panel-subtitle">为空时不会写入对应环境变量，Claude Code 将使用自身默认模型。</div>
+          </div>
+        </div>
+        <v-divider />
+        <v-card-text class="pa-5">
           <v-row v-for="item in modelDefaults" :key="item.family" class="model-default-row">
             <v-col cols="12" sm="3" class="d-flex align-center pt-sm-5">
               <v-chip :color="familyColor(item.family)" label>{{ familyTitle(item.family) }}</v-chip>
@@ -102,6 +108,8 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import AgentConfigHeader from '@/components/AgentConfigHeader.vue'
+import AgentConfigLocation from '@/components/AgentConfigLocation.vue'
 import { api, channelApiByType, type ClaudeCodeModelDefault, type ClaudeCodeSettings, type Channel } from '@/services/api'
 
 const loading = ref(false)
@@ -217,10 +225,5 @@ onMounted(loadSettings)
 </script>
 
 <style scoped>
-.claude-code-page { max-width: 1280px; margin: 0 auto; }
-.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.settings-card { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); }
-.config-path-alert code { overflow-wrap: anywhere; }
 .model-default-row + .model-default-row { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1); }
-@media (max-width: 600px) { .page-heading { align-items: flex-start; flex-direction: column; } }
 </style>

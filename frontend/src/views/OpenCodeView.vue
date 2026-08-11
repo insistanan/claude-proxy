@@ -1,15 +1,11 @@
 <template>
-  <div class="opencode-page">
-    <div class="page-heading mb-5">
-      <div>
-        <div class="text-h5 font-weight-bold">OpenCode 配置</div>
-        <div class="text-body-2 text-medium-emphasis mt-1">管理当前服务运行用户的 OpenCode 模型提供商和默认模型</div>
-      </div>
-      <div class="d-flex align-center ga-2">
+  <div class="agent-config-page opencode-page">
+    <AgentConfigHeader title="OpenCode 配置" subtitle="管理当前服务运行用户的 OpenCode 模型提供商和默认模型">
+      <template #default>
         <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="loadConfig">刷新</v-btn>
-        <v-btn color="primary" prepend-icon="mdi-content-copy" :loading="saving" :disabled="loading" @click="saveConfig">保存配置</v-btn>
-      </div>
-    </div>
+        <v-btn color="primary" prepend-icon="mdi-content-save" :loading="saving" :disabled="loading" @click="saveConfig">保存配置</v-btn>
+      </template>
+    </AgentConfigHeader>
 
     <v-alert v-if="loadError" type="error" variant="tonal" class="mb-5" closable @click:close="loadError = ''">
       {{ loadError }}
@@ -18,20 +14,19 @@
     <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-5" />
 
     <template v-else>
-      <v-alert type="info" variant="tonal" density="compact" class="mb-5 config-path-alert">
-        <div class="d-flex flex-wrap align-center ga-2">
-          <span>{{ config?.exists ? '当前配置文件' : '首次保存将创建配置文件' }}</span>
-          <code>{{ config?.path }}</code>
-          <v-chip v-if="config?.jsonc" size="x-small" label>JSONC 将在保存后规范化为 JSON</v-chip>
-        </div>
-      </v-alert>
+      <AgentConfigLocation
+        :label="config?.exists ? '当前配置文件' : '首次保存将创建配置文件'"
+        :path="config?.path"
+      >
+        <v-chip v-if="config?.jsonc" size="x-small" label>JSONC 将在保存后规范化为 JSON</v-chip>
+      </AgentConfigLocation>
 
       <v-row>
         <v-col cols="12" lg="4">
           <v-card class="provider-list-card" elevation="0">
-            <div class="d-flex align-center justify-space-between px-4 py-3">
-              <div class="text-subtitle-1 font-weight-bold">提供商</div>
-              <v-btn icon="mdi-plus" size="small" variant="text" title="添加提供商" @click="addProvider" />
+            <div class="agent-config-panel-header">
+              <div class="agent-config-panel-title">提供商</div>
+              <v-btn icon="mdi-plus" size="small" variant="text" title="添加提供商" aria-label="添加提供商" @click="addProvider" />
             </div>
             <v-divider />
             <v-list v-if="providers.length" density="comfortable" nav class="py-2">
@@ -62,23 +57,25 @@
 
         <v-col cols="12" lg="8">
           <v-card v-if="selectedProvider" elevation="0" class="provider-editor-card">
-            <div class="d-flex align-center justify-space-between px-5 py-4">
+            <div class="agent-config-panel-header">
               <div>
-                <div class="text-subtitle-1 font-weight-bold">{{ selectedProvider.name || '新提供商' }}</div>
-                <div class="text-caption text-medium-emphasis">配置会写入 OpenCode 标准 provider 字段</div>
+                <div class="agent-config-panel-title">{{ selectedProvider.name || '新提供商' }}</div>
+                <div class="agent-config-panel-subtitle">配置会写入 OpenCode 标准 provider 字段</div>
               </div>
-              <v-btn color="error" variant="text" size="small" prepend-icon="mdi-delete" @click="removeProvider(selectedProvider.id)">删除</v-btn>
+              <div class="agent-config-panel-actions">
+                <v-btn color="error" variant="text" size="small" prepend-icon="mdi-delete" @click="removeProvider(selectedProvider.id)">删除</v-btn>
+              </div>
             </div>
             <v-divider />
 
             <v-card-text class="pa-5">
               <!-- 从代理渠道快速选择 -->
-              <v-card variant="tonal" color="primary" class="mb-5 channel-quick-pick">
-                <v-card-title class="px-4 py-3 text-subtitle-2 font-weight-bold d-flex align-center ga-2">
+              <section class="agent-config-callout mb-5 channel-quick-pick">
+                <div class="agent-config-callout__title">
                   <v-icon size="18">mdi-lightning-bolt</v-icon>
                   从渠道快速选择
-                </v-card-title>
-                <v-card-text class="pa-4 pt-0">
+                </div>
+                <div>
                   <v-row>
                     <v-col cols="12" sm="6">
                       <v-select
@@ -110,8 +107,8 @@
                   <div class="text-caption text-medium-emphasis mt-1">
                     选择渠道后将自动填充协议、Base URL 与密钥，仍可手动微调
                   </div>
-                </v-card-text>
-              </v-card>
+                </div>
+              </section>
 
               <v-row>
                 <v-col cols="12" sm="6">
@@ -249,6 +246,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import AgentConfigHeader from '@/components/AgentConfigHeader.vue'
+import AgentConfigLocation from '@/components/AgentConfigLocation.vue'
 import { api, channelApiByType, type OpenCodeConfig, type OpenCodeProtocol, type OpenCodeProvider, type OpenCodeVariant, type SaveOpenCodeProvider, type Channel, type ApiTab } from '@/services/api'
 
 interface EditableVariant {
@@ -568,15 +567,6 @@ onMounted(loadConfig)
 </script>
 
 <style scoped>
-.opencode-page { max-width: 1480px; margin: 0 auto; }
-.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.config-path-alert code { overflow-wrap: anywhere; }
-.provider-list-card, .provider-editor-card, .default-model-card, .empty-editor { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); }
-.provider-list-card { min-height: 320px; }
-.empty-editor { min-height: 390px; }
-.empty-providers, .empty-models { border: 1px dashed rgba(var(--v-theme-on-surface), 0.2); border-radius: 6px; }
-.model-panels :deep(.v-expansion-panel) { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); margin-bottom: 8px; }
 .variants-section { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-radius: 8px; padding: 12px 16px; }
 .variant-row { flex-wrap: nowrap; }
-@media (max-width: 600px) { .page-heading { align-items: flex-start; flex-direction: column; } }
 </style>

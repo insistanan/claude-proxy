@@ -1,12 +1,8 @@
 <template>
-  <div class="piagent-page">
-    <div class="page-heading mb-4">
-      <div>
-        <div class="text-h5 font-weight-bold">pi-agent 配置</div>
-        <div class="text-body-2 text-medium-emphasis mt-1">管理当前服务运行用户的 pi-agent 模型供应商、凭据与备份</div>
-      </div>
+  <div class="agent-config-page piagent-page">
+    <AgentConfigHeader title="pi-agent 配置" subtitle="管理当前服务运行用户的 pi-agent 模型供应商、凭据与备份">
       <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="loadAll">刷新</v-btn>
-    </div>
+    </AgentConfigHeader>
 
     <v-alert v-if="disabled" type="warning" variant="tonal" class="mb-4">
       pi-agent 配置目录不可用。请确认 <code>~/.pi/agent</code> 目录存在并可写。
@@ -23,17 +19,13 @@
     <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-4" />
 
     <template v-if="!disabled && !loading">
-      <v-alert v-if="status" type="info" variant="tonal" density="compact" class="mb-4 config-path-alert">
-        <div class="d-flex flex-wrap align-center ga-2">
-          <span>配置目录</span>
-          <code>{{ status.configDir }}</code>
-          <v-chip v-if="!status.exists" size="x-small" color="warning" label>目录不存在</v-chip>
-          <v-chip v-else-if="!status.writable" size="x-small" color="error" label>不可写</v-chip>
-          <v-chip v-else size="x-small" color="success" label>可写</v-chip>
-        </div>
-      </v-alert>
+      <AgentConfigLocation v-if="status" label="配置目录" :path="status.configDir">
+        <v-chip v-if="!status.exists" size="x-small" color="warning" label>目录不存在</v-chip>
+        <v-chip v-else-if="!status.writable" size="x-small" color="error" label>不可写</v-chip>
+        <v-chip v-else size="x-small" color="success" label>可写</v-chip>
+      </AgentConfigLocation>
 
-      <v-tabs v-model="activeTab" color="primary" class="mb-4">
+      <v-tabs v-model="activeTab" color="primary" class="agent-config-tabs">
         <v-tab value="providers" prepend-icon="mdi-server-network">供应商</v-tab>
         <v-tab value="models" prepend-icon="mdi-tune">默认模型</v-tab>
         <v-tab value="credentials" prepend-icon="mdi-key-chain">凭据</v-tab>
@@ -46,8 +38,8 @@
           <v-row>
             <v-col cols="12" lg="4">
               <v-card class="provider-list-card" elevation="0">
-                <div class="d-flex align-center justify-space-between px-4 py-3">
-                  <div class="text-subtitle-1 font-weight-bold">供应商</div>
+                <div class="agent-config-panel-header">
+                  <div class="agent-config-panel-title">供应商</div>
                     <v-btn icon="mdi-plus" size="small" variant="text" title="添加供应商" aria-label="添加供应商" @click="addProvider" />
                 </div>
                 <v-divider />
@@ -70,12 +62,12 @@
 
             <v-col cols="12" lg="8">
               <v-card v-if="selectedProvider" elevation="0" class="provider-editor-card">
-                <div class="d-flex align-center justify-space-between px-5 py-4">
+                <div class="agent-config-panel-header">
                   <div>
-                    <div class="text-subtitle-1 font-weight-bold">{{ selectedProvider.name || '新供应商' }}</div>
-                    <div class="text-caption text-medium-emphasis">写入 pi-agent 的 models.json providers 字段</div>
+                    <div class="agent-config-panel-title">{{ selectedProvider.name || '新供应商' }}</div>
+                    <div class="agent-config-panel-subtitle">写入 pi-agent 的 models.json providers 字段</div>
                   </div>
-                  <div class="d-flex align-center ga-1">
+                  <div class="agent-config-panel-actions">
                     <v-tooltip text="连通性测试"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-test-tube" size="small" variant="text" aria-label="测试供应商连通性" :disabled="!isExistingProvider || discovering" :loading="testing" @click="testProvider" /></template></v-tooltip>
                     <v-tooltip text="发现 OpenAI 兼容模型"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-magnify" size="small" variant="text" aria-label="发现 OpenAI 兼容模型" :disabled="!isExistingProvider || testing || (selectedProvider.api && !['openai-completions', 'openai-responses'].includes(selectedProvider.api))" :loading="discovering" @click="discoverModels" /></template></v-tooltip>
                     <v-btn color="error" variant="text" size="small" prepend-icon="mdi-delete" :disabled="!isExistingProvider" @click="removeProvider(selectedProvider.id)">删除</v-btn>
@@ -241,11 +233,11 @@
 
         <!-- 默认模型 -->
         <v-window-item value="models">
-          <v-card elevation="0">
-            <div class="d-flex align-center justify-space-between px-5 py-4">
+          <v-card elevation="0" class="agent-config-panel">
+            <div class="agent-config-panel-header">
               <div>
-                <div class="text-subtitle-1 font-weight-bold">默认模型设置</div>
-                <div class="text-caption text-medium-emphasis">写入 pi-agent 的 settings.json，其余字段保持不变</div>
+                <div class="agent-config-panel-title">默认模型设置</div>
+                <div class="agent-config-panel-subtitle">写入 pi-agent 的 settings.json，其余字段保持不变</div>
               </div>
               <v-btn color="primary" prepend-icon="mdi-content-save" :loading="savingSettings" @click="saveModelSettings">保存设置</v-btn>
             </div>
@@ -271,12 +263,11 @@
 
         <!-- 凭据 -->
         <v-window-item value="credentials">
-          <v-card elevation="0">
-            <v-card-title class="px-5 py-4 d-flex align-center">
-              <span class="text-subtitle-1 font-weight-bold">凭据</span>
-              <v-spacer />
+          <v-card elevation="0" class="agent-config-panel">
+            <div class="agent-config-panel-header">
+              <span class="agent-config-panel-title">凭据</span>
               <v-btn variant="text" icon="mdi-refresh" size="small" :loading="loading" aria-label="刷新凭据" title="刷新凭据" @click="loadCredentials" />
-            </v-card-title>
+            </div>
             <v-divider />
             <v-table>
               <thead>
@@ -316,13 +307,13 @@
 
         <!-- 备份 -->
         <v-window-item value="backups">
-          <v-card elevation="0">
-            <div class="d-flex align-center justify-space-between px-5 py-4">
+          <v-card elevation="0" class="agent-config-panel">
+            <div class="agent-config-panel-header">
               <div>
-                <div class="text-subtitle-1 font-weight-bold">备份</div>
-                <div class="text-caption text-medium-emphasis">写入前自动备份，也可手动创建快照</div>
+                <div class="agent-config-panel-title">备份</div>
+                <div class="agent-config-panel-subtitle">写入前自动备份，也可手动创建快照</div>
               </div>
-              <div class="d-flex align-center ga-2">
+              <div class="agent-config-panel-actions">
                 <v-btn v-for="kind in backupKinds" :key="kind.value" size="small" variant="tonal" color="primary" prepend-icon="mdi-plus" :disabled="creatingBackup !== ''" :loading="creatingBackup === kind.value" @click="createBackup(kind.value)">备份 {{ kind.label }}</v-btn>
               </div>
             </div>
@@ -376,6 +367,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import AgentConfigHeader from '@/components/AgentConfigHeader.vue'
+import AgentConfigLocation from '@/components/AgentConfigLocation.vue'
 import { api, type ApiError, type PiAgentBackup, type PiAgentCredential, type PiAgentFileKind, type PiAgentStatus } from '@/services/api'
 
 const loading = ref(false)
@@ -887,14 +880,5 @@ onMounted(() => loadAll())
 </script>
 
 <style scoped>
-.piagent-page { max-width: 1480px; margin: 0 auto; }
-.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.config-path-alert code { overflow-wrap: anywhere; }
-.provider-list-card, .provider-editor-card, .empty-editor { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); }
-.provider-list-card { min-height: 320px; }
-.empty-editor { min-height: 390px; }
-.empty-providers, .empty-models { border: 1px dashed rgba(var(--v-theme-on-surface), 0.2); border-radius: 6px; }
-.model-panels :deep(.v-expansion-panel) { border: 1px solid rgba(var(--v-theme-on-surface), 0.12); margin-bottom: 8px; }
 .mono-text { font-family: 'JetBrains Mono', 'Cascadia Code', monospace; }
-@media (max-width: 600px) { .page-heading { flex-direction: column; align-items: flex-start; } }
 </style>
