@@ -12,7 +12,7 @@
       <v-card-text class="pa-4">
         <!-- 协议、渠道和模型选择 -->
         <v-row class="mb-4">
-          <v-col cols="12" md="4">
+          <v-col cols="12" md="3">
             <v-select
               v-model="playgroundStore.apiType"
               :items="apiTypeOptions"
@@ -22,7 +22,7 @@
               @update:model-value="onApiTypeChange"
             />
           </v-col>
-          <v-col cols="12" md="4">
+          <v-col cols="12" md="3">
             <v-select
               v-model="playgroundStore.channelIndex"
               :items="channelOptions"
@@ -33,22 +33,29 @@
               @update:model-value="onChannelChange"
             />
           </v-col>
-          <v-col cols="12" md="4">
-            <v-select
+          <v-col cols="12" md="3">
+            <v-combobox
               v-model="selectedModel"
               :items="modelOptions"
-              :loading="isLoadingModels"
-              :disabled="!playgroundStore.channelIndex"
-              label="选择模型"
+              :disabled="playgroundStore.channelIndex === null"
+              label="模型（留空使用默认值）"
               variant="outlined"
               prepend-inner-icon="mdi-robot"
+              clearable
             >
               <template #no-data>
-                <div class="text-center pa-4 text-medium-emphasis">
-                  {{ modelsError || '请先选择渠道' }}
-                </div>
+                <div class="text-center pa-4 text-medium-emphasis">可直接输入模型名称</div>
               </template>
-            </v-select>
+            </v-combobox>
+          </v-col>
+          <v-col cols="12" md="3">
+            <v-select
+              v-model="selectedThinking"
+              :items="thinkingOptions"
+              :disabled="playgroundStore.channelIndex === null"
+              label="思考档位"
+              variant="outlined"
+            />
           </v-col>
         </v-row>
 
@@ -76,6 +83,25 @@
             </div>
           </v-card-text>
         </v-card>
+
+        <div v-if="lastExecution" class="execution-summary mb-4" aria-live="polite">
+          <div class="d-flex flex-wrap align-center ga-3 text-caption text-medium-emphasis mb-2">
+            <span>{{ lastExecution.returnedModel || '未返回模型' }}</span>
+            <span>{{ lastExecution.timing.totalMs }} ms</span>
+            <span>{{ lastExecution.protocolTerminal || lastExecution.status }}</span>
+            <span v-if="lastExecution.usage.totalTokens">{{ lastExecution.usage.totalTokens }} tokens</span>
+          </div>
+          <div v-if="lastExecution.sseEvents?.length" class="d-flex flex-wrap ga-1">
+            <v-chip
+              v-for="(event, index) in lastExecution.sseEvents"
+              :key="`${event.sequence}-${event.type}-${index}`"
+              size="x-small"
+              variant="tonal"
+            >
+              {{ event.type }}
+            </v-chip>
+          </div>
+        </div>
 
         <!-- 输入区域 -->
         <v-row>
@@ -111,7 +137,7 @@
               :loading="playgroundStore.isStreaming"
               @click="sendMessage"
             >
-              发送 (Ctrl+Enter)
+              发送
             </v-btn>
           </v-col>
         </v-row>
@@ -119,7 +145,7 @@
     </v-card>
 
     <!-- 错误提示 -->
-    <v-snackbar v-model="showError" color="error" :timeout="3000">
+    <v-snackbar v-model="showError" color="error" :timeout="3000" role="alert">
       {{ errorMessage }}
     </v-snackbar>
   </v-container>
@@ -129,7 +155,8 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { usePlaygroundStore } from '@/stores/playground'
 import { useChannelStore } from '@/stores/channel'
-import { testChannelWithModel, fetchUpstreamModels } from '@/services/api'
+import type { ApiTab, ModelAuditExecutionResult, ModelAuditProtocolDescriptor } from '@/services/api'
+import { api, testChannelWithModel } from '@/services/api'
 
 const playgroundStore = usePlaygroundStore()
 const channelStore = useChannelStore()
@@ -140,10 +167,19 @@ const errorMessage = ref('')
 const messageContainer = ref<{ scrollTop: number; scrollHeight: number } | null>(null)
 
 // 模型选择相关
-const isLoadingModels = ref(false)
-const modelsError = ref<string | null>(null)
 const modelOptions = ref<Array<{ title: string; value: string }>>([])
 const selectedModel = ref<string | null>(null)
+const selectedThinking = ref('')
+const protocolCapability = ref<ModelAuditProtocolDescriptor | null>(null)
+const lastExecution = ref<ModelAuditExecutionResult | null>(null)
+
+const thinkingOptions = computed(() => [
+  { title: '使用协议默认值', value: '' },
+  ...(protocolCapability.value?.thinking.mappings || []).map(mapping => ({
+    title: mapping.level,
+    value: mapping.level
+  }))
+])
 
 const apiTypeOptions = [
   { title: 'Messages', value: 'messages' },
@@ -167,7 +203,6 @@ const canSend = computed(() => {
   return !!(
     playgroundStore.apiType &&
     playgroundStore.channelIndex !== null &&
-    selectedModel.value &&
     userInput.value.trim() &&
     !playgroundStore.isStreaming
   )
@@ -184,61 +219,32 @@ const canInput = computed(() => {
 const onApiTypeChange = (value: 'messages' | 'responses' | 'gemini' | 'chat' | 'images' | null) => {
   playgroundStore.setApiType(value)
   selectedModel.value = null
+  selectedThinking.value = ''
+  protocolCapability.value = null
+  lastExecution.value = null
   modelOptions.value = []
+  if (value) loadCapabilities(value)
 }
 
 const onChannelChange = (value: number | null) => {
   playgroundStore.setChannel(value)
   if (value !== null) {
-    loadModels()
+    const channel = channelStore.getChannelsByType(playgroundStore.apiType!).find(item => item.index === value)
+    selectedModel.value = channel?.defaultModel || null
+    modelOptions.value = channel?.defaultModel ? [{ title: channel.defaultModel, value: channel.defaultModel }] : []
   } else {
     selectedModel.value = null
     modelOptions.value = []
   }
 }
 
-const loadModels = async () => {
-  const channel = channelStore.getChannelsByType(playgroundStore.apiType!)
-    .find(ch => ch.index === playgroundStore.channelIndex)
-  
-  if (!channel || !channel.apiKeys.length) {
-    modelsError.value = '渠道未配置 API Key'
-    return
-  }
-
-  isLoadingModels.value = true
-  modelsError.value = null
-  modelOptions.value = []
-  selectedModel.value = null
-
+const loadCapabilities = async (apiType: ApiTab) => {
   try {
-    const result = await fetchUpstreamModels(
-      channel.baseUrl,
-      channel.apiKeys[0],
-      channel.serviceType,
-      {
-        baseUrls: channel.baseUrls,
-        insecureSkipVerify: channel.insecureSkipVerify,
-        proxyMode: channel.proxyMode,
-        proxyUrl: channel.proxyUrl
-      }
-    )
-    
-    if (result.data && result.data.length > 0) {
-      modelOptions.value = result.data.map(model => ({
-        title: model.id,
-        value: model.id
-      }))
-      // 自动选择第一个模型
-      selectedModel.value = result.data[0].id
-    } else {
-      modelsError.value = '未找到可用模型'
-    }
-  } catch (error: any) {
-    console.error('加载模型失败:', error)
-    modelsError.value = error.message || '加载模型失败'
-  } finally {
-    isLoadingModels.value = false
+    const capabilities = await api.getModelAuditCapabilities()
+    protocolCapability.value = capabilities.protocols.find(item => item.protocol === apiType) || null
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '加载协议能力失败'
+    showError.value = true
   }
 }
 
@@ -256,6 +262,14 @@ const scrollToBottom = async () => {
 
 const sendMessage = async () => {
   if (!canSend.value) return
+  const channel = channelStore
+    .getChannelsByType(playgroundStore.apiType!)
+    .find(item => item.index === playgroundStore.channelIndex)
+  if (!channel?.id) {
+    errorMessage.value = '渠道缺少稳定 ID，无法执行演练'
+    showError.value = true
+    return
+  }
 
   const message = userInput.value.trim()
   userInput.value = ''
@@ -269,6 +283,7 @@ const sendMessage = async () => {
 
   try {
     playgroundStore.setStreaming(true)
+    lastExecution.value = null
     playgroundStore.addMessage({
       role: 'assistant',
       content: ''
@@ -276,14 +291,29 @@ const sendMessage = async () => {
 
     await testChannelWithModel(
       playgroundStore.apiType!,
-      playgroundStore.channelIndex!,
-      selectedModel.value!,
+      channel.id!,
+      selectedModel.value || undefined,
       message,
       (chunk: string) => {
         playgroundStore.updateLastMessage(
           playgroundStore.messages[playgroundStore.messages.length - 1].content + chunk
         )
         scrollToBottom()
+      },
+      {
+        purpose: 'playground',
+        thinking: selectedThinking.value,
+        responseId: playgroundStore.responseId || undefined,
+        interactionId: playgroundStore.interactionId || undefined,
+        messages: playgroundStore.messages.slice(0, -1).map(item => ({
+          role: item.role,
+          content: item.content
+        })),
+        onResponseId: id => playgroundStore.setResponseId(id),
+        onInteractionId: id => playgroundStore.setInteractionId(id),
+        onResult: result => {
+          lastExecution.value = result
+        }
       }
     )
   } catch (error: any) {
@@ -298,6 +328,7 @@ const sendMessage = async () => {
 
 const clearMessages = () => {
   playgroundStore.clearMessages()
+  lastExecution.value = null
 }
 
 watch(() => playgroundStore.messages.length, () => {
@@ -346,5 +377,11 @@ watch(() => playgroundStore.messages.length, () => {
 .message-content {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.execution-summary {
+  padding: 12px 0;
+  border-top: 1px solid rgba(var(--v-border-color), 0.2);
+  border-bottom: 1px solid rgba(var(--v-border-color), 0.2);
 }
 </style>

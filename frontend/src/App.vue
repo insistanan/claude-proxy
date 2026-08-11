@@ -111,6 +111,10 @@
             演练台
           </router-link>
           <span class="api-type-text separator">/</span>
+          <router-link to="/audit/jobs" class="api-type-text" :class="{ active: topNavActive === 'audit' }">
+            审计
+          </router-link>
+          <span class="api-type-text separator">/</span>
           <router-link to="/opencode" class="api-type-text" :class="{ active: topNavActive === 'opencode' }">
             OpenCode
           </router-link>
@@ -470,7 +474,8 @@ const isOpenCodePage = computed(() => route.name === 'opencode')
 const isClaudeCodePage = computed(() => route.name === 'claude-code')
 const isPiAgentPage = computed(() => route.name === 'pi-agent')
 const isSettingsPage = computed(() => route.name === 'settings')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isSettingsPage.value)
+const isAuditPage = computed(() => route.name === 'audit-jobs' || route.name === 'audit-report')
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isSettingsPage.value || isAuditPage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -502,6 +507,9 @@ const topNavActive = computed(() => {
   }
   if (route.path === '/playground') {
     return 'playground'
+  }
+  if (isAuditPage.value) {
+    return 'audit'
   }
   if (isOpenCodePage.value) {
     return 'opencode'
@@ -575,6 +583,11 @@ const pingChannel = async (channelId: number) => {
 const handleQuickTest = (channelId: number) => {
   const playgroundStore = usePlaygroundStore()
   const currentApiType = channelStore.activeTab
+  const channel = channelStore.getChannelsByType(currentApiType).find(item => item.index === channelId)
+  if (!channel?.id) {
+    showToast('渠道缺少稳定 ID，无法执行快捷测试', 'error')
+    return
+  }
   
   // 设置演练台参数
   playgroundStore.setApiType(currentApiType)
@@ -600,7 +613,7 @@ const handleQuickTest = (channelId: number) => {
 
       await testChannel(
         currentApiType,
-        channelId,
+        channel.id,
         '你好',
         (chunk: string) => {
           playgroundStore.updateLastMessage(

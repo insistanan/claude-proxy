@@ -341,6 +341,14 @@
               />
             </div>
               </div><!-- .channel-row-content -->
+              <ChannelAuditSummary
+                :summary="getAuditSummary(element)"
+                :loading="isLoadingAuditSummaries"
+                :error="getAuditSummaryError(element)"
+                :has-stable-id="Boolean(element.id?.trim())"
+                @click.stop
+                @open="openAuditReport"
+              />
           </div><!-- .channel-row -->
 
           <!-- 展开的图表区域 -->
@@ -444,6 +452,14 @@
             <div v-if="channel.description" class="channel-info-desc text-caption text-disabled">
               {{ channel.description }}
             </div>
+            <ChannelAuditSummary
+              compact
+              :summary="getAuditSummary(channel)"
+              :loading="isLoadingAuditSummaries"
+              :error="getAuditSummaryError(channel)"
+              :has-stable-id="Boolean(channel.id?.trim())"
+              @open="openAuditReport"
+            />
           </div>
 
           <!-- API密钥数量 -->
@@ -558,6 +574,14 @@
             <div class="channel-info-desc text-caption text-disabled">
               弃用时间：{{ formatDateTime(channel.deprecatedAt) }}
             </div>
+            <ChannelAuditSummary
+              compact
+              :summary="getAuditSummary(channel)"
+              :loading="isLoadingAuditSummaries"
+              :error="getAuditSummaryError(channel)"
+              :has-stable-id="Boolean(channel.id?.trim())"
+              @open="openAuditReport"
+            />
           </div>
 
           <div class="channel-keys">
@@ -743,10 +767,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
-import { api, channelApiByType, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
+import { api, channelApiByType, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry, type ModelAuditChannelSummary } from '../services/api'
+import ChannelAuditSummary from './ChannelAuditSummary.vue'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
 import ChannelPoolGrid from './ChannelPoolGrid.vue'
 import ChannelQuickMenu from './ChannelQuickMenu.vue'
@@ -754,6 +780,7 @@ import KeyTrendChart from './KeyTrendChart.vue'
 import QuickTestModal from './QuickTestModal.vue'
 
 const apexchart = VueApexCharts
+const router = useRouter()
 
 const props = defineProps<{
   channels: Channel[]
@@ -802,6 +829,11 @@ const schedulerStats = ref<{
   windowSize: number
 } | null>(null)
 const isLoadingMetrics = ref(false)
+const auditSummaries = shallowRef<Record<string, ModelAuditChannelSummary>>({})
+const auditSummaryErrors = shallowRef<Record<string, string>>({})
+const isLoadingAuditSummaries = ref(false)
+let auditSummaryRequestGeneration = 0
+let auditSummaryRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 const showLogsDialog = ref(false)
 const logsChannel = ref<Channel | null>(null)
@@ -1012,6 +1044,65 @@ watch(() => props.channelType, () => {
 const getChannelMetrics = (channelIndex: number): ChannelMetrics | undefined => {
   return metrics.value.find(m => m.channelIndex === channelIndex)
 }
+
+const getAuditSummary = (channel: Channel): ModelAuditChannelSummary | undefined => {
+  const stableId = channel.id?.trim()
+  return stableId ? auditSummaries.value[stableId] : undefined
+}
+
+const getAuditSummaryError = (channel: Channel): string => {
+  const stableId = channel.id?.trim()
+  return stableId ? (auditSummaryErrors.value[stableId] || '') : ''
+}
+
+const openAuditReport = (reportId: string): void => {
+  void router.push({ name: 'audit-report', params: { reportId } })
+}
+
+const refreshAuditSummaries = async (): Promise<void> => {
+  const generation = ++auditSummaryRequestGeneration
+  const channelType = props.channelType
+  const stableIds = [...new Set(props.channels.map(channel => channel.id?.trim()).filter((id): id is string => Boolean(id)))]
+  if (stableIds.length === 0) {
+    auditSummaries.value = {}
+    auditSummaryErrors.value = {}
+    isLoadingAuditSummaries.value = false
+    return
+  }
+
+  isLoadingAuditSummaries.value = true
+  const results = await Promise.all(stableIds.map(async stableId => {
+    try {
+      const response = await api.getModelAuditChannelSummary(channelType, stableId)
+      return { stableId, summary: response.summary }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '审计摘要读取失败'
+      return { stableId, error: message }
+    }
+  }))
+  if (generation !== auditSummaryRequestGeneration) return
+
+  const nextSummaries: Record<string, ModelAuditChannelSummary> = {}
+  const nextErrors: Record<string, string> = {}
+  for (const result of results) {
+    if (result.summary) {
+      nextSummaries[result.stableId] = result.summary
+    } else {
+      const previous = auditSummaries.value[result.stableId]
+      if (previous) nextSummaries[result.stableId] = previous
+      nextErrors[result.stableId] = result.error || '审计摘要读取失败'
+    }
+  }
+  auditSummaries.value = nextSummaries
+  auditSummaryErrors.value = nextErrors
+  isLoadingAuditSummaries.value = false
+}
+
+watch(
+  () => [props.channelType, props.channels.map(channel => channel.id?.trim() || '').join('\u0000')],
+  () => { void refreshAuditSummaries() },
+  { immediate: true }
+)
 
 // 获取分时段统计的辅助方法
 const get15mStats = (channelIndex: number) => {
@@ -1695,6 +1786,7 @@ const handleDeleteChannel = (channel: Channel) => {
 // 组件挂载时加载指标并启动延迟过期检查定时器
 onMounted(() => {
   refreshMetrics()
+  auditSummaryRefreshTimer = setInterval(() => { void refreshAuditSummaries() }, 60000)
   // 每 30 秒更新一次 currentTime，触发延迟显示的响应式更新
   latencyCheckTimer = setInterval(() => {
     currentTime.value = Date.now()
@@ -1707,6 +1799,11 @@ onMounted(() => {
 
 // 组件卸载时清理定时器
 onUnmounted(() => {
+  auditSummaryRequestGeneration++
+  if (auditSummaryRefreshTimer) {
+    clearInterval(auditSummaryRefreshTimer)
+    auditSummaryRefreshTimer = null
+  }
   if (latencyCheckTimer) {
     clearInterval(latencyCheckTimer)
     latencyCheckTimer = null

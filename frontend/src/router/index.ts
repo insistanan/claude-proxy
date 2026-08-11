@@ -60,6 +60,19 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/audit/jobs',
+    name: 'audit-jobs',
+    component: () => import('@/views/AuditJobsView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/audit/reports/:reportId',
+    name: 'audit-report',
+    component: () => import('@/views/AuditReportView.vue'),
+    props: true,
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/channels/:type',  // 动态参数匹配 messages/responses/gemini/chat
     name: 'channels',
     component: () => import('@/views/ChannelsView.vue'),  // 懒加载

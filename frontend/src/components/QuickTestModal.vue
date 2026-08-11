@@ -9,7 +9,7 @@
             {{ channel.name }}
           </v-chip>
         </div>
-        <v-btn icon size="small" variant="text" @click="close">
+        <v-btn icon size="small" variant="text" aria-label="关闭快捷测试" @click="close">
           <v-icon>mdi-close</v-icon>
         </v-btn>
       </v-card-title>
@@ -18,23 +18,31 @@
 
       <v-card-text class="pa-4">
         <!-- 模型选择 -->
-        <v-select
+        <v-combobox
           v-model="selectedModel"
           :items="modelOptions"
-          :loading="isLoadingModels"
-          label="选择模型"
+          label="模型（留空使用渠道默认值）"
           variant="outlined"
           prepend-inner-icon="mdi-robot"
           density="comfortable"
           class="mb-4"
           :disabled="isSending"
+          clearable
         >
           <template #no-data>
-            <div class="text-center pa-4 text-medium-emphasis">
-              {{ modelsError || '无可用模型' }}
-            </div>
+            <div class="text-center pa-4 text-medium-emphasis">可直接输入模型名称，或留空使用渠道默认值</div>
           </template>
-        </v-select>
+        </v-combobox>
+
+        <v-select
+          v-model="selectedThinking"
+          :items="thinkingOptions"
+          label="思考档位"
+          variant="outlined"
+          density="comfortable"
+          class="mb-4"
+          :disabled="isSending"
+        />
 
         <!-- 测试输入 -->
         <v-textarea
@@ -69,7 +77,11 @@
           </v-card-title>
           <v-divider />
           <v-card-text class="pa-4" style="max-height: 300px; overflow-y: auto;">
-            <div v-if="responseError" class="error-message">
+            <div v-if="executionResult" class="text-caption text-medium-emphasis mb-2" aria-live="polite">
+              {{ executionResult.returnedModel || '未返回模型' }} · {{ executionResult.timing.totalMs }} ms ·
+              {{ executionResult.protocolTerminal || executionResult.status }}
+            </div>
+            <div v-if="responseError" class="error-message" role="alert">
               <v-icon color="error" class="mr-2">mdi-alert-circle</v-icon>
               <span class="text-error">{{ responseError }}</span>
             </div>
@@ -87,8 +99,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import type { Channel } from '@/services/api'
-import { fetchUpstreamModels, testChannelWithModel } from '@/services/api'
+import type { Channel, ModelAuditExecutionResult, ModelAuditProtocolDescriptor } from '@/services/api'
+import { api, testChannelWithModel } from '@/services/api'
 
 const props = defineProps<{
   modelValue: boolean
@@ -105,62 +117,38 @@ const isOpen = computed({
   set: (value) => emit('update:modelValue', value)
 })
 
-const isLoadingModels = ref(false)
-const modelsError = ref<string | null>(null)
 const modelOptions = ref<Array<{ title: string; value: string }>>([])
 const selectedModel = ref<string | null>(null)
-const testMessage = ref('你好')
+const selectedThinking = ref('')
+const protocolCapability = ref<ModelAuditProtocolDescriptor | null>(null)
+const testMessage = ref('请用一句完整的话说明你当前能完成什么任务。')
 const isSending = ref(false)
 const responseText = ref('')
 const responseError = ref<string | null>(null)
+const executionResult = ref<ModelAuditExecutionResult | null>(null)
+
+const thinkingOptions = computed(() => [
+  { title: '使用协议默认值', value: '' },
+  ...(protocolCapability.value?.thinking.mappings || []).map(mapping => ({
+    title: mapping.level,
+    value: mapping.level
+  }))
+])
 
 const canSend = computed(() => {
-  return !!(selectedModel.value && testMessage.value.trim() && !isSending.value)
+  return !!(props.channel?.id && testMessage.value.trim() && !isSending.value)
 })
 
 const close = () => {
   isOpen.value = false
 }
 
-const loadModels = async () => {
-  if (!props.channel || !props.channel.apiKeys.length) {
-    modelsError.value = '渠道未配置 API Key'
-    return
-  }
-
-  isLoadingModels.value = true
-  modelsError.value = null
-  modelOptions.value = []
-  selectedModel.value = null
-
+const loadCapabilities = async () => {
   try {
-    const result = await fetchUpstreamModels(
-      props.channel.baseUrl,
-      props.channel.apiKeys[0],
-      props.channel.serviceType,
-      {
-        baseUrls: props.channel.baseUrls,
-        insecureSkipVerify: props.channel.insecureSkipVerify,
-        proxyMode: props.channel.proxyMode,
-        proxyUrl: props.channel.proxyUrl
-      }
-    )
-    
-    if (result.data && result.data.length > 0) {
-      modelOptions.value = result.data.map(model => ({
-        title: model.id,
-        value: model.id
-      }))
-      // 自动选择第一个模型
-      selectedModel.value = result.data[0].id
-    } else {
-      modelsError.value = '未找到可用模型'
-    }
-  } catch (error: any) {
-    console.error('加载模型失败:', error)
-    modelsError.value = error.message || '加载模型失败'
-  } finally {
-    isLoadingModels.value = false
+    const capabilities = await api.getModelAuditCapabilities()
+    protocolCapability.value = capabilities.protocols.find(item => item.protocol === props.apiType) || null
+  } catch (error) {
+    responseError.value = error instanceof Error ? error.message : '加载协议能力失败'
   }
 }
 
@@ -170,15 +158,23 @@ const sendTest = async () => {
   isSending.value = true
   responseText.value = ''
   responseError.value = null
+  executionResult.value = null
 
   try {
     await testChannelWithModel(
       props.apiType,
-      props.channel.index,
-      selectedModel.value!,
+      props.channel.id!,
+      selectedModel.value || undefined,
       testMessage.value.trim(),
       (chunk: string) => {
         responseText.value += chunk
+      },
+      {
+        purpose: 'quick_test',
+        thinking: selectedThinking.value,
+        onResult: result => {
+          executionResult.value = result
+        }
       }
     )
   } catch (error: any) {
@@ -195,8 +191,14 @@ watch(() => props.modelValue, (newVal) => {
     // 重置状态
     responseText.value = ''
     responseError.value = null
-    testMessage.value = '你好'
-    loadModels()
+    executionResult.value = null
+    testMessage.value = '请用一句完整的话说明你当前能完成什么任务。'
+    selectedModel.value = props.channel.defaultModel || null
+    modelOptions.value = props.channel.defaultModel
+      ? [{ title: props.channel.defaultModel, value: props.channel.defaultModel }]
+      : []
+    selectedThinking.value = ''
+    loadCapabilities()
   }
 })
 </script>

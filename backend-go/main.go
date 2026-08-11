@@ -24,6 +24,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/logger"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
+	"github.com/BenedictKing/claude-proxy/internal/modelaudit"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/sensitive"
 	"github.com/BenedictKing/claude-proxy/internal/session"
@@ -68,6 +69,67 @@ func main() {
 		log.Fatalf("初始化配置管理器失败: %v", err)
 	}
 	defer cfgManager.Close()
+	auditResolver, err := modelaudit.NewConfigTargetResolver(cfgManager)
+	if err != nil {
+		log.Fatalf("初始化模型审计目标解析器失败: %v", err)
+	}
+	auditClientFactory, err := modelaudit.NewConfigHTTPClientFactory(cfgManager)
+	if err != nil {
+		log.Fatalf("初始化模型审计 HTTP 客户端失败: %v", err)
+	}
+	auditService, err := modelaudit.NewService(auditResolver, auditClientFactory, modelaudit.DefaultServiceConfig())
+	if err != nil {
+		log.Fatalf("初始化模型审计执行服务失败: %v", err)
+	}
+	defer auditService.Close()
+	auditStore, err := modelaudit.NewAuditSQLiteStore(".config/model-audit.db")
+	if err != nil {
+		log.Fatalf("初始化模型审计持久化仓储失败: %v", err)
+	}
+	defer func() {
+		if err := auditStore.Close(); err != nil {
+			log.Printf("[ModelAudit-Shutdown] 关闭模型审计仓储失败: %v", err)
+		}
+	}()
+	auditHTMLRenderer, err := modelaudit.NewSelfContainedAuditHTMLRenderer()
+	if err != nil {
+		log.Fatalf("初始化模型审计 HTML 渲染器失败: %v", err)
+	}
+	auditStrategies, err := modelaudit.NewStrategyRegistry(modelaudit.BuiltinIdentityStrategies()...)
+	if err != nil {
+		log.Fatalf("初始化模型审计策略注册表失败: %v", err)
+	}
+	auditRunController, err := modelaudit.NewBuiltinAuditRunController(
+		auditStore,
+		auditService,
+		auditStrategies,
+		modelaudit.DefaultAuditRunControllerConfig(),
+	)
+	if err != nil {
+		log.Fatalf("初始化模型审计运行控制器失败: %v", err)
+	}
+	auditManagement, err := modelaudit.NewAuditManagementService(auditStore, auditRunController, auditHTMLRenderer)
+	if err != nil {
+		log.Fatalf("初始化模型审计管理服务失败: %v", err)
+	}
+	auditScheduler, err := modelaudit.NewAuditScheduler(
+		auditStore,
+		auditRunController,
+		modelaudit.DefaultAuditSchedulerConfig(),
+	)
+	if err != nil {
+		log.Fatalf("初始化模型审计调度器失败: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := auditScheduler.Close(ctx); err != nil {
+			log.Printf("[ModelAudit-Shutdown] 关闭模型审计调度器失败: %v", err)
+		}
+		if err := auditRunController.Shutdown(ctx); err != nil {
+			log.Printf("[ModelAudit-Shutdown] 关闭模型审计运行控制器失败: %v", err)
+		}
+	}()
 
 	blockedStore, err := sensitive.NewBlockedStore(".config/blocked-logs.db")
 	if err != nil {
@@ -213,6 +275,9 @@ func main() {
 	// Web 管理界面 API 路由
 	apiGroup := r.Group("/api")
 	{
+		if err := modelaudit.RegisterRoutes(apiGroup, auditService, auditManagement); err != nil {
+			log.Fatalf("注册模型审计管理 API 失败: %v", err)
+		}
 		apiGroup.GET("/request-logs", handlers.GetRequestLogs(requestLogStore))
 		apiGroup.GET("/blocked-logs", handlers.GetBlockedLogs(blockedStore))
 		apiGroup.GET("/blocked-logs/:id", handlers.GetBlockedLog(blockedStore))
@@ -378,6 +443,10 @@ func main() {
 		})
 	}
 
+	if err := auditScheduler.Start(); err != nil {
+		log.Fatalf("启动模型审计调度器失败: %v", err)
+	}
+
 	// 启动服务器
 	addr := fmt.Sprintf(":%d", envCfg.Port)
 	fmt.Printf("\n[Server-Startup] API代理服务器已启动\n")
@@ -428,10 +497,22 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		if err := auditScheduler.Close(ctx); err != nil {
+			log.Printf("[ModelAudit-Shutdown] 警告: 关闭模型审计调度器失败: %v", err)
+		} else {
+			log.Println("[ModelAudit-Shutdown] 模型审计调度器已安全关闭")
+		}
+
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("[Server-Shutdown] 警告: 服务器关闭时发生错误: %v", err)
 		} else {
 			log.Println("[Server-Shutdown] 服务器已安全关闭")
+		}
+
+		if err := auditRunController.Shutdown(ctx); err != nil {
+			log.Printf("[ModelAudit-Shutdown] 警告: 关闭模型审计运行控制器失败: %v", err)
+		} else {
+			log.Println("[ModelAudit-Shutdown] 模型审计运行控制器已安全关闭")
 		}
 
 		// 关闭指标持久化存储
