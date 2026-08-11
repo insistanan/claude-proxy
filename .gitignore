@@ -246,3 +246,6 @@ docs/claude-code-investigation-*.md
 
 # Pi 工具 - agent 产物目录，非项目代码
 .pi/
+/.codex/
+/.claude/
+/.idea/
