@@ -99,6 +99,10 @@
             日志
           </router-link>
           <span class="api-type-text separator">/</span>
+          <router-link to="/blocked-logs" class="api-type-text" :class="{ active: topNavActive === 'blocked-logs' }">
+            拦截
+          </router-link>
+          <span class="api-type-text separator">/</span>
           <router-link to="/skills" class="api-type-text" :class="{ active: topNavActive === 'skills' }">
             Skills
           </router-link>
@@ -460,12 +464,13 @@ const { displayValue: activeChannelCountDisplay } = useCountUp(activeChannels)
 
 const isConversationPage = computed(() => route.name === 'conversations')
 const isLogsPage = computed(() => route.name === 'request-logs')
+const isBlockedLogsPage = computed(() => route.name === 'blocked-logs')
 const isSkillsPage = computed(() => route.name === 'skills')
 const isOpenCodePage = computed(() => route.name === 'opencode')
 const isClaudeCodePage = computed(() => route.name === 'claude-code')
 const isPiAgentPage = computed(() => route.name === 'pi-agent')
 const isSettingsPage = computed(() => route.name === 'settings')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isSettingsPage.value)
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isSettingsPage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -488,6 +493,9 @@ const topNavActive = computed(() => {
   }
   if (isLogsPage.value) {
     return 'logs'
+  }
+  if (isBlockedLogsPage.value) {
+    return 'blocked-logs'
   }
   if (isSkillsPage.value) {
     return 'skills'

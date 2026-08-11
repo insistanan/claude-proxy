@@ -201,7 +201,47 @@ export interface AppSettings {
     upstreamProxyUrl: string
     upstreamProxyEnabled: boolean
   }
+  contentSafety: ContentSafetySettings
 }
+
+export interface ContentSafetySettings {
+  sensitiveWord: {
+    enabled: boolean
+    pornographyEnabled: boolean
+    gamblingEnabled: boolean
+    drugsEnabled: boolean
+    violenceTerrorEnabled: boolean
+    politicalEnabled: boolean
+    illegalCrimeEnabled: boolean
+    customWords: string[]
+  }
+  sensitiveInfo: {
+    enabled: boolean
+    mode: ContentSafetyMode
+    enabledRules: SensitiveInfoRule[]
+  }
+  credential: {
+    enabled: boolean
+    userInputMode: ContentSafetyMode
+    toolResultMode: Exclude<ContentSafetyMode, 'mask'>
+    toolArgumentMode: Exclude<ContentSafetyMode, 'mask'>
+    enabledRules: CredentialRule[]
+  }
+  dangerousCmd: {
+    enabled: boolean
+    enabledRules: DangerousCommandRule[]
+  }
+}
+
+export type ContentSafetyMode = 'audit' | 'block' | 'mask'
+export type SensitiveInfoRule = 'phone' | 'id_card' | 'email' | 'ip_address'
+export type CredentialRule = 'api_key' | 'named_secret' | 'private_key' | 'connection_string' | 'high_entropy'
+export type DangerousCommandRule =
+  | 'destructive'
+  | 'download_execute'
+  | 'reverse_shell'
+  | 'privilege_escalation'
+  | 'environment_tampering'
 
 export type OpenCodeProtocol = 'chat' | 'responses' | 'messages' | 'gemini' | 'custom'
 
@@ -523,6 +563,38 @@ export interface RequestLogEntry extends ChannelLogEntry {
 export interface RequestLogsResponse {
   logs: RequestLogEntry[]
   limit: number
+}
+
+export type ContentSafetyAPIType = 'messages' | 'responses' | 'chat' | 'gemini'
+export type BlockedLogType = 'sensitive_word' | 'sensitive_info' | 'credential' | 'dangerous_cmd'
+
+export interface BlockedLogEntry {
+  id: number
+  timestamp: string
+  apiType: ContentSafetyAPIType
+  blockType: BlockedLogType
+  ruleName?: string
+  promptSnippet?: string
+  channelName?: string
+  model?: string
+  requestId?: string
+  createdAt: string
+}
+
+export interface BlockedLogsResponse {
+  logs: BlockedLogEntry[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface BlockedLogFilters {
+  apiType?: ContentSafetyAPIType | ''
+  blockType?: BlockedLogType | ''
+  from?: string
+  to?: string
+  page?: number
+  pageSize?: number
 }
 
 export interface ConversationRouteOverride {
@@ -908,6 +980,30 @@ class ApiService {
     return this.request(`/request-logs${query ? `?${query}` : ''}`)
   }
 
+  async getBlockedLogs(params: BlockedLogFilters = {}): Promise<BlockedLogsResponse> {
+    const search = new URLSearchParams()
+    if (params.apiType) search.set('apiType', params.apiType)
+    if (params.blockType) search.set('blockType', params.blockType)
+    if (params.from) search.set('from', params.from)
+    if (params.to) search.set('to', params.to)
+    if (params.page) search.set('page', String(params.page))
+    if (params.pageSize) search.set('pageSize', String(params.pageSize))
+    const query = search.toString()
+    return this.request(`/blocked-logs${query ? `?${query}` : ''}`)
+  }
+
+  async getBlockedLog(id: number): Promise<BlockedLogEntry> {
+    return this.request(`/blocked-logs/${id}`)
+  }
+
+  async deleteBlockedLog(id: number): Promise<void> {
+    await this.request(`/blocked-logs/${id}`, { method: 'DELETE' })
+  }
+
+  async clearBlockedLogs(): Promise<{ deleted: number }> {
+    return this.request('/blocked-logs', { method: 'DELETE' })
+  }
+
   async getConversations(params?: { q?: string; kind?: ConversationKind }): Promise<ConversationsResponse> {
     const search = new URLSearchParams()
     if (params?.q) search.set('q', params.q)
@@ -970,7 +1066,7 @@ class ApiService {
     return this.request('/settings')
   }
 
-  async updateSettings(settings: AppSettings): Promise<AppSettings> {
+  async updateSettings(settings: Partial<AppSettings>): Promise<AppSettings> {
     return this.request('/settings', {
       method: 'PUT',
       body: JSON.stringify(settings)

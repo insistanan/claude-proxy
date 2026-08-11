@@ -18,6 +18,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/blocked-logs',
+    name: 'blocked-logs',
+    component: () => import('@/views/BlockedLogsView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/skills',
     name: 'skills',
     component: () => import('@/views/SkillsView.vue'),
