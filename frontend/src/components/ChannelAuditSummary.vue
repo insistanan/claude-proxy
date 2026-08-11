@@ -3,7 +3,7 @@
     <div class="audit-heading">
       <v-icon size="14" color="primary">mdi-shield-refresh</v-icon>
       <span>模型审计</span>
-      <v-progress-circular v-if="loading" indeterminate size="12" width="2" color="primary" />
+      <v-progress-circular v-if="loading && !summary" indeterminate size="12" width="2" color="primary" />
     </div>
 
     <div v-if="!hasStableId" class="audit-unavailable">缺少稳定 ID</div>

@@ -1099,7 +1099,7 @@ const refreshAuditSummaries = async (): Promise<void> => {
 }
 
 watch(
-  () => [props.channelType, props.channels.map(channel => channel.id?.trim() || '').join('\u0000')],
+  () => `${props.channelType}\u0000${props.channels.map(channel => channel.id?.trim() || '').join('\u0000')}`,
   () => { void refreshAuditSummaries() },
   { immediate: true }
 )
