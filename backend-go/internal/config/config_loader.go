@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -77,6 +78,9 @@ func (cm *ConfigManager) loadConfig() error {
 	if err := cm.validateProxyConfig(); err != nil {
 		return err
 	}
+	if err := ValidateContentSafetyConfig(cm.config.Settings.ContentSafety); err != nil {
+		return fmt.Errorf("内容安全配置无效: %w", err)
+	}
 
 	// 如果有默认值迁移或格式迁移，保存配置
 	if needSaveDefaults || needMigration || needNormalization {
@@ -123,6 +127,9 @@ func (cm *ConfigManager) createDefaultConfig() error {
 		FuzzyModeEnabled:          true, // 默认启用 Fuzzy 模式
 		ClaudeCodeDisguiseEnabled: false,
 		CodexDisguiseEnabled:      false,
+		Settings: SettingsConfig{
+			ContentSafety: DefaultContentSafetyConfig(),
+		},
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cm.configFile), 0755); err != nil {
@@ -205,6 +212,23 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 				}
 			}
 		}
+		if rawSettings, exists := rawMap["settings"]; !exists {
+			cm.config.Settings.ContentSafety = DefaultContentSafetyConfig()
+			needSave = true
+			log.Printf("[Config-Migration] Settings.ContentSafety 字段不存在，已写入默认配置")
+		} else {
+			var settingsMap map[string]json.RawMessage
+			if err := json.Unmarshal(rawSettings, &settingsMap); err == nil {
+				if rawContentSafety, exists := settingsMap["contentSafety"]; !exists {
+					cm.config.Settings.ContentSafety = DefaultContentSafetyConfig()
+					needSave = true
+					log.Printf("[Config-Migration] Settings.ContentSafety 字段不存在，已写入默认配置")
+				} else if migrateContentSafetyConfig(&cm.config.Settings.ContentSafety, rawContentSafety) {
+					needSave = true
+					log.Printf("[Config-Migration] 内容安全配置已迁移到分离的 PII/凭据策略")
+				}
+			}
+		}
 	}
 
 	poolSets := []struct {
@@ -232,6 +256,115 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 	}
 
 	return needSave
+}
+
+func migrateContentSafetyConfig(settings *ContentSafetyConfig, rawJSON []byte) bool {
+	if settings == nil {
+		return false
+	}
+	defaults := DefaultContentSafetyConfig()
+	if bytes.Equal(bytes.TrimSpace(rawJSON), []byte("null")) {
+		*settings = defaults
+		return true
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rawJSON, &raw); err != nil {
+		return false
+	}
+	changed := false
+	if _, exists := raw["sensitiveWord"]; !exists {
+		settings.SensitiveWord = defaults.SensitiveWord
+		changed = true
+	}
+	if rawInfo, exists := raw["sensitiveInfo"]; !exists {
+		settings.SensitiveInfo = defaults.SensitiveInfo
+		changed = true
+	} else {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(rawInfo, &fields) == nil {
+			if _, exists := fields["mode"]; !exists {
+				settings.SensitiveInfo.Mode = ContentSafetyModeMask
+				changed = true
+			}
+		}
+	}
+
+	_, credentialExists := raw["credential"]
+	if !credentialExists {
+		settings.Credential = defaults.Credential
+		changed = true
+	} else {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw["credential"], &fields) == nil {
+			if _, exists := fields["userInputMode"]; !exists {
+				settings.Credential.UserInputMode = defaults.Credential.UserInputMode
+				changed = true
+			}
+			if _, exists := fields["toolResultMode"]; !exists {
+				settings.Credential.ToolResultMode = defaults.Credential.ToolResultMode
+				changed = true
+			}
+			if _, exists := fields["toolArgumentMode"]; !exists {
+				settings.Credential.ToolArgumentMode = defaults.Credential.ToolArgumentMode
+				changed = true
+			}
+		}
+	}
+
+	legacyAPIKey := false
+	legacySensitiveInfoEnabled := settings.SensitiveInfo.Enabled
+	filteredInfoRules := make([]string, 0, len(settings.SensitiveInfo.EnabledRules))
+	for _, rule := range settings.SensitiveInfo.EnabledRules {
+		if rule == CredentialRuleAPIKey {
+			legacyAPIKey = true
+			changed = true
+			continue
+		}
+		filteredInfoRules = append(filteredInfoRules, rule)
+	}
+	settings.SensitiveInfo.EnabledRules = filteredInfoRules
+	if legacyAPIKey && len(filteredInfoRules) == 0 && settings.SensitiveInfo.Enabled {
+		settings.SensitiveInfo.Enabled = false
+		changed = true
+	}
+	if legacyAPIKey && !containsString(settings.Credential.EnabledRules, CredentialRuleAPIKey) {
+		settings.Credential.EnabledRules = append(settings.Credential.EnabledRules, CredentialRuleAPIKey)
+		if !credentialExists {
+			settings.Credential.Enabled = legacySensitiveInfoEnabled
+			settings.Credential.UserInputMode = ContentSafetyModeMask
+		}
+	}
+
+	if _, exists := raw["dangerousCmd"]; !exists {
+		settings.DangerousCmd = defaults.DangerousCmd
+		changed = true
+	}
+	if settings.SensitiveWord.CustomWords == nil {
+		settings.SensitiveWord.CustomWords = []string{}
+		changed = true
+	}
+	if settings.SensitiveInfo.EnabledRules == nil {
+		settings.SensitiveInfo.EnabledRules = []string{}
+		changed = true
+	}
+	if settings.Credential.EnabledRules == nil {
+		settings.Credential.EnabledRules = []string{}
+		changed = true
+	}
+	if settings.DangerousCmd.EnabledRules == nil {
+		settings.DangerousCmd.EnabledRules = []string{}
+		changed = true
+	}
+	return changed
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // migrateOldFormat 迁移旧格式配置，返回是否有迁移

@@ -211,13 +211,113 @@ func decodeModelMapping(raw json.RawMessage) (map[string][]string, error) {
 
 // SettingsConfig 集中承载可由管理界面维护的全局设置，便于后续扩展其他设置分类。
 type SettingsConfig struct {
-	Network NetworkSettings `json:"network"`
+	Network       NetworkSettings     `json:"network"`
+	ContentSafety ContentSafetyConfig `json:"contentSafety"`
 }
 
 // NetworkSettings 网络相关设置。
 type NetworkSettings struct {
 	UpstreamProxyURL     string `json:"upstreamProxyUrl"`
 	UpstreamProxyEnabled bool   `json:"upstreamProxyEnabled"`
+}
+
+// ContentSafetyConfig 内容安全相关设置。
+type ContentSafetyConfig struct {
+	SensitiveWord SensitiveWordConfig `json:"sensitiveWord"`
+	SensitiveInfo SensitiveInfoConfig `json:"sensitiveInfo"`
+	Credential    CredentialConfig    `json:"credential"`
+	DangerousCmd  DangerousCmdConfig  `json:"dangerousCmd"`
+}
+
+// SensitiveWordConfig 敏感词检测设置。
+// CustomWords 仅预留给配置文件和后续管理能力，本轮不提供独立 CRUD 界面。
+type SensitiveWordConfig struct {
+	Enabled               bool     `json:"enabled"`
+	PornographyEnabled    bool     `json:"pornographyEnabled"`
+	GamblingEnabled       bool     `json:"gamblingEnabled"`
+	DrugsEnabled          bool     `json:"drugsEnabled"`
+	ViolenceTerrorEnabled bool     `json:"violenceTerrorEnabled"`
+	PoliticalEnabled      bool     `json:"politicalEnabled"`
+	IllegalCrimeEnabled   bool     `json:"illegalCrimeEnabled"`
+	CustomWords           []string `json:"customWords"`
+}
+
+// SensitiveInfoConfig 请求方向的个人信息检测设置。
+type SensitiveInfoConfig struct {
+	Enabled      bool     `json:"enabled"`
+	Mode         string   `json:"mode"`
+	EnabledRules []string `json:"enabledRules"`
+}
+
+// CredentialConfig 凭据检测设置。用户输入允许审计、阻断或掩码；工具结果
+// 和模型生成的工具参数不允许掩码，避免基于伪造配置继续工作或外发秘密。
+type CredentialConfig struct {
+	Enabled          bool     `json:"enabled"`
+	UserInputMode    string   `json:"userInputMode"`
+	ToolResultMode   string   `json:"toolResultMode"`
+	ToolArgumentMode string   `json:"toolArgumentMode"`
+	EnabledRules     []string `json:"enabledRules"`
+}
+
+// DangerousCmdConfig 响应方向的危险命令检测设置。
+type DangerousCmdConfig struct {
+	Enabled      bool     `json:"enabled"`
+	EnabledRules []string `json:"enabledRules"`
+}
+
+const (
+	SensitiveInfoRulePhone     = "phone"
+	SensitiveInfoRuleIDCard    = "id_card"
+	SensitiveInfoRuleEmail     = "email"
+	SensitiveInfoRuleIPAddress = "ip_address"
+
+	ContentSafetyModeAudit = "audit"
+	ContentSafetyModeBlock = "block"
+	ContentSafetyModeMask  = "mask"
+
+	CredentialRuleAPIKey           = "api_key"
+	CredentialRuleNamedSecret      = "named_secret"
+	CredentialRulePrivateKey       = "private_key"
+	CredentialRuleConnectionString = "connection_string"
+	CredentialRuleHighEntropy      = "high_entropy"
+
+	DangerousCmdRuleDestructive          = "destructive"
+	DangerousCmdRuleDownloadExecute      = "download_execute"
+	DangerousCmdRuleReverseShell         = "reverse_shell"
+	DangerousCmdRulePrivilegeEscalation  = "privilege_escalation"
+	DangerousCmdRuleEnvironmentTampering = "environment_tampering"
+)
+
+// DefaultContentSafetyConfig 返回开箱即用的内容安全默认设置。
+func DefaultContentSafetyConfig() ContentSafetyConfig {
+	return ContentSafetyConfig{
+		SensitiveWord: SensitiveWordConfig{
+			Enabled:               false,
+			PornographyEnabled:    false,
+			GamblingEnabled:       false,
+			DrugsEnabled:          false,
+			ViolenceTerrorEnabled: false,
+			PoliticalEnabled:      false,
+			IllegalCrimeEnabled:   false,
+			CustomWords:           []string{},
+		},
+		SensitiveInfo: SensitiveInfoConfig{
+			Enabled:      false,
+			Mode:         ContentSafetyModeMask,
+			EnabledRules: []string{},
+		},
+		Credential: CredentialConfig{
+			Enabled:          false,
+			UserInputMode:    ContentSafetyModeBlock,
+			ToolResultMode:   ContentSafetyModeBlock,
+			ToolArgumentMode: ContentSafetyModeBlock,
+			EnabledRules:     []string{},
+		},
+		DangerousCmd: DangerousCmdConfig{
+			Enabled:      false,
+			EnabledRules: []string{},
+		},
+	}
 }
 
 // Config 配置结构

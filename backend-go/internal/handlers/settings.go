@@ -16,22 +16,40 @@ func GetSettings(cfgManager *config.ConfigManager) gin.HandlerFunc {
 	}
 }
 
-// UpdateSettings 更新全局设置。当前仅开放网络设置，后续设置分类可沿用该结构扩展。
+// UpdateSettings 更新管理界面开放的全局设置。未提交的设置分类保持原值。
 func UpdateSettings(cfgManager *config.ConfigManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req struct {
-			Network *config.NetworkSettings `json:"network" binding:"required"`
+			Network       *config.NetworkSettings     `json:"network"`
+			ContentSafety *config.ContentSafetyConfig `json:"contentSafety"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的设置参数"})
 			return
 		}
-		req.Network.UpstreamProxyURL = strings.TrimSpace(req.Network.UpstreamProxyURL)
-		if err := config.ValidateProxyURL(req.Network.UpstreamProxyURL); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if req.Network == nil && req.ContentSafety == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "至少需要提交一个设置分类"})
 			return
 		}
-		if err := cfgManager.UpdateNetworkSettings(*req.Network); err != nil {
+
+		settings := cfgManager.GetSettings()
+		if req.Network != nil {
+			req.Network.UpstreamProxyURL = strings.TrimSpace(req.Network.UpstreamProxyURL)
+			if err := config.ValidateProxyURL(req.Network.UpstreamProxyURL); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			settings.Network = *req.Network
+		}
+		if req.ContentSafety != nil {
+			if err := config.ValidateContentSafetyConfig(*req.ContentSafety); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			settings.ContentSafety = *req.ContentSafety
+		}
+
+		if err := cfgManager.UpdateSettings(settings); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存全局设置失败"})
 			return
 		}

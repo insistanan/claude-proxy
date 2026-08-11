@@ -5,6 +5,87 @@ import (
 	"testing"
 )
 
+func TestDefaultContentSafetyConfigIsFullyDisabled(t *testing.T) {
+	settings := DefaultContentSafetyConfig()
+	if settings.SensitiveWord.Enabled || settings.SensitiveWord.PornographyEnabled ||
+		settings.SensitiveWord.GamblingEnabled || settings.SensitiveWord.DrugsEnabled ||
+		settings.SensitiveWord.ViolenceTerrorEnabled || settings.SensitiveWord.PoliticalEnabled ||
+		settings.SensitiveWord.IllegalCrimeEnabled || len(settings.SensitiveWord.CustomWords) != 0 {
+		t.Fatalf("敏感词默认设置未完全关闭: %+v", settings.SensitiveWord)
+	}
+	if settings.SensitiveInfo.Enabled || len(settings.SensitiveInfo.EnabledRules) != 0 {
+		t.Fatalf("敏感信息默认设置未完全关闭: %+v", settings.SensitiveInfo)
+	}
+	if settings.Credential.Enabled || len(settings.Credential.EnabledRules) != 0 {
+		t.Fatalf("凭据默认设置未完全关闭: %+v", settings.Credential)
+	}
+	if settings.DangerousCmd.Enabled || len(settings.DangerousCmd.EnabledRules) != 0 {
+		t.Fatalf("危险命令默认设置未完全关闭: %+v", settings.DangerousCmd)
+	}
+}
+
+func TestMigrateContentSafetyMovesLegacyAPIKeyRule(t *testing.T) {
+	settings := ContentSafetyConfig{
+		SensitiveInfo: SensitiveInfoConfig{
+			Enabled:      true,
+			EnabledRules: []string{"api_key", SensitiveInfoRuleEmail},
+		},
+	}
+	raw := []byte(`{"sensitiveWord":{"enabled":false},"sensitiveInfo":{"enabled":true,"enabledRules":["api_key","email"]},"dangerousCmd":{"enabled":false,"enabledRules":[]}}`)
+	if !migrateContentSafetyConfig(&settings, raw) {
+		t.Fatal("旧版 API Key 规则应触发配置迁移")
+	}
+	if !settings.Credential.Enabled || settings.Credential.UserInputMode != ContentSafetyModeMask ||
+		settings.Credential.ToolResultMode != ContentSafetyModeBlock ||
+		len(settings.Credential.EnabledRules) != 1 || settings.Credential.EnabledRules[0] != CredentialRuleAPIKey {
+		t.Fatalf("凭据迁移结果错误: %+v", settings.Credential)
+	}
+	if len(settings.SensitiveInfo.EnabledRules) != 1 || settings.SensitiveInfo.EnabledRules[0] != SensitiveInfoRuleEmail {
+		t.Fatalf("个人信息规则迁移结果错误: %+v", settings.SensitiveInfo)
+	}
+}
+
+func TestMigrateContentSafetyKeepsLegacyAPIKeyOnlyRuleEnabled(t *testing.T) {
+	settings := ContentSafetyConfig{
+		SensitiveInfo: SensitiveInfoConfig{
+			Enabled:      true,
+			EnabledRules: []string{"api_key"},
+		},
+	}
+	raw := []byte(`{"sensitiveWord":{"enabled":false},"sensitiveInfo":{"enabled":true,"enabledRules":["api_key"]},"dangerousCmd":{"enabled":false,"enabledRules":[]}}`)
+	if !migrateContentSafetyConfig(&settings, raw) {
+		t.Fatal("旧版仅 API Key 规则应触发配置迁移")
+	}
+	if settings.SensitiveInfo.Enabled || len(settings.SensitiveInfo.EnabledRules) != 0 {
+		t.Fatalf("旧版 API Key 不应继续留在个人信息配置: %+v", settings.SensitiveInfo)
+	}
+	if !settings.Credential.Enabled || settings.Credential.UserInputMode != ContentSafetyModeMask ||
+		len(settings.Credential.EnabledRules) != 1 || settings.Credential.EnabledRules[0] != CredentialRuleAPIKey {
+		t.Fatalf("旧版仅 API Key 规则迁移后不应被意外关闭: %+v", settings.Credential)
+	}
+}
+
+func TestValidateContentSafetyRejectsEnabledGroupWithoutRules(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ContentSafetyConfig)
+	}{
+		{name: "敏感词", mutate: func(settings *ContentSafetyConfig) { settings.SensitiveWord.Enabled = true }},
+		{name: "个人信息", mutate: func(settings *ContentSafetyConfig) { settings.SensitiveInfo.Enabled = true }},
+		{name: "凭据", mutate: func(settings *ContentSafetyConfig) { settings.Credential.Enabled = true }},
+		{name: "危险命令", mutate: func(settings *ContentSafetyConfig) { settings.DangerousCmd.Enabled = true }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			settings := DefaultContentSafetyConfig()
+			test.mutate(&settings)
+			if err := ValidateContentSafetyConfig(settings); err == nil {
+				t.Fatal("启用但未选择规则应返回错误")
+			}
+		})
+	}
+}
+
 func TestStripContextSuffix(t *testing.T) {
 	tests := []struct {
 		name          string

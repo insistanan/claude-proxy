@@ -116,7 +116,29 @@ func (cm *ConfigManager) ResolveUpstreamProxyURL(upstream *UpstreamConfig) (stri
 func (cm *ConfigManager) GetSettings() SettingsConfig {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	return cm.config.Settings
+	return cloneSettingsConfig(cm.config.Settings)
+}
+
+// UpdateSettings 原子更新可由管理界面维护的全部全局设置。
+func (cm *ConfigManager) UpdateSettings(settings SettingsConfig) error {
+	settings.Network.UpstreamProxyURL = strings.TrimSpace(settings.Network.UpstreamProxyURL)
+	if err := ValidateProxyURL(settings.Network.UpstreamProxyURL); err != nil {
+		return err
+	}
+	if err := ValidateContentSafetyConfig(settings.ContentSafety); err != nil {
+		return err
+	}
+	settings = cloneSettingsConfig(settings)
+
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	previous := cloneSettingsConfig(cm.config.Settings)
+	cm.config.Settings = settings
+	if err := cm.saveConfigLocked(cm.config); err != nil {
+		cm.config.Settings = previous
+		return err
+	}
+	return nil
 }
 
 func (cm *ConfigManager) UpdateNetworkSettings(settings NetworkSettings) error {
@@ -141,6 +163,135 @@ func (cm *ConfigManager) UpdateNetworkSettings(settings NetworkSettings) error {
 		return err
 	}
 	return nil
+}
+
+// ValidateContentSafetyConfig 校验内容安全规则选择，拒绝未知、空白或重复配置。
+func ValidateContentSafetyConfig(settings ContentSafetyConfig) error {
+	if settings.SensitiveWord.Enabled &&
+		!settings.SensitiveWord.PornographyEnabled &&
+		!settings.SensitiveWord.GamblingEnabled &&
+		!settings.SensitiveWord.DrugsEnabled &&
+		!settings.SensitiveWord.ViolenceTerrorEnabled &&
+		!settings.SensitiveWord.PoliticalEnabled &&
+		!settings.SensitiveWord.IllegalCrimeEnabled &&
+		len(settings.SensitiveWord.CustomWords) == 0 {
+		return proxyConfigErrorf("敏感词检测已启用，但未选择任何分类或自定义词")
+	}
+	if err := validateEnabledRuleSelection("敏感信息", settings.SensitiveInfo.Enabled, settings.SensitiveInfo.EnabledRules); err != nil {
+		return err
+	}
+	if err := validateSafetyMode("敏感信息", settings.SensitiveInfo.Mode, true); err != nil {
+		return err
+	}
+	if err := validateRuleSelection(
+		"敏感信息",
+		settings.SensitiveInfo.EnabledRules,
+		map[string]struct{}{
+			SensitiveInfoRulePhone:     {},
+			SensitiveInfoRuleIDCard:    {},
+			SensitiveInfoRuleEmail:     {},
+			SensitiveInfoRuleIPAddress: {},
+		},
+	); err != nil {
+		return err
+	}
+	if err := validateEnabledRuleSelection("凭据", settings.Credential.Enabled, settings.Credential.EnabledRules); err != nil {
+		return err
+	}
+	if err := validateSafetyMode("凭据用户输入", settings.Credential.UserInputMode, true); err != nil {
+		return err
+	}
+	if err := validateSafetyMode("凭据工具结果", settings.Credential.ToolResultMode, false); err != nil {
+		return err
+	}
+	if err := validateSafetyMode("凭据工具参数", settings.Credential.ToolArgumentMode, false); err != nil {
+		return err
+	}
+	if err := validateRuleSelection(
+		"凭据",
+		settings.Credential.EnabledRules,
+		map[string]struct{}{
+			CredentialRuleAPIKey:           {},
+			CredentialRuleNamedSecret:      {},
+			CredentialRulePrivateKey:       {},
+			CredentialRuleConnectionString: {},
+			CredentialRuleHighEntropy:      {},
+		},
+	); err != nil {
+		return err
+	}
+	if err := validateEnabledRuleSelection("危险命令", settings.DangerousCmd.Enabled, settings.DangerousCmd.EnabledRules); err != nil {
+		return err
+	}
+	if err := validateRuleSelection(
+		"危险命令",
+		settings.DangerousCmd.EnabledRules,
+		map[string]struct{}{
+			DangerousCmdRuleDestructive:          {},
+			DangerousCmdRuleDownloadExecute:      {},
+			DangerousCmdRuleReverseShell:         {},
+			DangerousCmdRulePrivilegeEscalation:  {},
+			DangerousCmdRuleEnvironmentTampering: {},
+		},
+	); err != nil {
+		return err
+	}
+
+	seenWords := make(map[string]struct{}, len(settings.SensitiveWord.CustomWords))
+	for _, word := range settings.SensitiveWord.CustomWords {
+		if strings.TrimSpace(word) == "" {
+			return proxyConfigErrorf("自定义敏感词不能为空")
+		}
+		if _, exists := seenWords[word]; exists {
+			return proxyConfigErrorf("自定义敏感词 %q 重复", word)
+		}
+		seenWords[word] = struct{}{}
+	}
+	return nil
+}
+
+func validateEnabledRuleSelection(label string, enabled bool, rules []string) error {
+	if enabled && len(rules) == 0 {
+		return proxyConfigErrorf("%s已启用，但未选择任何规则", label)
+	}
+	return nil
+}
+
+func validateSafetyMode(label, mode string, allowMask bool) error {
+	switch mode {
+	case ContentSafetyModeAudit, ContentSafetyModeBlock:
+		return nil
+	case ContentSafetyModeMask:
+		if allowMask {
+			return nil
+		}
+	}
+	return proxyConfigErrorf("%s处理模式 %q 无效", label, mode)
+}
+
+func validateRuleSelection(label string, rules []string, allowed map[string]struct{}) error {
+	seen := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		if strings.TrimSpace(rule) == "" {
+			return proxyConfigErrorf("%s规则名不能为空", label)
+		}
+		if _, exists := allowed[rule]; !exists {
+			return proxyConfigErrorf("不支持的%s规则 %q", label, rule)
+		}
+		if _, exists := seen[rule]; exists {
+			return proxyConfigErrorf("%s规则 %q 重复", label, rule)
+		}
+		seen[rule] = struct{}{}
+	}
+	return nil
+}
+
+func cloneSettingsConfig(settings SettingsConfig) SettingsConfig {
+	settings.ContentSafety.SensitiveWord.CustomWords = append([]string{}, settings.ContentSafety.SensitiveWord.CustomWords...)
+	settings.ContentSafety.SensitiveInfo.EnabledRules = append([]string{}, settings.ContentSafety.SensitiveInfo.EnabledRules...)
+	settings.ContentSafety.Credential.EnabledRules = append([]string{}, settings.ContentSafety.Credential.EnabledRules...)
+	settings.ContentSafety.DangerousCmd.EnabledRules = append([]string{}, settings.ContentSafety.DangerousCmd.EnabledRules...)
+	return settings
 }
 
 func (cm *ConfigManager) validateProxyConfig() error {
