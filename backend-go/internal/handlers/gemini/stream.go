@@ -23,7 +23,7 @@ func handleStreamSuccess(
 	envCfg *config.EnvConfig,
 	startTime time.Time,
 	model string,
-) *types.Usage {
+) (*types.Usage, error) {
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -35,18 +35,21 @@ func handleStreamSuccess(
 		log.Printf("[Gemini-Stream] 警告: ResponseWriter 不支持 Flusher")
 	}
 
-	var totalUsage *types.Usage
+	var (
+		totalUsage *types.Usage
+		err        error
+	)
 
 	switch upstreamType {
 	case "gemini":
-		totalUsage = streamGeminiToGemini(c, resp, flusher, envCfg)
+		totalUsage, err = streamGeminiToGemini(c, resp, flusher, envCfg)
 	case "claude":
-		totalUsage = streamClaudeToGemini(c, resp, flusher, envCfg, model)
+		totalUsage, err = streamClaudeToGemini(c, resp, flusher, envCfg, model)
 	case "openai":
-		totalUsage = streamOpenAIToGemini(c, resp, flusher, envCfg, model)
+		totalUsage, err = streamOpenAIToGemini(c, resp, flusher, envCfg, model)
 	default:
 		// 默认透传
-		totalUsage = streamGeminiToGemini(c, resp, flusher, envCfg)
+		totalUsage, err = streamGeminiToGemini(c, resp, flusher, envCfg)
 	}
 
 	if envCfg.EnableResponseLogs {
@@ -54,7 +57,7 @@ func handleStreamSuccess(
 		log.Printf("[Gemini-Stream-Timing] 流式响应完成: %dms", responseTime)
 	}
 
-	return totalUsage
+	return totalUsage, err
 }
 
 // streamGeminiToGemini Gemini 上游直接透传
@@ -63,7 +66,7 @@ func streamGeminiToGemini(
 	resp *http.Response,
 	flusher http.Flusher,
 	envCfg *config.EnvConfig,
-) *types.Usage {
+) (*types.Usage, error) {
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer
 
@@ -79,6 +82,9 @@ func streamGeminiToGemini(
 			// 尝试解析 usage
 			var chunk types.GeminiStreamChunk
 			if err := json.Unmarshal([]byte(jsonData), &chunk); err == nil {
+				if err := feedGeminiStreamChunk(c, &chunk); err != nil {
+					return nil, err
+				}
 				if chunk.UsageMetadata != nil {
 					totalUsage = &types.Usage{
 						InputTokens:          chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount,
@@ -102,8 +108,10 @@ func streamGeminiToGemini(
 			flusher.Flush()
 		}
 	}
-
-	return totalUsage
+	if err := common.FlushAttachedStreamHooks(c); err != nil {
+		return nil, err
+	}
+	return totalUsage, nil
 }
 
 // streamClaudeToGemini Claude 流式响应转换为 Gemini 格式
@@ -113,7 +121,7 @@ func streamClaudeToGemini(
 	flusher http.Flusher,
 	envCfg *config.EnvConfig,
 	model string,
-) *types.Usage {
+) (*types.Usage, error) {
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
@@ -149,6 +157,9 @@ func streamClaudeToGemini(
 			deltaType, _ := delta["type"].(string)
 			if deltaType == "text_delta" {
 				text, _ := delta["text"].(string)
+				if err := common.FeedAttachedStreamText(c, text); err != nil {
+					return nil, err
+				}
 				currentText.WriteString(text)
 
 				// 转换为 Gemini 格式
@@ -231,8 +242,10 @@ func streamClaudeToGemini(
 			}
 		}
 	}
-
-	return totalUsage
+	if err := common.FlushAttachedStreamHooks(c); err != nil {
+		return nil, err
+	}
+	return totalUsage, nil
 }
 
 // streamOpenAIToGemini OpenAI 流式响应转换为 Gemini 格式
@@ -242,7 +255,7 @@ func streamOpenAIToGemini(
 	flusher http.Flusher,
 	envCfg *config.EnvConfig,
 	model string,
-) *types.Usage {
+) (*types.Usage, error) {
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
@@ -335,6 +348,9 @@ func streamOpenAIToGemini(
 		// 提取文本内容
 		content, _ := delta["content"].(string)
 		if content != "" {
+			if err := common.FeedAttachedStreamText(c, content); err != nil {
+				return nil, err
+			}
 			currentText.WriteString(content)
 
 			geminiChunk := types.GeminiStreamChunk{
@@ -376,8 +392,37 @@ func streamOpenAIToGemini(
 			}
 		}
 	}
+	if err := common.FlushAttachedStreamHooks(c); err != nil {
+		return nil, err
+	}
+	return totalUsage, nil
+}
 
-	return totalUsage
+func feedGeminiStreamChunk(c *gin.Context, chunk *types.GeminiStreamChunk) error {
+	if chunk == nil {
+		return nil
+	}
+	for candidateIndex, candidate := range chunk.Candidates {
+		if candidate.Content == nil {
+			continue
+		}
+		for partIndex, part := range candidate.Content.Parts {
+			if err := common.FeedAttachedStreamText(c, part.Text); err != nil {
+				return err
+			}
+			if part.FunctionCall != nil && len(part.FunctionCall.Args) > 0 {
+				arguments, err := json.Marshal(part.FunctionCall.Args)
+				if err != nil {
+					return fmt.Errorf("序列化 Gemini 工具参数失败: %w", err)
+				}
+				key := fmt.Sprintf("gemini.candidate.%d.part.%d.%s", candidateIndex, partIndex, part.FunctionCall.Name)
+				if err := common.FeedAttachedStreamToolArgumentsForKey(c, key, string(arguments)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // openaiFinishReasonToGemini 将 OpenAI 停止原因转换为 Gemini 格式

@@ -1,0 +1,676 @@
+package common
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/sensitive"
+	"github.com/BenedictKing/claude-proxy/internal/utils"
+)
+
+// ContentSafetyError 是请求前内容安全 Hook 的可识别错误。
+type ContentSafetyError struct {
+	BlockType string
+	RuleName  string
+	Snippet   string
+}
+
+// ContentSafetyHookError 表示内容安全基础设施自身失败，而不是策略命中。
+// 上游故障统计必须把它视为本地中性错误，不能降级渠道或 API Key。
+type ContentSafetyHookError struct {
+	Err error
+}
+
+func (e *ContentSafetyHookError) Error() string {
+	if e == nil || e.Err == nil {
+		return "内容安全检查失败"
+	}
+	return fmt.Sprintf("内容安全检查失败: %v", e.Err)
+}
+
+func (e *ContentSafetyHookError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func wrapContentSafetyHookError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var safetyErr *ContentSafetyError
+	if errors.As(err, &safetyErr) {
+		return err
+	}
+	var hookErr *ContentSafetyHookError
+	if errors.As(err, &hookErr) {
+		return err
+	}
+	return &ContentSafetyHookError{Err: err}
+}
+
+func (e *ContentSafetyError) Error() string {
+	if e == nil {
+		return "内容安全检查失败"
+	}
+	if e.RuleName == "" {
+		return fmt.Sprintf("请求被内容安全策略拦截 (%s)", e.BlockType)
+	}
+	return fmt.Sprintf("请求被内容安全策略拦截 (%s: %s)", e.BlockType, e.RuleName)
+}
+
+// Code 返回稳定的客户端错误码，协议适配层可据此生成各自格式的响应。
+func (e *ContentSafetyError) Code() string {
+	if e != nil {
+		switch e.BlockType {
+		case sensitive.BlockTypeSensitiveWord:
+			return "SENSITIVE_WORD_BLOCKED"
+		case sensitive.BlockTypeSensitiveInfo:
+			return "SENSITIVE_INFORMATION_BLOCKED"
+		case sensitive.BlockTypeDangerousCmd:
+			return "DANGEROUS_COMMAND_BLOCKED"
+		case sensitive.BlockTypeCredential:
+			return "CREDENTIAL_BLOCKED"
+		}
+	}
+	return "CONTENT_SAFETY_BLOCKED"
+}
+
+const contentSafetyPipelineKey = "__content_safety_hook_pipeline"
+
+type attachedHookPipeline struct {
+	pipeline       *HookPipeline
+	metadataMu     sync.RWMutex
+	metadata       HookContext
+	streamMu       sync.Mutex
+	stream         *sensitive.StreamCmdScanner
+	toolArgs       map[string]string
+	credentialHits map[string]struct{}
+}
+
+// AttachHookPipeline 将内容安全 Hook 管道绑定到当前请求。入口解析请求后调用，
+// 请求前检查会在最终上游载荷生成后、Vision 处理前后各执行一次。
+func AttachHookPipeline(c requestContextSetter, pipeline *HookPipeline, metadata HookContext) {
+	if c == nil || pipeline == nil {
+		return
+	}
+	if metadata.eventDeduper == nil {
+		metadata.eventDeduper = newSafetyEventDeduper()
+	}
+	c.Set(contentSafetyPipelineKey, &attachedHookPipeline{pipeline: pipeline, metadata: metadata})
+}
+
+type requestContextSetter interface {
+	Set(string, any)
+}
+
+type requestContextGetter interface {
+	Get(string) (any, bool)
+}
+
+func runAttachedPreRequestHooks(ctx context.Context, c requestContextGetter, req *http.Request, channelName string, payloadProtocols ...string) error {
+	if c == nil || req == nil {
+		return nil
+	}
+	value, exists := c.Get(contentSafetyPipelineKey)
+	if !exists || value == nil {
+		return nil
+	}
+	attached, ok := value.(*attachedHookPipeline)
+	if !ok || attached == nil || attached.pipeline == nil {
+		return fmt.Errorf("内容安全管道绑定数据无效")
+	}
+	var (
+		body                  []byte
+		err                   error
+		originalContentLength = req.ContentLength
+		originalGetBody       = req.GetBody
+		originalBodyWasNil    = req.Body == nil
+		originalHeaderLength  []string
+		hadHeaderLength       bool
+	)
+	if req.Header != nil {
+		originalHeaderLength, hadHeaderLength = req.Header["Content-Length"]
+		originalHeaderLength = append([]string(nil), originalHeaderLength...)
+	}
+	if req.Body != nil {
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			return fmt.Errorf("读取上游请求体失败: %w", err)
+		}
+	}
+	metadata := attached.currentMetadata()
+	metadata.ChannelName = channelName
+	metadata.RequestID = requestIDFromHeaders(req.Header)
+	if len(payloadProtocols) > 1 {
+		return fmt.Errorf("内容安全只允许一个上游载荷协议")
+	}
+	if len(payloadProtocols) == 1 {
+		metadata.PayloadProtocol = payloadProtocols[0]
+	}
+	attached.metadataMu.Lock()
+	attached.metadata = metadata
+	attached.metadataMu.Unlock()
+	result, err := attached.pipeline.RunPreRequest(ctx, metadata, HookResult{
+		RequestBody:     body,
+		UpstreamRequest: req,
+	})
+	if err != nil {
+		return attached.recordContentSafetyError(ctx, metadata, err)
+	}
+	if result.UpstreamRequest == nil {
+		result.UpstreamRequest = req
+	}
+	if result.UpstreamRequest != req {
+		return fmt.Errorf("请求前 Hook 不允许替换上游请求对象")
+	}
+
+	requestBody := append([]byte(nil), result.RequestBody...)
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+	req.Body = io.NopCloser(bytes.NewReader(requestBody))
+	if bytes.Equal(requestBody, body) {
+		if originalBodyWasNil {
+			req.Body = nil
+		}
+		req.ContentLength = originalContentLength
+		req.GetBody = originalGetBody
+		if req.Header != nil {
+			if hadHeaderLength {
+				req.Header["Content-Length"] = originalHeaderLength
+			} else {
+				req.Header.Del("Content-Length")
+			}
+		}
+		return nil
+	}
+	req.ContentLength = int64(len(requestBody))
+	req.TransferEncoding = nil
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(requestBody)), nil
+	}
+	if req.Header != nil {
+		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(requestBody)))
+	}
+	return nil
+}
+
+// RunAttachedPreRequestHooks 对已经构造完成的上游请求执行绑定的请求前 Hook。
+// 独立代理入口（例如 Responses Compact）应在每次实际上游发送前调用它。
+func RunAttachedPreRequestHooks(ctx context.Context, c requestContextGetter, req *http.Request, channelName string, payloadProtocols ...string) error {
+	return runAttachedPreRequestHooks(ctx, c, req, channelName, payloadProtocols...)
+}
+
+// NewContentSafetyPipeline 创建带敏感词和敏感信息请求前 Hook 的管道。
+// 设置在每次请求时从 ConfigManager 读取，文件热重载无需重建路由。
+func NewContentSafetyPipeline(cfgManager *config.ConfigManager) *HookPipeline {
+	return NewContentSafetyPipelineWithRecorder(cfgManager, nil)
+}
+
+// ResolveContentSafetyPipeline 解析入口注入的共享管道。
+// 不传参数时保留旧 Handler 调用合同，仍创建完整的检测管道；主进程必须传入
+// 带 BlockedLogRecorder 的共享实例，确保拦截事件可以持久化。
+func ResolveContentSafetyPipeline(cfgManager *config.ConfigManager, pipelines ...*HookPipeline) *HookPipeline {
+	if len(pipelines) > 1 {
+		panic("每个协议入口只能注入一个内容安全管道")
+	}
+	if len(pipelines) == 1 {
+		if pipelines[0] == nil {
+			panic("注入的内容安全管道不能为空")
+		}
+		return pipelines[0]
+	}
+	return NewContentSafetyPipeline(cfgManager)
+}
+
+// NewContentSafetyPipelineWithRecorder 创建内容安全管道并注入统一拦截记录器。
+func NewContentSafetyPipelineWithRecorder(cfgManager *config.ConfigManager, recorder BlockedLogRecorder) *HookPipeline {
+	pipeline := NewHookPipeline()
+	pipeline.blockedLogRecorder = recorder
+	if err := pipeline.Register(&contentSafetyPreRequestHook{cfgManager: cfgManager, recorder: recorder}); err != nil {
+		panic(fmt.Sprintf("注册内置内容安全 Hook 失败: %v", err))
+	}
+	if err := pipeline.Register(&contentSafetyPostResponseHook{cfgManager: cfgManager, recorder: recorder}); err != nil {
+		panic(fmt.Sprintf("注册内置响应安全 Hook 失败: %v", err))
+	}
+	return pipeline
+}
+
+// RunAttachedPostResponseHooks 在协议将非流式响应写回客户端前执行响应 Hook。
+func RunAttachedPostResponseHooks(ctx context.Context, c requestContextGetter, body []byte, response *http.Response) ([]byte, error) {
+	if c == nil {
+		return body, nil
+	}
+	value, exists := c.Get(contentSafetyPipelineKey)
+	if !exists || value == nil {
+		return body, nil
+	}
+	attached, ok := value.(*attachedHookPipeline)
+	if !ok || attached == nil || attached.pipeline == nil {
+		return body, wrapContentSafetyHookError(fmt.Errorf("内容安全管道绑定数据无效"))
+	}
+	metadata := attached.currentMetadata()
+	result, err := attached.pipeline.RunPostResponse(ctx, metadata, HookResult{
+		ResponseBody:     body,
+		UpstreamResponse: response,
+	})
+	if err != nil {
+		return body, wrapContentSafetyHookError(attached.recordContentSafetyError(ctx, metadata, err))
+	}
+	return result.ResponseBody, nil
+}
+
+func (a *attachedHookPipeline) currentMetadata() HookContext {
+	if a == nil {
+		return HookContext{}
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	return a.metadata
+}
+
+func (a *attachedHookPipeline) recordContentSafetyError(ctx context.Context, metadata HookContext, err error) error {
+	if a == nil || a.pipeline == nil || a.pipeline.blockedLogRecorder == nil {
+		return err
+	}
+	safetyErr := contentSafetyError(err)
+	if safetyErr == nil {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, recordErr := a.pipeline.blockedLogRecorder.Record(ctx, sensitive.BlockedLog{
+		APIType:       metadata.APIType,
+		BlockType:     safetyErr.BlockType,
+		RuleName:      safetyErr.RuleName,
+		PromptSnippet: safetyErr.Snippet,
+		ChannelName:   metadata.ChannelName,
+		Model:         metadata.Model,
+		RequestID:     metadata.RequestID,
+	})
+	if recordErr == nil {
+		return err
+	}
+	recordErr = fmt.Errorf("写入内容安全拦截记录失败: %w", recordErr)
+	log.Printf("[ContentSafety] %v", recordErr)
+	return errors.Join(err, recordErr)
+}
+
+func requestIDFromHeaders(header http.Header) string {
+	if header == nil {
+		return ""
+	}
+	for _, name := range []string{"X-Request-Id", "X-Oai-Request-Id", "Request-Id"} {
+		if requestID := strings.TrimSpace(header.Get(name)); requestID != "" {
+			return requestID
+		}
+	}
+	return ""
+}
+
+type contentSafetySnapshot struct {
+	settings   config.ContentSafetyConfig
+	words      *sensitive.WordFilter
+	info       *sensitive.InfoDetector
+	credential *sensitive.CredentialDetector
+}
+
+type contentSafetyPreRequestHook struct {
+	cfgManager *config.ConfigManager
+	recorder   BlockedLogRecorder
+	mu         sync.Mutex
+	snapshot   atomic.Pointer[contentSafetySnapshot]
+}
+
+func (h *contentSafetyPreRequestHook) Name() string     { return "content-safety" }
+func (h *contentSafetyPreRequestHook) Stage() HookStage { return HookStagePreRequest }
+func (h *contentSafetyPreRequestHook) Priority() int    { return 100 }
+
+func (h *contentSafetyPreRequestHook) Run(ctx context.Context, metadata HookContext, result HookResult) (HookResult, error) {
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	if h == nil || h.cfgManager == nil {
+		return result, fmt.Errorf("内容安全 Hook 未绑定配置管理器")
+	}
+	snapshot, err := h.currentSnapshot()
+	if err != nil {
+		return result, err
+	}
+	if !snapshot.settings.SensitiveWord.Enabled &&
+		!snapshot.settings.SensitiveInfo.Enabled &&
+		!snapshot.settings.Credential.Enabled {
+		return result, nil
+	}
+	if len(result.RequestBody) == 0 || result.UpstreamRequest == nil {
+		return result, nil
+	}
+	contentType := result.UpstreamRequest.Header.Get("Content-Type")
+	if !isJSONContentType(contentType, result.RequestBody) {
+		return result, nil
+	}
+
+	var payload interface{}
+	decoder := json.NewDecoder(bytes.NewReader(result.RequestBody))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return result, fmt.Errorf("解析内容安全请求体失败: %w", err)
+	}
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return result, fmt.Errorf("解析内容安全请求体失败: JSON 包含多个顶层值")
+		}
+		return result, fmt.Errorf("解析内容安全请求体尾部失败: %w", err)
+	}
+	root, ok := payload.(map[string]interface{})
+	if !ok {
+		return result, nil
+	}
+	prompts := make([]string, 0, 4)
+	protocol := metadata.PayloadProtocol
+	if protocol == "" {
+		protocol = metadata.APIType
+	}
+	segments, err := extractSafetySegments(protocol, root)
+	if err != nil {
+		return result, err
+	}
+	changed, err := applyContentSafetySegments(ctx, metadata, segments, snapshot, h.recorder, &prompts)
+	if err != nil {
+		return result, err
+	}
+	if !changed {
+		result.Prompts = prompts
+		return result, nil
+	}
+	body, err := utils.MarshalJSONNoEscape(payload)
+	if err != nil {
+		return result, fmt.Errorf("序列化内容安全请求体失败: %w", err)
+	}
+	result.RequestBody = body
+	result.Prompts = prompts
+	return result, nil
+}
+
+func (h *contentSafetyPreRequestHook) currentSnapshot() (*contentSafetySnapshot, error) {
+	settings := h.cfgManager.GetSettings().ContentSafety
+	current := h.snapshot.Load()
+	if current != nil && reflect.DeepEqual(current.settings, settings) {
+		return current, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	current = h.snapshot.Load()
+	if current != nil && reflect.DeepEqual(current.settings, settings) {
+		return current, nil
+	}
+	words, err := sensitive.NewWordFilter(settings.SensitiveWord)
+	if err != nil {
+		return nil, fmt.Errorf("初始化敏感词检测器失败: %w", err)
+	}
+	info, err := sensitive.NewInfoDetector(settings.SensitiveInfo)
+	if err != nil {
+		return nil, fmt.Errorf("初始化敏感信息检测器失败: %w", err)
+	}
+	credential, err := sensitive.NewCredentialDetector(settings.Credential)
+	if err != nil {
+		return nil, fmt.Errorf("初始化凭据检测器失败: %w", err)
+	}
+	next := &contentSafetySnapshot{settings: settings, words: words, info: info, credential: credential}
+	h.snapshot.Store(next)
+	return next, nil
+}
+
+func isJSONContentType(contentType string, body []byte) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	if mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") {
+		return true
+	}
+	if strings.HasPrefix(mediaType, "multipart/") || mediaType == "application/x-www-form-urlencoded" {
+		return false
+	}
+	trimmed := bytes.TrimSpace(body)
+	return len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
+}
+
+func transformPromptPayload(payload interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
+	root, ok := payload.(map[string]interface{})
+	if !ok {
+		return false, nil
+	}
+	changed := false
+	if value, exists := root["instructions"]; exists {
+		updated := value
+		mutated, block := transformPromptValue(&updated, snapshot, prompts)
+		if block != nil {
+			return changed, block
+		}
+		root["instructions"] = updated
+		changed = mutated || changed
+	}
+	if system, exists := root["system"]; exists {
+		updated := system
+		mutated, block := transformPromptValue(&updated, snapshot, prompts)
+		if block != nil {
+			return changed, block
+		}
+		root["system"] = updated
+		changed = mutated || changed
+	}
+	if prompt, exists := root["prompt"]; exists {
+		updated := prompt
+		mutated, block := transformPromptValue(&updated, snapshot, prompts)
+		if block != nil {
+			return changed, block
+		}
+		root["prompt"] = updated
+		changed = mutated || changed
+	}
+	if messages, exists := root["messages"]; exists {
+		mutated, block := transformMessageList(messages, snapshot, prompts)
+		if block != nil {
+			return changed, block
+		}
+		changed = mutated || changed
+	}
+	if contents, exists := root["contents"]; exists {
+		mutated, block := transformGeminiContents(contents, snapshot, prompts)
+		if block != nil {
+			return changed, block
+		}
+		changed = mutated || changed
+	}
+	if input, exists := root["input"]; exists {
+		updated := input
+		mutated, block := transformResponsesInput(&updated, snapshot, prompts)
+		if block != nil {
+			return changed, block
+		}
+		root["input"] = updated
+		changed = mutated || changed
+	}
+	return changed, nil
+}
+
+func transformMessageList(value interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
+	items, ok := value.([]interface{})
+	if !ok {
+		return false, nil
+	}
+	changed := false
+	for _, item := range items {
+		message, ok := item.(map[string]interface{})
+		if !ok || !isUserRole(message["role"]) {
+			continue
+		}
+		if content, exists := message["content"]; exists {
+			updated := content
+			mutated, block := transformPromptValue(&updated, snapshot, prompts)
+			if block != nil {
+				return changed, block
+			}
+			message["content"] = updated
+			changed = mutated || changed
+		}
+	}
+	return changed, nil
+}
+
+func transformGeminiContents(value interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
+	items, ok := value.([]interface{})
+	if !ok {
+		return false, nil
+	}
+	changed := false
+	for _, item := range items {
+		content, ok := item.(map[string]interface{})
+		if !ok || (content["role"] != nil && !isUserRole(content["role"])) {
+			continue
+		}
+		parts, ok := content["parts"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			partMap, ok := part.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if text, ok := partMap["text"].(string); ok {
+				masked, mutated, block := transformPromptText(text, snapshot, prompts)
+				if block != nil {
+					return changed, block
+				}
+				if mutated {
+					partMap["text"] = masked
+					changed = true
+				}
+			}
+		}
+	}
+	return changed, nil
+}
+
+func transformResponsesInput(value *interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
+	switch input := (*value).(type) {
+	case string:
+		masked, changed, block := transformPromptText(input, snapshot, prompts)
+		if block != nil {
+			return false, block
+		}
+		if changed {
+			*value = masked
+		}
+		return changed, nil
+	case []interface{}:
+		changed := false
+		for _, item := range input {
+			itemMap, ok := item.(map[string]interface{})
+			if !ok || (itemMap["role"] != nil && !isUserRole(itemMap["role"])) {
+				continue
+			}
+			for _, key := range []string{"content", "text", "input_text"} {
+				if raw, exists := itemMap[key]; exists {
+					updated := raw
+					mutated, block := transformPromptValue(&updated, snapshot, prompts)
+					if block != nil {
+						return changed, block
+					}
+					itemMap[key] = updated
+					changed = mutated || changed
+				}
+			}
+		}
+		return changed, nil
+	default:
+		return false, nil
+	}
+}
+
+func transformPromptValue(value *interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
+	switch current := (*value).(type) {
+	case string:
+		masked, changed, block := transformPromptText(current, snapshot, prompts)
+		if block != nil {
+			return false, block
+		}
+		if changed {
+			*value = masked
+		}
+		return changed, nil
+	case []interface{}:
+		changed := false
+		for _, item := range current {
+			block, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			for _, key := range []string{"text", "input_text", "content"} {
+				if raw, exists := block[key]; exists {
+					updated := raw
+					mutated, err := transformPromptValue(&updated, snapshot, prompts)
+					if err != nil {
+						return changed, err
+					}
+					block[key] = updated
+					changed = mutated || changed
+				}
+			}
+		}
+		return changed, nil
+	default:
+		return false, nil
+	}
+}
+
+func transformPromptText(text string, snapshot *contentSafetySnapshot, prompts *[]string) (string, bool, *ContentSafetyError) {
+	if snapshot.words != nil {
+		if match, ok := snapshot.words.FindFirst(text); ok {
+			return text, false, &ContentSafetyError{
+				BlockType: sensitive.BlockTypeSensitiveWord,
+				RuleName:  string(match.Category),
+				Snippet:   truncateSafetySnippet(text),
+			}
+		}
+	}
+	masked := text
+	changed := false
+	if snapshot.info != nil {
+		var matches []sensitive.InfoMatch
+		masked, matches = snapshot.info.Mask(text)
+		changed = len(matches) > 0
+	}
+	if strings.TrimSpace(masked) != "" {
+		*prompts = append(*prompts, masked)
+	}
+	return masked, changed, nil
+}
+
+func isUserRole(value interface{}) bool {
+	role, ok := value.(string)
+	return !ok || strings.EqualFold(role, "user")
+}
+
+func truncateSafetySnippet(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= 256 {
+		return text
+	}
+	return text[:256] + "..."
+}

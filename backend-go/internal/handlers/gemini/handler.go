@@ -28,10 +28,13 @@ func Handler(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
 	channelScheduler *scheduler.ChannelScheduler,
+	contentSafetyPipelines ...*common.HookPipeline,
 ) gin.HandlerFunc {
+	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	spec := common.ProtocolSpec{
-		Kind:    scheduler.ChannelKindGemini,
-		LogName: "Gemini",
+		Kind:         scheduler.ChannelKindGemini,
+		LogName:      "Gemini",
+		HookPipeline: contentSafetyPipeline,
 		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
 			var geminiReq types.GeminiRequest
 			if len(body) > 0 {
@@ -122,6 +125,7 @@ func Handler(
 		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
 	}
 }
+
 // extractModelName 从 URL 参数提取模型名称
 // 输入: "gemini-2.0-flash:generateContent" 或 "gemini-2.0-flash"
 // 输出: "gemini-2.0-flash"
@@ -318,7 +322,7 @@ func handleSuccess(
 	defer resp.Body.Close()
 
 	if isStream {
-		return handleStreamSuccess(c, resp, upstreamType, envCfg, startTime, model), nil
+		return handleStreamSuccess(c, resp, upstreamType, envCfg, startTime, model)
 	}
 
 	// 非流式响应处理
@@ -338,6 +342,15 @@ func handleSuccess(
 		responseTime := time.Since(startTime).Milliseconds()
 		log.Printf("[Gemini-Timing] 响应完成: %dms, 状态: %d", responseTime, resp.StatusCode)
 	}
+	writeResponse := func(body []byte) error {
+		checkedBody, err := common.RunAttachedPostResponseHooks(c.Request.Context(), c, body, resp)
+		if err != nil {
+			return err
+		}
+		common.MarkRequestLogFirstToken(c)
+		c.Data(resp.StatusCode, "application/json", checkedBody)
+		return nil
+	}
 
 	// 根据上游类型转换响应
 	var geminiResp *types.GeminiResponse
@@ -346,58 +359,45 @@ func handleSuccess(
 	case "gemini":
 		// 直接解析 Gemini 响应
 		if err := json.Unmarshal(bodyBytes, &geminiResp); err != nil {
-			common.MarkRequestLogFirstToken(c)
-			c.Data(resp.StatusCode, "application/json", bodyBytes)
-			return nil, nil
+			return nil, writeResponse(bodyBytes)
 		}
 
 	case "claude":
 		// 转换 Claude 响应为 Gemini 格式
 		var claudeResp map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &claudeResp); err != nil {
-			common.MarkRequestLogFirstToken(c)
-			c.Data(resp.StatusCode, "application/json", bodyBytes)
-			return nil, nil
+			return nil, writeResponse(bodyBytes)
 		}
 		geminiResp, err = converters.ClaudeResponseToGemini(claudeResp)
 		if err != nil {
-			common.MarkRequestLogFirstToken(c)
-			c.Data(resp.StatusCode, "application/json", bodyBytes)
-			return nil, nil
+			return nil, writeResponse(bodyBytes)
 		}
 
 	case "openai":
 		// 转换 OpenAI 响应为 Gemini 格式
 		var openaiResp map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &openaiResp); err != nil {
-			common.MarkRequestLogFirstToken(c)
-			c.Data(resp.StatusCode, "application/json", bodyBytes)
-			return nil, nil
+			return nil, writeResponse(bodyBytes)
 		}
 		geminiResp, err = converters.OpenAIResponseToGemini(openaiResp)
 		if err != nil {
-			common.MarkRequestLogFirstToken(c)
-			c.Data(resp.StatusCode, "application/json", bodyBytes)
-			return nil, nil
+			return nil, writeResponse(bodyBytes)
 		}
 
 	default:
 		// 默认直接返回
-		common.MarkRequestLogFirstToken(c)
-		c.Data(resp.StatusCode, "application/json", bodyBytes)
-		return nil, nil
+		return nil, writeResponse(bodyBytes)
 	}
 
 	// 返回 Gemini 格式响应
 	respBytes, err := json.Marshal(geminiResp)
 	if err != nil {
-		common.MarkRequestLogFirstToken(c)
-		c.Data(resp.StatusCode, "application/json", bodyBytes)
-		return nil, nil
+		return nil, writeResponse(bodyBytes)
 	}
 
-	common.MarkRequestLogFirstToken(c)
-	c.Data(resp.StatusCode, "application/json", respBytes)
+	if err := writeResponse(respBytes); err != nil {
+		return nil, err
+	}
 
 	// 提取 usage 统计
 	var usage *types.Usage

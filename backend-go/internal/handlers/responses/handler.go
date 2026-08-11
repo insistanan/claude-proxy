@@ -36,7 +36,9 @@ func Handler(
 	cfgManager *config.ConfigManager,
 	sessionManager *session.SessionManager,
 	channelScheduler *scheduler.ChannelScheduler,
+	contentSafetyPipelines ...*common.HookPipeline,
 ) gin.HandlerFunc {
+	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	return gin.HandlerFunc(func(c *gin.Context) {
 		// 先进行认证
 		middleware.ProxyAuthMiddleware(envCfg)(c)
@@ -59,6 +61,11 @@ func Handler(
 		if len(bodyBytes) > 0 {
 			_ = json.Unmarshal(bodyBytes, &responsesReq)
 		}
+		common.AttachHookPipeline(c, contentSafetyPipeline, common.HookContext{
+			APIType: string(scheduler.ChannelKindResponses),
+			Model:   responsesReq.Model,
+			Stream:  responsesReq.Stream,
+		})
 
 		hasImage := utils.DetectImageContent(bodyBytes)
 		if responsesReq.PreviousResponseID != "" {
@@ -418,6 +425,13 @@ func handleSuccess(
 
 	// Token 补全逻辑
 	patchResponsesUsage(responsesResp, originalRequestJSON, envCfg)
+	responseBody, err := utils.MarshalJSONNoEscape(responsesResp)
+	if err != nil {
+		return nil, fmt.Errorf("序列化 Responses 响应失败: %w", err)
+	}
+	if _, err := common.RunAttachedPostResponseHooks(c.Request.Context(), c, responseBody, resp); err != nil {
+		return nil, err
+	}
 	common.AssociateConversationExternalID(channelScheduler, conversationID, scheduler.ChannelKindResponses, responsesResp.ID)
 
 	// 客户端的 store 只控制上游是否保存，不能关闭本代理自己的七天会话持久化。
@@ -896,6 +910,15 @@ func handleStreamSuccess(
 			if streamResponseID == "" {
 				streamResponseID = extractResponsesCompletedID(eventToSend)
 			}
+			text, toolArguments := extractResponsesStreamSafetyFragments(eventToSend)
+			if err := common.FeedAttachedStreamText(c, text); err != nil {
+				return nil, err
+			}
+			for _, toolArgument := range toolArguments {
+				if err := common.FeedAttachedStreamToolArgumentsForKey(c, toolArgument.key, toolArgument.fragment); err != nil {
+					return nil, err
+				}
+			}
 
 			// ---- 缓冲阶段逻辑 ----
 			if buffering {
@@ -961,6 +984,9 @@ func handleStreamSuccess(
 	if buffering && !c.Writer.Written() {
 		log.Printf("[Responses-Stream] 流结束仍无内容，判定为空响应 (buffered=%d)", len(bufferedEvents))
 		return nil, common.NewRetrySameCandidateError(ErrEmptyStreamResponse)
+	}
+	if err := common.FlushAttachedStreamHooks(c); err != nil {
+		return nil, err
 	}
 
 	if envCfg.EnableResponseLogs {
@@ -1059,7 +1085,7 @@ func extractResponsesTextFromEvent(event string, buf *bytes.Buffer) {
 			if delta, ok := data["delta"].(string); ok {
 				buf.WriteString(delta)
 			}
-		case "response.function_call_arguments.delta":
+		case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 			if delta, ok := data["delta"].(string); ok {
 				buf.WriteString(delta)
 			}
@@ -1088,6 +1114,55 @@ func extractResponsesTextFromEvent(event string, buf *bytes.Buffer) {
 			}
 		}
 	}
+}
+
+type responsesStreamToolArgumentFragment struct {
+	key      string
+	fragment string
+}
+
+func extractResponsesStreamSafetyFragments(event string) (string, []responsesStreamToolArgumentFragment) {
+	var text strings.Builder
+	toolArguments := make([]responsesStreamToolArgumentFragment, 0)
+	for lineIndex, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+			continue
+		}
+		eventType, _ := data["type"].(string)
+		delta, _ := data["delta"].(string)
+		switch eventType {
+		case "response.output_text.delta", "response.reasoning_summary_text.delta", "response.output_json.delta", "response.content_part.delta":
+			if delta != "" {
+				text.WriteString(delta)
+			} else if value, _ := data["text"].(string); value != "" {
+				text.WriteString(value)
+			}
+		case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
+			if delta != "" {
+				toolArguments = append(toolArguments, responsesStreamToolArgumentFragment{
+					key:      responsesStreamToolArgumentKey(data, lineIndex),
+					fragment: delta,
+				})
+			}
+		}
+	}
+	return text.String(), toolArguments
+}
+
+func responsesStreamToolArgumentKey(data map[string]interface{}, fallback int) string {
+	for _, field := range []string{"item_id", "call_id", "output_index"} {
+		if value, exists := data[field]; exists {
+			if key := strings.TrimSpace(fmt.Sprint(value)); key != "" {
+				return "responses.tool." + key
+			}
+		}
+	}
+	return fmt.Sprintf("responses.tool.default.%d", fallback)
 }
 
 // checkResponsesEventUsage 检测 Responses 事件是否包含 usage

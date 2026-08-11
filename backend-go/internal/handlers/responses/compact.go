@@ -21,9 +21,10 @@ import (
 
 // compactError 封装 compact 请求错误
 type compactError struct {
-	status         int
-	body           []byte
-	shouldFailover bool
+	status          int
+	body            []byte
+	shouldFailover  bool
+	responseWritten bool
 }
 
 // CompactHandler Responses API compact 端点处理器
@@ -33,7 +34,9 @@ func CompactHandler(
 	cfgManager *config.ConfigManager,
 	_ *session.SessionManager,
 	channelScheduler *scheduler.ChannelScheduler,
+	contentSafetyPipelines ...*common.HookPipeline,
 ) gin.HandlerFunc {
+	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	return gin.HandlerFunc(func(c *gin.Context) {
 		// 认证
 		middleware.ProxyAuthMiddleware(envCfg)(c)
@@ -52,6 +55,11 @@ func CompactHandler(
 		// 提取对话标识用于 Trace 亲和性
 		userID := common.ExtractConversationID(c, bodyBytes)
 		model := compactRequestModel(bodyBytes)
+		common.AttachHookPipeline(c, contentSafetyPipeline, common.HookContext{
+			APIType: string(scheduler.ChannelKindResponses),
+			Model:   model,
+			Stream:  false,
+		})
 
 		// 检查是否为多渠道模式
 		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindResponses, model)
@@ -99,6 +107,9 @@ func handleSingleChannelCompact(
 		}
 
 		if compactErr != nil {
+			if compactErr.responseWritten {
+				return
+			}
 			lastErr = compactErr
 			if compactErr.shouldFailover {
 				failedKeys[apiKey] = true
@@ -177,6 +188,9 @@ func handleMultiChannelCompact(
 		releaseReservation()
 		failedChannels[channelIndex] = true
 		if compactErr != nil {
+			if compactErr.responseWritten {
+				return
+			}
 			lastErr = compactErr
 		}
 	}
@@ -253,6 +267,9 @@ func tryCompactChannelWithAllKeys(
 		}
 
 		if compactErr != nil {
+			if compactErr.responseWritten {
+				return true, "", nil
+			}
 			lastErr = compactErr
 			if compactErr.shouldFailover {
 				failedKeys[apiKey] = true
@@ -299,9 +316,15 @@ func tryCompactWithKey(
 	req.Header.Del("x-api-key")
 	utils.SetAuthenticationHeader(req.Header, apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	if err := common.RunAttachedPreRequestHooks(c.Request.Context(), c, req, upstream.Name, "responses"); err != nil {
+		_ = req.Body.Close()
+		writeCompactContentSafetyError(c, err)
+		return false, &compactError{responseWritten: true}
+	}
 
 	proxyURL, err := cfgManager.ResolveUpstreamProxyURL(upstream)
 	if err != nil {
+		_ = req.Body.Close()
 		return false, &compactError{status: 500, body: []byte(`{"error":"上游代理配置无效"}`), shouldFailover: false}
 	}
 	resp, err := common.SendRequest(req, upstream, envCfg, false, "Responses", proxyURL)
@@ -320,9 +343,24 @@ func tryCompactWithKey(
 	}
 
 	// 成功
+	respBody, err = common.RunAttachedPostResponseHooks(c.Request.Context(), c, respBody, resp)
+	if err != nil {
+		writeCompactContentSafetyError(c, err)
+		return false, &compactError{responseWritten: true}
+	}
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 	c.Data(resp.StatusCode, "application/json", respBody)
 	return true, nil
+}
+
+func writeCompactContentSafetyError(c *gin.Context, err error) {
+	if writeErr := common.WriteAttachedContentSafetyError(c, err); writeErr == nil {
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{
+		"error": "内容安全检查失败",
+		"code":  "CONTENT_SAFETY_HOOK_ERROR",
+	})
 }
 
 // buildCompactURL 构建 compact 端点 URL

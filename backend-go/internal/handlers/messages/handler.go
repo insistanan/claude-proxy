@@ -23,10 +23,17 @@ import (
 // 支持多渠道调度：当配置多个渠道时自动启用
 // Handler Messages API 代理处理器。
 // 使用通用 RunProxyRequest 骨架，通过 ProtocolSpec 注入协议特有逻辑。
-func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channelScheduler *scheduler.ChannelScheduler) gin.HandlerFunc {
+func Handler(
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	contentSafetyPipelines ...*common.HookPipeline,
+) gin.HandlerFunc {
+	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	spec := common.ProtocolSpec{
-		Kind:    scheduler.ChannelKindMessages,
-		LogName: "Messages",
+		Kind:         scheduler.ChannelKindMessages,
+		LogName:      "Messages",
+		HookPipeline: contentSafetyPipeline,
 		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
 			body, _ = common.RemoveEmptySignatures(body, envCfg.EnableRequestLogs, "Messages")
 			c.Set(utils.ContextKeyClaudeCodeDisguise, cfgManager.GetClaudeCodeDisguiseEnabled())
@@ -63,6 +70,7 @@ func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channel
 		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
 	}
 }
+
 func handleNormalResponse(
 	c *gin.Context,
 	resp *http.Response,
@@ -175,9 +183,6 @@ func handleNormalResponse(
 		}
 	}()
 
-	// 转发上游响应头
-	utils.ForwardResponseHeaders(resp.Header, c.Writer)
-
 	// 缓存字段会被 Cursor 计入 Conversation 上下文。流式出口已经剥离它们，
 	// 非流式响应也必须保持同一契约；内部 usage 仍用于后续指标记录。
 	clientResp := *claudeResp
@@ -190,9 +195,18 @@ func handleNormalResponse(
 		clientUsage.CacheTTL = ""
 		clientResp.Usage = &clientUsage
 	}
+	clientBody, err := utils.MarshalJSONNoEscape(&clientResp)
+	if err != nil {
+		return nil, fmt.Errorf("序列化 Messages 响应失败: %w", err)
+	}
+	clientBody, err = common.RunAttachedPostResponseHooks(c.Request.Context(), c, clientBody, resp)
+	if err != nil {
+		return nil, err
+	}
 
+	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 	common.MarkRequestLogFirstToken(c)
-	c.JSON(200, &clientResp)
+	c.Data(http.StatusOK, "application/json", clientBody)
 
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()

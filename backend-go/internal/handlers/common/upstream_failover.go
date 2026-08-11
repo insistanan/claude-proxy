@@ -292,6 +292,57 @@ func rankTargetModelsForChannel(
 	return ordered
 }
 
+func prepareRequestForUpstream(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	kind scheduler.ChannelKind,
+	upstream *config.UpstreamConfig,
+	model string,
+	conversationID string,
+	req *http.Request,
+	apiType string,
+) (string, error) {
+	payloadProtocol := payloadProtocolForServiceType(upstream.ServiceType, apiType)
+	if err := runAttachedPreRequestHooks(c.Request.Context(), c, req, upstream.Name, payloadProtocol); err != nil {
+		return "content_safety", err
+	}
+	if err := visionlayer.PrepareRequest(
+		c,
+		envCfg,
+		cfgManager,
+		channelScheduler,
+		kind,
+		upstream,
+		model,
+		conversationID,
+		req,
+	); err != nil {
+		return "vision_layer", err
+	}
+	if err := runAttachedPreRequestHooks(c.Request.Context(), c, req, upstream.Name, payloadProtocol); err != nil {
+		return "content_safety", err
+	}
+	return "", nil
+}
+
+func handleContentSafetyPreparationError(c *gin.Context, apiType string, err error) int {
+	if safetyErr := contentSafetyError(err); safetyErr != nil {
+		if writeErr := WriteAttachedContentSafetyError(c, safetyErr); writeErr != nil {
+			log.Printf("[%s-ContentSafety] 协议错误写出失败: %v", apiType, writeErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": writeErr.Error(), "code": "CONTENT_SAFETY_RESPONSE_ERROR"})
+			return http.StatusInternalServerError
+		}
+		return http.StatusForbidden
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{
+		"error": err.Error(),
+		"code":  "CONTENT_SAFETY_HOOK_ERROR",
+	})
+	return http.StatusInternalServerError
+}
+
 // 返回:
 //   - handled: 是否已向客户端写回响应（成功或非 failover 错误）
 //   - successKey: 成功的 key（仅 handled=true 且成功时有值）
@@ -403,18 +454,21 @@ func TryUpstreamWithAllKeys(
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "build_request", err.Error(), true, isStream, nil)
 				continue
 			}
-			if err := visionlayer.PrepareRequest(
-				c,
-				envCfg,
-				cfgManager,
-				channelScheduler,
-				kind,
-				upstreamCopy,
-				logCtx.Model,
-				logCtx.ConversationID,
-				req,
-			); err != nil {
+			prepareStage, err := prepareRequestForUpstream(
+				c, envCfg, cfgManager, channelScheduler, kind, upstreamCopy,
+				logCtx.Model, logCtx.ConversationID, req, apiType,
+			)
+			if err != nil {
 				_ = req.Body.Close()
+				if prepareStage == "content_safety" {
+					status := handleContentSafetyPreparationError(c, apiType, err)
+					attemptStatus := "failed"
+					if status == http.StatusForbidden {
+						attemptStatus = "blocked"
+					}
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, attemptStatus, status, false, attemptStart, prepareStage, err.Error(), false, isStream, nil)
+					return true, "", 0, nil, nil, err
+				}
 				status, code := visionlayer.ErrorResponse(err)
 				payload := gin.H{
 					"error": err.Error(),
@@ -428,7 +482,6 @@ func TryUpstreamWithAllKeys(
 				c.JSON(status, payload)
 				return true, "", 0, nil, nil, err
 			}
-
 			// 记录请求开始
 			channelScheduler.RecordRequestStart(currentBaseURL, apiKey, kind)
 
@@ -441,6 +494,19 @@ func TryUpstreamWithAllKeys(
 
 			// TCP 建连开始即计数：将活跃度统计提前到发起上游请求之前
 			requestID := metricsManager.RecordRequestConnected(currentBaseURL, apiKey, logCtx.Model)
+			finishRetryContentSafety := func(preparationErr error) {
+				status := handleContentSafetyPreparationError(c, apiType, preparationErr)
+				metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
+				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+				if pm := channelScheduler.GetProfileManager(); pm != nil {
+					pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
+				}
+				attemptStatus := "failed"
+				if status == http.StatusForbidden {
+					attemptStatus = "blocked"
+				}
+				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, attemptStatus, status, false, attemptStart, "content_safety", preparationErr.Error(), false, isStream, nil)
+			}
 
 			resp, err := SendRequest(req, upstream, envCfg, isStream, apiType, proxyURL)
 			if err != nil {
@@ -519,18 +585,16 @@ func TryUpstreamWithAllKeys(
 					retryReq, retryErr := buildRequest(c, upstreamCopy, apiKey)
 					if retryErr != nil {
 						log.Printf("[%s-ChannelCapability] 重建无 prompt_cache_key 请求失败: %v", apiType, retryErr)
-					} else if retryErr = visionlayer.PrepareRequest(
-						c,
-						envCfg,
-						cfgManager,
-						channelScheduler,
-						kind,
-						upstreamCopy,
-						logCtx.Model,
-						logCtx.ConversationID,
-						retryReq,
-					); retryErr != nil {
+					} else if retryStage, prepareErr := prepareRequestForUpstream(
+						c, envCfg, cfgManager, channelScheduler, kind, upstreamCopy,
+						logCtx.Model, logCtx.ConversationID, retryReq, apiType,
+					); prepareErr != nil {
+						retryErr = prepareErr
 						_ = retryReq.Body.Close()
+						if retryStage == "content_safety" {
+							finishRetryContentSafety(retryErr)
+							return true, "", 0, nil, nil, retryErr
+						}
 						log.Printf("[%s-ChannelCapability] 准备无 prompt_cache_key 请求失败: %v", apiType, retryErr)
 					} else {
 						retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
@@ -566,18 +630,16 @@ func TryUpstreamWithAllKeys(
 					retryReq, retryErr := buildRequest(c, upstreamCopy, apiKey)
 					if retryErr != nil {
 						log.Printf("[%s-ChannelCapability] 重建 reasoning_content 兼容请求失败: %v", apiType, retryErr)
-					} else if retryErr = visionlayer.PrepareRequest(
-						c,
-						envCfg,
-						cfgManager,
-						channelScheduler,
-						kind,
-						upstreamCopy,
-						logCtx.Model,
-						logCtx.ConversationID,
-						retryReq,
-					); retryErr != nil {
+					} else if retryStage, prepareErr := prepareRequestForUpstream(
+						c, envCfg, cfgManager, channelScheduler, kind, upstreamCopy,
+						logCtx.Model, logCtx.ConversationID, retryReq, apiType,
+					); prepareErr != nil {
+						retryErr = prepareErr
 						_ = retryReq.Body.Close()
+						if retryStage == "content_safety" {
+							finishRetryContentSafety(retryErr)
+							return true, "", 0, nil, nil, retryErr
+						}
 						log.Printf("[%s-ChannelCapability] 准备 reasoning_content 兼容请求失败: %v", apiType, retryErr)
 					} else {
 						retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
@@ -608,18 +670,16 @@ func TryUpstreamWithAllKeys(
 						retryReq, retryErr := buildRequest(c, upstreamCopy, apiKey)
 						if retryErr != nil {
 							log.Printf("[%s-ContentPolicy] 重建转义请求失败: %v", apiType, retryErr)
-						} else if retryErr = visionlayer.PrepareRequest(
-							c,
-							envCfg,
-							cfgManager,
-							channelScheduler,
-							kind,
-							upstreamCopy,
-							logCtx.Model,
-							logCtx.ConversationID,
-							retryReq,
-						); retryErr != nil {
+						} else if retryStage, prepareErr := prepareRequestForUpstream(
+							c, envCfg, cfgManager, channelScheduler, kind, upstreamCopy,
+							logCtx.Model, logCtx.ConversationID, retryReq, apiType,
+						); prepareErr != nil {
+							retryErr = prepareErr
 							_ = retryReq.Body.Close()
+							if retryStage == "content_safety" {
+								finishRetryContentSafety(retryErr)
+								return true, "", 0, nil, nil, retryErr
+							}
 							log.Printf("[%s-ContentPolicy] 准备转义请求失败: %v", apiType, retryErr)
 						} else {
 							retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
@@ -717,6 +777,41 @@ func TryUpstreamWithAllKeys(
 					}
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", resp.StatusCode, false, attemptStart, "client_cancelled", err.Error(), false, isStream, usage)
 					log.Printf("[%s-Cancel] 请求已取消，停止渠道 failover", apiType)
+				} else if safetyErr := contentSafetyError(err); safetyErr != nil {
+					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					if pm := channelScheduler.GetProfileManager(); pm != nil {
+						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
+					}
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "blocked", http.StatusForbidden, false, attemptStart, "content_safety", safetyErr.Error(), false, isStream, usage)
+					if c.Writer.Written() {
+						if writeErr := WriteAttachedStreamError(c, safetyErr); writeErr != nil {
+							log.Printf("[%s-ContentSafety] 流错误写出失败: %v", apiType, writeErr)
+						}
+					} else {
+						if writeErr := WriteAttachedContentSafetyError(c, safetyErr); writeErr != nil {
+							log.Printf("[%s-ContentSafety] 协议错误写出失败: %v", apiType, writeErr)
+							c.JSON(http.StatusInternalServerError, gin.H{"error": writeErr.Error(), "code": "CONTENT_SAFETY_RESPONSE_ERROR"})
+						}
+					}
+				} else if hookErr := contentSafetyHookError(err); hookErr != nil {
+					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					if pm := channelScheduler.GetProfileManager(); pm != nil {
+						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
+					}
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", http.StatusInternalServerError, false, attemptStart, "content_safety_hook", hookErr.Error(), false, isStream, usage)
+					log.Printf("[%s-ContentSafety] 本地响应检查失败: %v", apiType, hookErr)
+					if c.Writer.Written() {
+						if writeErr := WriteAttachedStreamHookError(c, hookErr); writeErr != nil {
+							log.Printf("[%s-ContentSafety] 流内部错误写出失败: %v", apiType, writeErr)
+						}
+					} else {
+						c.JSON(http.StatusInternalServerError, gin.H{
+							"error": "内容安全检查失败",
+							"code":  "CONTENT_SAFETY_HOOK_ERROR",
+						})
+					}
 				} else if isRetrySameCandidateError(err) && !c.Writer.Written() {
 					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
 					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
@@ -791,6 +886,22 @@ func TryUpstreamWithAllKeys(
 	}
 
 	return false, "", 0, lastFailoverError, nil, lastError
+}
+
+func contentSafetyError(err error) *ContentSafetyError {
+	var target *ContentSafetyError
+	if errors.As(err, &target) {
+		return target
+	}
+	return nil
+}
+
+func contentSafetyHookError(err error) *ContentSafetyHookError {
+	var target *ContentSafetyHookError
+	if errors.As(err, &target) {
+		return target
+	}
+	return nil
 }
 
 func recordConversationAttempt(channelScheduler *scheduler.ChannelScheduler, kind scheduler.ChannelKind, upstream *config.UpstreamConfig, logCtx AttemptLogContext, isStream bool) {

@@ -160,10 +160,21 @@ func ProcessStreamEvents(
 
 		case event, ok := <-eventChan:
 			if !ok {
+				if err := FlushAttachedStreamHooks(c); err != nil {
+					return nil, err
+				}
 				usage := logStreamCompletion(ctx, envCfg, startTime)
 				return usage, nil
 			}
-			ProcessStreamEvent(c, w, flusher, event, ctx, envCfg, requestBody)
+			if err := ProcessStreamEvent(c, w, flusher, event, ctx, envCfg, requestBody); err != nil {
+				// 内容安全错误由上层统一按入口协议编码，避免先写通用
+				// stream_error、随后再写 content_safety_error 的重复事件。
+				if !ctx.ClientGone && contentSafetyError(err) == nil {
+					w.Write([]byte(BuildStreamErrorEvent(err)))
+					flusher.Flush()
+				}
+				return nil, err
+			}
 
 		case err, ok := <-errChan:
 			if !ok {
@@ -173,11 +184,8 @@ func ProcessStreamEvents(
 			if err != nil {
 				log.Printf("[Messages-Stream] 错误: 流式传输错误: %v", err)
 				logPartialResponse(ctx, envCfg)
-
-				// 向客户端发送错误事件（如果连接仍然有效）
-				if !ctx.ClientGone {
-					errorEvent := BuildStreamErrorEvent(err)
-					w.Write([]byte(errorEvent))
+				if !ctx.ClientGone && contentSafetyError(err) == nil {
+					w.Write([]byte(BuildStreamErrorEvent(err)))
 					flusher.Flush()
 				}
 
@@ -196,7 +204,7 @@ func ProcessStreamEvent(
 	ctx *StreamContext,
 	envCfg *config.EnvConfig,
 	requestBody []byte,
-) {
+) error {
 	// SSE 事件调试日志
 	ctx.EventCount++
 	if envCfg.SSEDebugLevel == "full" || envCfg.SSEDebugLevel == "summary" {
@@ -220,6 +228,15 @@ func ProcessStreamEvent(
 	eventData, hasEventData := ParseSSEEventData(event)
 	if hasEventData {
 		ctx.captureReasoningContext(eventData)
+		text, toolArguments := streamSafetyFragments(eventData)
+		if err := FeedAttachedStreamText(c, text); err != nil {
+			return err
+		}
+		for _, toolArgument := range toolArguments {
+			if err := FeedAttachedStreamToolArgumentsForKey(c, toolArgument.key, toolArgument.fragment); err != nil {
+				return err
+			}
+		}
 	}
 
 	// 提取文本用于估算 token
@@ -393,6 +410,36 @@ func ProcessStreamEvent(
 			flusher.Flush()
 		}
 	}
+	return nil
+}
+
+type streamToolArgumentFragment struct {
+	key      string
+	fragment string
+}
+
+func streamSafetyFragments(data map[string]interface{}) (string, []streamToolArgumentFragment) {
+	if data == nil {
+		return "", nil
+	}
+	var text string
+	if block, ok := data["content_block"].(map[string]interface{}); ok {
+		text, _ = block["text"].(string)
+	}
+	var toolArguments []streamToolArgumentFragment
+	if delta, ok := data["delta"].(map[string]interface{}); ok {
+		if deltaText, _ := delta["text"].(string); deltaText != "" {
+			text += deltaText
+		}
+		if fragment, _ := delta["partial_json"].(string); fragment != "" {
+			key := "messages.content_block.default"
+			if index, exists := data["index"]; exists {
+				key = "messages.content_block." + strings.TrimSpace(fmt.Sprint(index))
+			}
+			toolArguments = append(toolArguments, streamToolArgumentFragment{key: key, fragment: fragment})
+		}
+	}
+	return text, toolArguments
 }
 
 // updateCollectedUsage 更新收集的 usage 数据

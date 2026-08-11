@@ -22,6 +22,11 @@ type ProtocolSpec struct {
 	Kind    scheduler.ChannelKind
 	LogName string // 日志前缀，如 "Messages" / "Chat"
 
+	// HookPipeline 可选：请求前/请求时/请求后公共管道。请求前 Hook 会在
+	// 最终上游载荷生成后、Vision 处理前后执行，既避免原文先进入图片理解层，
+	// 也会检查图片理解层新生成的文本。
+	HookPipeline *HookPipeline
+
 	// PreRoute 可选：协议特有的前置路由（如 chat 的 modelcatalog 路由）。
 	// 返回 true 表示请求已被处理，主流程应直接返回。
 	PreRoute func(c *gin.Context, body []byte, model string, userID string, startTime time.Time) bool
@@ -86,6 +91,11 @@ func RunProxyRequest(
 	if !ok {
 		return
 	}
+	AttachHookPipeline(c, spec.HookPipeline, HookContext{
+		APIType: string(spec.Kind),
+		Model:   model,
+		Stream:  stream,
+	})
 
 	// 4. 会话观测
 	userID := ObserveConversationRequest(

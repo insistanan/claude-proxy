@@ -28,8 +28,8 @@ var chatVersionPattern = regexp.MustCompile(`/v\d+[a-z]*$`)
 // 使用通用 RunProxyRequest 骨架，通过 ProtocolSpec 注入协议特有逻辑。
 func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channelScheduler *scheduler.ChannelScheduler, endpoint string) gin.HandlerFunc {
 	spec := common.ProtocolSpec{
-		Kind:    scheduler.ChannelKindImages,
-		LogName: "Images",
+		Kind:     scheduler.ChannelKindImages,
+		LogName:  "Images",
 		PreRoute: nil,
 		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
 			requestMeta := extractImagesRequestMetadata(c.GetHeader("Content-Type"), body)

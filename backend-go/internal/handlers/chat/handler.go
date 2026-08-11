@@ -34,10 +34,17 @@ const chatWebSearchProxyName = "web_search"
 // Handler Chat Completions API 代理处理器。
 // Chat 是独立一等公民：只走 Chat 渠道池，不默认进行 Anthropic/Gemini 协议转换。
 // 使用通用 RunProxyRequest 骨架，通过 ProtocolSpec 注入协议特有逻辑。
-func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channelScheduler *scheduler.ChannelScheduler) gin.HandlerFunc {
+func Handler(
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	contentSafetyPipelines ...*common.HookPipeline,
+) gin.HandlerFunc {
+	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	spec := common.ProtocolSpec{
-		Kind:    scheduler.ChannelKindChat,
-		LogName: "Chat",
+		Kind:         scheduler.ChannelKindChat,
+		LogName:      "Chat",
+		HookPipeline: contentSafetyPipeline,
 		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
 			if len(body) == 0 {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Chat Completions request body"})
@@ -330,6 +337,10 @@ func handleSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig
 	if usage == nil {
 		usage = &types.Usage{InputTokens: utils.EstimateTokens(string(originalBody))}
 	}
+	bodyBytes, err = common.RunAttachedPostResponseHooks(c.Request.Context(), c, bodyBytes, resp)
+	if err != nil {
+		return nil, err
+	}
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 	common.MarkRequestLogFirstToken(c)
@@ -367,6 +378,15 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 		if usage := extractChatUsageFromSSELine(line); usage != nil {
 			streamUsage = mergeChatUsage(streamUsage, usage)
 		}
+		text, toolArguments := extractChatStreamSafetyFragments(line)
+		if err := common.FeedAttachedStreamText(c, text); err != nil {
+			return nil, err
+		}
+		for _, toolArgument := range toolArguments {
+			if err := common.FeedAttachedStreamToolArgumentsForKey(c, toolArgument.key, toolArgument.fragment); err != nil {
+				return nil, err
+			}
+		}
 		common.MarkRequestLogFirstToken(c)
 		if _, err := c.Writer.Write(rawLine); err != nil {
 			return nil, err
@@ -382,7 +402,72 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 			return nil, readErr
 		}
 	}
+	if err := common.FlushAttachedStreamHooks(c); err != nil {
+		return nil, err
+	}
 	return streamUsage, nil
+}
+
+type chatStreamToolArgumentFragment struct {
+	key      string
+	fragment string
+}
+
+func extractChatStreamSafetyFragments(line string) (string, []chatStreamToolArgumentFragment) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "data:") {
+		return "", nil
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if payload == "" || payload == "[DONE]" {
+		return "", nil
+	}
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return "", nil
+	}
+	choices, _ := event["choices"].([]interface{})
+	var text strings.Builder
+	toolArguments := make([]chatStreamToolArgumentFragment, 0)
+	for choiceOffset, choice := range choices {
+		choiceMap, _ := choice.(map[string]interface{})
+		delta, _ := choiceMap["delta"].(map[string]interface{})
+		if content, _ := delta["content"].(string); content != "" {
+			text.WriteString(content)
+		}
+		toolCalls, _ := delta["tool_calls"].([]interface{})
+		for toolOffset, toolCall := range toolCalls {
+			callMap, _ := toolCall.(map[string]interface{})
+			function, _ := callMap["function"].(map[string]interface{})
+			if arguments, _ := function["arguments"].(string); arguments != "" {
+				choiceKey := streamFragmentKeyPart(choiceMap["index"], choiceOffset)
+				toolKey := streamFragmentKeyPart(callMap["index"], toolOffset)
+				toolArguments = append(toolArguments, chatStreamToolArgumentFragment{
+					key:      fmt.Sprintf("chat.choice.%s.tool.%s", choiceKey, toolKey),
+					fragment: arguments,
+				})
+			}
+		}
+		if functionCall, ok := delta["function_call"].(map[string]interface{}); ok {
+			if arguments, _ := functionCall["arguments"].(string); arguments != "" {
+				choiceKey := streamFragmentKeyPart(choiceMap["index"], choiceOffset)
+				toolArguments = append(toolArguments, chatStreamToolArgumentFragment{
+					key:      fmt.Sprintf("chat.choice.%s.function_call", choiceKey),
+					fragment: arguments,
+				})
+			}
+		}
+	}
+	return text.String(), toolArguments
+}
+
+func streamFragmentKeyPart(value interface{}, fallback int) string {
+	if value != nil {
+		if key := strings.TrimSpace(fmt.Sprint(value)); key != "" {
+			return key
+		}
+	}
+	return fmt.Sprintf("%d", fallback)
 }
 
 func buildChatDirectRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string, bodyBytes []byte) (*http.Request, error) {

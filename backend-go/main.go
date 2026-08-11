@@ -16,6 +16,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/handlers"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/chat"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/gemini"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/images"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/messages"
@@ -24,6 +25,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
+	"github.com/BenedictKing/claude-proxy/internal/sensitive"
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 	"github.com/gin-gonic/gin"
@@ -66,6 +68,18 @@ func main() {
 		log.Fatalf("初始化配置管理器失败: %v", err)
 	}
 	defer cfgManager.Close()
+
+	blockedStore, err := sensitive.NewBlockedStore(".config/blocked-logs.db")
+	if err != nil {
+		log.Fatalf("初始化内容安全拦截记录存储失败: %v", err)
+	}
+	defer func() {
+		if err := blockedStore.Close(); err != nil {
+			log.Printf("[ContentSafety-Shutdown] 关闭拦截记录存储失败: %v", err)
+		}
+	}()
+	contentSafetyPipeline := common.NewContentSafetyPipelineWithRecorder(cfgManager, blockedStore)
+	log.Printf("[ContentSafety-Init] 拦截记录存储已初始化")
 
 	// 初始化会话管理器（Responses API 专用），与对话记录共用持久化数据库。
 	sessionManager, err := session.NewPersistentSessionManager(
@@ -200,6 +214,10 @@ func main() {
 	apiGroup := r.Group("/api")
 	{
 		apiGroup.GET("/request-logs", handlers.GetRequestLogs(requestLogStore))
+		apiGroup.GET("/blocked-logs", handlers.GetBlockedLogs(blockedStore))
+		apiGroup.GET("/blocked-logs/:id", handlers.GetBlockedLog(blockedStore))
+		apiGroup.DELETE("/blocked-logs/:id", handlers.DeleteBlockedLog(blockedStore))
+		apiGroup.DELETE("/blocked-logs", handlers.ClearBlockedLogs(blockedStore))
 
 		// 渠道管理 API 路由（messages/responses/gemini/chat/images 五组收敛为一次调用）
 		// 各渠道类型的 CRUD / key 管理 / pools / reorder / status / promotion / metrics / ping
@@ -313,7 +331,7 @@ func main() {
 	}
 
 	// 代理端点 - Messages API
-	r.POST("/v1/messages", messages.Handler(envCfg, cfgManager, channelScheduler))
+	r.POST("/v1/messages", messages.Handler(envCfg, cfgManager, channelScheduler, contentSafetyPipeline))
 	r.POST("/v1/messages/count_tokens", messages.CountTokensHandler(envCfg, cfgManager, channelScheduler))
 
 	// 代理端点 - Models API（转发到上游）
@@ -321,11 +339,11 @@ func main() {
 	r.GET("/v1/models/:model", messages.ModelsDetailHandler(envCfg, cfgManager, channelScheduler))
 
 	// 代理端点 - Responses API
-	r.POST("/v1/responses", responses.Handler(envCfg, cfgManager, sessionManager, channelScheduler))
-	r.POST("/v1/responses/compact", responses.CompactHandler(envCfg, cfgManager, sessionManager, channelScheduler))
+	r.POST("/v1/responses", responses.Handler(envCfg, cfgManager, sessionManager, channelScheduler, contentSafetyPipeline))
+	r.POST("/v1/responses/compact", responses.CompactHandler(envCfg, cfgManager, sessionManager, channelScheduler, contentSafetyPipeline))
 
 	// 代理端点 - Chat Completions API (OpenAI-compatible 原生协议)
-	r.POST("/v1/chat/completions", chat.Handler(envCfg, cfgManager, channelScheduler))
+	r.POST("/v1/chat/completions", chat.Handler(envCfg, cfgManager, channelScheduler, contentSafetyPipeline))
 	// 代理端点 - Images API (OpenAI-compatible 独立协议)
 	r.POST("/v1/images/generations", images.Handler(envCfg, cfgManager, channelScheduler, "/images/generations"))
 	r.POST("/v1/images/edits", images.Handler(envCfg, cfgManager, channelScheduler, "/images/edits"))
@@ -334,7 +352,7 @@ func main() {
 	// 代理端点 - Gemini API (原生协议)
 	// 使用通配符捕获 model:action 格式，如 gemini-pro:generateContent
 	// 路径格式：/v1beta/models/{model}:generateContent (Gemini 原生格式)
-	r.POST("/v1beta/models/*modelAction", gemini.Handler(envCfg, cfgManager, channelScheduler))
+	r.POST("/v1beta/models/*modelAction", gemini.Handler(envCfg, cfgManager, channelScheduler, contentSafetyPipeline))
 
 	// 静态文件服务 (嵌入的前端)
 	if envCfg.EnableWebUI {
