@@ -21,18 +21,40 @@
         <v-combobox
           v-model="selectedModel"
           :items="modelOptions"
+          item-title="title"
+          item-value="value"
+          :return-object="false"
           label="模型（留空使用渠道默认值）"
           variant="outlined"
           prepend-inner-icon="mdi-robot"
           density="comfortable"
           class="mb-4"
           :disabled="isSending"
+          :loading="isLoadingModels"
           clearable
         >
           <template #no-data>
-            <div class="text-center pa-4 text-medium-emphasis">可直接输入模型名称，或留空使用渠道默认值</div>
+            <div class="text-center pa-4 text-medium-emphasis">
+              <template v-if="isLoadingModels">正在从上游获取模型列表...</template>
+              <template v-else-if="modelLoadError">暂时无法显示模型列表，仍可直接输入模型名称</template>
+              <template v-else>未找到匹配模型，可直接输入模型名称</template>
+            </div>
           </template>
         </v-combobox>
+
+        <div v-if="modelLoadError" class="model-load-error mb-4" role="alert">
+          <span>{{ modelLoadError }}</span>
+          <v-btn
+            size="small"
+            variant="text"
+            color="warning"
+            :loading="isLoadingModels"
+            :disabled="isSending"
+            @click="loadModels"
+          >
+            重新获取
+          </v-btn>
+        </div>
 
         <v-select
           v-model="selectedThinking"
@@ -42,6 +64,7 @@
           density="comfortable"
           class="mb-4"
           :disabled="isSending"
+          :error-messages="capabilityLoadError"
         />
 
         <!-- 测试输入 -->
@@ -70,7 +93,7 @@
         </div>
 
         <!-- 响应结果 -->
-        <v-card v-if="responseText || isSending" variant="outlined" class="response-area">
+        <v-card v-if="responseText || responseError || isSending" variant="outlined" class="response-area">
           <v-card-title class="text-subtitle-2 pa-3 bg-surface">
             <v-icon size="small" class="mr-2">mdi-message-reply-text</v-icon>
             响应结果
@@ -119,13 +142,17 @@ const isOpen = computed({
 
 const modelOptions = ref<Array<{ title: string; value: string }>>([])
 const selectedModel = ref<string | null>(null)
+const isLoadingModels = ref(false)
+const modelLoadError = ref('')
 const selectedThinking = ref('')
 const protocolCapability = ref<ModelAuditProtocolDescriptor | null>(null)
+const capabilityLoadError = ref('')
 const testMessage = ref('请用一句完整的话说明你当前能完成什么任务。')
 const isSending = ref(false)
 const responseText = ref('')
 const responseError = ref<string | null>(null)
 const executionResult = ref<ModelAuditExecutionResult | null>(null)
+let modelLoadRequestId = 0
 
 const thinkingOptions = computed(() => [
   { title: '使用协议默认值', value: '' },
@@ -140,15 +167,64 @@ const canSend = computed(() => {
 })
 
 const close = () => {
+  modelLoadRequestId++
   isOpen.value = false
 }
 
 const loadCapabilities = async () => {
+  capabilityLoadError.value = ''
   try {
     const capabilities = await api.getModelAuditCapabilities()
     protocolCapability.value = capabilities.protocols.find(item => item.protocol === props.apiType) || null
   } catch (error) {
-    responseError.value = error instanceof Error ? error.message : '加载协议能力失败'
+    capabilityLoadError.value = error instanceof Error ? error.message : '加载协议能力失败'
+  }
+}
+
+const loadModels = async () => {
+  const channel = props.channel
+  const requestId = ++modelLoadRequestId
+  if (!channel) return
+
+  const baseUrl = channel.baseUrl?.trim() || channel.baseUrls?.find(url => url.trim())?.trim() || ''
+  if (!baseUrl) {
+    modelLoadError.value = '渠道未配置有效的上游地址，无法获取模型列表。'
+    return
+  }
+
+  isLoadingModels.value = true
+  modelLoadError.value = ''
+
+  try {
+    const response = await api.discoverUpstreamModels({
+      baseUrl,
+      baseUrls: channel.baseUrls,
+      apiKey: channel.apiKeys?.[0] || '',
+      serviceType: channel.serviceType,
+      insecureSkipVerify: channel.insecureSkipVerify,
+      proxyMode: channel.proxyMode,
+      proxyUrl: channel.proxyUrl
+    })
+    if (requestId !== modelLoadRequestId) return
+
+    const defaultModel = channel.defaultModel?.trim() || ''
+    const discoveredModels = response.data
+      .map(item => item.id?.trim())
+      .filter((model): model is string => !!model)
+    const models = Array.from(new Set([defaultModel, ...discoveredModels].filter(Boolean)))
+
+    modelOptions.value = models.map(model => ({ title: model, value: model }))
+    if (discoveredModels.length === 0) {
+      modelLoadError.value = '上游未返回可用模型，可直接输入模型名称或留空使用渠道默认值。'
+    }
+  } catch (error) {
+    if (requestId !== modelLoadRequestId) return
+    const message = error instanceof Error ? error.message : '未知错误'
+    modelLoadError.value = `获取模型列表失败：${message}。仍可直接输入模型名称。`
+  } finally {
+    if (requestId === modelLoadRequestId) {
+      isLoadingModels.value = false
+    }
   }
 }
 
@@ -185,10 +261,11 @@ const sendTest = async () => {
   }
 }
 
-// 监听弹窗打开，自动加载模型
-watch(() => props.modelValue, (newVal) => {
+// 监听弹窗打开或渠道切换，自动加载对应渠道的模型。
+watch([() => props.modelValue, () => props.channel?.id], ([newVal]) => {
   if (newVal && props.channel) {
     // 重置状态
+    modelLoadRequestId++
     responseText.value = ''
     responseError.value = null
     executionResult.value = null
@@ -198,7 +275,14 @@ watch(() => props.modelValue, (newVal) => {
       ? [{ title: props.channel.defaultModel, value: props.channel.defaultModel }]
       : []
     selectedThinking.value = ''
-    loadCapabilities()
+    protocolCapability.value = null
+    capabilityLoadError.value = ''
+    modelLoadError.value = ''
+    void loadCapabilities()
+    void loadModels()
+  } else {
+    modelLoadRequestId++
+    isLoadingModels.value = false
   }
 })
 </script>
@@ -223,5 +307,32 @@ watch(() => props.modelValue, (newVal) => {
   padding: 12px;
   background: rgba(var(--v-theme-error), 0.1);
   border-radius: 8px;
+}
+
+.model-load-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: -8px;
+  padding: 8px 12px;
+  color: rgb(var(--v-theme-warning));
+  background: rgba(var(--v-theme-warning), 0.08);
+  border: 1px solid rgba(var(--v-theme-warning), 0.24);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.model-load-error span {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.model-load-error .v-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 </style>
