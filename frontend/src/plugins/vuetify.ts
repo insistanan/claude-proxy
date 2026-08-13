@@ -99,6 +99,9 @@ import {
   mdiChartLine,
   mdiCodeBraces,
   mdiDatabase,
+  mdiDatabaseImport,
+  mdiFolderArrowDown,
+  mdiPuzzleOutline,
   mdiTextBoxSearchOutline,
   mdiSignature,
   mdiImageSearchOutline,
@@ -113,50 +116,50 @@ import {
   mdiTimerSand,
   mdiTestTube,
   mdiImage,
-  mdiTranslate,
+  mdiTranslate
 } from '@mdi/js'
 
 // 图标名称到 SVG path 的映射 (使用 kebab-case)
 const iconMap: Record<string, string> = {
-  'complete': mdiCheck,
-  'cancel': mdiCloseCircle,
-  'close': mdiClose,
-  'delete': mdiDelete,
-  'clear': mdiClose,
-  'success': mdiCheckCircle,
-  'info': mdiInformation,
-  'warning': mdiAlert,
-  'error': mdiAlertCircle,
-  'prev': mdiChevronLeft,
-  'next': mdiChevronRight,
-  'checkboxOn': mdiCheckboxMarked,
-  'checkboxOff': mdiCheckboxBlankOutline,
-  'checkboxIndeterminate': mdiMinusBox,
-  'delimiter': mdiCircle,
-  'sortAsc': mdiArrowUpBold,
-  'sortDesc': mdiArrowDownBold,
-  'expand': mdiChevronDown,
-  'menu': mdiMenuDown,
-  'subgroup': mdiMenuDown,
-  'dropdown': mdiMenuDown,
-  'radioOn': mdiRadioboxMarked,
-  'radioOff': mdiRadioboxBlank,
-  'edit': mdiPencil,
-  'ratingEmpty': mdiStarOutline,
-  'ratingFull': mdiStar,
-  'ratingHalf': mdiStarHalf,
-  'loading': mdiLoading,
-  'first': mdiPageFirst,
-  'last': mdiPageLast,
-  'unfold': mdiUnfoldMoreHorizontal,
-  'file': mdiPaperclip,
-  'magnify': mdiMagnify,
-  'plus': mdiPlus,
-  'minus': mdiMinusBox,
-  'calendar': mdiCalendar,
-  'treeviewCollapse': mdiMenuDown,
-  'treeviewExpand': mdiMenuUp,
-  'eyeDropper': mdiEyedropper,
+  complete: mdiCheck,
+  cancel: mdiCloseCircle,
+  close: mdiClose,
+  delete: mdiDelete,
+  clear: mdiClose,
+  success: mdiCheckCircle,
+  info: mdiInformation,
+  warning: mdiAlert,
+  error: mdiAlertCircle,
+  prev: mdiChevronLeft,
+  next: mdiChevronRight,
+  checkboxOn: mdiCheckboxMarked,
+  checkboxOff: mdiCheckboxBlankOutline,
+  checkboxIndeterminate: mdiMinusBox,
+  delimiter: mdiCircle,
+  sortAsc: mdiArrowUpBold,
+  sortDesc: mdiArrowDownBold,
+  expand: mdiChevronDown,
+  menu: mdiMenuDown,
+  subgroup: mdiMenuDown,
+  dropdown: mdiMenuDown,
+  radioOn: mdiRadioboxMarked,
+  radioOff: mdiRadioboxBlank,
+  edit: mdiPencil,
+  ratingEmpty: mdiStarOutline,
+  ratingFull: mdiStar,
+  ratingHalf: mdiStarHalf,
+  loading: mdiLoading,
+  first: mdiPageFirst,
+  last: mdiPageLast,
+  unfold: mdiUnfoldMoreHorizontal,
+  file: mdiPaperclip,
+  magnify: mdiMagnify,
+  plus: mdiPlus,
+  minus: mdiMinusBox,
+  calendar: mdiCalendar,
+  treeviewCollapse: mdiMenuDown,
+  treeviewExpand: mdiMenuUp,
+  eyeDropper: mdiEyedropper,
 
   // 布局与导航
   'swap-vertical-bold': mdiSwapVerticalBold,
@@ -167,7 +170,7 @@ const iconMap: Record<string, string> = {
   'chevron-left': mdiChevronLeft,
   'chevron-right': mdiChevronRight,
   'dots-vertical': mdiDotsVertical,
-  'logout': mdiLogout,
+  logout: mdiLogout,
   'archive-outline': mdiArchiveOutline,
   'archive-clock-outline': mdiArchiveClockOutline,
   'content-save': mdiContentSave,
@@ -175,9 +178,9 @@ const iconMap: Record<string, string> = {
   'menu-up': mdiMenuUp,
 
   // 操作按钮
-  'pencil': mdiPencil,
-  'refresh': mdiRefresh,
-  'check': mdiCheck,
+  pencil: mdiPencil,
+  refresh: mdiRefresh,
+  check: mdiCheck,
   'content-copy': mdiContentCopy,
   'arrow-up-bold': mdiArrowUpBold,
   'arrow-down-bold': mdiArrowDownBold,
@@ -195,34 +198,34 @@ const iconMap: Record<string, string> = {
   'alert-circle-outline': mdiAlertCircleOutline,
   'close-circle': mdiCloseCircle,
   'help-circle': mdiHelpCircle,
-  'alert': mdiAlert,
+  alert: mdiAlert,
 
   'shield-refresh': mdiShieldRefresh,
   'shield-off-outline': mdiShieldOffOutline,
 
-  'key': mdiKey,
+  key: mdiKey,
   'key-chain': mdiKeyChain,
-  'speedometer': mdiSpeedometer,
+  speedometer: mdiSpeedometer,
   'speedometer-slow': mdiSpeedometerSlow,
   'rocket-launch': mdiRocketLaunch,
   'playlist-remove': mdiPlaylistRemove,
-  'tag': mdiTag,
-  'information': mdiInformation,
-  'cog': mdiCog,
-  'web': mdiWeb,
+  tag: mdiTag,
+  information: mdiInformation,
+  cog: mdiCog,
+  web: mdiWeb,
   'shield-alert': mdiShieldAlert,
-  'text': mdiText,
-  'tune': mdiTune,
+  text: mdiText,
+  tune: mdiTune,
   'dice-6': mdiDice6,
   'heart-pulse': mdiHeartPulse,
   'server-network': mdiServerNetwork,
-  'pin': mdiPin,
+  pin: mdiPin,
   'pin-outline': mdiPinOutline,
   'lightning-bolt': mdiLightningBolt,
   'form-textbox': mdiFormTextbox,
   'clock-outline': mdiClockOutline,
   'chart-line-variant': mdiChartLineVariant,
-  'paperclip': mdiPaperclip,
+  paperclip: mdiPaperclip,
   'eye-dropper': mdiEyedropper,
 
   // 主题切换
@@ -230,45 +233,48 @@ const iconMap: Record<string, string> = {
   'white-balance-sunny': mdiWhiteBalanceSunny,
 
   // 服务类型图标
-  'robot': mdiRobot,
+  robot: mdiRobot,
   'robot-outline': mdiRobotOutline,
   'message-processing': mdiMessageProcessing,
   'message-reply-text': mdiMessageReplyText,
   'chat-outline': mdiChatOutline,
   'chat-processing': mdiChatProcessing,
   'diamond-stone': mdiDiamondStone,
-  'api': mdiApi,
-  'image': mdiImage,
-  'translate': mdiTranslate,
+  api: mdiApi,
+  image: mdiImage,
+  translate: mdiTranslate,
 
   'checkbox-marked': mdiCheckboxMarked,
   'checkbox-blank-outline': mdiCheckboxBlankOutline,
   'minus-box': mdiMinusBox,
   'radiobox-marked': mdiRadioboxMarked,
   'radiobox-blank': mdiRadioboxBlank,
-  'star': mdiStar,
+  star: mdiStar,
   'star-outline': mdiStarOutline,
   'star-half': mdiStarHalf,
   'page-first': mdiPageFirst,
   'page-last': mdiPageLast,
   'unfold-more-horizontal': mdiUnfoldMoreHorizontal,
-  'circle': mdiCircle,
+  circle: mdiCircle,
   'chart-timeline-variant': mdiChartTimelineVariant,
   'chart-areaspline': mdiChartAreaspline,
   'chart-line': mdiChartLine,
   'code-braces': mdiCodeBraces,
-  'database': mdiDatabase,
+  database: mdiDatabase,
+  'database-import': mdiDatabaseImport,
+  'folder-arrow-down': mdiFolderArrowDown,
+  'puzzle-outline': mdiPuzzleOutline,
   'text-box-search-outline': mdiTextBoxSearchOutline,
-  'signature': mdiSignature,
+  signature: mdiSignature,
   'image-search-outline': mdiImageSearchOutline,
   'arrow-collapse-up': mdiArrowCollapseUp,
   'arrow-collapse-down': mdiArrowCollapseDown,
   'format-list-bulleted': mdiFormatListBulleted,
-  'sort': mdiSort,
+  sort: mdiSort,
   'timer-sand': mdiTimerSand,
   'test-tube': mdiTestTube,
-  'account': mdiAccount,
-  'send': mdiSend,
+  account: mdiAccount,
+  send: mdiSend
 }
 
 // 自定义 SVG iconset
@@ -284,24 +290,32 @@ const customSvgIconSet: IconSet = {
       if (import.meta.env.DEV) {
         console.warn(`[Vuetify Icon] 未找到图标: ${iconName}`)
       }
-      return h('svg', {
-        class: 'v-icon__svg v-icon__svg--missing',
+      return h(
+        'svg',
+        {
+          class: 'v-icon__svg v-icon__svg--missing',
+          xmlns: 'http://www.w3.org/2000/svg',
+          viewBox: '0 0 24 24',
+          role: 'img',
+          'aria-hidden': 'true',
+          style: { fontSize: 'inherit', width: '1em', height: '1em' }
+        },
+        [h('path', { d: mdiHelpCircle, fill: 'currentColor' })]
+      )
+    }
+
+    return h(
+      'svg',
+      {
+        class: 'v-icon__svg',
         xmlns: 'http://www.w3.org/2000/svg',
         viewBox: '0 0 24 24',
         role: 'img',
         'aria-hidden': 'true',
-        style: { fontSize: 'inherit', width: '1em', height: '1em' },
-      }, [h('path', { d: mdiHelpCircle, fill: 'currentColor' })])
-    }
-
-    return h('svg', {
-      class: 'v-icon__svg',
-      xmlns: 'http://www.w3.org/2000/svg',
-      viewBox: '0 0 24 24',
-      role: 'img',
-      'aria-hidden': 'true',
-      style: { fontSize: 'inherit', width: '1em', height: '1em' },
-    }, [h('path', { d: svgPath, fill: 'currentColor' })])
+        style: { fontSize: 'inherit', width: '1em', height: '1em' }
+      },
+      [h('path', { d: svgPath, fill: 'currentColor' })]
+    )
   }
 }
 
@@ -337,7 +351,7 @@ const lightTheme: ThemeDefinition = {
     'on-background': '#252B36',
     'on-surface-variant': '#555E6E',
     outline: '#939CAC',
-    'outline-variant': '#C9CFDA',
+    'outline-variant': '#C9CFDA'
   }
 }
 
@@ -364,7 +378,7 @@ const darkTheme: ThemeDefinition = {
     'on-background': '#DBDFE8',
     'on-surface-variant': '#A2AAB8',
     outline: '#5B6472',
-    'outline-variant': '#2B323D',
+    'outline-variant': '#2B323D'
   }
 }
 
@@ -384,57 +398,57 @@ export default createVuetify({
     variations: {
       colors: ['primary', 'secondary', 'info', 'success', 'warning', 'error'],
       lighten: 3,
-      darken: 2,
+      darken: 2
     }
   },
   defaults: {
     VCard: {
       elevation: 0,
-      rounded: 'md',
+      rounded: 'md'
     },
     VBtn: {
-      rounded: 'sm',
+      rounded: 'sm'
     },
     VChip: {
-      rounded: 'sm',
+      rounded: 'sm'
     },
     VDialog: {
-      rounded: 'md',
+      rounded: 'md'
     },
     VMenu: {
-      rounded: 'md',
+      rounded: 'md'
     },
     VTooltip: {
-      location: 'top',
+      location: 'top'
     },
     VTextField: {
       variant: 'outlined',
-      density: 'comfortable',
+      density: 'comfortable'
     },
     VTextarea: {
       variant: 'outlined',
-      density: 'comfortable',
+      density: 'comfortable'
     },
     VSelect: {
       variant: 'outlined',
-      density: 'comfortable',
+      density: 'comfortable'
     },
     VCombobox: {
       variant: 'outlined',
-      density: 'comfortable',
+      density: 'comfortable'
     },
     VAutocomplete: {
       variant: 'outlined',
-      density: 'comfortable',
+      density: 'comfortable'
     },
     VTable: {
-      density: 'comfortable',
+      density: 'comfortable'
     },
     VList: {
-      density: 'comfortable',
+      density: 'comfortable'
     },
     VExpansionPanel: {
-      variant: 'accordion',
-    },
+      variant: 'accordion'
+    }
   }
 })

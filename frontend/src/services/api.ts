@@ -66,10 +66,10 @@ export interface ChannelMetrics {
   requestCount: number
   successCount: number
   failureCount: number
-  successRate: number       // 0-100
-  errorRate: number         // 0-100
+  successRate: number // 0-100
+  errorRate: number // 0-100
   consecutiveFailures: number
-  latency: number           // ms
+  latency: number // ms
   lastSuccessAt?: string
   lastFailureAt?: string
   // 分时段统计 (15m, 1h, 6h, 24h)
@@ -87,38 +87,38 @@ export interface Channel {
   name: string
   serviceType: 'openai' | 'gemini' | 'claude' | 'responses' | 'chat'
   baseUrl: string
-  baseUrls?: string[]                // 多 BaseURL 支持（failover 模式）
+  baseUrls?: string[] // 多 BaseURL 支持（failover 模式）
   apiKeys: string[]
   description?: string
   website?: string
   insecureSkipVerify?: boolean
   proxyMode?: 'inherit' | 'direct' | 'custom'
   proxyUrl?: string
-  modelMapping?: Record<string, string[]>  // 模型重定向：源模型 -> 目标模型列表（支持多个备选）
+  modelMapping?: Record<string, string[]> // 模型重定向：源模型 -> 目标模型列表（支持多个备选）
   defaultModel?: string
   latency?: number
   status?: ChannelStatus | 'healthy' | 'error' | 'unknown' | ''
   index: number
   pinned?: boolean
   // 多渠道调度相关字段
-  priority?: number          // 渠道优先级（数字越小优先级越高）
-  metrics?: ChannelMetrics   // 实时指标
-  suspendReason?: string     // 熔断原因
-  promotionUntil?: string    // 促销期截止时间（ISO 格式）
-  promotionCount?: number    // 促销期剩余请求次数
-  latencyTestTime?: number   // 延迟测试时间戳（用于 5 分钟后自动清除显示）
-  lowQuality?: boolean       // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
-  visionCapable?: boolean    // 渠道是否原生支持图片理解
+  priority?: number // 渠道优先级（数字越小优先级越高）
+  metrics?: ChannelMetrics // 实时指标
+  suspendReason?: string // 熔断原因
+  promotionUntil?: string // 促销期截止时间（ISO 格式）
+  promotionCount?: number // 促销期剩余请求次数
+  latencyTestTime?: number // 延迟测试时间戳（用于 5 分钟后自动清除显示）
+  lowQuality?: boolean // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
+  visionCapable?: boolean // 渠道是否原生支持图片理解
   excludeFromConversation?: boolean // 不参与常规对话调度，仅作为图片理解渠道使用
   disablePromptCacheKey?: boolean // 不向上游发送 prompt_cache_key
   visionLayerEnabled?: boolean // 是否为当前渠道启用图片理解层
   visionLayerChannelId?: string // 图片理解层指定调用的稳定渠道标识
-  visionLayerModel?: string  // 可选：覆盖透传给图片理解渠道的模型名
-  temporary?: boolean        // 临时渠道：一天后自动移入弃用池
-  temporaryUntil?: string    // 临时渠道到期时间
-  deprecatedAt?: string      // 移入弃用池时间
-  injectDummyThoughtSignature?: boolean  // Gemini 特定：为 functionCall 注入 dummy thought_signature（兼容第三方 API）
-  stripThoughtSignature?: boolean        // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
+  visionLayerModel?: string // 可选：覆盖透传给图片理解渠道的模型名
+  temporary?: boolean // 临时渠道：一天后自动移入弃用池
+  temporaryUntil?: string // 临时渠道到期时间
+  deprecatedAt?: string // 移入弃用池时间
+  injectDummyThoughtSignature?: boolean // Gemini 特定：为 functionCall 注入 dummy thought_signature（兼容第三方 API）
+  stripThoughtSignature?: boolean // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
 }
 
 export interface SkillLocation {
@@ -418,7 +418,10 @@ export interface PiAgentDiscoverResult {
   error?: string
 }
 
-export interface SaveClaudeCodeSettings extends Pick<ClaudeCodeSettings, 'baseUrl' | 'credentialKind' | 'model' | 'reasoningModel' | 'modelDefaults'> {
+export interface SaveClaudeCodeSettings extends Pick<
+  ClaudeCodeSettings,
+  'baseUrl' | 'credentialKind' | 'model' | 'reasoningModel' | 'modelDefaults'
+> {
   credentialAction: 'keep' | 'replace' | 'remove'
   credential?: string
 }
@@ -457,7 +460,7 @@ export interface ChannelDashboardResponse {
     windowSize: number
     circuitRecoveryTime: string
   }
-  recentActivity?: ChannelRecentActivity[]  // 最近 15 分钟分段活跃度
+  recentActivity?: ChannelRecentActivity[] // 最近 15 分钟分段活跃度
 }
 
 export interface PingResult {
@@ -711,9 +714,9 @@ export interface ActivitySegment {
 // 渠道最近活跃度数据
 export interface ChannelRecentActivity {
   channelIndex: number
-  segments: ActivitySegment[]  // 150 段，每段 6 秒，从旧到新（共 15 分钟）
-  rpm: number                  // 15分钟平均 RPM
-  tpm: number                  // 15分钟平均 TPM
+  segments: ActivitySegment[] // 150 段，每段 6 秒，从旧到新（共 15 分钟）
+  rpm: number // 15分钟平均 RPM
+  tpm: number // 15分钟平均 TPM
 }
 
 // ============== 上游模型列表类型 ==============
@@ -750,29 +753,41 @@ class ApiService {
     const p = `/${type}`
     return {
       getChannels: () => this.request(`${p}/channels`),
-      addChannel: (channel) => this.request(`${p}/channels`, { method: 'POST', body: JSON.stringify(channel) }),
-      updateChannel: (id, channel) => this.request(`${p}/channels/${id}`, { method: 'PUT', body: JSON.stringify(channel) }),
-      deleteChannel: (id) => this.request(`${p}/channels/${id}`, { method: 'DELETE' }),
-      addKey: (channelId, apiKey) => this.request(`${p}/channels/${channelId}/keys`, { method: 'POST', body: JSON.stringify({ apiKey }) }),
-      removeKey: (channelId, apiKey) => this.request(`${p}/channels/${channelId}/keys/${encodeURIComponent(apiKey)}`, { method: 'DELETE' }),
-      moveKeyToTop: (channelId, apiKey) => this.request(`${p}/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/top`, { method: 'POST' }),
-      moveKeyToBottom: (channelId, apiKey) => this.request(`${p}/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/bottom`, { method: 'POST' }),
-      reorder: (order) => this.request(`${p}/channels/reorder`, { method: 'POST', body: JSON.stringify({ order }) }),
-      setStatus: (channelId, status) => this.request(`${p}/channels/${channelId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+      addChannel: channel => this.request(`${p}/channels`, { method: 'POST', body: JSON.stringify(channel) }),
+      updateChannel: (id, channel) =>
+        this.request(`${p}/channels/${id}`, { method: 'PUT', body: JSON.stringify(channel) }),
+      deleteChannel: id => this.request(`${p}/channels/${id}`, { method: 'DELETE' }),
+      addKey: (channelId, apiKey) =>
+        this.request(`${p}/channels/${channelId}/keys`, { method: 'POST', body: JSON.stringify({ apiKey }) }),
+      removeKey: (channelId, apiKey) =>
+        this.request(`${p}/channels/${channelId}/keys/${encodeURIComponent(apiKey)}`, { method: 'DELETE' }),
+      moveKeyToTop: (channelId, apiKey) =>
+        this.request(`${p}/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/top`, { method: 'POST' }),
+      moveKeyToBottom: (channelId, apiKey) =>
+        this.request(`${p}/channels/${channelId}/keys/${encodeURIComponent(apiKey)}/bottom`, { method: 'POST' }),
+      reorder: order => this.request(`${p}/channels/reorder`, { method: 'POST', body: JSON.stringify({ order }) }),
+      setStatus: (channelId, status) =>
+        this.request(`${p}/channels/${channelId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
       setPromotion: (channelId, durationSeconds, count) => {
         const duration = this.normalizePromotionValue(durationSeconds)
         const normalizedCount = this.normalizePromotionValue(count)
-        return this.request(`${p}/channels/${channelId}/promotion`, { method: 'POST', body: JSON.stringify({ duration, count: normalizedCount }) })
+        return this.request(`${p}/channels/${channelId}/promotion`, {
+          method: 'POST',
+          body: JSON.stringify({ duration, count: normalizedCount })
+        })
       },
-      pingChannel: (id) => this.request(`${p}/ping/${id}`),
+      pingChannel: id => this.request(`${p}/ping/${id}`),
       pingAllChannels: () => this.request(`${p}/ping`),
-      updateLoadBalance: (strategy) => this.request(`${p}/loadbalance`, { method: 'PUT', body: JSON.stringify({ strategy }) }),
-      resumeChannel: (channelId) => this.request(`${p}/channels/${channelId}/resume`, { method: 'POST' }),
+      updateLoadBalance: strategy =>
+        this.request(`${p}/loadbalance`, { method: 'PUT', body: JSON.stringify({ strategy }) }),
+      resumeChannel: channelId => this.request(`${p}/channels/${channelId}/resume`, { method: 'POST' }),
       getChannelMetrics: () => this.request(`${p}/channels/metrics`),
-      getChannelMetricsHistory: (duration = '24h') => this.request(`${p}/channels/metrics/history?duration=${duration}`),
-      getChannelKeyMetricsHistory: (channelId, duration = '6h') => this.request(`${p}/channels/${channelId}/keys/metrics/history?duration=${duration}`),
+      getChannelMetricsHistory: (duration = '24h') =>
+        this.request(`${p}/channels/metrics/history?duration=${duration}`),
+      getChannelKeyMetricsHistory: (channelId, duration = '6h') =>
+        this.request(`${p}/channels/${channelId}/keys/metrics/history?duration=${duration}`),
       getGlobalStats: (duration = '24h') => this.request(`${p}/global/stats/history?duration=${duration}`),
-      getChannelDashboard: () => this.request(`${p}/channels/dashboard`),
+      getChannelDashboard: () => this.request(`${p}/channels/dashboard`)
     }
   }
 
@@ -783,9 +798,7 @@ class ApiService {
   }
 
   private normalizePromotionValue(value: unknown): number {
-    const parsed = typeof value === 'number'
-      ? value
-      : Number(String(value ?? '').trim())
+    const parsed = typeof value === 'number' ? value : Number(String(value ?? '').trim())
 
     if (!Number.isFinite(parsed) || parsed <= 0) {
       return 0
@@ -825,11 +838,20 @@ class ApiService {
     if (!response.ok) {
       const errorBody = await this.parseResponseBody(response)
       const errorMessage =
-        (typeof errorBody === 'object' && errorBody && 'error' in errorBody && typeof (errorBody as { error?: unknown }).error === 'string'
+        (typeof errorBody === 'object' &&
+        errorBody &&
+        'error' in errorBody &&
+        typeof (errorBody as { error?: unknown }).error === 'string'
           ? (errorBody as { error: string }).error
-          : typeof errorBody === 'object' && errorBody && 'error' in errorBody && typeof (errorBody as { error?: { message?: unknown } }).error?.message === 'string'
+          : typeof errorBody === 'object' &&
+              errorBody &&
+              'error' in errorBody &&
+              typeof (errorBody as { error?: { message?: unknown } }).error?.message === 'string'
             ? (errorBody as { error: { message: string } }).error.message
-            : typeof errorBody === 'object' && errorBody && 'message' in errorBody && typeof (errorBody as { message?: unknown }).message === 'string'
+            : typeof errorBody === 'object' &&
+                errorBody &&
+                'message' in errorBody &&
+                typeof (errorBody as { message?: unknown }).message === 'string'
               ? (errorBody as { message: string }).message
               : typeof errorBody === 'string'
                 ? errorBody
@@ -853,16 +875,24 @@ class ApiService {
     return this.parseResponseBody(response)
   }
 
-
-  async getChannelPools(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'): Promise<{ pools: ChannelPool[] }> {
+  async getChannelPools(
+    type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
+  ): Promise<{ pools: ChannelPool[] }> {
     return this.request(`/${type}/pools`)
   }
 
-  async createChannelPool(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', pool: Pick<ChannelPool, 'name' | 'modelMatcher'>): Promise<{ pool: ChannelPool }> {
+  async createChannelPool(
+    type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
+    pool: Pick<ChannelPool, 'name' | 'modelMatcher'>
+  ): Promise<{ pool: ChannelPool }> {
     return this.request(`/${type}/pools`, { method: 'POST', body: JSON.stringify(pool) })
   }
 
-  async updateChannelPool(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', id: string, pool: Partial<Pick<ChannelPool, 'name' | 'modelMatcher'>>): Promise<void> {
+  async updateChannelPool(
+    type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
+    id: string,
+    pool: Partial<Pick<ChannelPool, 'name' | 'modelMatcher'>>
+  ): Promise<void> {
     await this.request(`/${type}/pools/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(pool) })
   }
 
@@ -870,49 +900,25 @@ class ApiService {
     await this.request(`/${type}/pools/${encodeURIComponent(id)}`, { method: 'DELETE' })
   }
 
-  async saveChannelPoolLayout(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', pools: Array<{ poolId: string; channelIds: string[] }>): Promise<void> {
+  async saveChannelPoolLayout(
+    type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
+    pools: Array<{ poolId: string; channelIds: string[] }>
+  ): Promise<void> {
     await this.request(`/${type}/pools/layout`, { method: 'PUT', body: JSON.stringify({ pools }) })
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
   // ============== Responses 渠道管理 API ==============
 
-
-
-
-
-
-
   // ============== Chat 渠道管理 API ==============
-
-
-
-
-
-
-
-
-
-
-
-
 
   // ============== 多渠道调度 API ==============
 
   // 重新排序渠道优先级
 
-  async duplicateChannel(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', channelId: number): Promise<void> {
+  async duplicateChannel(
+    type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
+    channelId: number
+  ): Promise<void> {
     await this.request(`/${type}/channels/${channelId}/duplicate`, {
       method: 'POST'
     })
@@ -947,7 +953,9 @@ class ApiService {
   }
 
   // 获取渠道仪表盘数据（合并 channels + metrics + stats）
-  async getChannelDashboard(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images' = 'messages'): Promise<ChannelDashboardResponse> {
+  async getChannelDashboard(
+    type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images' = 'messages'
+  ): Promise<ChannelDashboardResponse> {
     return this.request(`/${type}/channels/dashboard`)
   }
 
@@ -963,11 +971,10 @@ class ApiService {
 
   // ============== Chat 多渠道调度 API ==============
 
-
-
-
-
-  async getChannelLogs(type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images', channelId: number): Promise<ChannelLogsResponse> {
+  async getChannelLogs(
+    type: 'messages' | 'responses' | 'gemini' | 'chat' | 'images',
+    channelId: number
+  ): Promise<ChannelLogsResponse> {
     return this.request(`/${type}/channels/${channelId}/logs`)
   }
 
@@ -1151,7 +1158,10 @@ class ApiService {
     })
   }
 
-  async updatePiAgentProvider(id: string, payload: Record<string, unknown>): Promise<{ success: boolean; revision: string }> {
+  async updatePiAgentProvider(
+    id: string,
+    payload: Record<string, unknown>
+  ): Promise<{ success: boolean; revision: string }> {
     return this.request(`/settings/pi-agent/providers/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(payload)
@@ -1165,21 +1175,30 @@ class ApiService {
     })
   }
 
-  async validatePiAgentProvider(payload: { id: string; provider: Partial<PiAgentProvider> }): Promise<{ valid: boolean; errors: string[] }> {
+  async validatePiAgentProvider(payload: {
+    id: string
+    provider: Partial<PiAgentProvider>
+  }): Promise<{ valid: boolean; errors: string[] }> {
     return this.request('/settings/pi-agent/validate', {
       method: 'POST',
       body: JSON.stringify(payload)
     })
   }
 
-  async testPiAgentProvider(id: string, payload: { baseUrl?: string; apiKey?: string; api?: string }): Promise<PiAgentProbeResult> {
+  async testPiAgentProvider(
+    id: string,
+    payload: { baseUrl?: string; apiKey?: string; api?: string }
+  ): Promise<PiAgentProbeResult> {
     return this.request(`/settings/pi-agent/providers/${encodeURIComponent(id)}/test`, {
       method: 'POST',
       body: JSON.stringify(payload)
     })
   }
 
-  async discoverPiAgentModels(id: string, payload: { baseUrl?: string; apiKey?: string; api?: string }): Promise<PiAgentDiscoverResult> {
+  async discoverPiAgentModels(
+    id: string,
+    payload: { baseUrl?: string; apiKey?: string; api?: string }
+  ): Promise<PiAgentDiscoverResult> {
     return this.request(`/settings/pi-agent/providers/${encodeURIComponent(id)}/discover-models`, {
       method: 'POST',
       body: JSON.stringify(payload)
@@ -1190,7 +1209,10 @@ class ApiService {
     return this.request('/settings/pi-agent/credentials')
   }
 
-  async updatePiAgentCredential(id: string, payload: { revision: string; action: 'keep' | 'replace' | 'remove'; key?: string }): Promise<{ success: boolean; revision: string }> {
+  async updatePiAgentCredential(
+    id: string,
+    payload: { revision: string; action: 'keep' | 'replace' | 'remove'; key?: string }
+  ): Promise<{ success: boolean; revision: string }> {
     return this.request(`/settings/pi-agent/credentials/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(payload)
@@ -1208,7 +1230,10 @@ class ApiService {
     return this.request('/settings/pi-agent/model-settings')
   }
 
-  async updatePiAgentModelSettings(payload: { revision: string; settings: Partial<PiAgentModelSettings> }): Promise<{ success: boolean; revision: string }> {
+  async updatePiAgentModelSettings(payload: {
+    revision: string
+    settings: Partial<PiAgentModelSettings>
+  }): Promise<{ success: boolean; revision: string }> {
     return this.request('/settings/pi-agent/model-settings', {
       method: 'PATCH',
       body: JSON.stringify(payload)
@@ -1254,8 +1279,15 @@ class ApiService {
     return this.request('/skills/consolidate', { method: 'POST' })
   }
 
-  async importSkill(fileName: string, contentBase64: string, targets: string[]): Promise<{ success: boolean; name: string }> {
-    return this.request('/skills/import', { method: 'POST', body: JSON.stringify({ fileName, contentBase64, targets }) })
+  async importSkill(
+    fileName: string,
+    contentBase64: string,
+    targets: string[]
+  ): Promise<{ success: boolean; name: string }> {
+    return this.request('/skills/import', {
+      method: 'POST',
+      body: JSON.stringify({ fileName, contentBase64, targets })
+    })
   }
 
   async searchSkills(query: string): Promise<SkillSearchResponse> {
@@ -1266,11 +1298,18 @@ class ApiService {
     return this.request('/skills/remote/inspect', { method: 'POST', body: JSON.stringify({ id }) })
   }
 
-  async installRemoteSkill(id: string, targets: string[]): Promise<{ success: boolean; name: string; source: string; repositoryUrl: string }> {
+  async installRemoteSkill(
+    id: string,
+    targets: string[]
+  ): Promise<{ success: boolean; name: string; source: string; repositoryUrl: string }> {
     return this.request('/skills/remote/install', { method: 'POST', body: JSON.stringify({ id, targets }) })
   }
 
-  async copySkill(locationKey: string, name: string, targets: string[]): Promise<{ success: boolean; name: string; targets: string[] }> {
+  async copySkill(
+    locationKey: string,
+    name: string,
+    targets: string[]
+  ): Promise<{ success: boolean; name: string; targets: string[] }> {
     return this.request('/skills/copy', { method: 'POST', body: JSON.stringify({ locationKey, name, targets }) })
   }
 
@@ -1278,7 +1317,14 @@ class ApiService {
     await this.request('/skills', { method: 'DELETE', body: JSON.stringify({ locationKey, name }) })
   }
 
-  async backupSkill(payload: { locationKey: string; name: string; original: string; translated: string; model?: string; channelName?: string }): Promise<{ success: boolean; path: string }> {
+  async backupSkill(payload: {
+    locationKey: string
+    name: string
+    original: string
+    translated: string
+    model?: string
+    channelName?: string
+  }): Promise<{ success: boolean; path: string }> {
     return this.request('/skills/backup', { method: 'POST', body: JSON.stringify(payload) })
   }
 
@@ -1296,7 +1342,10 @@ class ApiService {
   // ============== Key 级别历史指标 API ==============
 
   // 获取 Messages 渠道 Key 级别历史指标（用于 Key 趋势图表）
-  async getChannelKeyMetricsHistory(channelId: number, duration: '1h' | '6h' | '24h' | 'today' = '6h'): Promise<ChannelKeyMetricsHistoryResponse> {
+  async getChannelKeyMetricsHistory(
+    channelId: number,
+    duration: '1h' | '6h' | '24h' | 'today' = '6h'
+  ): Promise<ChannelKeyMetricsHistoryResponse> {
     return this.request(`/messages/channels/${channelId}/keys/metrics/history?duration=${duration}`)
   }
 
@@ -1322,22 +1371,9 @@ class ApiService {
 
   // ============== Gemini 渠道管理 API ==============
 
-
-
-
-
-
-
-
-
   // ============== Gemini 多渠道调度 API ==============
 
-
-
   // Gemini 恢复渠道（降级实现：后端未实现 resume 端点，直接设置状态为 active）
-
-
-
 
   // ============== Gemini 历史指标 API ==============
 
@@ -1347,28 +1383,9 @@ class ApiService {
 
   // 获取 Gemini 全局统计历史
 
-
-
   // Gemini Dashboard（使用后端统一接口）
 
-
-
-
   // ===== Images API =====
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   async getModelAuditCapabilities(): Promise<{ protocols: ModelAuditProtocolDescriptor[] }> {
     return this.request('/model-audit/capabilities')
@@ -1389,7 +1406,9 @@ class ApiService {
   async getModelAuditChannelSummary(channelKind: ApiTab, channelId: string): Promise<ModelAuditChannelSummaryResponse> {
     const stableId = channelId.trim()
     if (!stableId) throw new Error('渠道缺少稳定 ID，无法读取审计摘要')
-    return this.request(`/model-audit/channels/${encodeURIComponent(channelKind)}/${encodeURIComponent(stableId)}/summary`)
+    return this.request(
+      `/model-audit/channels/${encodeURIComponent(channelKind)}/${encodeURIComponent(stableId)}/summary`
+    )
   }
 
   async getModelAuditReportDetail(
@@ -1405,7 +1424,7 @@ class ApiService {
       samplePage: String(samplePage),
       samplePageSize: String(samplePageSize),
       strategyPage: String(strategyPage),
-      strategyPageSize: String(strategyPageSize),
+      strategyPageSize: String(strategyPageSize)
     })
     return this.request(`/model-audit/reports/${encodeURIComponent(stableId)}?${query}`)
   }
@@ -1422,8 +1441,13 @@ class ApiService {
     return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}`)
   }
 
-  async listModelAuditJobs(page = 1, pageSize = 20): Promise<ModelAuditJobPageResponse> {
+  async listModelAuditJobs(
+    page = 1,
+    pageSize = 20,
+    workloadKind?: 'identity' | 'capability'
+  ): Promise<ModelAuditJobPageResponse> {
     const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+    if (workloadKind) query.set('workloadKind', workloadKind)
     return this.request(`/model-audit/jobs?${query}`)
   }
 
@@ -1433,7 +1457,7 @@ class ApiService {
   ): Promise<ModelAuditJobResponse> {
     return this.request('/model-audit/jobs', {
       method: 'POST',
-      body: JSON.stringify({ definition, initialStatus }),
+      body: JSON.stringify({ definition, initialStatus })
     })
   }
 
@@ -1448,7 +1472,7 @@ class ApiService {
     }
     return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}`, {
       method: 'PUT',
-      body: JSON.stringify({ expectedRevision, definition }),
+      body: JSON.stringify({ expectedRevision, definition })
     })
   }
 
@@ -1463,7 +1487,7 @@ class ApiService {
     }
     return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}/transition`, {
       method: 'POST',
-      body: JSON.stringify({ expectedRevision, status }),
+      body: JSON.stringify({ expectedRevision, status })
     })
   }
 
@@ -1491,6 +1515,85 @@ class ApiService {
     return this.request('/model-audit/capability-presets')
   }
 
+  async getModelAuditIdentityPresets(): Promise<ModelAuditIdentityPresetCatalogResponse> {
+    return this.request('/model-audit/identity-presets')
+  }
+
+  async reloadModelEvaluationQuestionBanks(): Promise<ModelAuditCapabilityCatalogResponse> {
+    return this.request('/model-audit/question-banks/reload', { method: 'POST' })
+  }
+
+  async getModelAuditMods(): Promise<ModelAuditModCatalogResponse> {
+    return this.request('/model-audit/mods')
+  }
+
+  async reloadModelAuditMods(): Promise<ModelAuditModCatalogResponse> {
+    return this.request('/model-audit/mods/reload', { method: 'POST' })
+  }
+
+  async getModelAuditMod(modId: string): Promise<ModelAuditModResponse> {
+    const stableId = modId.trim()
+    if (!stableId) throw new Error('Mod ID 不能为空')
+    return this.request(`/model-audit/mods/${encodeURIComponent(stableId)}`)
+  }
+
+  async getModelAuditModExamples(): Promise<{ examples: ModelAuditModExample[] }> {
+    return this.request('/model-audit/mod-examples')
+  }
+
+  async createModelAuditMod(directoryName: string, files: Record<string, string>): Promise<ModelAuditModResponse> {
+    return this.request('/model-audit/mods', {
+      method: 'POST',
+      body: JSON.stringify({ directoryName, files })
+    })
+  }
+
+  async updateModelAuditMod(
+    modId: string,
+    directoryName: string,
+    expectedContentSha256: string,
+    files: Record<string, string>
+  ): Promise<ModelAuditModResponse> {
+    const stableId = modId.trim()
+    if (!stableId || !expectedContentSha256.trim()) throw new Error('Mod ID 或内容版本无效')
+    return this.request(`/model-audit/mods/${encodeURIComponent(stableId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ directoryName, expectedContentSha256, files })
+    })
+  }
+
+  async importModelAuditMod(sourcePath: string, directoryName = ''): Promise<ModelAuditModResponse> {
+    return this.request('/model-audit/mods/import', {
+      method: 'POST',
+      body: JSON.stringify({ sourcePath, ...(directoryName.trim() ? { directoryName } : {}) })
+    })
+  }
+
+  async listModelAuditModAnalyses(runId: string, page = 1, pageSize = 100): Promise<ModelAuditModAnalysisPageResponse> {
+    const stableId = runId.trim()
+    if (!stableId) throw new Error('运行 ID 不能为空')
+    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+    return this.request(`/model-audit/runs/${encodeURIComponent(stableId)}/analyses?${query}`)
+  }
+
+  async importManualModelAuditAnalysis(
+    analysisId: string,
+    result: Record<string, unknown>
+  ): Promise<{ analysis: ModelAuditModAnalysisRecord }> {
+    const stableId = analysisId.trim()
+    if (!stableId) throw new Error('分析记录 ID 不能为空')
+    return this.request(`/model-audit/analyses/${encodeURIComponent(stableId)}/manual-result`, {
+      method: 'POST',
+      body: JSON.stringify({ result })
+    })
+  }
+
+  async rerunModelAuditAnalysis(analysisId: string): Promise<{ analysis: ModelAuditModAnalysisRecord }> {
+    const stableId = analysisId.trim()
+    if (!stableId) throw new Error('分析记录 ID 不能为空')
+    return this.request(`/model-audit/analyses/${encodeURIComponent(stableId)}/rerun`, { method: 'POST' })
+  }
+
   async startModelAuditJobRun(jobId: string, expectedRevision: number): Promise<ModelAuditRunResponse> {
     const stableId = jobId.trim()
     if (!stableId || !Number.isInteger(expectedRevision) || expectedRevision <= 0) {
@@ -1498,7 +1601,15 @@ class ApiService {
     }
     return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}/runs`, {
       method: 'POST',
-      body: JSON.stringify({ expectedRevision }),
+      body: JSON.stringify({ expectedRevision })
+    })
+  }
+
+  async retryModelAuditJob(jobId: string, expectedRevision: number): Promise<{ job: ModelAuditJob; run: ModelAuditRunPresentation }> {
+    const stableId = jobId.trim()
+    if (!stableId || !Number.isInteger(expectedRevision) || expectedRevision <= 0) throw new Error('审计任务 ID 或版本无效')
+    return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}/retry`, {
+      method: 'POST', body: JSON.stringify({ expectedRevision })
     })
   }
 
@@ -1526,7 +1637,7 @@ export interface HealthResponse {
  * 注意：/health 端点不需要认证，直接请求根路径
  */
 export const fetchHealth = async (): Promise<HealthResponse> => {
-  const baseUrl = import.meta.env.PROD ? '' : (import.meta.env.VITE_BACKEND_URL || '')
+  const baseUrl = import.meta.env.PROD ? '' : import.meta.env.VITE_BACKEND_URL || ''
   const response = await fetch(`${baseUrl}/health`)
   if (!response.ok) {
     throw new Error(`Health check failed: ${response.status}`)
@@ -1579,7 +1690,13 @@ export interface ModelAuditMixtureComponent {
 }
 
 export interface ModelAuditIdentitySummary {
-  conclusion: 'matched' | 'suspected_substitution' | 'suspected_mixture' | 'unknown' | 'insufficient_evidence' | 'unsupported'
+  conclusion:
+    | 'matched'
+    | 'suspected_substitution'
+    | 'suspected_mixture'
+    | 'unknown'
+    | 'insufficient_evidence'
+    | 'unsupported'
   formal: boolean
   confidence: number
   consistencyScore: number
@@ -1606,6 +1723,8 @@ export interface ModelAuditCapabilitySummary {
   }
   coverage: number
   scoredDimensions: number
+  dimension?: ModelAuditCapabilityDimension['dimension']
+  score?: number
 }
 
 export interface ModelAuditFreshness {
@@ -1670,6 +1789,13 @@ export interface ModelAuditRunPresentation {
   startedAt?: string
   finishedAt?: string
   failureHidden: boolean
+  failureMessage?: string
+  result?: {
+    reportId: string
+    resultStatus: 'complete' | 'partial' | 'failed' | 'unsupported' | 'insufficient_evidence'
+    capability?: ModelAuditCapabilitySummary
+    reportedAt: string
+  }
 }
 
 export interface ModelAuditRunResponse {
@@ -1680,6 +1806,7 @@ export type ModelAuditJobStatus = 'draft' | 'enabled' | 'running' | 'paused' | '
 
 export interface ModelAuditStrategySelection {
   strategyId: string
+  ref?: ModelAuditVersionedRef
   enabled: boolean
   config: Record<string, unknown>
 }
@@ -1708,6 +1835,7 @@ export interface ModelAuditSchedule {
   intervalMs: number
   timeZone: string
   jitterMs: number
+  oneShot?: boolean
 }
 
 export interface ModelAuditRunBudget {
@@ -1718,12 +1846,22 @@ export interface ModelAuditRunBudget {
   maxConcurrentRequests: number
 }
 
+export interface ModelAuditAnalysisTarget {
+  channelId: string
+  channelKind: ApiTab
+  protocol: ApiTab
+  model: string
+  thinking: string
+  requestProfile: string
+}
+
 export interface ModelAuditJobDefinition {
   name: string
   workload: ModelAuditWorkload
   targets: ModelAuditJobTarget[]
   schedule: ModelAuditSchedule
   budget: ModelAuditRunBudget
+  analyzer?: ModelAuditAnalysisTarget
 }
 
 export interface ModelAuditJob extends ModelAuditJobDefinition {
@@ -1746,6 +1884,7 @@ export interface ModelAuditJobPageResponse {
     page: number
     pageSize: number
   }
+  latestRuns: Record<string, ModelAuditRunPresentation>
 }
 
 export interface ModelAuditRunPageResponse {
@@ -1763,7 +1902,10 @@ export interface ModelAuditStrategyDescriptor {
   description: string
   configSchema: {
     type?: string
-    properties?: Record<string, { type?: string; minimum?: number; maximum?: number; multipleOf?: number; default?: unknown }>
+    properties?: Record<
+      string,
+      { type?: string; minimum?: number; maximum?: number; multipleOf?: number; default?: unknown }
+    >
     required?: string[]
     additionalProperties?: boolean
   }
@@ -1787,6 +1929,90 @@ export interface ModelAuditStrategyCatalogResponse {
   strategies: ModelAuditStrategyDescriptor[]
 }
 
+export type ModelAuditModAnalysisMode = 'llm' | 'python' | 'manual'
+
+export interface ModelAuditModReference {
+  id: string
+  version: string
+  contentSha256: string
+}
+
+export interface ModelAuditModDescriptor {
+  reference: ModelAuditModReference
+  name: string
+  description: string
+  analysisMode: ModelAuditModAnalysisMode
+  sourcePath: string
+  snapshotPath: string
+  loadedAt: string
+}
+
+export interface ModelAuditModCatalogResponse {
+  catalog: {
+    mods: ModelAuditModDescriptor[]
+    issues: Array<{ directory: string; modId?: string; message: string }>
+    loadedAt: string
+  }
+}
+
+export interface ModelAuditModEditable {
+  descriptor: ModelAuditModDescriptor
+  manifest: Record<string, unknown>
+  files: Record<string, string>
+  binaryFiles?: string[]
+}
+
+export interface ModelAuditModResponse {
+  mod: ModelAuditModEditable
+}
+
+export interface ModelAuditModExample {
+  id: string
+  name: string
+  description: string
+  mode: ModelAuditModAnalysisMode
+  files: Record<string, string>
+}
+
+export interface ModelAuditModAnalysisRecord {
+  id: string
+  revision: number
+  runId: string
+  targetId: string
+  mod: ModelAuditModReference
+  mode: ModelAuditModAnalysisMode
+  status: 'pending' | 'running' | 'awaiting_manual' | 'completed' | 'failed'
+  analyzer?: ModelAuditAnalysisTarget
+  sourceDirectory?: string
+  snapshotDirectory?: string
+  workingDirectory?: string
+  method?: string
+  interpreter?: string
+  interpreterVersion?: string
+  command?: string[]
+  exitCode?: number
+  stdout?: string
+  stderr?: string
+  input: Record<string, unknown>
+  inputSha256: string
+  result?: Record<string, unknown>
+  resultSha256?: string
+  usage: ModelAuditRunUsage
+  failure?: string
+  createdAt: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface ModelAuditModAnalysisPageResponse {
+  page: {
+    analyses: ModelAuditModAnalysisRecord[]
+    total: number
+    page: number
+    pageSize: number
+  }
+}
+
 export interface ModelAuditCapabilityPreset {
   ref: ModelAuditVersionedRef
   mode: 'quick' | 'standard' | 'deep'
@@ -1796,12 +2022,55 @@ export interface ModelAuditCapabilityPreset {
   limits: { requests: number; inputTokens: number; outputTokens: number; totalTokens: number }
 }
 
+export interface ModelAuditCapabilityEvaluationOption {
+  id: string
+  bankId: string
+  bankName: string
+  label: string
+  dimension?: ModelAuditCapabilityDimension['dimension']
+  questionCount: number
+  preset: ModelAuditVersionedRef
+  limits: { requests: number; inputTokens: number; outputTokens: number; totalTokens: number }
+}
+
+export interface ModelAuditIdentityPreset {
+  ref: ModelAuditVersionedRef
+  level: 'low' | 'medium' | 'high'
+  description: string
+  formalEligible: boolean
+  strategies: ModelAuditStrategySelection[]
+  estimateTokens: number
+  estimateRequests: number
+}
+
+export interface ModelAuditIdentityPresetCatalogResponse {
+  presets: ModelAuditIdentityPreset[]
+}
+
+export interface ModelEvaluationQuestionBankDescriptor {
+  id: string
+  version: string
+  name: string
+  description: string
+  contentSha256: string
+  questionCount: number
+  sourcePath: string
+  snapshotPath: string
+  loadedAt: string
+}
+
 export interface ModelAuditCapabilityCatalogResponse {
   catalog: {
     available: boolean
     reason?: string
     packages: unknown[]
     presets: ModelAuditCapabilityPreset[]
+    evaluationOptions: ModelAuditCapabilityEvaluationOption[]
+    questionBanks: {
+      banks: ModelEvaluationQuestionBankDescriptor[]
+      issues: Array<{ directory: string; bankId?: string; message: string }>
+      loadedAt: string
+    }
   }
 }
 
@@ -1874,7 +2143,14 @@ export interface ModelAuditResultCounts {
 }
 
 export interface ModelAuditCapabilityDimension {
-  dimension: 'math_logic' | 'code' | 'instruction_following' | 'tool_use' | 'long_context_multiturn' | 'knowledge_factuality' | 'repeatability'
+  dimension:
+    | 'math_logic'
+    | 'code'
+    | 'instruction_following'
+    | 'tool_use'
+    | 'long_context_multiturn'
+    | 'knowledge_factuality'
+    | 'repeatability'
   weight: number
   score?: number
   interval?: ModelAuditCapabilitySummary['indexInterval']
@@ -1888,7 +2164,9 @@ export interface ModelAuditCapabilityDimension {
     score?: number
     coverage: number
     counts: ModelAuditResultCounts
+    reasons?: string[]
   }>
+  reasons?: string[]
 }
 
 export interface ModelAuditCapabilityReport extends ModelAuditCapabilitySummary {
@@ -1955,6 +2233,7 @@ export interface ModelAuditEvidencePage {
 export interface ModelAuditReportDetailResult {
   detail: {
     schema: ModelAuditVersionedRef
+    workloadKind: 'identity' | 'capability'
     summary: ModelAuditChannelSummary
     run: ModelAuditRunPresentation
     report: ModelAuditTargetReport
@@ -1967,7 +2246,7 @@ export interface ModelAuditReportDetailResponse {
   result: ModelAuditReportDetailResult
 }
 
-export type ModelAuditPurpose = 'quick_test' | 'playground' | 'identity_probe' | 'capability_eval'
+export type ModelAuditPurpose = 'quick_test' | 'playground' | 'identity_probe' | 'capability_eval' | 'audit_analysis'
 export type ModelAuditSupport = 'official' | 'channel_profile' | 'unsupported'
 export type ModelAuditStatus =
   | 'pending'
@@ -2095,7 +2374,10 @@ export interface ChannelApi {
   resumeChannel(channelId: number): Promise<void>
   getChannelMetrics(): Promise<ChannelMetrics[]>
   getChannelMetricsHistory(duration?: '1h' | '6h' | '24h'): Promise<MetricsHistoryResponse[]>
-  getChannelKeyMetricsHistory(channelId: number, duration?: '1h' | '6h' | '24h' | 'today'): Promise<ChannelKeyMetricsHistoryResponse>
+  getChannelKeyMetricsHistory(
+    channelId: number,
+    duration?: '1h' | '6h' | '24h' | 'today'
+  ): Promise<ChannelKeyMetricsHistoryResponse>
   getGlobalStats(duration?: '1h' | '6h' | '24h' | 'today'): Promise<GlobalStatsHistoryResponse>
   getChannelDashboard(): Promise<ChannelDashboardResponse>
 }

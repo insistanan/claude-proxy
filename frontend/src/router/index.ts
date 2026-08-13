@@ -66,8 +66,21 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/evaluation',
+    name: 'model-evaluation',
+    component: () => import('@/views/AuditJobsView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/audit/reports/:reportId',
     name: 'audit-report',
+    component: () => import('@/views/AuditReportView.vue'),
+    props: true,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/evaluation/reports/:reportId',
+    name: 'evaluation-report',
     component: () => import('@/views/AuditReportView.vue'),
     props: true,
     meta: { requiresAuth: true }

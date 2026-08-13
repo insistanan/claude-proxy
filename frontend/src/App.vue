@@ -115,6 +115,10 @@
             审计
           </router-link>
           <span class="api-type-text separator">/</span>
+          <router-link to="/evaluation" class="api-type-text" :class="{ active: topNavActive === 'evaluation' }">
+            能力评测
+          </router-link>
+          <span class="api-type-text separator">/</span>
           <router-link to="/opencode" class="api-type-text" :class="{ active: topNavActive === 'opencode' }">
             OpenCode
           </router-link>
@@ -475,7 +479,8 @@ const isClaudeCodePage = computed(() => route.name === 'claude-code')
 const isPiAgentPage = computed(() => route.name === 'pi-agent')
 const isSettingsPage = computed(() => route.name === 'settings')
 const isAuditPage = computed(() => route.name === 'audit-jobs' || route.name === 'audit-report')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isSettingsPage.value || isAuditPage.value)
+const isEvaluationPage = computed(() => route.name === 'model-evaluation' || route.name === 'evaluation-report')
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isSettingsPage.value || isAuditPage.value || isEvaluationPage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -510,6 +515,9 @@ const topNavActive = computed(() => {
   }
   if (isAuditPage.value) {
     return 'audit'
+  }
+  if (isEvaluationPage.value) {
+    return 'evaluation'
   }
   if (isOpenCodePage.value) {
     return 'opencode'
