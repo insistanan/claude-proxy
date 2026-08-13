@@ -1056,7 +1056,7 @@ const getAuditSummaryError = (channel: Channel): string => {
 }
 
 const openAuditReport = (reportId: string): void => {
-  void router.push({ name: 'audit-report', params: { reportId } })
+	void router.push({ name: 'audit-report', params: { reportId } })
 }
 
 const refreshAuditSummaries = async (): Promise<void> => {

@@ -1,9 +1,9 @@
 <template>
   <div class="audit-report-view">
     <header class="report-header">
-      <v-btn icon="mdi-chevron-left" variant="text" aria-label="返回渠道列表" title="返回渠道列表" @click="backToChannel" />
+      <v-btn icon="mdi-chevron-left" variant="text" aria-label="返回" title="返回" @click="goBack" />
       <div class="report-heading">
-        <div class="report-eyebrow">模型审计报告</div>
+        <div class="report-eyebrow">{{ workloadKind === 'capability' ? '能力评测报告' : '模型审计报告' }}</div>
         <h1>{{ channelName }}</h1>
         <div v-if="report" class="report-id">{{ report.id }}</div>
       </div>
@@ -25,7 +25,7 @@
           :loading="actionLoading === 'run'"
           :disabled="Boolean(actionLoading)"
           @click="startRunAgain"
-        >再次运行</v-btn>
+        >重新检查</v-btn>
         <v-btn
           color="secondary"
           variant="outlined"
@@ -47,6 +47,9 @@
     </v-alert>
 
     <template v-if="detail">
+      <v-alert v-if="detail.run.status === 'failed'" type="error" variant="tonal" role="alert" aria-live="assertive" class="report-error">
+        {{ detail.run.failureMessage || '本次检查未完成，后台没有返回具体原因。' }}
+      </v-alert>
       <section class="report-overview" aria-label="报告摘要">
         <div class="overview-status">
           <v-chip :color="summaryStatus.color" variant="tonal">{{ summaryStatus.label }}</v-chip>
@@ -69,8 +72,8 @@
       </section>
 
       <v-tabs v-model="activeTab" color="primary" class="report-tabs" show-arrows>
-        <v-tab value="identity" prepend-icon="mdi-signature">身份与混用</v-tab>
-        <v-tab value="capability" prepend-icon="mdi-chart-areaspline">七维能力</v-tab>
+        <v-tab v-if="identity || workloadKind === 'identity'" value="identity" prepend-icon="mdi-signature">身份与混用</v-tab>
+        <v-tab v-if="capability || workloadKind === 'capability'" value="capability" prepend-icon="mdi-chart-areaspline">能力结果</v-tab>
         <v-tab value="evidence" prepend-icon="mdi-database">样本与证据</v-tab>
         <v-tab value="versions" prepend-icon="mdi-code-braces">配置与版本</v-tab>
       </v-tabs>
@@ -139,7 +142,7 @@
           <section class="report-section">
             <div v-if="capability" class="metric-strip">
               <div><span>能力指数</span><strong>{{ capability.index?.toFixed(1) ?? '--' }}</strong></div>
-              <div><span>报告状态</span><strong>{{ capabilityStatusLabel(capability.status) }}</strong></div>
+              <div><span>报告状态</span><strong>{{ detail.run.status === 'failed' ? '评测未完成' : capabilityStatusLabel(capability.status) }}</strong></div>
               <div><span>正式维度</span><strong>{{ capability.formalDimensions }}/7</strong></div>
               <div><span>已判分</span><strong>{{ capability.counts.scored }}/{{ capability.counts.planned }}</strong></div>
               <div><span>覆盖率</span><strong>{{ formatPercent(capability.coverage) }}</strong></div>
@@ -166,6 +169,9 @@
                   <span v-if="dimension.counts.executionFailed">执行失败 {{ dimension.counts.executionFailed }}</span>
                   <span v-if="dimension.counts.scoringFailed">判分失败 {{ dimension.counts.scoringFailed }}</span>
                   <span v-if="dimension.counts.missing">未执行 {{ dimension.counts.missing }}</span>
+                </div>
+                <div v-if="dimension.reasons?.length" class="dimension-reasons" role="alert" aria-live="polite">
+                  <span v-for="reason in dimension.reasons" :key="reason">{{ reason }}</span>
                 </div>
               </div>
             </div>
@@ -250,11 +256,12 @@ let requestGeneration = 0
 
 const reportId = computed(() => String(route.params.reportId || '').trim())
 const detail = computed(() => result.value?.detail)
+const workloadKind = computed(() => detail.value?.workloadKind || (route.name === 'evaluation-report' ? 'capability' : 'identity'))
 const report = computed(() => detail.value?.report)
 const summary = computed(() => detail.value?.summary)
 const identity = computed(() => report.value?.identity)
 const capability = computed(() => report.value?.capability)
-const channelName = computed(() => report.value?.target.resolved?.channelName || summary.value?.channelId || '审计详情')
+const channelName = computed(() => report.value?.target.resolved?.channelName || summary.value?.channelId || (workloadKind.value === 'capability' ? '评测详情' : '审计详情'))
 const resolvedModel = computed(() => report.value?.target.resolved?.resolvedModel || report.value?.target.requested.model || '未解析')
 const targetProtocol = computed(() => {
   const requested = report.value?.target.requested.protocol
@@ -301,9 +308,18 @@ const loadReport = async (): Promise<void> => {
 }
 
 watch(() => [reportId.value, samplePage.value, strategyPage.value], () => { void loadReport() }, { immediate: true })
+watch(workloadKind, (kind) => {
+  if (kind === 'capability' && !identity.value) activeTab.value = 'capability'
+  if (kind === 'identity' && !capability.value) activeTab.value = 'identity'
+  const expectedRoute = kind === 'capability' ? 'evaluation-report' : 'audit-report'
+  if (detail.value && route.name !== expectedRoute) {
+    void router.replace({ name: expectedRoute, params: { reportId: reportId.value } })
+  }
+}, { immediate: true })
 
-const backToChannel = (): void => {
-  void router.push({ name: 'channels', params: { type: summary.value?.channelKind || 'messages' } })
+const goBack = (): void => {
+  if (window.history.length > 1) { router.back(); return }
+  void router.push({ name: workloadKind.value === 'capability' ? 'model-evaluation' : 'channels', params: workloadKind.value === 'capability' ? undefined : { type: summary.value?.channelKind || 'messages' } })
 }
 
 const showFeedback = (message: string, color: 'success' | 'error'): void => {
@@ -317,10 +333,9 @@ const startRunAgain = async (): Promise<void> => {
   actionLoading.value = 'run'
   try {
     const current = await api.getModelAuditJob(report.value.jobId)
-    if (current.job.status !== 'enabled') {
-      throw new Error(`审计任务当前状态为 ${jobStatusLabel(current.job.status)}，不能再次运行`)
-    }
-    const response = await api.startModelAuditJobRun(current.job.id, current.job.revision)
+    const response = current.job.schedule.oneShot || current.job.status === 'expired'
+      ? await api.retryModelAuditJob(current.job.id, current.job.revision)
+      : await api.startModelAuditJobRun(current.job.id, current.job.revision)
     showFeedback(`运行 ${response.run.id} 已提交`, 'success')
     await loadReport()
   } catch (caught) {
@@ -419,6 +434,7 @@ const dimensionLabel = (value: string): string => lookupLabel({ math_logic: '数
 .dimension-heading > div { display: flex; align-items: baseline; gap: 8px; }
 .dimension-value strong { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
 .dimension-meta { justify-content: flex-start; flex-wrap: wrap; margin-top: 7px; }
+.dimension-reasons { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; padding-left: 10px; border-left: 2px solid rgb(var(--v-theme-error)); color: rgb(var(--v-theme-error)); font-size: 12px; line-height: 1.5; }
 .table-scroll { overflow-x: auto; border: 1px solid rgba(var(--v-theme-outline), 0.35); }
 .audit-table { min-width: 860px; }
 .audit-table th { color: rgba(var(--v-theme-on-surface), 0.55); font-size: 12px; }

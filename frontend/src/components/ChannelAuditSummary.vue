@@ -30,10 +30,11 @@
       </div>
 
       <div class="audit-field" :title="capabilityTitle">
-        <span class="audit-label">能力</span>
+        <span class="audit-label">{{ capabilityDimensionLabel }}</span>
         <strong>{{ capabilityLabel }}</strong>
         <span v-if="summary.capability" class="audit-detail">
-          覆盖 {{ formatPercent(summary.capability.coverage) }} · {{ summary.capability.scoredDimensions }}/7 维
+          覆盖 {{ formatPercent(summary.capability.coverage)
+          }}<template v-if="!summary.capability.dimension"> · {{ summary.capability.scoredDimensions }}/7 维</template>
         </span>
       </div>
 
@@ -54,14 +55,14 @@
         </template>
       </v-tooltip>
 
-      <v-tooltip v-if="summary.reportId" text="查看审计详情" location="top">
+      <v-tooltip v-if="summary.reportId" :text="reportDetailLabel" location="top">
         <template #activator="{ props: tooltipProps }">
           <v-btn
             v-bind="tooltipProps"
             icon="mdi-chevron-right"
             size="x-small"
             variant="text"
-            aria-label="查看审计详情"
+            :aria-label="reportDetailLabel"
             class="audit-detail-button"
             @click="$emit('open', summary.reportId)"
           />
@@ -79,19 +80,24 @@ defineEmits<{
   (_e: 'open', _reportId: string): void
 }>()
 
-const props = withDefaults(defineProps<{
-  summary?: ModelAuditChannelSummary
-  loading?: boolean
-  error?: string
-  hasStableId?: boolean
-  compact?: boolean
-}>(), {
-  summary: undefined,
-  loading: false,
-  error: '',
-  hasStableId: true,
-  compact: false,
-})
+const props = withDefaults(
+  defineProps<{
+    summary?: ModelAuditChannelSummary
+    loading?: boolean
+    error?: string
+    hasStableId?: boolean
+    compact?: boolean
+  }>(),
+  {
+    summary: undefined,
+    loading: false,
+    error: '',
+    hasStableId: true,
+    compact: false
+  }
+)
+
+const reportDetailLabel = computed(() => '查看模型审计详情')
 
 const statusMetadata: Record<ModelAuditChannelSummary['primaryStatus'], { label: string; color: string }> = {
   not_detected: { label: '未检测', color: 'secondary' },
@@ -101,7 +107,7 @@ const statusMetadata: Record<ModelAuditChannelSummary['primaryStatus'], { label:
   failed: { label: '运行失败', color: 'error' },
   unsupported: { label: '协议不支持', color: 'secondary' },
   insufficient_evidence: { label: '证据不足', color: 'warning' },
-  stale: { label: '结果过期', color: 'warning' },
+  stale: { label: '结果过期', color: 'warning' }
 }
 
 const identityLabels: Record<string, string> = {
@@ -110,21 +116,21 @@ const identityLabels: Record<string, string> = {
   suspected_mixture: '疑似混用',
   unknown: '未知',
   insufficient_evidence: '证据不足',
-  unsupported: '不支持',
+  unsupported: '不支持'
 }
 
 const capabilityStatusLabels: Record<string, string> = {
   complete: '正式',
   provisional: '临时结果',
   partial_budget: '预算中止',
-  insufficient_evidence: '证据不足',
+  insufficient_evidence: '证据不足'
 }
 
 const statusMeta = computed(() => statusMetadata[props.summary?.primaryStatus ?? 'not_detected'])
 
 const identityLabel = computed(() => {
   const identity = props.summary?.identity
-  return identity ? (identityLabels[identity.conclusion] || identity.conclusion) : '未检测'
+  return identity ? identityLabels[identity.conclusion] || identity.conclusion : '未检测'
 })
 
 const identityTitle = computed(() => {
@@ -146,8 +152,24 @@ const mixtureLabel = computed(() => {
 const capabilityLabel = computed(() => {
   const capability = props.summary?.capability
   if (!capability) return '未检测'
+  if (capability.score !== undefined) return capability.score.toFixed(1)
   if (capability.index !== undefined) return capability.index.toFixed(1)
   return capabilityStatusLabels[capability.status] || capability.status
+})
+
+const capabilityDimensionLabels: Record<string, string> = {
+  math_logic: '数学与逻辑',
+  code: '代码',
+  instruction_following: '指令遵循',
+  tool_use: '工具使用',
+  long_context_multiturn: '长上下文与多轮',
+  knowledge_factuality: '知识与事实性',
+  repeatability: '稳定性'
+}
+
+const capabilityDimensionLabel = computed(() => {
+  const dimension = props.summary?.capability?.dimension
+  return dimension ? capabilityDimensionLabels[dimension] || dimension : '综合能力'
 })
 
 const capabilityTitle = computed(() => {
@@ -156,7 +178,7 @@ const capabilityTitle = computed(() => {
   const interval = capability.indexInterval
     ? `；区间 ${capability.indexInterval.lower.toFixed(1)}-${capability.indexInterval.upper.toFixed(1)}`
     : ''
-  return `${capabilityStatusLabels[capability.status] || capability.status}${interval}；覆盖 ${formatPercent(capability.coverage)}`
+  return `${capabilityDimensionLabel.value} ${capabilityLabel.value}；${capabilityStatusLabels[capability.status] || capability.status}${interval}；覆盖 ${formatPercent(capability.coverage)}`
 })
 
 const reportedAtLabel = computed(() => formatAuditTime(props.summary?.reportedAt))
@@ -178,7 +200,7 @@ const formatAuditTime = (value?: string): string => {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hour12: false
   })
 }
 </script>
