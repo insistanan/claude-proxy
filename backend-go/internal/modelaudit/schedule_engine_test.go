@@ -70,6 +70,24 @@ func TestNextAuditScheduleSlotStopsAtEnd(t *testing.T) {
 	}
 }
 
+func TestOneShotScheduleNeverProducesScheduledSlot(t *testing.T) {
+	start := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	schedule := AuditSchedule{
+		StartAt: start, IntervalMs: AuditMinimumInterval.Milliseconds(), TimeZone: "UTC", OneShot: true,
+	}
+	next, err := NextAuditScheduleSlot("job-1", schedule, start.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	due, err := DueAuditScheduleSlot("job-1", schedule, start.Add(-time.Minute), start.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != nil || due != nil {
+		t.Fatalf("单次任务不应生成定时槽位: next=%#v due=%#v", next, due)
+	}
+}
+
 func TestManualRunDoesNotAffectScheduledSlot(t *testing.T) {
 	start := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
 	schedule := AuditSchedule{StartAt: start, IntervalMs: AuditDefaultInterval.Milliseconds(), TimeZone: "UTC", JitterMs: time.Hour.Milliseconds()}

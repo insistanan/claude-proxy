@@ -6,28 +6,41 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const BuiltinCapabilityPackageID = "capability.pack.builtin-core"
 
+func versionedRefKey(ref VersionedRef) string {
+	return ref.ID + "\x00" + ref.SemanticVersion + "\x00" + ref.ImplementationVersion
+}
+
 type BuiltinCapabilityAssets struct {
-	packageSnapshot CapabilityTaskPackageSnapshot
-	presets         map[string]CapabilityRunPreset
-	scorers         map[CapabilityScorerKind]CapabilityScorer
+	mu                sync.RWMutex
+	packageSnapshot   CapabilityTaskPackageSnapshot
+	packages          map[string]CapabilityTaskPackageSnapshot
+	presets           map[string]CapabilityRunPreset
+	evaluationOptions []CapabilityEvaluationOption
+	tasks             map[string]CapabilityTaskDefinition
+	taskPackages      map[string]VersionedRef
+	questions         map[string]QuestionBankQuestion
+	scorers           map[CapabilityScorerKind]CapabilityScorer
+	questionBanks     QuestionBankCatalogSnapshot
+	sourceRoot        string
+	cacheRoot         string
 }
 
 func NewBuiltinCapabilityAssets() (*BuiltinCapabilityAssets, error) {
-	exact, err := NewBuiltinCapabilityScorer(CapabilityScorerExactMatch)
+	scorers, err := builtinCapabilityScorers()
 	if err != nil {
 		return nil, err
 	}
-	tool, err := NewBuiltinCapabilityScorer(CapabilityScorerToolCall)
-	if err != nil {
-		return nil, err
-	}
+	exact := scorers[CapabilityScorerExactMatch]
+	tool := scorers[CapabilityScorerToolCall]
 	packageRef := VersionedRef{ID: BuiltinCapabilityPackageID, SemanticVersion: "1.0.0", ImplementationVersion: "builtin-1"}
 	dimensions := CapabilityDimensions()
 	weights := make(map[CapabilityDimension]float64, len(dimensions))
@@ -80,16 +93,223 @@ func NewBuiltinCapabilityAssets() (*BuiltinCapabilityAssets, error) {
 		if _, err := PrepareCapabilityRun(preset, snapshot); err != nil {
 			return nil, err
 		}
-		presets[preset.Ref.ID] = preset
+		presets[versionedRefKey(preset.Ref)] = preset
 	}
-	return &BuiltinCapabilityAssets{
+	assets := &BuiltinCapabilityAssets{
 		packageSnapshot: snapshot,
+		packages:        map[string]CapabilityTaskPackageSnapshot{versionedRefKey(packageRef): snapshot},
 		presets:         presets,
-		scorers: map[CapabilityScorerKind]CapabilityScorer{
-			CapabilityScorerExactMatch: exact,
-			CapabilityScorerToolCall:   tool,
-		},
-	}, nil
+		tasks:           make(map[string]CapabilityTaskDefinition, len(tasks)),
+		taskPackages:    make(map[string]VersionedRef, len(tasks)),
+		questions:       make(map[string]QuestionBankQuestion),
+		scorers:         scorers,
+		questionBanks:   QuestionBankCatalogSnapshot{Banks: []QuestionBankDescriptor{}, Issues: []QuestionBankLoadIssue{}},
+	}
+	for _, task := range tasks {
+		key := versionedRefKey(task.Ref)
+		assets.tasks[key] = task
+		assets.taskPackages[key] = packageRef
+	}
+	return assets, nil
+}
+
+func builtinCapabilityScorers() (map[CapabilityScorerKind]CapabilityScorer, error) {
+	result := make(map[CapabilityScorerKind]CapabilityScorer)
+	for _, kind := range []CapabilityScorerKind{CapabilityScorerExactMatch, CapabilityScorerSetMatch, CapabilityScorerNumericTolerance, CapabilityScorerJSONStructure, CapabilityScorerToolCall, CapabilityScorerAssertions} {
+		scorer, err := NewBuiltinCapabilityScorer(kind)
+		if err != nil {
+			return nil, err
+		}
+		result[kind] = scorer
+	}
+	return result, nil
+}
+
+func NewQuestionBankCapabilityAssets(sourceRoot, cacheRoot string) (*BuiltinCapabilityAssets, error) {
+	assets, err := NewBuiltinCapabilityAssets()
+	if err != nil {
+		return nil, err
+	}
+	assets.sourceRoot, assets.cacheRoot = sourceRoot, cacheRoot
+	if _, err := assets.ReloadQuestionBanks(); err != nil {
+		return nil, err
+	}
+	return assets, nil
+}
+
+func (a *BuiltinCapabilityAssets) ReloadQuestionBanks() (QuestionBankCatalogSnapshot, error) {
+	if a == nil || strings.TrimSpace(a.sourceRoot) == "" || strings.TrimSpace(a.cacheRoot) == "" {
+		return QuestionBankCatalogSnapshot{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "能力题库目录未配置")
+	}
+	banks, catalog, err := loadQuestionBanks(a.sourceRoot, a.cacheRoot)
+	if err != nil {
+		return QuestionBankCatalogSnapshot{}, err
+	}
+	packages := make(map[string]CapabilityTaskPackageSnapshot)
+	presets := make(map[string]CapabilityRunPreset)
+	evaluationOptions := make([]CapabilityEvaluationOption, 0)
+	tasks := make(map[string]CapabilityTaskDefinition)
+	taskPackages := make(map[string]VersionedRef)
+	questions := make(map[string]QuestionBankQuestion)
+	currentBanks := make([]QuestionBankDescriptor, 0, len(catalog.Banks))
+	for _, bank := range banks {
+		packageSnapshot, bankPresets, bankOptions, bankTasks, err := buildQuestionBankCapabilityAssets(bank)
+		if err != nil {
+			catalog.Issues = append(catalog.Issues, QuestionBankLoadIssue{Directory: bank.descriptor.SourcePath, BankID: bank.manifest.ID, Message: err.Error()})
+			continue
+		}
+		packages[versionedRefKey(packageSnapshot.Package.Ref)] = packageSnapshot
+		for _, preset := range bankPresets {
+			presets[versionedRefKey(preset.Ref)] = preset
+		}
+		evaluationOptions = append(evaluationOptions, bankOptions...)
+		for index, task := range bankTasks {
+			key := versionedRefKey(task.Ref)
+			tasks[key] = task
+			taskPackages[key] = packageSnapshot.Package.Ref
+			questions[key] = bank.questions[index]
+		}
+		if !pathWithinQuestionBankCache(bank.descriptor.SourcePath, a.cacheRoot) {
+			currentBanks = append(currentBanks, bank.descriptor)
+		}
+	}
+	if len(packages) == 0 {
+		return QuestionBankCatalogSnapshot{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "没有可用的能力题库")
+	}
+	catalog.Banks = currentBanks
+	a.mu.Lock()
+	a.packages, a.presets, a.evaluationOptions, a.tasks, a.taskPackages, a.questions, a.questionBanks = packages, presets, evaluationOptions, tasks, taskPackages, questions, catalog
+	for _, snapshot := range packages {
+		a.packageSnapshot = snapshot
+		break
+	}
+	a.mu.Unlock()
+	return catalog, nil
+}
+
+func buildQuestionBankCapabilityAssets(bank loadedQuestionBank) (CapabilityTaskPackageSnapshot, []CapabilityRunPreset, []CapabilityEvaluationOption, []CapabilityTaskDefinition, error) {
+	implementation := "bank-" + bank.descriptor.ContentSHA256
+	packageRef := VersionedRef{ID: "capability.pack.bank." + bank.manifest.ID, SemanticVersion: bank.manifest.Version, ImplementationVersion: implementation}
+	tasks := make([]CapabilityTaskDefinition, len(bank.questions))
+	for index, question := range bank.questions {
+		scorer, err := NewBuiltinCapabilityScorer(question.ScorerKind)
+		if err != nil {
+			return CapabilityTaskPackageSnapshot{}, nil, nil, nil, err
+		}
+		maxInput, maxOutput, timeout, weight, risk := question.MaximumInputTokens, question.MaximumOutputTokens, question.TimeoutMillis, question.Weight, question.DisclosureRisk
+		if maxInput == 0 {
+			maxInput = 512
+		}
+		if maxOutput == 0 {
+			maxOutput = 128
+		}
+		if timeout == 0 {
+			timeout = auditSampleTimeoutMillis
+		}
+		if weight == 0 {
+			weight = 1
+		}
+		if risk == "" {
+			risk = DisclosureRiskLow
+		}
+		config := question.ScorerConfig
+		if len(config) == 0 {
+			config = json.RawMessage(`{}`)
+		}
+		tasks[index] = CapabilityTaskDefinition{
+			Ref:       VersionedRef{ID: "capability.task.bank." + bank.manifest.ID + "." + question.ID, SemanticVersion: bank.manifest.Version, ImplementationVersion: implementation},
+			Dimension: question.Dimension, Difficulty: question.Difficulty, Visibility: CapabilityTaskPublicFixed,
+			Modalities: []CapabilityModality{CapabilityModalityText}, Protocols: []Protocol{ProtocolMessages, ProtocolResponses, ProtocolChat, ProtocolGemini},
+			RequestProfiles: []string{"messages.standard.v1", "responses.standard.v1", "chat.standard.v1", "gemini.standard.v1"},
+			Generator:       VersionedRef{ID: "capability.generator.bank." + bank.manifest.ID, SemanticVersion: bank.manifest.Version, ImplementationVersion: implementation}, SeedRuleVersion: "question-bank-fixed-v1",
+			Scorer: scorer.Descriptor().Ref, ScorerKind: question.ScorerKind, ScorerConfig: config, ExpectedContract: json.RawMessage(`{"type":"json_value","reportDisclosure":"excluded"}`),
+			MaximumInputTokens: maxInput, MaximumOutputTokens: maxOutput, TimeoutMillis: timeout, Repetitions: 3, Weight: weight, DisclosureRisk: risk,
+		}
+	}
+	weights := bank.manifest.DimensionWeights
+	if len(weights) == 0 {
+		weights = make(map[CapabilityDimension]float64)
+		for _, dimension := range capabilityDimensions {
+			weights[dimension] = 1 / float64(len(capabilityDimensions))
+		}
+	}
+	packageSnapshot, err := NewCapabilityTaskPackageSnapshot(CapabilityTaskPackage{Ref: packageRef, Description: bank.manifest.Description, ScoringModel: VersionedRef{ID: "capability.aggregate.weighted", SemanticVersion: "1.0.0", ImplementationVersion: "builtin-1"}, DimensionWeights: weights, Tasks: tasks})
+	if err != nil {
+		return CapabilityTaskPackageSnapshot{}, nil, nil, nil, err
+	}
+	presets := make([]CapabilityRunPreset, 0, 11)
+	for _, item := range []struct {
+		mode        CapabilityPresetMode
+		repetitions int
+	}{{CapabilityPresetQuick, 1}, {CapabilityPresetStandard, 2}, {CapabilityPresetDeep, 3}} {
+		selected := make([]CapabilityPresetTask, len(tasks))
+		for i, task := range tasks {
+			selected[i] = CapabilityPresetTask{TaskID: task.Ref.ID, Repetitions: item.repetitions}
+		}
+		limits := capabilityLimitsForTasks(tasks, selected)
+		preset := CapabilityRunPreset{Ref: VersionedRef{ID: "capability.preset.bank." + bank.manifest.ID + "." + string(item.mode), SemanticVersion: bank.manifest.Version, ImplementationVersion: implementation}, Mode: item.mode, Package: packageRef, FormalEligible: item.mode != CapabilityPresetQuick, Tasks: selected, Limits: limits}
+		if _, err := PrepareCapabilityRun(preset, packageSnapshot); err != nil {
+			return CapabilityTaskPackageSnapshot{}, nil, nil, nil, err
+		}
+		presets = append(presets, preset)
+	}
+
+	labels := map[CapabilityDimension]string{
+		CapabilityMathLogic: "数学与逻辑", CapabilityCode: "代码", CapabilityInstructionFollowing: "指令遵循",
+		CapabilityToolUse: "工具使用", CapabilityLongContextMultiturn: "长上下文与多轮",
+		CapabilityKnowledgeFactuality: "知识与事实性", CapabilityRepeatability: "稳定性",
+	}
+	options := make([]CapabilityEvaluationOption, 0, len(capabilityDimensions)+1)
+	addOption := func(suffix, label string, dimension CapabilityDimension) error {
+		selected := make([]CapabilityPresetTask, 0, len(tasks))
+		for _, task := range tasks {
+			if dimension == "" || task.Dimension == dimension {
+				selected = append(selected, CapabilityPresetTask{TaskID: task.Ref.ID, Repetitions: 1})
+			}
+		}
+		if len(selected) == 0 {
+			return nil
+		}
+		preset := CapabilityRunPreset{
+			Ref:  VersionedRef{ID: "capability.preset.bank." + bank.manifest.ID + "." + suffix, SemanticVersion: bank.manifest.Version, ImplementationVersion: implementation},
+			Mode: CapabilityPresetQuick, Package: packageRef, FormalEligible: false, Tasks: selected,
+			Limits: capabilityLimitsForTasks(tasks, selected),
+		}
+		if _, err := PrepareCapabilityRun(preset, packageSnapshot); err != nil {
+			return err
+		}
+		presets = append(presets, preset)
+		options = append(options, CapabilityEvaluationOption{
+			ID: bank.manifest.ID + "." + suffix, BankID: bank.manifest.ID, BankName: bank.manifest.Name,
+			Label: label, Dimension: dimension, QuestionCount: len(selected), Preset: preset.Ref, Limits: preset.Limits,
+		})
+		return nil
+	}
+	if err := addOption("all", "综合能力", ""); err != nil {
+		return CapabilityTaskPackageSnapshot{}, nil, nil, nil, err
+	}
+	for _, dimension := range capabilityDimensions {
+		if err := addOption(string(dimension), labels[dimension], dimension); err != nil {
+			return CapabilityTaskPackageSnapshot{}, nil, nil, nil, err
+		}
+	}
+	return packageSnapshot, presets, options, tasks, nil
+}
+
+func capabilityLimitsForTasks(tasks []CapabilityTaskDefinition, selected []CapabilityPresetTask) CapabilityBudgetLimits {
+	definitions := make(map[string]CapabilityTaskDefinition, len(tasks))
+	for _, task := range tasks {
+		definitions[task.Ref.ID] = task
+	}
+	limits := CapabilityBudgetLimits{}
+	for _, selection := range selected {
+		task := definitions[selection.TaskID]
+		limits.Requests += selection.Repetitions
+		limits.InputTokens += int64(task.MaximumInputTokens * selection.Repetitions)
+		limits.OutputTokens += int64(task.MaximumOutputTokens * selection.Repetitions)
+	}
+	limits.TotalTokens = limits.InputTokens + limits.OutputTokens
+	return limits
 }
 
 func builtinCapabilityPreset(packageRef VersionedRef, mode CapabilityPresetMode, repetitions int) CapabilityRunPreset {
@@ -111,16 +331,52 @@ func (a *BuiltinCapabilityAssets) Catalog() AuditCapabilityAssetCatalog {
 	if a == nil {
 		return AuditCapabilityAssetCatalog{Available: false, Reason: "能力资产未初始化", Packages: []CapabilityTaskPackageSnapshot{}, Presets: []CapabilityRunPreset{}}
 	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	currentImplementations := make(map[string]bool)
+	for _, bank := range a.questionBanks.Banks {
+		currentImplementations["bank-"+bank.ContentSHA256] = true
+	}
+	presetIDs := make([]string, 0, len(a.presets))
+	for id, preset := range a.presets {
+		if strings.HasPrefix(preset.Ref.ImplementationVersion, "bank-") && !currentImplementations[preset.Ref.ImplementationVersion] {
+			continue
+		}
+		presetIDs = append(presetIDs, id)
+	}
+	sort.Strings(presetIDs)
 	presets := make([]CapabilityRunPreset, 0, len(a.presets))
-	for _, mode := range []CapabilityPresetMode{CapabilityPresetQuick, CapabilityPresetStandard, CapabilityPresetDeep} {
-		preset := a.presets["capability.preset.builtin."+string(mode)]
+	for _, id := range presetIDs {
+		preset := a.presets[id]
 		preset.Tasks = append([]CapabilityPresetTask(nil), preset.Tasks...)
 		presets = append(presets, preset)
 	}
+	evaluationOptions := make([]CapabilityEvaluationOption, 0, len(a.evaluationOptions))
+	for _, option := range a.evaluationOptions {
+		if currentImplementations[option.Preset.ImplementationVersion] {
+			evaluationOptions = append(evaluationOptions, option)
+		}
+	}
+	sort.Slice(evaluationOptions, func(i, j int) bool {
+		if evaluationOptions[i].BankName != evaluationOptions[j].BankName {
+			return evaluationOptions[i].BankName < evaluationOptions[j].BankName
+		}
+		return evaluationOptions[i].ID < evaluationOptions[j].ID
+	})
+	packageKeys := make([]string, 0, len(a.packages))
+	for key := range a.packages {
+		packageKeys = append(packageKeys, key)
+	}
+	sort.Strings(packageKeys)
+	packages := make([]CapabilityTaskPackageSnapshot, 0, len(packageKeys))
+	for _, key := range packageKeys {
+		packages = append(packages, a.packages[key])
+	}
 	return AuditCapabilityAssetCatalog{
-		Available: true,
-		Packages:  []CapabilityTaskPackageSnapshot{a.packageSnapshot},
-		Presets:   presets,
+		Available:         true,
+		Packages:          packages,
+		Presets:           presets,
+		EvaluationOptions: evaluationOptions,
 	}
 }
 
@@ -128,24 +384,45 @@ func (a *BuiltinCapabilityAssets) ResolvePreset(reference VersionedRef) (Capabil
 	if a == nil {
 		return CapabilityRunPreset{}, CapabilityRunPlan{}, false, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "能力资产未初始化")
 	}
-	preset, found := a.presets[strings.TrimSpace(reference.ID)]
-	if !found || preset.Ref != reference {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	preset, found := a.presets[versionedRefKey(reference)]
+	if !found {
 		return CapabilityRunPreset{}, CapabilityRunPlan{}, false, nil
 	}
-	plan, err := PrepareCapabilityRun(preset, a.packageSnapshot)
+	packageSnapshot, ok := a.packages[versionedRefKey(preset.Package)]
+	if !ok {
+		return CapabilityRunPreset{}, CapabilityRunPlan{}, false, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "能力预设引用的题库快照不可用")
+	}
+	plan, err := PrepareCapabilityRun(preset, packageSnapshot)
 	return preset, plan, true, err
 }
 
-func (a *BuiltinCapabilityAssets) Task(id string) (CapabilityTaskDefinition, bool) {
+func (a *BuiltinCapabilityAssets) Task(reference VersionedRef) (CapabilityTaskDefinition, bool) {
 	if a == nil {
 		return CapabilityTaskDefinition{}, false
 	}
-	for _, task := range a.packageSnapshot.Package.Tasks {
-		if task.Ref.ID == strings.TrimSpace(id) {
-			return task, true
-		}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	task, found := a.tasks[versionedRefKey(reference)]
+	return task, found
+}
+
+func (a *BuiltinCapabilityAssets) PackageForTask(taskRef VersionedRef) (CapabilityTaskPackageSnapshot, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	ref, found := a.taskPackages[versionedRefKey(taskRef)]
+	if !found {
+		return CapabilityTaskPackageSnapshot{}, false
 	}
-	return CapabilityTaskDefinition{}, false
+	snapshot, found := a.packages[versionedRefKey(ref)]
+	return snapshot, found
+}
+
+func (a *BuiltinCapabilityAssets) QuestionBankCatalog() QuestionBankCatalogSnapshot {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.questionBanks
 }
 
 func (a *BuiltinCapabilityAssets) Score(
@@ -183,7 +460,20 @@ func (a *BuiltinCapabilityAssets) GenerateInstance(
 	if !capabilityTaskSupportsTarget(task, target) {
 		return CapabilityTaskInstance{}, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "能力任务不支持当前协议、请求轮廓或思考档位")
 	}
-	prompt, expected, tools, err := generateBuiltinCapabilityInput(task.Dimension, seed)
+	a.mu.RLock()
+	key := versionedRefKey(task.Ref)
+	question, fromBank := a.questions[key]
+	packageRef := a.taskPackages[key]
+	a.mu.RUnlock()
+	var prompt string
+	var expected json.RawMessage
+	var tools []ToolDefinition
+	var err error
+	if fromBank {
+		prompt, expected, tools = question.Prompt, append(json.RawMessage(nil), question.ExpectedOutput...), append([]ToolDefinition(nil), question.Tools...)
+	} else {
+		prompt, expected, tools, err = generateBuiltinCapabilityInput(task.Dimension, seed)
+	}
 	if err != nil {
 		return CapabilityTaskInstance{}, err
 	}
@@ -201,7 +491,7 @@ func (a *BuiltinCapabilityAssets) GenerateInstance(
 	digest := sha256.Sum256(inputBytes)
 	instance := CapabilityTaskInstance{
 		InstanceID: runID + "." + target.ChannelID + "." + task.Ref.ID + "." + strconv.Itoa(repetition),
-		Package:    a.packageSnapshot.Package.Ref, Task: task.Ref, Dimension: task.Dimension, Seed: seed, Repetition: repetition,
+		Package:    packageRef, Task: task.Ref, Dimension: task.Dimension, Seed: seed, Repetition: repetition,
 		InputSHA256: hex.EncodeToString(digest[:]), ExpectedOutput: expected, Execution: execution, CreatedAt: createdAt,
 	}
 	if err := instance.Validate(); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -18,9 +19,22 @@ type AuditWorkloadValidator interface {
 	ValidateWorkload(AuditWorkload) error
 }
 
+type AuditJobDefinitionPreparer interface {
+	PrepareJobDefinition(AuditJobDefinition) (AuditJobDefinition, error)
+}
+
+type AuditModAnalysisController interface {
+	ImportManualModAnalysis(context.Context, string, json.RawMessage) (AuditModAnalysisRecord, error)
+	RerunModAnalysis(context.Context, AuditJob, AuditRun, string, AuditModBundle, json.RawMessage) (AuditModAnalysisRecord, error)
+}
+
 type AuditRuntimeCatalogProvider interface {
 	StrategyCatalog() []StrategyDescriptor
 	CapabilityCatalog() AuditCapabilityAssetCatalog
+}
+
+type QuestionBankReloader interface {
+	ReloadQuestionBanks() (QuestionBankCatalogSnapshot, error)
 }
 
 type AuditHTMLRenderer interface {
@@ -31,9 +45,18 @@ type AuditManagementService struct {
 	store         *AuditSQLiteStore
 	runController AuditRunController
 	renderer      AuditHTMLRenderer
+	mods          *AuditModManager
 	now           func() time.Time
 	newJobID      func() (string, error)
 	newArtifactID func() (string, error)
+}
+
+func (s *AuditManagementService) SetModManager(manager *AuditModManager) error {
+	if s == nil || manager == nil {
+		return contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "审计 Mod 管理器未初始化")
+	}
+	s.mods = manager
+	return nil
 }
 
 type AuditHTMLExport struct {
@@ -61,9 +84,11 @@ func (s *AuditManagementService) CreateJob(ctx context.Context, definition Audit
 	if err := s.validate(); err != nil {
 		return AuditJob{}, err
 	}
-	if err := s.validateWorkload(definition.Workload); err != nil {
+	prepared, err := s.prepareJobDefinition(definition)
+	if err != nil {
 		return AuditJob{}, err
 	}
+	definition = prepared
 	id, err := s.newJobID()
 	if err != nil {
 		return AuditJob{}, err
@@ -79,9 +104,11 @@ func (s *AuditManagementService) CreateJob(ctx context.Context, definition Audit
 }
 
 func (s *AuditManagementService) UpdateJob(ctx context.Context, id string, expectedRevision uint64, definition AuditJobDefinition) (AuditJob, error) {
-	if err := s.validateWorkload(definition.Workload); err != nil {
+	prepared, err := s.prepareJobDefinition(definition)
+	if err != nil {
 		return AuditJob{}, err
 	}
+	definition = prepared
 	job, err := s.requireJob(ctx, id)
 	if err != nil {
 		return AuditJob{}, err
@@ -141,6 +168,40 @@ func (s *AuditManagementService) StartManualRun(ctx context.Context, jobID strin
 	return s.runController.StartManual(ctx, job)
 }
 
+func (s *AuditManagementService) RetryJob(ctx context.Context, jobID string, expectedRevision uint64) (AuditJob, AuditRun, error) {
+	original, err := s.requireJob(ctx, jobID)
+	if err != nil {
+		return AuditJob{}, AuditRun{}, err
+	}
+	if original.Revision != expectedRevision {
+		return AuditJob{}, AuditRun{}, auditRevisionConflict(original.Revision, expectedRevision)
+	}
+	if !original.Status.Valid() || original.Status == AuditJobDeleted || original.Status == AuditJobRunning {
+		return AuditJob{}, AuditRun{}, contractError(ErrorCodeConflict, ErrorCategoryRequest, fmt.Sprintf("状态 %q 的审计任务不能重新运行", original.Status))
+	}
+	if s.runController == nil {
+		return AuditJob{}, AuditRun{}, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "审计 Runner 尚未配置，不能重新运行")
+	}
+	now := s.now().UTC()
+	definition := AuditJobDefinition{
+		Name: original.Name, Workload: original.Workload, Targets: append([]AuditJobTarget(nil), original.Targets...),
+		Schedule: cloneAuditSchedule(original.Schedule), Budget: original.Budget, Analyzer: cloneAuditAnalysisTarget(original.Analyzer),
+	}
+	definition.Schedule.StartAt = now
+	definition.Schedule.EndAt = nil
+	definition.Schedule.DurationMs = 0
+	definition.Schedule.OneShot = true
+	created, err := s.CreateJob(ctx, definition, AuditJobEnabled)
+	if err != nil {
+		return AuditJob{}, AuditRun{}, err
+	}
+	run, err := s.runController.StartManual(ctx, created)
+	if err != nil {
+		return created, AuditRun{}, err
+	}
+	return created, run, nil
+}
+
 func (s *AuditManagementService) CancelRun(ctx context.Context, runID string) (AuditRun, error) {
 	run, err := s.requireRun(ctx, runID)
 	if err != nil {
@@ -166,6 +227,43 @@ func (s *AuditManagementService) ListRuns(ctx context.Context, options AuditRunL
 	return s.store.ListRuns(ctx, options)
 }
 
+func (s *AuditManagementService) PresentRun(ctx context.Context, run AuditRun) (AuditRunPresentation, error) {
+	view, err := NewAuditRunPresentation(run)
+	if err != nil {
+		return AuditRunPresentation{}, err
+	}
+	if len(run.Targets) != 1 {
+		return view, nil
+	}
+	result, found, err := s.store.GetSingleRunResult(ctx, run.ID)
+	if err != nil {
+		return AuditRunPresentation{}, err
+	}
+	if found {
+		view.Result = &result
+	}
+	return view, view.Validate()
+}
+
+func (s *AuditManagementService) ListLatestRunPresentations(ctx context.Context, jobIDs []string) (map[string]AuditRunPresentation, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	runs, err := s.store.ListLatestRunsForJobs(ctx, jobIDs)
+	if err != nil {
+		return nil, err
+	}
+	views := make(map[string]AuditRunPresentation, len(runs))
+	for jobID, run := range runs {
+		view, err := s.PresentRun(ctx, run)
+		if err != nil {
+			return nil, err
+		}
+		views[jobID] = view
+	}
+	return views, nil
+}
+
 func (s *AuditManagementService) GetStrategyCatalog() AuditStrategyCatalogResponse {
 	response := AuditStrategyCatalogResponse{Available: false, Strategies: []StrategyDescriptor{}}
 	provider, ok := s.runController.(AuditRuntimeCatalogProvider)
@@ -187,6 +285,115 @@ func (s *AuditManagementService) GetCapabilityCatalog() AuditCapabilityCatalogRe
 		response.Catalog = provider.CapabilityCatalog()
 	}
 	return response
+}
+
+func (s *AuditManagementService) ReloadQuestionBanks() (QuestionBankCatalogSnapshot, error) {
+	reloader, ok := s.runController.(QuestionBankReloader)
+	if !ok {
+		return QuestionBankCatalogSnapshot{}, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "能力题库不支持重载")
+	}
+	return reloader.ReloadQuestionBanks()
+}
+
+func (s *AuditManagementService) GetModCatalog() (AuditModCatalogSnapshot, error) {
+	if err := s.validateMods(); err != nil {
+		return AuditModCatalogSnapshot{}, err
+	}
+	return s.mods.Snapshot(), nil
+}
+
+func (s *AuditManagementService) GetModExamples() ([]AuditModExample, error) {
+	return BuiltinAuditModExamples()
+}
+
+func (s *AuditManagementService) ReloadMods(ctx context.Context) (AuditModCatalogSnapshot, error) {
+	if err := s.validateMods(); err != nil {
+		return AuditModCatalogSnapshot{}, err
+	}
+	return s.mods.Reload(ctx)
+}
+
+func (s *AuditManagementService) GetMod(id string) (AuditModEditable, error) {
+	if err := s.validateMods(); err != nil {
+		return AuditModEditable{}, err
+	}
+	return s.mods.Editable(id)
+}
+
+func (s *AuditManagementService) SaveMod(ctx context.Context, requestedID string, request AuditModWriteRequest) (AuditModEditable, error) {
+	if err := s.validateMods(); err != nil {
+		return AuditModEditable{}, err
+	}
+	return s.mods.Save(ctx, requestedID, request)
+}
+
+func (s *AuditManagementService) ImportMod(ctx context.Context, request AuditModImportRequest) (AuditModEditable, error) {
+	if err := s.validateMods(); err != nil {
+		return AuditModEditable{}, err
+	}
+	return s.mods.Import(ctx, request)
+}
+
+func (s *AuditManagementService) ListModAnalyses(ctx context.Context, options AuditModAnalysisListOptions) (AuditModAnalysisPage, error) {
+	if err := s.validate(); err != nil {
+		return AuditModAnalysisPage{}, err
+	}
+	return s.store.ListModAnalyses(ctx, options)
+}
+
+func (s *AuditManagementService) ImportManualModAnalysis(
+	ctx context.Context,
+	analysisID string,
+	result json.RawMessage,
+) (AuditModAnalysisRecord, error) {
+	controller, ok := s.runController.(AuditModAnalysisController)
+	if !ok {
+		return AuditModAnalysisRecord{}, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "Mod 分析控制器尚未配置")
+	}
+	return controller.ImportManualModAnalysis(ctx, analysisID, result)
+}
+
+func (s *AuditManagementService) RerunModAnalysis(ctx context.Context, analysisID string) (AuditModAnalysisRecord, error) {
+	if err := s.validateMods(); err != nil {
+		return AuditModAnalysisRecord{}, err
+	}
+	previous, found, err := s.store.GetModAnalysis(ctx, strings.TrimSpace(analysisID))
+	if err != nil {
+		return AuditModAnalysisRecord{}, err
+	}
+	if !found {
+		return AuditModAnalysisRecord{}, auditNotFound("Mod 分析", analysisID)
+	}
+	if !previous.Status.Terminal() {
+		return AuditModAnalysisRecord{}, contractError(ErrorCodeConflict, ErrorCategoryRequest, "只有已完成或失败的 Mod 分析可以重新分析")
+	}
+	run, err := s.requireRun(ctx, previous.RunID)
+	if err != nil {
+		return AuditModAnalysisRecord{}, err
+	}
+	job, err := s.requireJob(ctx, run.JobID)
+	if err != nil {
+		return AuditModAnalysisRecord{}, err
+	}
+	if previous.Analyzer != nil {
+		job.Analyzer = &AuditAnalysisTarget{
+			ChannelID: previous.Analyzer.ChannelID, ChannelKind: previous.Analyzer.ChannelKind,
+			Protocol: previous.Analyzer.Protocol, Model: previous.Analyzer.Model, Thinking: previous.Analyzer.Thinking,
+			RequestProfile: previous.Analyzer.RequestProfile,
+		}
+	}
+	bundle, found, err := s.mods.GetStored(ctx, previous.Mod)
+	if err != nil {
+		return AuditModAnalysisRecord{}, err
+	}
+	if !found {
+		return AuditModAnalysisRecord{}, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "重新分析所需的冻结 Mod 版本不存在")
+	}
+	controller, ok := s.runController.(AuditModAnalysisController)
+	if !ok {
+		return AuditModAnalysisRecord{}, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "Mod 分析控制器尚未配置")
+	}
+	return controller.RerunModAnalysis(ctx, job, run, previous.TargetID, bundle, previous.Input)
 }
 
 func (s *AuditManagementService) GetChannelSummary(ctx context.Context, channelID string, channelKind ChannelKind) (AuditChannelSummary, error) {
@@ -280,11 +487,31 @@ func (s *AuditManagementService) validate() error {
 	return nil
 }
 
+func (s *AuditManagementService) validateMods() error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if s.mods == nil {
+		return contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "审计 Mod 管理器尚未配置")
+	}
+	return nil
+}
+
 func (s *AuditManagementService) validateWorkload(workload AuditWorkload) error {
 	if validator, ok := s.runController.(AuditWorkloadValidator); ok {
 		return validator.ValidateWorkload(workload)
 	}
 	return nil
+}
+
+func (s *AuditManagementService) prepareJobDefinition(definition AuditJobDefinition) (AuditJobDefinition, error) {
+	if preparer, ok := s.runController.(AuditJobDefinitionPreparer); ok {
+		return preparer.PrepareJobDefinition(definition)
+	}
+	if err := s.validateWorkload(definition.Workload); err != nil {
+		return AuditJobDefinition{}, err
+	}
+	return definition, nil
 }
 
 func (s *AuditManagementService) requireJob(ctx context.Context, id string) (AuditJob, error) {

@@ -10,11 +10,12 @@ import (
 )
 
 type AuditJobDefinition struct {
-	Name     string           `json:"name"`
-	Workload AuditWorkload    `json:"workload"`
-	Targets  []AuditJobTarget `json:"targets"`
-	Schedule AuditSchedule    `json:"schedule"`
-	Budget   AuditRunBudget   `json:"budget"`
+	Name     string               `json:"name"`
+	Workload AuditWorkload        `json:"workload"`
+	Targets  []AuditJobTarget     `json:"targets"`
+	Schedule AuditSchedule        `json:"schedule"`
+	Budget   AuditRunBudget       `json:"budget"`
+	Analyzer *AuditAnalysisTarget `json:"analyzer,omitempty"`
 }
 
 func (d AuditJobDefinition) Validate() error {
@@ -36,6 +37,11 @@ func (d AuditJobDefinition) Validate() error {
 	}
 	if err := d.Schedule.Validate(); err != nil {
 		return err
+	}
+	if d.Analyzer != nil {
+		if err := d.Analyzer.Validate(); err != nil {
+			return err
+		}
 	}
 	return d.Budget.Validate()
 }
@@ -76,7 +82,8 @@ func CreateAuditJob(id string, definition AuditJobDefinition, initialStatus Audi
 	job := AuditJob{
 		ID: id, Name: definition.Name, Revision: 1, Status: initialStatus,
 		Workload: definition.Workload, Targets: append([]AuditJobTarget(nil), definition.Targets...),
-		Schedule: cloneAuditSchedule(definition.Schedule), Budget: definition.Budget, CreatedAt: createdAt, UpdatedAt: createdAt,
+		Schedule: cloneAuditSchedule(definition.Schedule), Budget: definition.Budget, Analyzer: cloneAuditAnalysisTarget(definition.Analyzer),
+		CreatedAt: createdAt, UpdatedAt: createdAt,
 	}
 	if err := job.Validate(); err != nil {
 		return AuditJob{}, err
@@ -123,12 +130,21 @@ func UpdateAuditJob(current AuditJob, expectedRevision uint64, definition AuditJ
 	updated.Targets = append([]AuditJobTarget(nil), definition.Targets...)
 	updated.Schedule = cloneAuditSchedule(definition.Schedule)
 	updated.Budget = definition.Budget
+	updated.Analyzer = cloneAuditAnalysisTarget(definition.Analyzer)
 	updated.Revision = nextRevision
 	updated.UpdatedAt = updatedAt.UTC()
 	if err := updated.Validate(); err != nil {
 		return AuditJob{}, err
 	}
 	return updated, nil
+}
+
+func cloneAuditAnalysisTarget(value *AuditAnalysisTarget) *AuditAnalysisTarget {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func TransitionAuditJob(current AuditJob, expectedRevision uint64, nextStatus AuditJobStatus, changedAt time.Time) (AuditJob, error) {

@@ -226,12 +226,18 @@ func TestAuditSQLiteSchemaMigratesPresentationIndex(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT value FROM audit_schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != "2" {
+	if version != "3" {
 		t.Fatalf("迁移后的 Schema 版本 = %q", version)
 	}
 	var indexTable string
 	if err := store.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'audit_report_index'`).Scan(&indexTable); err != nil {
 		t.Fatal(err)
+	}
+	for _, table := range []string{"audit_mod_versions", "audit_mod_analyses"} {
+		var actual string
+		if err := store.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&actual); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

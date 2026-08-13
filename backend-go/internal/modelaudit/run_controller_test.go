@@ -56,6 +56,36 @@ func TestBuiltinAuditRunControllerCapabilityPresetsAndBudget(t *testing.T) {
 	}
 }
 
+func TestBuiltinAuditRunControllerStopsSystematicCapabilityFailure(t *testing.T) {
+	store, _, controller, job := auditRunControllerFixture(t, "https://fixture.invalid", capabilityBadGatewayDoer{})
+	job = updateAuditJobForCapability(t, store, job, CapabilityPresetQuick, 100)
+	started, err := controller.StartManual(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := waitForStoredAuditRun(t, store, started.ID)
+	if terminal.Status != AuditRunFailed || terminal.StopReason != AuditRunStopFailure || terminal.Usage.Requests != capabilitySystemFailureConsecutiveThreshold {
+		t.Fatalf("系统性能力故障终态 = %#v", terminal)
+	}
+	if !strings.Contains(terminal.Failure, "HTTP 502 Bad Gateway") {
+		t.Fatalf("系统性能力故障原因未保留安全摘要: %q", terminal.Failure)
+	}
+	summary := waitForAuditSummaryReport(t, store, job.Targets[0], terminal.FinishedAt.Add(time.Minute))
+	if summary.PrimaryStatus != AuditSummaryFailed || summary.Capability == nil {
+		t.Fatalf("系统性能力故障摘要 = %#v", summary)
+	}
+	detail, found, err := store.GetReportDetail(context.Background(), summary.ReportID, AuditReportDetailOptions{
+		Now: terminal.FinishedAt.Add(time.Minute), Samples: AuditPageRequest{Page: 1, PageSize: 10}, StrategyResults: AuditPageRequest{Page: 1, PageSize: 10},
+	})
+	if err != nil || !found {
+		t.Fatalf("读取系统性能力故障报告: found=%v err=%v", found, err)
+	}
+	if detail.Detail.Report.Capability == nil || detail.Detail.Report.Capability.Counts.ExecutionFailed != capabilitySystemFailureConsecutiveThreshold || len(detail.Detail.Report.Capability.Reasons) == 0 ||
+		!strings.Contains(strings.Join(detail.Detail.Report.Capability.Reasons, " "), "HTTP 502 Bad Gateway") {
+		t.Fatalf("能力故障报告未展示具体原因: %#v", detail.Detail.Report.Capability)
+	}
+}
+
 func TestAuditManagementCatalogAndManualRunUseAvailableAssets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -160,6 +190,35 @@ func TestBuiltinAuditRunControllerCompletesIdentityRunAndReport(t *testing.T) {
 		t.Fatalf("完成后租约: found=%v err=%v", found, err)
 	}
 	_ = service
+}
+
+func TestBuiltinAuditRunControllerKeepsPartialIdentityEvidence(t *testing.T) {
+	store, _, controller, job := auditRunControllerFixture(t, "https://fixture.invalid", &identityPartialFailureDoer{})
+	started, err := controller.StartManual(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := waitForStoredAuditRun(t, store, started.ID)
+	if terminal.Status != AuditRunCompleted || terminal.Usage.Requests != 2 {
+		t.Fatalf("部分身份证据运行终态 = %#v", terminal)
+	}
+	summary := waitForAuditSummaryReport(t, store, job.Targets[0], terminal.FinishedAt.Add(time.Minute))
+	if summary.PrimaryStatus != AuditSummaryInsufficientEvidence || summary.Identity == nil {
+		t.Fatalf("部分身份证据摘要 = %#v", summary)
+	}
+	detail, found, err := store.GetReportDetail(context.Background(), summary.ReportID, AuditReportDetailOptions{
+		Now: terminal.FinishedAt.Add(time.Minute), Samples: AuditPageRequest{Page: 1, PageSize: 10}, StrategyResults: AuditPageRequest{Page: 1, PageSize: 10},
+	})
+	if err != nil || !found {
+		t.Fatalf("读取部分身份报告: found=%v err=%v", found, err)
+	}
+	reasons := make([]string, 0, len(detail.Detail.Report.Identity.Signals))
+	for _, signal := range detail.Detail.Report.Identity.Signals {
+		reasons = append(reasons, signal.Reason)
+	}
+	if !strings.Contains(strings.Join(reasons, " "), "HTTP 504 Gateway Timeout") {
+		t.Fatalf("身份报告未展示失败样本原因: %#v", detail.Detail.Report.Identity.Signals)
+	}
 }
 
 func TestBuiltinAuditRunControllerCancelsActiveRequest(t *testing.T) {
@@ -314,6 +373,41 @@ func updateAuditJobForCapability(
 }
 
 type capabilityFixtureDoer struct{}
+
+type capabilityBadGatewayDoer struct{}
+
+type identityPartialFailureDoer struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (d *identityPartialFailureDoer) Do(request *http.Request) (*http.Response, error) {
+	d.mu.Lock()
+	d.calls++
+	call := d.calls
+	d.mu.Unlock()
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+	if call == 1 {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: header,
+			Body: io.NopCloser(strings.NewReader(`{"id":"resp-audit","model":"gpt-5.6-sol","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`)), Request: request,
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusGatewayTimeout, Header: header,
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"sensitive timeout detail"}}`)), Request: request,
+	}, nil
+}
+
+func (capabilityBadGatewayDoer) Do(request *http.Request) (*http.Response, error) {
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+	return &http.Response{
+		StatusCode: http.StatusBadGateway, Header: header,
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"sensitive upstream detail","type":"upstream_error"}}`)), Request: request,
+	}, nil
+}
 
 func (capabilityFixtureDoer) Do(request *http.Request) (*http.Response, error) {
 	body, err := io.ReadAll(request.Body)

@@ -34,12 +34,13 @@ const (
 	SignalModeDifference      IdentitySignalKind = "mode_difference"
 	SignalMetadataConsistency IdentitySignalKind = "metadata_consistency"
 	SignalVariationStability  IdentitySignalKind = "variation_stability"
+	SignalCustomMod           IdentitySignalKind = "custom_mod"
 )
 
 func (k IdentitySignalKind) Valid() bool {
 	switch k {
 	case SignalJuiceBehavior, SignalRewriteBehavior, SignalSyntheticCoverage, SignalProbabilityBehavior,
-		SignalModeDifference, SignalMetadataConsistency, SignalVariationStability:
+		SignalModeDifference, SignalMetadataConsistency, SignalVariationStability, SignalCustomMod:
 		return true
 	default:
 		return false

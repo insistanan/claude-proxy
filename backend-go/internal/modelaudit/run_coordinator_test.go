@@ -160,4 +160,14 @@ func TestPrepareAuditRunFinishRestoresScheduleState(t *testing.T) {
 	if coordination.Job.Status != AuditJobExpired {
 		t.Fatalf("到期运行完成后的任务状态 = %q", coordination.Job.Status)
 	}
+
+	start.Job.Schedule.EndAt = nil
+	start.Job.Schedule.OneShot = true
+	coordination, err = PrepareAuditRunFinish(start.Job, start.Job.Revision, run, start.Lease, finishedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coordination.Job.Status != AuditJobExpired {
+		t.Fatalf("单次运行完成后的任务状态 = %q", coordination.Job.Status)
+	}
 }

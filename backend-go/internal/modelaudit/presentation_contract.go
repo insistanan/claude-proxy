@@ -161,6 +161,8 @@ type AuditCapabilitySummary struct {
 	IndexInterval    *CapabilityConfidenceInterval `json:"indexInterval,omitempty"`
 	Coverage         float64                       `json:"coverage"`
 	ScoredDimensions int                           `json:"scoredDimensions"`
+	Dimension        CapabilityDimension           `json:"dimension,omitempty"`
+	Score            *float64                      `json:"score,omitempty"`
 }
 
 func SummarizeAuditCapability(report CapabilityReport) (AuditCapabilitySummary, error) {
@@ -175,6 +177,15 @@ func SummarizeAuditCapability(report CapabilityReport) (AuditCapabilitySummary, 
 		interval := *report.IndexInterval
 		summary.IndexInterval = &interval
 	}
+	if report.ScoredDimensions == 1 {
+		for _, dimension := range report.Dimensions {
+			if dimension.Score != nil {
+				summary.Dimension = dimension.Dimension
+				summary.Score = cloneFloatPointer(dimension.Score)
+				break
+			}
+		}
+	}
 	return summary, summary.Validate()
 }
 
@@ -184,6 +195,12 @@ func (s AuditCapabilitySummary) Validate() error {
 	}
 	if s.Index != nil && (!finiteNumber(*s.Index) || *s.Index < 0 || *s.Index > 100) {
 		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计能力摘要指数无效")
+	}
+	if s.Dimension != "" && !s.Dimension.Valid() {
+		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计能力摘要维度无效")
+	}
+	if s.Score != nil && (s.Dimension == "" || !finiteNumber(*s.Score) || *s.Score < 0 || *s.Score > 100) {
+		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计能力摘要单项分数无效")
 	}
 	if s.IndexInterval != nil {
 		if err := s.IndexInterval.Validate(); err != nil {
@@ -415,20 +432,56 @@ func (s AuditChannelSummary) Validate() error {
 }
 
 type AuditRunPresentation struct {
-	ID            string             `json:"id"`
-	JobID         string             `json:"jobId"`
-	JobRevision   uint64             `json:"jobRevision"`
-	Trigger       AuditRunTrigger    `json:"trigger"`
-	ScheduledFor  *time.Time         `json:"scheduledFor,omitempty"`
-	Status        AuditRunStatus     `json:"status"`
-	StopReason    AuditRunStopReason `json:"stopReason,omitempty"`
-	Budget        AuditRunBudget     `json:"budget"`
-	Usage         AuditRunUsage      `json:"usage"`
-	TargetCount   int                `json:"targetCount"`
-	CreatedAt     time.Time          `json:"createdAt"`
-	StartedAt     *time.Time         `json:"startedAt,omitempty"`
-	FinishedAt    *time.Time         `json:"finishedAt,omitempty"`
-	FailureHidden bool               `json:"failureHidden"`
+	ID             string             `json:"id"`
+	JobID          string             `json:"jobId"`
+	JobRevision    uint64             `json:"jobRevision"`
+	Trigger        AuditRunTrigger    `json:"trigger"`
+	ScheduledFor   *time.Time         `json:"scheduledFor,omitempty"`
+	Status         AuditRunStatus     `json:"status"`
+	StopReason     AuditRunStopReason `json:"stopReason,omitempty"`
+	Budget         AuditRunBudget     `json:"budget"`
+	Usage          AuditRunUsage      `json:"usage"`
+	TargetCount    int                `json:"targetCount"`
+	CreatedAt      time.Time          `json:"createdAt"`
+	StartedAt      *time.Time         `json:"startedAt,omitempty"`
+	FinishedAt     *time.Time         `json:"finishedAt,omitempty"`
+	FailureHidden  bool               `json:"failureHidden"`
+	FailureMessage string             `json:"failureMessage,omitempty"`
+	Result         *AuditRunResult    `json:"result,omitempty"`
+}
+
+type AuditRunResult struct {
+	ReportID     string                  `json:"reportId"`
+	ResultStatus AuditReportResultStatus `json:"resultStatus"`
+	Capability   *AuditCapabilitySummary `json:"capability,omitempty"`
+	ReportedAt   time.Time               `json:"reportedAt"`
+}
+
+func NewAuditRunResult(report AuditTargetReport) (AuditRunResult, error) {
+	if err := report.Validate(); err != nil {
+		return AuditRunResult{}, err
+	}
+	result := AuditRunResult{
+		ReportID: report.ID, ResultStatus: report.ResultStatus, ReportedAt: report.CreatedAt,
+	}
+	if report.Capability != nil {
+		capability, err := SummarizeAuditCapability(*report.Capability)
+		if err != nil {
+			return AuditRunResult{}, err
+		}
+		result.Capability = &capability
+	}
+	return result, result.Validate()
+}
+
+func (r AuditRunResult) Validate() error {
+	if !validAuditEntityID(r.ReportID) || !r.ResultStatus.Valid() || r.ReportedAt.IsZero() {
+		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计运行结果摘要无效")
+	}
+	if r.Capability != nil {
+		return r.Capability.Validate()
+	}
+	return nil
 }
 
 func NewAuditRunPresentation(run AuditRun) (AuditRunPresentation, error) {
@@ -440,6 +493,7 @@ func NewAuditRunPresentation(run AuditRun) (AuditRunPresentation, error) {
 		ScheduledFor: cloneTimePointer(run.ScheduledFor), Status: run.Status, StopReason: run.StopReason,
 		Budget: run.Budget, Usage: run.Usage, TargetCount: len(run.Targets), CreatedAt: run.CreatedAt,
 		StartedAt: cloneTimePointer(run.StartedAt), FinishedAt: cloneTimePointer(run.FinishedAt), FailureHidden: run.Failure != "",
+		FailureMessage: strings.TrimSpace(run.Failure),
 	}
 	return view, view.Validate()
 }
@@ -465,14 +519,23 @@ func (v AuditRunPresentation) Validate() error {
 	if v.Status.Terminal() != (v.FinishedAt != nil) {
 		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计运行展示视图终态时间不一致")
 	}
+	if v.Result != nil {
+		if err := v.Result.Validate(); err != nil {
+			return err
+		}
+		if v.Result.ReportedAt.Before(v.CreatedAt) {
+			return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计运行结果早于运行创建时间")
+		}
+	}
 	return nil
 }
 
 type AuditReportDetail struct {
-	Schema  VersionedRef         `json:"schema"`
-	Summary AuditChannelSummary  `json:"summary"`
-	Run     AuditRunPresentation `json:"run"`
-	Report  AuditTargetReport    `json:"report"`
+	Schema       VersionedRef         `json:"schema"`
+	WorkloadKind AuditWorkloadKind    `json:"workloadKind"`
+	Summary      AuditChannelSummary  `json:"summary"`
+	Run          AuditRunPresentation `json:"run"`
+	Report       AuditTargetReport    `json:"report"`
 }
 
 func (d AuditReportDetail) Validate() error {

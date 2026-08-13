@@ -113,6 +113,46 @@ func (s *AuditSQLiteStore) GetTargetReport(ctx context.Context, id string) (Audi
 	return s.getTargetReportLocked(ctx, id)
 }
 
+// GetSingleRunResult 仅为单目标运行返回结果，避免多目标审计报告的语义混淆。
+func (s *AuditSQLiteStore) GetSingleRunResult(ctx context.Context, runID string) (AuditRunResult, bool, error) {
+	if err := s.lockOpen(); err != nil {
+		return AuditRunResult{}, false, err
+	}
+	defer s.mu.RUnlock()
+	if !validAuditEntityID(runID) {
+		return AuditRunResult{}, false, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计运行 ID 无效")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT report_id FROM audit_report_index
+		WHERE run_id = ? ORDER BY reported_at DESC, report_id ASC LIMIT 2`, runID)
+	if err != nil {
+		return AuditRunResult{}, false, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "查询审计运行报告失败", err)
+	}
+	defer rows.Close()
+	reportIDs := make([]string, 0, 2)
+	for rows.Next() {
+		var reportID string
+		if err := rows.Scan(&reportID); err != nil {
+			return AuditRunResult{}, false, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "读取审计运行报告失败", err)
+		}
+		reportIDs = append(reportIDs, reportID)
+	}
+	if err := rows.Err(); err != nil {
+		return AuditRunResult{}, false, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "遍历审计运行报告失败", err)
+	}
+	if len(reportIDs) != 1 {
+		return AuditRunResult{}, false, nil
+	}
+	report, found, err := s.getTargetReportLocked(ctx, reportIDs[0])
+	if err != nil || !found {
+		return AuditRunResult{}, false, err
+	}
+	result, err := NewAuditRunResult(report)
+	if err != nil {
+		return AuditRunResult{}, false, err
+	}
+	return result, true, nil
+}
+
 func (s *AuditSQLiteStore) GetLatestChannelSummary(ctx context.Context, channelID string, channelKind ChannelKind, now time.Time) (AuditChannelSummary, error) {
 	if err := s.lockOpen(); err != nil {
 		return AuditChannelSummary{}, err
@@ -164,6 +204,13 @@ func (s *AuditSQLiteStore) GetReportDetail(ctx context.Context, reportID string,
 	if err != nil {
 		return AuditReportDetailResult{}, false, err
 	}
+	job, err := scanAuditJob(s.db.QueryRowContext(ctx, `SELECT revision, status, job_json FROM audit_jobs WHERE id = ?`, report.JobID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AuditReportDetailResult{}, false, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "审计详情报告引用的任务不存在")
+	}
+	if err != nil {
+		return AuditReportDetailResult{}, false, err
+	}
 	requested := report.Target.Requested
 	activeRunID, activeRunCount, err := s.activeChannelRunsLocked(ctx, requested.ChannelID, requested.ChannelKind)
 	if err != nil {
@@ -185,10 +232,11 @@ func (s *AuditSQLiteStore) GetReportDetail(ctx context.Context, reportID string,
 		return AuditReportDetailResult{}, false, err
 	}
 	detail := AuditReportDetail{
-		Schema:  VersionedRef{ID: "audit.report-detail", SemanticVersion: "1.0.0", ImplementationVersion: "builtin-1"},
-		Summary: summary,
-		Run:     runView,
-		Report:  report,
+		Schema:       VersionedRef{ID: "audit.report-detail", SemanticVersion: "1.0.0", ImplementationVersion: "builtin-1"},
+		WorkloadKind: job.Workload.Kind,
+		Summary:      summary,
+		Run:          runView,
+		Report:       report,
 	}
 	samples, err := s.listEvidenceMetadataLocked(ctx, AuditEvidenceListOptions{
 		Page: options.Samples, RunID: report.RunID, TargetID: report.Target.TargetID, Kind: AuditStoredSample,

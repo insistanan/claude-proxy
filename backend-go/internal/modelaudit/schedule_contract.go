@@ -47,6 +47,14 @@ func (w AuditWorkload) Validate() error {
 			if !stableIDPattern.MatchString(selection.StrategyID) {
 				return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "身份审计策略 ID 无效")
 			}
+			if selection.Ref != nil {
+				if selection.Ref.ID != selection.StrategyID {
+					return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "身份审计策略 ID 与冻结引用不一致")
+				}
+				if err := selection.Ref.Validate("身份审计冻结策略"); err != nil {
+					return err
+				}
+			}
 			if _, duplicate := seen[selection.StrategyID]; duplicate {
 				return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, fmt.Sprintf("身份审计策略 %q 重复", selection.StrategyID))
 			}
@@ -83,6 +91,26 @@ type AuditJobTarget struct {
 	RequestProfile string        `json:"requestProfile"`
 }
 
+type AuditAnalysisTarget struct {
+	ChannelID      string        `json:"channelId"`
+	ChannelKind    ChannelKind   `json:"channelKind"`
+	Protocol       Protocol      `json:"protocol"`
+	Model          string        `json:"model"`
+	Thinking       ThinkingLevel `json:"thinking"`
+	RequestProfile string        `json:"requestProfile"`
+}
+
+func (t AuditAnalysisTarget) Validate() error {
+	if strings.TrimSpace(t.ChannelID) == "" || !t.ChannelKind.Valid() || !t.Protocol.Valid() || t.Protocol.ChannelKind() != t.ChannelKind ||
+		strings.TrimSpace(t.Model) == "" || !t.Thinking.Valid() || strings.TrimSpace(t.RequestProfile) == "" {
+		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计任务分析模型目标无效")
+	}
+	if t.Protocol == ProtocolImages {
+		return contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "审计结果分析模型必须使用文本协议")
+	}
+	return nil
+}
+
 func (t AuditJobTarget) Validate() error {
 	if !validAuditEntityID(t.ID) || !validAuditEntityID(t.ChannelID) || !t.ChannelKind.Valid() || !t.Protocol.Valid() ||
 		t.Protocol.ChannelKind() != t.ChannelKind || !t.Thinking.Valid() || !stableIDPattern.MatchString(t.RequestProfile) ||
@@ -99,6 +127,7 @@ type AuditSchedule struct {
 	IntervalMs int64      `json:"intervalMs"`
 	TimeZone   string     `json:"timeZone"`
 	JitterMs   int64      `json:"jitterMs"`
+	OneShot    bool       `json:"oneShot,omitempty"`
 }
 
 func (s AuditSchedule) Validate() error {
@@ -180,17 +209,18 @@ func (s AuditJobStatus) Valid() bool {
 }
 
 type AuditJob struct {
-	ID        string           `json:"id"`
-	Name      string           `json:"name"`
-	Revision  uint64           `json:"revision"`
-	Status    AuditJobStatus   `json:"status"`
-	Workload  AuditWorkload    `json:"workload"`
-	Targets   []AuditJobTarget `json:"targets"`
-	Schedule  AuditSchedule    `json:"schedule"`
-	Budget    AuditRunBudget   `json:"budget"`
-	CreatedAt time.Time        `json:"createdAt"`
-	UpdatedAt time.Time        `json:"updatedAt"`
-	DeletedAt *time.Time       `json:"deletedAt,omitempty"`
+	ID        string               `json:"id"`
+	Name      string               `json:"name"`
+	Revision  uint64               `json:"revision"`
+	Status    AuditJobStatus       `json:"status"`
+	Workload  AuditWorkload        `json:"workload"`
+	Targets   []AuditJobTarget     `json:"targets"`
+	Schedule  AuditSchedule        `json:"schedule"`
+	Budget    AuditRunBudget       `json:"budget"`
+	Analyzer  *AuditAnalysisTarget `json:"analyzer,omitempty"`
+	CreatedAt time.Time            `json:"createdAt"`
+	UpdatedAt time.Time            `json:"updatedAt"`
+	DeletedAt *time.Time           `json:"deletedAt,omitempty"`
 }
 
 func (j AuditJob) Validate() error {
@@ -221,6 +251,11 @@ func (j AuditJob) Validate() error {
 	if err := j.Schedule.Validate(); err != nil {
 		return err
 	}
+	if j.Analyzer != nil {
+		if err := j.Analyzer.Validate(); err != nil {
+			return err
+		}
+	}
 	return j.Budget.Validate()
 }
 
@@ -228,6 +263,10 @@ func CanonicalizeAuditWorkload(workload AuditWorkload) (AuditWorkload, error) {
 	cloned := workload
 	cloned.Strategies = append([]StrategySelection(nil), workload.Strategies...)
 	for index := range cloned.Strategies {
+		if workload.Strategies[index].Ref != nil {
+			ref := *workload.Strategies[index].Ref
+			cloned.Strategies[index].Ref = &ref
+		}
 		canonical, _, err := canonicalJSONObject(cloned.Strategies[index].Config)
 		if err != nil {
 			return AuditWorkload{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "身份审计策略配置必须是 JSON 对象", err)

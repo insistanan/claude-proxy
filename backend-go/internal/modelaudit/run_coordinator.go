@@ -193,7 +193,7 @@ func PrepareAuditRunFinish(job AuditJob, expectedRevision uint64, run AuditRun, 
 		return AuditRunFinishCoordination{}, err
 	}
 	nextStatus := AuditJobEnabled
-	if endAt != nil && !endAt.After(finishedAt) {
+	if job.Schedule.OneShot || endAt != nil && !endAt.After(finishedAt) {
 		nextStatus = AuditJobExpired
 	}
 	updatedJob, err := TransitionAuditJob(job, expectedRevision, nextStatus, finishedAt)

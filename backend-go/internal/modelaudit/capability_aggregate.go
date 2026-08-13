@@ -100,6 +100,7 @@ type CapabilityTaskScore struct {
 	Score     *float64               `json:"score,omitempty"`
 	Coverage  float64                `json:"coverage"`
 	Counts    CapabilityResultCounts `json:"counts"`
+	Reasons   []string               `json:"reasons,omitempty"`
 }
 
 func (s CapabilityTaskScore) Validate() error {
@@ -150,6 +151,7 @@ type CapabilityDimensionScore struct {
 	Formal    bool                          `json:"formal"`
 	Counts    CapabilityResultCounts        `json:"counts"`
 	Tasks     []CapabilityTaskScore         `json:"tasks"`
+	Reasons   []string                      `json:"reasons,omitempty"`
 }
 
 func (s CapabilityDimensionScore) Validate() error {
@@ -349,6 +351,7 @@ func AggregateCapability(config CapabilityAggregationConfig, input CapabilityAgg
 	for _, accumulator := range accumulators {
 		counts := CapabilityResultCounts{Planned: accumulator.plan.PlannedInstances}
 		scoreTotal := 0.0
+		taskReasons := make([]string, 0)
 		for _, result := range accumulator.results {
 			switch result.Status {
 			case CapabilityTaskScored:
@@ -363,8 +366,10 @@ func AggregateCapability(config CapabilityAggregationConfig, input CapabilityAgg
 				counts.Indeterminate++
 			case CapabilityTaskExecutionFailed:
 				counts.ExecutionFailed++
+				taskReasons = append(taskReasons, result.Reason)
 			case CapabilityTaskScoringFailed:
 				counts.ScoringFailed++
+				taskReasons = append(taskReasons, result.Reason)
 			}
 		}
 		counts.Missing = counts.Planned - counts.completed()
@@ -375,7 +380,7 @@ func AggregateCapability(config CapabilityAggregationConfig, input CapabilityAgg
 		}
 		taskScore := CapabilityTaskScore{
 			Task: accumulator.task.Ref, Dimension: accumulator.task.Dimension, Weight: accumulator.task.Weight,
-			Score: score, Coverage: float64(counts.Scored) / float64(counts.Planned), Counts: counts,
+			Score: score, Coverage: float64(counts.Scored) / float64(counts.Planned), Counts: counts, Reasons: uniqueSortedStrings(taskReasons),
 		}
 		taskScoresByDimension[accumulator.task.Dimension] = append(taskScoresByDimension[accumulator.task.Dimension], taskScore)
 		addCapabilityCounts(&totalCounts, counts)
@@ -394,6 +399,7 @@ func AggregateCapability(config CapabilityAggregationConfig, input CapabilityAgg
 		tasks := taskScoresByDimension[dimension]
 		sort.Slice(tasks, func(i, j int) bool { return tasks[i].Task.ID < tasks[j].Task.ID })
 		counts := CapabilityResultCounts{}
+		dimensionReasons := make([]string, 0)
 		plannedTaskWeight, coveredTaskWeight := 0.0, 0.0
 		scoreWeight, weightedScore := 0.0, 0.0
 		for _, task := range tasks {
@@ -404,6 +410,7 @@ func AggregateCapability(config CapabilityAggregationConfig, input CapabilityAgg
 				scoreWeight += task.Weight
 				weightedScore += task.Weight * *task.Score
 			}
+			dimensionReasons = append(dimensionReasons, task.Reasons...)
 		}
 		coverage := 0.0
 		if plannedTaskWeight > 0 {
@@ -429,7 +436,7 @@ func AggregateCapability(config CapabilityAggregationConfig, input CapabilityAgg
 		weight := input.Package.Package.DimensionWeights[dimension]
 		dimensionScore := CapabilityDimensionScore{
 			Dimension: dimension, Weight: weight, Score: score, Interval: interval,
-			Coverage: coverage, Formal: formal, Counts: counts, Tasks: tasks,
+			Coverage: coverage, Formal: formal, Counts: counts, Tasks: tasks, Reasons: uniqueSortedStrings(dimensionReasons),
 		}
 		dimensions = append(dimensions, dimensionScore)
 		overallCoverage += weight * coverage
@@ -503,6 +510,17 @@ func AggregateCapability(config CapabilityAggregationConfig, input CapabilityAgg
 		formal = false
 		status = CapabilityAggregationPartialBudget
 		reasons = append(reasons, "运行达到请求或 token 预算上限，报告仅包含部分结果")
+	}
+	if totalCounts.ExecutionFailed > 0 && !formal {
+		failureReasons := make([]string, 0)
+		for _, dimension := range dimensions {
+			failureReasons = append(failureReasons, dimension.Reasons...)
+		}
+		reasons = append(reasons, fmt.Sprintf("%d 个能力样本执行失败", totalCounts.ExecutionFailed))
+		reasons = append(reasons, failureReasons...)
+	}
+	if totalCounts.ScoringFailed > 0 && !formal {
+		reasons = append(reasons, fmt.Sprintf("%d 个能力样本判分失败", totalCounts.ScoringFailed))
 	}
 	report := CapabilityReport{
 		Aggregator: config.Aggregator, Package: input.Package.Package.Ref, PackageSHA256: input.Package.SHA256,

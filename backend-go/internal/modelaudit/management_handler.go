@@ -15,8 +15,99 @@ func (h *Handler) listAuditStrategies(c *gin.Context) {
 	c.JSON(http.StatusOK, h.management.GetStrategyCatalog())
 }
 
+func (h *Handler) listAuditIdentityPresets(c *gin.Context) {
+	c.JSON(http.StatusOK, AuditIdentityPresetCatalogResponse{Presets: BuiltinIdentityPresets()})
+}
+
 func (h *Handler) listAuditCapabilityPresets(c *gin.Context) {
 	c.JSON(http.StatusOK, h.management.GetCapabilityCatalog())
+}
+
+func (h *Handler) reloadQuestionBanks(c *gin.Context) {
+	_, err := h.management.ReloadQuestionBanks()
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, AuditCapabilityCatalogResponse{Catalog: h.management.GetCapabilityCatalog().Catalog})
+}
+
+func (h *Handler) listAuditMods(c *gin.Context) {
+	catalog, err := h.management.GetModCatalog()
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, AuditModCatalogResponse{Catalog: catalog})
+}
+
+func (h *Handler) listAuditModExamples(c *gin.Context) {
+	examples, err := h.management.GetModExamples()
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, AuditModExamplesResponse{Examples: examples})
+}
+
+func (h *Handler) reloadAuditMods(c *gin.Context) {
+	catalog, err := h.management.ReloadMods(c.Request.Context())
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, AuditModCatalogResponse{Catalog: catalog})
+}
+
+func (h *Handler) getAuditMod(c *gin.Context) {
+	mod, err := h.management.GetMod(c.Param("id"))
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, AuditModResponse{Mod: mod})
+}
+
+func (h *Handler) createAuditMod(c *gin.Context) {
+	var request AuditModWriteRequest
+	if err := decodeAuditManagementBody(c, &request); err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	mod, err := h.management.SaveMod(c.Request.Context(), "", request)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, AuditModResponse{Mod: mod})
+}
+
+func (h *Handler) updateAuditMod(c *gin.Context) {
+	var request AuditModWriteRequest
+	if err := decodeAuditManagementBody(c, &request); err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	mod, err := h.management.SaveMod(c.Request.Context(), c.Param("id"), request)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, AuditModResponse{Mod: mod})
+}
+
+func (h *Handler) importAuditMod(c *gin.Context) {
+	var request AuditModImportRequest
+	if err := decodeAuditManagementBody(c, &request); err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	mod, err := h.management.ImportMod(c.Request.Context(), request)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, AuditModResponse{Mod: mod})
 }
 
 func (h *Handler) listAuditJobs(c *gin.Context) {
@@ -33,12 +124,26 @@ func (h *Handler) listAuditJobs(c *gin.Context) {
 			return
 		}
 	}
-	result, err := h.management.ListJobs(c.Request.Context(), AuditJobListOptions{Page: page, IncludeDeleted: includeDeleted})
+	workloadKind := AuditWorkloadKind(strings.TrimSpace(c.Query("workloadKind")))
+	if workloadKind != "" && !workloadKind.Valid() {
+		writeAPIError(c, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "workloadKind 必须是 identity 或 capability"))
+		return
+	}
+	result, err := h.management.ListJobs(c.Request.Context(), AuditJobListOptions{Page: page, IncludeDeleted: includeDeleted, WorkloadKind: workloadKind})
 	if err != nil {
 		writeAPIError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, AuditJobPageResponse{Page: result})
+	jobIDs := make([]string, len(result.Jobs))
+	for index, job := range result.Jobs {
+		jobIDs[index] = job.ID
+	}
+	latestRuns, err := h.management.ListLatestRunPresentations(c.Request.Context(), jobIDs)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, AuditJobPageResponse{Page: result, LatestRuns: latestRuns})
 }
 
 func (h *Handler) createAuditJob(c *gin.Context) {
@@ -117,12 +222,31 @@ func (h *Handler) startManualAuditRun(c *gin.Context) {
 		writeAPIError(c, err)
 		return
 	}
-	view, err := NewAuditRunPresentation(run)
+	view, err := h.management.PresentRun(c.Request.Context(), run)
 	if err != nil {
 		writeAPIError(c, err)
 		return
 	}
 	c.JSON(http.StatusAccepted, AuditRunResponse{Run: view})
+}
+
+func (h *Handler) retryAuditJob(c *gin.Context) {
+	var request StartManualAuditRunRequest
+	if err := decodeAuditManagementBody(c, &request); err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	job, run, err := h.management.RetryJob(c.Request.Context(), c.Param("id"), request.ExpectedRevision)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	view, err := h.management.PresentRun(c.Request.Context(), run)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, RetryAuditJobResponse{Job: job, Run: view})
 }
 
 func (h *Handler) listAuditRuns(c *gin.Context) {
@@ -141,7 +265,7 @@ func (h *Handler) listAuditRuns(c *gin.Context) {
 	}
 	views := make([]AuditRunPresentation, len(result.Runs))
 	for index, run := range result.Runs {
-		views[index], err = NewAuditRunPresentation(run)
+		views[index], err = h.management.PresentRun(c.Request.Context(), run)
 		if err != nil {
 			writeAPIError(c, err)
 			return
@@ -158,7 +282,7 @@ func (h *Handler) getAuditRun(c *gin.Context) {
 		writeAPIError(c, err)
 		return
 	}
-	view, err := NewAuditRunPresentation(run)
+	view, err := h.management.PresentRun(c.Request.Context(), run)
 	if err != nil {
 		writeAPIError(c, err)
 		return
@@ -172,12 +296,52 @@ func (h *Handler) cancelAuditRun(c *gin.Context) {
 		writeAPIError(c, err)
 		return
 	}
-	view, err := NewAuditRunPresentation(run)
+	view, err := h.management.PresentRun(c.Request.Context(), run)
 	if err != nil {
 		writeAPIError(c, err)
 		return
 	}
 	c.JSON(http.StatusAccepted, AuditRunResponse{Run: view})
+}
+
+func (h *Handler) listAuditModAnalyses(c *gin.Context) {
+	page, err := auditPageFromQuery(c, "page", "pageSize")
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	result, err := h.management.ListModAnalyses(c.Request.Context(), AuditModAnalysisListOptions{
+		Page: page, RunID: strings.TrimSpace(c.Param("id")), TargetID: strings.TrimSpace(c.Query("targetId")),
+		Status: AuditModAnalysisStatus(strings.TrimSpace(c.Query("status"))),
+	})
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, AuditModAnalysisPageResponse{Page: result})
+}
+
+func (h *Handler) importManualAuditModAnalysis(c *gin.Context) {
+	var request ImportManualAuditModAnalysisRequest
+	if err := decodeAuditManagementBody(c, &request); err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	analysis, err := h.management.ImportManualModAnalysis(c.Request.Context(), c.Param("id"), request.Result)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, AuditModAnalysisResponse{Analysis: analysis})
+}
+
+func (h *Handler) rerunAuditModAnalysis(c *gin.Context) {
+	analysis, err := h.management.RerunModAnalysis(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, AuditModAnalysisResponse{Analysis: analysis})
 }
 
 func (h *Handler) getAuditChannelSummary(c *gin.Context) {

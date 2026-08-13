@@ -78,6 +78,41 @@ func TestAuditFrontendJSONContractExposesFrozenMetadataOnly(t *testing.T) {
 	}
 }
 
+func TestAuditRunPresentationIncludesItsCapabilityResult(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewAuditSQLiteStore(filepath.Join(t.TempDir(), "run-result-contract.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	report := auditHTMLStoredReportFixture(t, ctx, store)
+	management, err := NewAuditManagementService(store, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := management.GetRun(ctx, report.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := management.PresentRun(ctx, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Result == nil || view.Result.ReportID != report.ID || view.Result.Capability == nil ||
+		view.Result.Capability.Index == nil || *view.Result.Capability.Index != 100 {
+		t.Fatalf("运行能力结果摘要 = %#v", view.Result)
+	}
+
+	latest, err := management.ListLatestRunPresentations(ctx, []string{report.JobID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest[report.JobID].Result == nil || latest[report.JobID].Result.ReportID != report.ID {
+		t.Fatalf("任务最新运行结果 = %#v", latest[report.JobID])
+	}
+}
+
 func auditJSONPath(document map[string]any, path ...string) (any, bool) {
 	var current any = document
 	for _, segment := range path {

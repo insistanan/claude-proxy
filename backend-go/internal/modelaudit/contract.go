@@ -15,11 +15,12 @@ const (
 	PurposePlayground     ExecutionPurpose = "playground"
 	PurposeIdentityProbe  ExecutionPurpose = "identity_probe"
 	PurposeCapabilityEval ExecutionPurpose = "capability_eval"
+	PurposeAuditAnalysis  ExecutionPurpose = "audit_analysis"
 )
 
 func (p ExecutionPurpose) Valid() bool {
 	switch p {
-	case PurposeQuickTest, PurposePlayground, PurposeIdentityProbe, PurposeCapabilityEval:
+	case PurposeQuickTest, PurposePlayground, PurposeIdentityProbe, PurposeCapabilityEval, PurposeAuditAnalysis:
 		return true
 	default:
 		return false

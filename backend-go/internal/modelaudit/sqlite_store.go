@@ -42,8 +42,9 @@ func (r AuditPageRequest) Normalize() (AuditPageRequest, error) {
 }
 
 type AuditJobListOptions struct {
-	Page           AuditPageRequest `json:"page"`
-	IncludeDeleted bool             `json:"includeDeleted"`
+	Page           AuditPageRequest  `json:"page"`
+	IncludeDeleted bool              `json:"includeDeleted"`
+	WorkloadKind   AuditWorkloadKind `json:"workloadKind,omitempty"`
 }
 
 type AuditJobPage struct {
@@ -195,6 +196,30 @@ func (s *AuditSQLiteStore) initSchema() error {
 			FOREIGN KEY(run_id) REFERENCES audit_runs(id) ON DELETE CASCADE,
 			FOREIGN KEY(report_id) REFERENCES audit_reports(id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS audit_mod_versions (
+			mod_id TEXT NOT NULL,
+			version TEXT NOT NULL,
+			content_sha256 TEXT NOT NULL,
+			version_json TEXT NOT NULL,
+			loaded_at INTEGER NOT NULL,
+			PRIMARY KEY(mod_id, content_sha256)
+		)`,
+		`CREATE TABLE IF NOT EXISTS audit_mod_analyses (
+			id TEXT PRIMARY KEY,
+			revision INTEGER NOT NULL,
+			run_id TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			mod_id TEXT NOT NULL,
+			mod_sha256 TEXT NOT NULL,
+			mode TEXT NOT NULL,
+			status TEXT NOT NULL,
+			analysis_json TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			started_at INTEGER,
+			finished_at INTEGER,
+			FOREIGN KEY(run_id) REFERENCES audit_runs(id) ON DELETE CASCADE,
+			FOREIGN KEY(mod_id, mod_sha256) REFERENCES audit_mod_versions(mod_id, content_sha256)
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_jobs_status_updated ON audit_jobs(status, updated_at DESC, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_job_targets_channel ON audit_job_targets(channel_kind, channel_id, job_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_runs_job_created ON audit_runs(job_id, created_at DESC, id)`,
@@ -203,6 +228,9 @@ func (s *AuditSQLiteStore) initSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_audit_strategy_results_run_created ON audit_strategy_results(run_id, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_reports_run_created ON audit_reports(run_id, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_report_index_channel ON audit_report_index(channel_kind, channel_id, reported_at DESC, report_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_mod_versions_loaded ON audit_mod_versions(mod_id, loaded_at DESC, content_sha256)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_mod_analyses_run ON audit_mod_analyses(run_id, target_id, created_at ASC, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_mod_analyses_status ON audit_mod_analyses(status, created_at ASC, id)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
@@ -223,7 +251,17 @@ func (s *AuditSQLiteStore) initSchema() error {
 		}
 		schemaVersion = "2"
 	}
-	if schemaVersion != "2" {
+	if schemaVersion == "2" {
+		result, err := s.db.Exec(`UPDATE audit_schema_meta SET value = '3' WHERE key = 'schema_version' AND value = '2'`)
+		if err != nil {
+			return contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "迁移 Mod 审计数据库 Schema 失败", err)
+		}
+		if err := requireOneAuditRow(result, "Mod 审计数据库 Schema 版本迁移冲突"); err != nil {
+			return err
+		}
+		schemaVersion = "3"
+	}
+	if schemaVersion != "3" {
 		return contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "审计数据库 Schema 版本不兼容")
 	}
 	return nil
@@ -332,6 +370,18 @@ func (s *AuditSQLiteStore) ListJobs(ctx context.Context, options AuditJobListOpt
 	if options.IncludeDeleted {
 		where = ""
 		args = nil
+	}
+	if options.WorkloadKind != "" {
+		if !options.WorkloadKind.Valid() {
+			return AuditJobPage{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计任务工作负载筛选无效")
+		}
+		clause := "json_extract(job_json, '$.workload.kind') = ?"
+		if where == "" {
+			where = " WHERE " + clause
+		} else {
+			where += " AND " + clause
+		}
+		args = append(args, options.WorkloadKind)
 	}
 	var total int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_jobs`+where, args...).Scan(&total); err != nil {

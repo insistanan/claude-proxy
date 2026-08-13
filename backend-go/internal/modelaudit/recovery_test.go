@@ -60,4 +60,13 @@ func TestPlanAuditRecoveryFinalizesAmbiguousRunningState(t *testing.T) {
 	if decision.Run.Status != AuditRunPartial || decision.Run.StopReason != AuditRunStopInterrupted || decision.Run.Usage.Requests != 1 {
 		t.Fatalf("已有请求的中断恢复 = %#v", decision)
 	}
+
+	job.Schedule.OneShot = true
+	decision, err = PlanAuditRecovery(AuditRecoveryEntry{Job: job, Run: running}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Job.Status != AuditJobExpired {
+		t.Fatalf("单次任务中断恢复后的状态 = %q", decision.Job.Status)
+	}
 }

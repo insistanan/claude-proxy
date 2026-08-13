@@ -120,6 +120,7 @@ type Strategy interface {
 
 type StrategySelection struct {
 	StrategyID string          `json:"strategyId"`
+	Ref        *VersionedRef   `json:"ref,omitempty"`
 	Enabled    bool            `json:"enabled"`
 	Config     json.RawMessage `json:"config"`
 }
@@ -132,8 +133,11 @@ type StrategyConfigSnapshot struct {
 }
 
 type StrategyRegistry struct {
-	mu         sync.RWMutex
-	strategies map[string]registeredStrategy
+	mu             sync.RWMutex
+	strategies     map[string]registeredStrategy
+	versions       map[string]registeredStrategy
+	dynamicCurrent map[string]struct{}
+	staticIDs      map[string]struct{}
 }
 
 type registeredStrategy struct {
@@ -147,7 +151,10 @@ var (
 )
 
 func NewStrategyRegistry(strategies ...Strategy) (*StrategyRegistry, error) {
-	registry := &StrategyRegistry{strategies: make(map[string]registeredStrategy)}
+	registry := &StrategyRegistry{
+		strategies: make(map[string]registeredStrategy), versions: make(map[string]registeredStrategy),
+		dynamicCurrent: make(map[string]struct{}), staticIDs: make(map[string]struct{}),
+	}
 	for _, strategy := range strategies {
 		if err := registry.Register(strategy); err != nil {
 			return nil, err
@@ -157,7 +164,7 @@ func NewStrategyRegistry(strategies ...Strategy) (*StrategyRegistry, error) {
 }
 
 func (r *StrategyRegistry) Register(strategy Strategy) error {
-	if r == nil || r.strategies == nil {
+	if r == nil || r.strategies == nil || r.versions == nil || r.staticIDs == nil {
 		return contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "策略注册表未初始化")
 	}
 	if strategy == nil {
@@ -172,10 +179,81 @@ func (r *StrategyRegistry) Register(strategy Strategy) error {
 	if _, exists := r.strategies[descriptor.Ref.ID]; exists {
 		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, fmt.Sprintf("策略 ID %q 已注册", descriptor.Ref.ID))
 	}
-	r.strategies[descriptor.Ref.ID] = registeredStrategy{
+	registered := registeredStrategy{
 		implementation: strategy,
 		descriptor:     cloneStrategyDescriptor(descriptor),
 	}
+	r.strategies[descriptor.Ref.ID] = registered
+	r.versions[strategyVersionKey(descriptor.Ref)] = registered
+	r.staticIDs[descriptor.Ref.ID] = struct{}{}
+	return nil
+}
+
+func (r *StrategyRegistry) ReplaceDynamic(strategies ...Strategy) error {
+	if r == nil || r.strategies == nil || r.versions == nil || r.dynamicCurrent == nil {
+		return contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "策略注册表未初始化")
+	}
+	prepared := make(map[string]registeredStrategy, len(strategies))
+	for _, strategy := range strategies {
+		if strategy == nil {
+			return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "动态策略不能为空")
+		}
+		descriptor := strategy.Descriptor()
+		if err := validateStrategyDescriptor(descriptor); err != nil {
+			return err
+		}
+		if _, duplicate := prepared[descriptor.Ref.ID]; duplicate {
+			return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, fmt.Sprintf("动态策略 ID %q 重复", descriptor.Ref.ID))
+		}
+		prepared[descriptor.Ref.ID] = registeredStrategy{implementation: strategy, descriptor: cloneStrategyDescriptor(descriptor)}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id := range prepared {
+		if _, exists := r.strategies[id]; !exists {
+			continue
+		}
+		if _, dynamic := r.dynamicCurrent[id]; !dynamic {
+			return contractError(ErrorCodeConflict, ErrorCategoryRequest, fmt.Sprintf("动态策略 ID %q 与内置策略冲突", id))
+		}
+	}
+	for id := range r.dynamicCurrent {
+		delete(r.strategies, id)
+	}
+	clear(r.dynamicCurrent)
+	for id, registered := range prepared {
+		r.strategies[id] = registered
+		key := strategyVersionKey(registered.descriptor.Ref)
+		if _, exists := r.versions[key]; !exists {
+			r.versions[key] = registered
+		}
+		r.dynamicCurrent[id] = struct{}{}
+	}
+	return nil
+}
+
+func (r *StrategyRegistry) RegisterDynamicVersion(strategy Strategy) error {
+	if r == nil || r.versions == nil || r.staticIDs == nil {
+		return contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "策略注册表未初始化")
+	}
+	if strategy == nil {
+		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "历史动态策略不能为空")
+	}
+	descriptor := strategy.Descriptor()
+	if err := validateStrategyDescriptor(descriptor); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, static := r.staticIDs[descriptor.Ref.ID]; static {
+		return contractError(ErrorCodeConflict, ErrorCategoryRequest, fmt.Sprintf("历史动态策略 ID %q 与内置策略冲突", descriptor.Ref.ID))
+	}
+	key := strategyVersionKey(descriptor.Ref)
+	if _, exists := r.versions[key]; exists {
+		return nil
+	}
+	r.versions[key] = registeredStrategy{implementation: strategy, descriptor: cloneStrategyDescriptor(descriptor)}
 	return nil
 }
 
@@ -187,6 +265,26 @@ func (r *StrategyRegistry) Get(id string) (Strategy, bool) {
 	defer r.mu.RUnlock()
 	registered, ok := r.strategies[strings.TrimSpace(id)]
 	return registered.implementation, ok
+}
+
+func (r *StrategyRegistry) GetVersion(ref VersionedRef) (Strategy, bool) {
+	if r == nil || ref.Validate("策略") != nil {
+		return nil, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	registered, ok := r.versions[strategyVersionKey(ref)]
+	return registered.implementation, ok
+}
+
+func (r *StrategyRegistry) IsStatic(id string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, found := r.staticIDs[strings.TrimSpace(id)]
+	return found
 }
 
 func (r *StrategyRegistry) Descriptors() []StrategyDescriptor {
@@ -216,7 +314,16 @@ func (r *StrategyRegistry) Freeze(selections []StrategySelection) ([]StrategyCon
 			return nil, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, fmt.Sprintf("策略选择包含重复 ID %q", id))
 		}
 		seen[id] = struct{}{}
-		registered, ok := r.lookup(id)
+		var registered registeredStrategy
+		var ok bool
+		if selection.Ref != nil {
+			if selection.Ref.ID != id {
+				return nil, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, fmt.Sprintf("第 %d 个策略 ID 与冻结引用不一致", index+1))
+			}
+			registered, ok = r.lookupVersion(*selection.Ref)
+		} else {
+			registered, ok = r.lookup(id)
+		}
 		if !ok {
 			return nil, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, fmt.Sprintf("第 %d 个策略 %q 未注册", index+1, id))
 		}
@@ -261,6 +368,20 @@ func (r *StrategyRegistry) lookup(id string) (registeredStrategy, bool) {
 	defer r.mu.RUnlock()
 	registered, ok := r.strategies[strings.TrimSpace(id)]
 	return registered, ok
+}
+
+func (r *StrategyRegistry) lookupVersion(ref VersionedRef) (registeredStrategy, bool) {
+	if r == nil || ref.Validate("策略") != nil {
+		return registeredStrategy{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	registered, ok := r.versions[strategyVersionKey(ref)]
+	return registered, ok
+}
+
+func strategyVersionKey(ref VersionedRef) string {
+	return ref.ID + "\x00" + ref.SemanticVersion + "\x00" + ref.ImplementationVersion
 }
 
 func validateStrategyDescriptor(descriptor StrategyDescriptor) error {

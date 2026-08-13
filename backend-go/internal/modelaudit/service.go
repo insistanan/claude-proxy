@@ -114,12 +114,30 @@ func (s *Service) ExecuteResolved(ctx context.Context, spec ExecutionSpec, targe
 	if err := s.validateSpecLimits(spec); err != nil {
 		return ExecutionResult{}, err
 	}
-	if target.Snapshot.ChannelID != spec.Target.ChannelID || target.Snapshot.ChannelKind != spec.Target.ChannelKind ||
-		target.Snapshot.Protocol != spec.Protocol || target.Snapshot.RequestedModel != spec.Model ||
-		target.Snapshot.Thinking != spec.Thinking || target.Snapshot.RequestProfile != spec.RequestProfile {
-		return ExecutionResult{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryTarget, "冻结目标与执行规格不一致")
+	if target.Snapshot.ChannelID != spec.Target.ChannelID {
+		return ExecutionResult{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryTarget, fmt.Sprintf("冻结目标与执行规格不一致：channelId 期望 %q，实际 %q", target.Snapshot.ChannelID, spec.Target.ChannelID))
 	}
-	request, err := NewDirectExecutionRequest(spec, target)
+	if target.Snapshot.ChannelKind != spec.Target.ChannelKind {
+		return ExecutionResult{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryTarget, fmt.Sprintf("冻结目标与执行规格不一致：channelKind 期望 %q，实际 %q", target.Snapshot.ChannelKind, spec.Target.ChannelKind))
+	}
+	if target.Snapshot.Protocol != spec.Protocol {
+		return ExecutionResult{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryTarget, fmt.Sprintf("冻结目标与执行规格不一致：protocol 期望 %q，实际 %q", target.Snapshot.Protocol, spec.Protocol))
+	}
+	if target.Snapshot.RequestedModel != spec.Model {
+		return ExecutionResult{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryTarget, fmt.Sprintf("冻结目标与执行规格不一致：model 期望 %q，实际 %q", target.Snapshot.RequestedModel, spec.Model))
+	}
+	if target.Snapshot.RequestProfile != spec.RequestProfile {
+		return ExecutionResult{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryTarget, fmt.Sprintf("冻结目标与执行规格不一致：requestProfile 期望 %q，实际 %q", target.Snapshot.RequestProfile, spec.RequestProfile))
+	}
+	// thinking 是每条审计样本的执行变量（身份策略会主动切换档位），不能被目标快照固定。
+	executionTarget := target
+	executionTarget.Snapshot.Thinking = spec.Thinking
+	thinkingMapping, err := ResolveThinking(executionTarget.Snapshot.WireProtocol, spec.Thinking)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	executionTarget.Snapshot.ThinkingMap = thinkingMapping
+	request, err := NewDirectExecutionRequest(spec, executionTarget)
 	if err != nil {
 		return ExecutionResult{}, err
 	}

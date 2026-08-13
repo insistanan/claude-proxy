@@ -127,6 +127,6 @@ func TestAuditJobCannotEnableAnEndedSchedule(t *testing.T) {
 func auditJobDefinitionFromFixture(job AuditJob) AuditJobDefinition {
 	return AuditJobDefinition{
 		Name: job.Name, Workload: job.Workload, Targets: append([]AuditJobTarget(nil), job.Targets...),
-		Schedule: job.Schedule, Budget: job.Budget,
+		Schedule: job.Schedule, Budget: job.Budget, Analyzer: cloneAuditAnalysisTarget(job.Analyzer),
 	}
 }

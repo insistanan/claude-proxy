@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -267,6 +268,54 @@ func (s *AuditSQLiteStore) ListRuns(ctx context.Context, options AuditRunListOpt
 		return AuditRunPage{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "读取审计运行失败", err)
 	}
 	return AuditRunPage{Runs: runs, Total: total, Page: page.Page, PageSize: page.PageSize}, nil
+}
+
+func (s *AuditSQLiteStore) ListLatestRunsForJobs(ctx context.Context, jobIDs []string) (map[string]AuditRun, error) {
+	if err := s.lockOpen(); err != nil {
+		return nil, err
+	}
+	defer s.mu.RUnlock()
+	result := make(map[string]AuditRun)
+	unique := make([]string, 0, len(jobIDs))
+	seen := make(map[string]struct{}, len(jobIDs))
+	for _, jobID := range jobIDs {
+		if !validAuditEntityID(jobID) {
+			return nil, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "审计任务 ID 无效")
+		}
+		if _, exists := seen[jobID]; exists {
+			continue
+		}
+		seen[jobID] = struct{}{}
+		unique = append(unique, jobID)
+	}
+	if len(unique) == 0 {
+		return result, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, len(unique))
+	for index, jobID := range unique {
+		args[index] = jobID
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT status, run_json FROM audit_runs AS current
+		WHERE job_id IN (`+placeholders+`) AND id = (
+			SELECT id FROM audit_runs AS candidate WHERE candidate.job_id = current.job_id
+			ORDER BY created_at DESC, id ASC LIMIT 1
+		)`, args...)
+	if err != nil {
+		return nil, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "查询任务最新审计运行失败", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		run, err := scanAuditRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		result[run.JobID] = run
+	}
+	if err := rows.Err(); err != nil {
+		return nil, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "读取任务最新审计运行失败", err)
+	}
+	return result, nil
 }
 
 func (s *AuditSQLiteStore) GetLease(ctx context.Context, jobID string) (AuditRunLease, bool, error) {

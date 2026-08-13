@@ -85,7 +85,7 @@ func PlanAuditRecovery(entry AuditRecoveryEntry, now time.Time) (AuditRecoveryDe
 	if err != nil {
 		return AuditRecoveryDecision{}, err
 	}
-	if endAt != nil && !endAt.After(now) {
+	if entry.Job.Schedule.OneShot || endAt != nil && !endAt.After(now) {
 		nextStatus = AuditJobExpired
 	}
 	job, err := TransitionAuditJob(entry.Job, entry.Job.Revision, nextStatus, now)

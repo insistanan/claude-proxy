@@ -86,7 +86,7 @@ func (s *MetadataConsistencyStrategy) Plan(_ context.Context, input StrategyPlan
 				Purpose:  PurposeIdentityProbe,
 				Target:   ChannelTarget{ChannelID: input.Target.ChannelID, ChannelKind: input.Target.ChannelKind},
 				Protocol: input.Target.Protocol, Model: input.Target.RequestedModel, Thinking: input.Target.Thinking,
-				RequestProfile: input.Target.RequestProfile, Stream: false, TimeoutMillis: 30_000, MaxOutputTokens: 128,
+				RequestProfile: input.Target.RequestProfile, Stream: false, TimeoutMillis: auditSampleTimeoutMillis, MaxOutputTokens: 128,
 				Input: ExecutionInput{Prompt: prompt}, Redaction: RedactionDigest,
 			},
 		}

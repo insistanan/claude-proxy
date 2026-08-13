@@ -44,11 +44,12 @@ type StrategyPlanInput struct {
 }
 
 type SamplePlan struct {
-	SampleID  string        `json:"sampleId"`
-	Strategy  VersionedRef  `json:"strategy"`
-	Ordinal   int           `json:"ordinal"`
-	Seed      uint64        `json:"seed"`
-	Execution ExecutionSpec `json:"execution"`
+	SampleID      string        `json:"sampleId"`
+	Strategy      VersionedRef  `json:"strategy"`
+	Ordinal       int           `json:"ordinal"`
+	Seed          uint64        `json:"seed"`
+	DelayBeforeMs int64         `json:"delayBeforeMs,omitempty"`
+	Execution     ExecutionSpec `json:"execution"`
 }
 
 func (p SamplePlan) Validate() error {
@@ -58,8 +59,8 @@ func (p SamplePlan) Validate() error {
 	if err := p.Strategy.Validate("样本策略"); err != nil {
 		return err
 	}
-	if p.Ordinal < 0 {
-		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "样本序号不能小于 0")
+	if p.Ordinal < 0 || p.DelayBeforeMs < 0 || p.DelayBeforeMs > maximumAuditSampleDelayMillis {
+		return contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "样本序号或请求前等待时间无效")
 	}
 	return p.Execution.Validate()
 }

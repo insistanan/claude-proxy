@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -15,14 +16,27 @@ import (
 type AuditRunControllerConfig struct {
 	MaximumActiveRuns int
 	LeaseDuration     time.Duration
+	ModAnalysis       AuditModAnalysisRunnerConfig
 }
 
+const (
+	auditSampleTimeoutMillis                    int64 = 120_000
+	capabilitySystemFailureConsecutiveThreshold       = 2
+)
+
 func DefaultAuditRunControllerConfig() AuditRunControllerConfig {
-	return AuditRunControllerConfig{MaximumActiveRuns: 2, LeaseDuration: 10 * time.Minute}
+	return AuditRunControllerConfig{
+		MaximumActiveRuns: 2,
+		LeaseDuration:     10 * time.Minute,
+		ModAnalysis:       DefaultAuditModAnalysisRunnerConfig(),
+	}
 }
 
 func (c AuditRunControllerConfig) validate() error {
-	return (AuditRunStartLimits{MaximumActiveRuns: c.MaximumActiveRuns, LeaseDurationMs: c.LeaseDuration.Milliseconds()}).Validate()
+	if err := (AuditRunStartLimits{MaximumActiveRuns: c.MaximumActiveRuns, LeaseDurationMs: c.LeaseDuration.Milliseconds()}).Validate(); err != nil {
+		return err
+	}
+	return c.ModAnalysis.validate()
 }
 
 type activeAuditRun struct {
@@ -81,14 +95,15 @@ func (r *activeAuditRun) stopLeaseRenewal() {
 }
 
 type BuiltinAuditRunController struct {
-	store      *AuditSQLiteStore
-	service    *Service
-	strategies *StrategyRegistry
-	capability *BuiltinCapabilityAssets
-	config     AuditRunControllerConfig
-	ownerID    string
-	now        func() time.Time
-	newID      func(string) (string, error)
+	store       *AuditSQLiteStore
+	service     *Service
+	strategies  *StrategyRegistry
+	capability  *BuiltinCapabilityAssets
+	modAnalysis *AuditModAnalysisRunner
+	config      AuditRunControllerConfig
+	ownerID     string
+	now         func() time.Time
+	newID       func(string) (string, error)
 
 	mu     sync.Mutex
 	active map[string]*activeAuditRun
@@ -100,7 +115,21 @@ func NewBuiltinAuditRunController(
 	strategies *StrategyRegistry,
 	config AuditRunControllerConfig,
 ) (*BuiltinAuditRunController, error) {
-	if store == nil || service == nil || strategies == nil {
+	capability, err := NewBuiltinCapabilityAssets()
+	if err != nil {
+		return nil, err
+	}
+	return NewAuditRunControllerWithCapabilityAssets(store, service, strategies, capability, config)
+}
+
+func NewAuditRunControllerWithCapabilityAssets(
+	store *AuditSQLiteStore,
+	service *Service,
+	strategies *StrategyRegistry,
+	capability *BuiltinCapabilityAssets,
+	config AuditRunControllerConfig,
+) (*BuiltinAuditRunController, error) {
+	if store == nil || service == nil || strategies == nil || capability == nil {
 		return nil, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "审计运行控制器依赖未初始化")
 	}
 	if err := config.validate(); err != nil {
@@ -110,12 +139,12 @@ func NewBuiltinAuditRunController(
 	if err != nil {
 		return nil, err
 	}
-	capability, err := NewBuiltinCapabilityAssets()
+	modAnalysis, err := NewAuditModAnalysisRunner(store, service, config.ModAnalysis)
 	if err != nil {
 		return nil, err
 	}
 	return &BuiltinAuditRunController{
-		store: store, service: service, strategies: strategies, capability: capability, config: config, ownerID: ownerID,
+		store: store, service: service, strategies: strategies, capability: capability, modAnalysis: modAnalysis, config: config, ownerID: ownerID,
 		now: time.Now, newID: NewAuditEntityID, active: make(map[string]*activeAuditRun),
 	}, nil
 }
@@ -142,7 +171,7 @@ func (c *BuiltinAuditRunController) ResumePending(ctx context.Context, entry Aud
 	if decision.Action != AuditRecoveryResumePending {
 		return AuditRun{}, contractError(ErrorCodeConflict, ErrorCategoryRequest, "审计运行当前不能按 pending 恢复")
 	}
-	if err := c.validateWorkload(entry.Job.Workload); err != nil {
+	if err := c.validateJob(entry.Job); err != nil {
 		return AuditRun{}, err
 	}
 	c.mu.Lock()
@@ -184,7 +213,7 @@ func (c *BuiltinAuditRunController) start(
 	if err := ctx.Err(); err != nil {
 		return AuditRun{}, contractError(ErrorCodeCancelled, ErrorCategoryRequest, "审计运行启动请求已取消", err)
 	}
-	if err := c.validateWorkload(job.Workload); err != nil {
+	if err := c.validateJob(job); err != nil {
 		return AuditRun{}, err
 	}
 	now := c.now().UTC()
@@ -271,8 +300,33 @@ func (c *BuiltinAuditRunController) CancelRun(ctx context.Context, run AuditRun)
 	return updated, nil
 }
 
+func (c *BuiltinAuditRunController) ImportManualModAnalysis(
+	ctx context.Context,
+	analysisID string,
+	result json.RawMessage,
+) (AuditModAnalysisRecord, error) {
+	if err := c.validate(); err != nil {
+		return AuditModAnalysisRecord{}, err
+	}
+	return c.modAnalysis.ImportManualResult(ctx, strings.TrimSpace(analysisID), result)
+}
+
+func (c *BuiltinAuditRunController) RerunModAnalysis(
+	ctx context.Context,
+	job AuditJob,
+	run AuditRun,
+	targetID string,
+	bundle AuditModBundle,
+	input json.RawMessage,
+) (AuditModAnalysisRecord, error) {
+	if err := c.validate(); err != nil {
+		return AuditModAnalysisRecord{}, err
+	}
+	return c.modAnalysis.Rerun(ctx, job, run, strings.TrimSpace(targetID), bundle, input)
+}
+
 func (c *BuiltinAuditRunController) validate() error {
-	if c == nil || c.store == nil || c.service == nil || c.strategies == nil || c.capability == nil || c.now == nil || c.newID == nil ||
+	if c == nil || c.store == nil || c.service == nil || c.strategies == nil || c.capability == nil || c.modAnalysis == nil || c.now == nil || c.newID == nil ||
 		c.ownerID == "" || c.active == nil {
 		return contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "审计运行控制器未初始化")
 	}
@@ -308,6 +362,62 @@ func (c *BuiltinAuditRunController) ValidateWorkload(workload AuditWorkload) err
 	return c.validateWorkload(workload)
 }
 
+func (c *BuiltinAuditRunController) PrepareJobDefinition(definition AuditJobDefinition) (AuditJobDefinition, error) {
+	if err := c.validate(); err != nil {
+		return AuditJobDefinition{}, err
+	}
+	canonical, err := CanonicalizeAuditWorkload(definition.Workload)
+	if err != nil {
+		return AuditJobDefinition{}, err
+	}
+	definition.Workload = canonical
+	if canonical.Kind != AuditWorkloadIdentity {
+		if err := c.validateWorkload(canonical); err != nil {
+			return AuditJobDefinition{}, err
+		}
+		return definition, nil
+	}
+	snapshots, err := c.strategies.Freeze(canonical.Strategies)
+	if err != nil {
+		return AuditJobDefinition{}, err
+	}
+	needsAnalyzer := false
+	for index := range definition.Workload.Strategies {
+		ref := snapshots[index].Ref
+		definition.Workload.Strategies[index].Ref = &ref
+		if !snapshots[index].Enabled {
+			continue
+		}
+		strategy, found := c.strategies.GetVersion(ref)
+		if !found {
+			return AuditJobDefinition{}, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "冻结身份策略实现不存在")
+		}
+		modStrategy, ok := strategy.(*DeclarativeAuditModStrategy)
+		if ok && modStrategy.bundle.Manifest.Analysis.Mode == AuditModAnalysisLLM {
+			needsAnalyzer = true
+		}
+	}
+	if needsAnalyzer && definition.Analyzer == nil {
+		return AuditJobDefinition{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryRequest, "所选 LLM 分析 Mod 需要为任务选择分析模型")
+	}
+	if err := definition.Validate(); err != nil {
+		return AuditJobDefinition{}, err
+	}
+	return definition, nil
+}
+
+func (c *BuiltinAuditRunController) validateJob(job AuditJob) error {
+	if err := job.Validate(); err != nil {
+		return err
+	}
+	definition := AuditJobDefinition{
+		Name: job.Name, Workload: job.Workload, Targets: job.Targets, Schedule: job.Schedule,
+		Budget: job.Budget, Analyzer: job.Analyzer,
+	}
+	_, err := c.PrepareJobDefinition(definition)
+	return err
+}
+
 func (c *BuiltinAuditRunController) StrategyCatalog() []StrategyDescriptor {
 	if c == nil || c.strategies == nil {
 		return nil
@@ -319,7 +429,16 @@ func (c *BuiltinAuditRunController) CapabilityCatalog() AuditCapabilityAssetCata
 	if c == nil || c.capability == nil {
 		return AuditCapabilityAssetCatalog{Available: false, Reason: "能力资产未初始化", Packages: []CapabilityTaskPackageSnapshot{}, Presets: []CapabilityRunPreset{}}
 	}
-	return c.capability.Catalog()
+	catalog := c.capability.Catalog()
+	catalog.QuestionBanks = c.capability.QuestionBankCatalog()
+	return catalog
+}
+
+func (c *BuiltinAuditRunController) ReloadQuestionBanks() (QuestionBankCatalogSnapshot, error) {
+	if c == nil || c.capability == nil {
+		return QuestionBankCatalogSnapshot{}, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "能力资产未初始化")
+	}
+	return c.capability.ReloadQuestionBanks()
 }
 
 type auditTargetWorkloadResult struct {
@@ -378,7 +497,7 @@ func (c *BuiltinAuditRunController) execute(ctx context.Context, start AuditRunS
 		var err error
 		switch start.Job.Workload.Kind {
 		case AuditWorkloadIdentity:
-			result, updatedRun, reason, err = c.executeIdentityTarget(ctx, run, active, target, resolvedTarget, start.Job.Workload)
+			result, updatedRun, reason, err = c.executeIdentityTarget(ctx, run, active, target, resolvedTarget, start.Job)
 		case AuditWorkloadCapability:
 			result, updatedRun, reason, err = c.executeCapabilityTarget(ctx, run, active, target, resolvedTarget, start.Job.Workload)
 		default:
@@ -392,7 +511,11 @@ func (c *BuiltinAuditRunController) execute(ctx context.Context, start AuditRunS
 				stopReason = AuditRunStopCancelled
 			} else {
 				stopReason = AuditRunStopFailure
-				failure = "审计身份工作负载执行失败"
+				workloadName := "身份审计"
+				if start.Job.Workload.Kind == AuditWorkloadCapability {
+					workloadName = "能力评测"
+				}
+				failure = workloadName + "执行失败：" + NewAPIError(err).Error.Message
 				c.reportBackgroundError(run.ID, err)
 			}
 			break
@@ -464,7 +587,7 @@ func auditTargetResolutionSpec(target AuditJobTarget, workload AuditWorkloadKind
 	return ExecutionSpec{
 		Purpose: purpose, Target: ChannelTarget{ChannelID: target.ChannelID, ChannelKind: target.ChannelKind},
 		Protocol: target.Protocol, Model: target.Model, Thinking: target.Thinking, RequestProfile: target.RequestProfile,
-		Stream: target.Protocol != ProtocolImages, TimeoutMillis: 30_000, MaxOutputTokens: 128,
+		Stream: target.Protocol != ProtocolImages, TimeoutMillis: auditSampleTimeoutMillis, MaxOutputTokens: 128,
 		Input: ExecutionInput{Prompt: "审计目标解析"}, Redaction: RedactionDigest,
 	}
 }
@@ -475,8 +598,9 @@ func (c *BuiltinAuditRunController) executeIdentityTarget(
 	active *activeAuditRun,
 	target AuditRunTargetSnapshot,
 	resolved ResolvedTarget,
-	workload AuditWorkload,
+	job AuditJob,
 ) (auditTargetWorkloadResult, AuditRun, AuditRunStopReason, error) {
+	workload := job.Workload
 	snapshots, err := c.strategies.Freeze(workload.Strategies)
 	if err != nil {
 		return auditTargetWorkloadResult{}, run, AuditRunStopNone, err
@@ -490,7 +614,7 @@ func (c *BuiltinAuditRunController) executeIdentityTarget(
 		if !snapshot.Enabled {
 			continue
 		}
-		strategy, found := c.strategies.Get(snapshot.Ref.ID)
+		strategy, found := c.strategies.GetVersion(snapshot.Ref)
 		if !found {
 			return auditTargetWorkloadResult{}, run, AuditRunStopNone, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "冻结身份策略实现不存在")
 		}
@@ -510,8 +634,12 @@ func (c *BuiltinAuditRunController) executeIdentityTarget(
 		}
 		strategySamples := make([]StrategySample, 0, len(plans))
 		strategyEvidence := make([]EvidenceReference, 0, len(plans))
+		strategyExecutionFailures := make([]string, 0)
 		for _, plan := range plans {
 			if err := ctx.Err(); err != nil {
+				return auditTargetWorkloadResult{}, run, AuditRunStopCancelled, err
+			}
+			if err := waitForAuditSampleDelay(ctx, plan.DelayBeforeMs); err != nil {
 				return auditTargetWorkloadResult{}, run, AuditRunStopCancelled, err
 			}
 			decision, err := CheckAuditRunBudget(run, AuditRequestBudget{
@@ -561,8 +689,7 @@ func (c *BuiltinAuditRunController) executeIdentityTarget(
 				returnedModels = append(returnedModels, execution.ReturnedModel)
 			}
 			if execution.Status != StatusCompleted {
-				return auditTargetWorkloadResult{evidence: evidence, samples: len(allSamples)}, run, AuditRunStopNone,
-					contractError(ErrorCodeProtocol, ErrorCategoryProtocol, "身份审计样本未成功完成")
+				strategyExecutionFailures = append(strategyExecutionFailures, executionFailureSummary(execution))
 			}
 		}
 		evaluation, err := strategy.Evaluate(ctx, StrategyEvaluationInput{Config: snapshot, Samples: strategySamples})
@@ -570,9 +697,26 @@ func (c *BuiltinAuditRunController) executeIdentityTarget(
 			return auditTargetWorkloadResult{}, run, AuditRunStopNone, err
 		}
 		evaluation.Evidence = append(evaluation.Evidence, strategyEvidence...)
+		if len(strategyExecutionFailures) > 0 {
+			failureReason := fmt.Sprintf("%d 个身份样本执行失败：%s", len(strategyExecutionFailures), strings.Join(uniqueSortedStrings(strategyExecutionFailures), "；"))
+			if evaluation.Reason == "" {
+				evaluation.Reason = failureReason
+			} else {
+				evaluation.Reason += "；" + failureReason
+			}
+			evaluation.AlternativeExplanations = append(evaluation.AlternativeExplanations, failureReason)
+		}
 		signal, err := identitySignalFromEvaluation(evaluation)
 		if err != nil {
 			return auditTargetWorkloadResult{}, run, AuditRunStopNone, err
+		}
+		if len(strategyExecutionFailures) > 0 {
+			failureReason := fmt.Sprintf("%d 个身份样本执行失败：%s", len(strategyExecutionFailures), strings.Join(uniqueSortedStrings(strategyExecutionFailures), "；"))
+			if signal.Reason == "" {
+				signal.Reason = failureReason
+			} else {
+				signal.Reason += "；" + failureReason
+			}
 		}
 		signal.Evidence = append(signal.Evidence, strategyEvidence...)
 		metrics, err := encodeIdentityEvaluationMetrics(signal)
@@ -590,6 +734,32 @@ func (c *BuiltinAuditRunController) executeIdentityTarget(
 		evaluations = append(evaluations, evaluation)
 		signals = append(signals, signal)
 		evidence = append(evidence, evaluationReference)
+		if modStrategy, ok := strategy.(*DeclarativeAuditModStrategy); ok {
+			var features AuditModEvaluationFeatures
+			if err := json.Unmarshal(signal.Features, &features); err != nil {
+				return auditTargetWorkloadResult{}, run, AuditRunStopNone,
+					contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "解码 Mod 分析输入特征失败", err)
+			}
+			_, analysisUsage, analysisErr := c.modAnalysis.Run(
+				ctx, job, run, target.TargetID, *target.Resolved, modStrategy.Bundle(), strategySamples, features,
+			)
+			if errors.Is(analysisErr, ErrAuditModAnalysisBudgetExceeded) {
+				return auditTargetWorkloadResult{evidence: evidence, samples: len(allSamples)}, run, AuditRunStopBudget, nil
+			}
+			if analysisErr != nil {
+				return auditTargetWorkloadResult{}, run, AuditRunStopNone, analysisErr
+			}
+			if analysisUsage.Requests > 0 {
+				updated, err := RecordAuditRunUsage(run, analysisUsage)
+				if err != nil {
+					return auditTargetWorkloadResult{}, run, AuditRunStopNone, err
+				}
+				if err := c.store.SaveRun(context.Background(), updated, AuditRunRunning, active.currentLease(), c.now().UTC()); err != nil {
+					return auditTargetWorkloadResult{}, run, AuditRunStopNone, err
+				}
+				run = updated
+			}
+		}
 	}
 	identity, err := aggregateBuiltinIdentity(workload, *target.Resolved, allSamples, signals, returnedModels, c.strategies.Descriptors())
 	if err != nil {
@@ -622,8 +792,11 @@ func (c *BuiltinAuditRunController) executeCapabilityTarget(
 	evidence := make([]EvidenceReference, 0, plan.Estimate.Requests*2)
 	executedSamples := 0
 	stoppedByBudget := false
+	consecutiveFailureKey := ""
+	consecutiveFailureCount := 0
+	var systematicFailure *ExecutionFailure
 	for _, coverage := range plan.Tasks {
-		task, found := c.capability.Task(coverage.Task.ID)
+		task, found := c.capability.Task(coverage.Task)
 		if !found || task.Ref != coverage.Task {
 			return auditTargetWorkloadResult{}, run, AuditRunStopNone, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "能力运行计划引用的任务不可用")
 		}
@@ -643,6 +816,9 @@ func (c *BuiltinAuditRunController) executeCapabilityTarget(
 					continue
 				}
 				return auditTargetWorkloadResult{}, run, AuditRunStopNone, err
+			}
+			if instance.Package.ID == BuiltinCapabilityPackageID && instance.Execution.TimeoutMillis < auditSampleTimeoutMillis {
+				instance.Execution.TimeoutMillis = auditSampleTimeoutMillis
 			}
 			decision, err := CheckAuditRunBudget(run, AuditRequestBudget{
 				MaximumInputTokens: int64(task.MaximumInputTokens), MaximumOutputTokens: int64(task.MaximumOutputTokens),
@@ -691,6 +867,8 @@ func (c *BuiltinAuditRunController) executeCapabilityTarget(
 				Evidence: []EvidenceReference{sampleReference}, CapturedAt: c.now().UTC(),
 			}
 			if execution.Status == StatusCompleted {
+				consecutiveFailureKey = ""
+				consecutiveFailureCount = 0
 				score, err := c.capability.Score(ctx, task, instance, execution, result.Evidence)
 				if err != nil {
 					result.Status = CapabilityTaskScoringFailed
@@ -706,9 +884,24 @@ func (c *BuiltinAuditRunController) executeCapabilityTarget(
 				}
 			} else {
 				result.Status = CapabilityTaskExecutionFailed
-				result.Reason = "协议执行未成功完成"
+				result.Reason = executionFailureSummary(execution)
 				if execution.Failure != nil {
 					result.ErrorClass = string(execution.Failure.Code)
+					if key, infrastructure := capabilityInfrastructureFailureKey(execution); infrastructure {
+						if key == consecutiveFailureKey {
+							consecutiveFailureCount++
+						} else {
+							consecutiveFailureKey = key
+							consecutiveFailureCount = 1
+						}
+						if consecutiveFailureCount >= capabilitySystemFailureConsecutiveThreshold {
+							failure := *execution.Failure
+							systematicFailure = &failure
+						}
+					} else {
+						consecutiveFailureKey = ""
+						consecutiveFailureCount = 0
+					}
 				}
 			}
 			if err := result.Validate(); err != nil {
@@ -722,8 +915,11 @@ func (c *BuiltinAuditRunController) executeCapabilityTarget(
 			}
 			results = append(results, result)
 			evidence = append(evidence, resultReference)
+			if systematicFailure != nil {
+				break
+			}
 		}
-		if stoppedByBudget {
+		if stoppedByBudget || systematicFailure != nil {
 			break
 		}
 	}
@@ -733,6 +929,10 @@ func (c *BuiltinAuditRunController) executeCapabilityTarget(
 		stopReason = CapabilityRunStoppedByBudget
 		runStopReason = AuditRunStopBudget
 	}
+	packageSnapshot, found := c.capability.PackageForTask(plan.Tasks[0].Task)
+	if !found || packageSnapshot.Package.Ref != plan.Package {
+		return auditTargetWorkloadResult{}, run, AuditRunStopNone, contractError(ErrorCodeUnsupported, ErrorCategoryUnsupported, "能力题库冻结快照不可用")
+	}
 	report, err := AggregateCapability(CapabilityAggregationConfig{
 		Aggregator:                         VersionedRef{ID: "capability.aggregate.weighted", SemanticVersion: "1.0.0", ImplementationVersion: "builtin-1"},
 		MinimumScoredInstancesPerDimension: 1, MinimumDimensionsForIndex: 1, MinimumFormalDimensions: 7,
@@ -740,12 +940,68 @@ func (c *BuiltinAuditRunController) executeCapabilityTarget(
 		BootstrapSeed:                     int64(auditStrategySeed(run.ID, target.TargetID, plan.Preset.ID) & uint64(^uint64(0)>>1)),
 		MinimumScoredInstancesForInterval: 2,
 	}, CapabilityAggregationInput{
-		Package: c.capability.packageSnapshot, Plan: plan.Tasks, Results: results, StopReason: stopReason,
+		Package: packageSnapshot, Plan: plan.Tasks, Results: results, StopReason: stopReason,
 	})
 	if err != nil {
 		return auditTargetWorkloadResult{}, run, AuditRunStopNone, err
 	}
+	if systematicFailure != nil {
+		message := fmt.Sprintf("连续 %d 个能力样本发生同类基础设施错误，已停止后续评测：%s", consecutiveFailureCount, executionFailureMessage(*systematicFailure, 0))
+		return auditTargetWorkloadResult{capability: &report, evidence: evidence, samples: executedSamples}, run, AuditRunStopFailure,
+			contractError(systematicFailure.Code, systematicFailure.Category, message)
+	}
 	return auditTargetWorkloadResult{capability: &report, evidence: evidence, samples: executedSamples}, run, runStopReason, nil
+}
+
+func capabilityInfrastructureFailureKey(execution ExecutionResult) (string, bool) {
+	if execution.Failure == nil {
+		return "", false
+	}
+	failure := execution.Failure
+	if failure.Category != ErrorCategoryUpstream && failure.Category != ErrorCategoryTransport {
+		return "", false
+	}
+	return fmt.Sprintf("%s|%s|%d", failure.Category, failure.Code, firstNonZero(execution.HTTPStatus, failure.StatusCode)), true
+}
+
+func executionFailureSummary(execution ExecutionResult) string {
+	if execution.Failure == nil {
+		return fmt.Sprintf("执行以 %s 状态结束", execution.Status)
+	}
+	return executionFailureMessage(*execution.Failure, execution.HTTPStatus)
+}
+
+func executionFailureMessage(failure ExecutionFailure, httpStatus int) string {
+	status := firstNonZero(httpStatus, failure.StatusCode)
+	if status > 0 {
+		statusText := http.StatusText(status)
+		if statusText == "" {
+			return fmt.Sprintf("上游请求失败：HTTP %d", status)
+		}
+		return fmt.Sprintf("上游请求失败：HTTP %d %s", status, statusText)
+	}
+	switch failure.Code {
+	case ErrorCodeTimeout:
+		return "上游请求超时"
+	case ErrorCodeTransport:
+		return "上游连接失败"
+	case ErrorCodeUpstream:
+		return "上游服务执行失败"
+	}
+	message := strings.TrimSpace(failure.Message)
+	if message != "" {
+		return message
+	}
+	return string(failure.Code)
+}
+
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (c *BuiltinAuditRunController) saveRunPayload(
@@ -1086,6 +1342,20 @@ func maxInt(left, right int) int {
 		return left
 	}
 	return right
+}
+
+func waitForAuditSampleDelay(ctx context.Context, delayMillis int64) error {
+	if delayMillis <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(time.Duration(delayMillis) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *BuiltinAuditRunController) reportBackgroundError(runID string, err error) {

@@ -62,6 +62,9 @@ func NextAuditScheduleSlot(jobID string, schedule AuditSchedule, after time.Time
 	if err := schedule.Validate(); err != nil {
 		return nil, err
 	}
+	if schedule.OneShot {
+		return nil, nil
+	}
 	endAt, err := schedule.EffectiveEndAt()
 	if err != nil {
 		return nil, err
@@ -115,6 +118,9 @@ func DueAuditScheduleSlot(jobID string, schedule AuditSchedule, after, now time.
 	}
 	if err := schedule.Validate(); err != nil {
 		return nil, err
+	}
+	if schedule.OneShot {
+		return nil, nil
 	}
 	endAt, err := schedule.EffectiveEndAt()
 	if err != nil {

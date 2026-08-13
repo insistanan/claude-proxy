@@ -535,7 +535,7 @@ func planBuiltinProbeSamples(
 				Purpose:  PurposeIdentityProbe,
 				Target:   ChannelTarget{ChannelID: input.Target.ChannelID, ChannelKind: input.Target.ChannelKind},
 				Protocol: input.Target.Protocol, Model: input.Target.RequestedModel, Thinking: thinking,
-				RequestProfile: input.Target.RequestProfile, Stream: false, TimeoutMillis: 30_000, MaxOutputTokens: maxOutput,
+				RequestProfile: input.Target.RequestProfile, Stream: false, TimeoutMillis: auditSampleTimeoutMillis, MaxOutputTokens: maxOutput,
 				Input: ExecutionInput{System: system, Prompt: prompt}, Redaction: RedactionDigest,
 			},
 		}
