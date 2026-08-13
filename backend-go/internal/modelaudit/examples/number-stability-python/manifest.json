@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "mod.number-stability-python",
+  "version": "1.0.0",
+  "name": "数字稳定性（Python 分析）",
+  "description": "多次独立请求一个 0-100 整数，由 Python 根据均值和标准差生成分析结果。",
+  "probeFile": "probe-prompt.md",
+  "rulesFile": "rules.json",
+  "sampling": {
+    "mode": "independent",
+    "defaultSampleCount": 20,
+    "maximumSamples": 100,
+    "sampleIntervalMs": 1000,
+    "maxOutputTokens": 16
+  },
+  "parser": { "type": "number", "minimum": 0, "maximum": 100 },
+  "aggregation": { "type": "numeric" },
+  "analysis": {
+    "mode": "python",
+    "methodFile": "method.md",
+    "resultSchemaFile": "result-schema.json",
+    "python": { "entry": "analysis.py", "interpreter": "auto", "timeoutSeconds": 60 }
+  }
+}

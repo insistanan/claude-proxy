@@ -1,0 +1,34 @@
+{
+  "rules": [
+    {
+      "id": "mostly-low",
+      "path": "histogram.low.rate",
+      "operator": "gte",
+      "value": 0.65,
+      "outcome": {
+        "verdict": "distribution_low",
+        "score": 0.75,
+        "confidence": 0.7,
+        "message": "至少 65% 的结果落在 50 以下。"
+      }
+    },
+    {
+      "id": "mostly-high",
+      "path": "histogram.high.rate",
+      "operator": "gte",
+      "value": 0.65,
+      "outcome": {
+        "verdict": "distribution_high",
+        "score": 0.75,
+        "confidence": 0.7,
+        "message": "至少 65% 的结果落在 50 到 100。"
+      }
+    }
+  ],
+  "fallback": {
+    "verdict": "distribution_balanced",
+    "score": 0.5,
+    "confidence": 0.55,
+    "message": "两个区间没有出现明显集中。"
+  }
+}

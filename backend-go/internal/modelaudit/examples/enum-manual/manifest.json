@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "mod.enum-manual",
+  "version": "1.0.0",
+  "name": "选项偏好（手动分析）",
+  "description": "统计 A/B/C 选项偏好，并展示如何用 Java、EXE 或其他外部程序手动分析。",
+  "probeFile": "probe-prompt.md",
+  "rulesFile": "rules.json",
+  "sampling": {
+    "mode": "independent",
+    "defaultSampleCount": 30,
+    "maximumSamples": 100,
+    "sampleIntervalMs": 500,
+    "maxOutputTokens": 8
+  },
+  "parser": { "type": "enum", "choices": ["A", "B", "C"], "ignoreCase": true },
+  "aggregation": { "type": "frequency" },
+  "analysis": {
+    "mode": "manual",
+    "methodFile": "method.md",
+    "resultSchemaFile": "result-schema.json",
+    "manual": {
+      "runtime": "external",
+      "commandExample": "external-analyzer.exe --input \"{input}\" --output \"{output}\""
+    }
+  }
+}

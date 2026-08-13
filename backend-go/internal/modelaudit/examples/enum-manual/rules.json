@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "id": "a-dominant",
+      "path": "frequencies.A",
+      "operator": "gte",
+      "value": 18,
+      "outcome": {
+        "verdict": "a_dominant",
+        "score": 0.7,
+        "confidence": 0.65,
+        "message": "A 至少出现 18 次。"
+      }
+    }
+  ],
+  "fallback": {
+    "verdict": "no_dominant_choice",
+    "score": 0.45,
+    "confidence": 0.5,
+    "message": "没有选项达到预设集中阈值。"
+  }
+}
