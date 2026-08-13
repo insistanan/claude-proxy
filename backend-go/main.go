@@ -99,10 +99,34 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化模型审计策略注册表失败: %v", err)
 	}
-	auditRunController, err := modelaudit.NewBuiltinAuditRunController(
+	auditModCatalog, err := modelaudit.NewAuditModCatalog(".config/model-audit/mods", ".config/model-audit/cache")
+	if err != nil {
+		log.Fatalf("初始化模型审计 Mod 目录失败: %v", err)
+	}
+	auditModManager, err := modelaudit.NewAuditModManager(auditModCatalog, auditStore, auditStrategies)
+	if err != nil {
+		log.Fatalf("初始化模型审计 Mod 管理器失败: %v", err)
+	}
+	auditModSnapshot, err := auditModManager.Reload(context.Background())
+	if err != nil {
+		log.Fatalf("加载模型审计 Mod 失败: %v", err)
+	}
+	for _, issue := range auditModSnapshot.Issues {
+		log.Printf("[ModelAudit-Mod] 目录 %s 加载失败: %s", issue.Directory, issue.Message)
+	}
+	log.Printf("[ModelAudit-Mod] 已加载 %d 个 Mod，%d 个目录存在问题", len(auditModSnapshot.Mods), len(auditModSnapshot.Issues))
+	auditCapabilityAssets, err := modelaudit.NewQuestionBankCapabilityAssets(".config/model-evaluation/question-banks", ".config/model-evaluation/cache")
+	if err != nil {
+		log.Fatalf("初始化能力评测题库失败: %v", err)
+	}
+	for _, issue := range auditCapabilityAssets.QuestionBankCatalog().Issues {
+		log.Printf("[ModelEvaluation-Bank] 目录 %s 加载失败: %s", issue.Directory, issue.Message)
+	}
+	auditRunController, err := modelaudit.NewAuditRunControllerWithCapabilityAssets(
 		auditStore,
 		auditService,
 		auditStrategies,
+		auditCapabilityAssets,
 		modelaudit.DefaultAuditRunControllerConfig(),
 	)
 	if err != nil {
@@ -111,6 +135,9 @@ func main() {
 	auditManagement, err := modelaudit.NewAuditManagementService(auditStore, auditRunController, auditHTMLRenderer)
 	if err != nil {
 		log.Fatalf("初始化模型审计管理服务失败: %v", err)
+	}
+	if err := auditManagement.SetModManager(auditModManager); err != nil {
+		log.Fatalf("绑定模型审计 Mod 管理器失败: %v", err)
 	}
 	auditScheduler, err := modelaudit.NewAuditScheduler(
 		auditStore,
