@@ -389,6 +389,8 @@ func main() {
 		apiGroup.PUT("/settings/opencode", handlers.SaveOpenCodeConfig())
 		apiGroup.GET("/settings/claude-code", handlers.GetClaudeCodeSettings())
 		apiGroup.PUT("/settings/claude-code", handlers.SaveClaudeCodeSettings())
+		apiGroup.GET("/settings/dsh", handlers.GetDSHSettings())
+		apiGroup.PUT("/settings/dsh", handlers.SaveDSHSettings())
 
 		// pi-agent 配置管理（沿用 apiGroup 的统一鉴权）
 		apiGroup.GET("/settings/pi-agent", handlers.GetPiAgentStatus())

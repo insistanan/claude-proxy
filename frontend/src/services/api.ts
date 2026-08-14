@@ -426,6 +426,47 @@ export interface SaveClaudeCodeSettings extends Pick<
   credential?: string
 }
 
+// ============== DSH 配置类型 ==============
+
+export interface DSHModel {
+  id: string
+  name?: string
+  input?: string[]
+  reasoningEfforts?: Record<string, string | null> | false
+  contextWindow?: number | null
+  maxTokens?: number | null
+}
+
+export interface DSHProvider {
+  apiKeyEnv?: string
+  api?: string
+  baseURL?: string
+  displayName?: string
+  models?: DSHModel[]
+}
+
+export interface DSHDefaultModel {
+  provider: string
+  model: string
+}
+
+export interface DSHSettings {
+  dshHome: string
+  path: string
+  exists: boolean
+  writable: boolean
+  providers: Record<string, DSHProvider>
+  providerKeys: string[]
+  defaultModel: DSHDefaultModel | null
+  theme: string
+}
+
+export interface SaveDSHSettings {
+  providers: Record<string, DSHProvider>
+  providerKeys?: string[]
+  defaultModel: DSHDefaultModel | null
+}
+
 export interface ChannelPool {
   id: string
   name: string
@@ -1136,6 +1177,19 @@ class ApiService {
 
   async saveClaudeCodeSettings(settings: SaveClaudeCodeSettings): Promise<{ success: boolean; path: string }> {
     return this.request('/settings/claude-code', {
+      method: 'PUT',
+      body: JSON.stringify(settings)
+    })
+  }
+
+  // ============== DSH 配置 API ==============
+
+  async getDSHSettings(): Promise<DSHSettings> {
+    return this.request('/settings/dsh')
+  }
+
+  async saveDSHSettings(settings: SaveDSHSettings): Promise<{ success: boolean; path: string }> {
+    return this.request('/settings/dsh', {
       method: 'PUT',
       body: JSON.stringify(settings)
     })

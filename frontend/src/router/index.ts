@@ -54,6 +54,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/dsh',
+    name: 'dsh',
+    component: () => import('@/views/DshView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),

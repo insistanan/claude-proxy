@@ -130,6 +130,10 @@
           <router-link to="/pi-agent" class="api-type-text" :class="{ active: topNavActive === 'pi-agent' }">
             pi-agent
           </router-link>
+          <span class="api-type-text separator">/</span>
+          <router-link to="/dsh" class="api-type-text" :class="{ active: topNavActive === 'dsh' }">
+            DSH
+          </router-link>
         </div>
       </div>
 
@@ -477,10 +481,11 @@ const isSkillsPage = computed(() => route.name === 'skills')
 const isOpenCodePage = computed(() => route.name === 'opencode')
 const isClaudeCodePage = computed(() => route.name === 'claude-code')
 const isPiAgentPage = computed(() => route.name === 'pi-agent')
+const isDshPage = computed(() => route.name === 'dsh')
 const isSettingsPage = computed(() => route.name === 'settings')
 const isAuditPage = computed(() => route.name === 'audit-jobs' || route.name === 'audit-report')
 const isEvaluationPage = computed(() => route.name === 'model-evaluation' || route.name === 'evaluation-report')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isSettingsPage.value || isAuditPage.value || isEvaluationPage.value)
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isDshPage.value || isSettingsPage.value || isAuditPage.value || isEvaluationPage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -527,6 +532,9 @@ const topNavActive = computed(() => {
   }
   if (isPiAgentPage.value) {
     return 'pi-agent'
+  }
+  if (isDshPage.value) {
+    return 'dsh'
   }
   if (isSettingsPage.value) {
     return 'settings'
