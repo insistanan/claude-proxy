@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -215,6 +216,24 @@ func (s *Service) Start(ctx context.Context, spec ExecutionSpec) (CreateExecutio
 func (s *Service) run(ctx context.Context, record *executionRecord, request DirectExecutionRequest) {
 	defer func() { <-s.semaphore }()
 	defer record.cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			finishedAt := s.now().UTC()
+			failed := record.snapshot()
+			failed.Status = StatusFailed
+			failed.FinishedAt = &finishedAt
+			if failed.Timing.TotalMillis == 0 {
+				failed.Timing.TotalMillis = finishedAt.Sub(failed.StartedAt).Milliseconds()
+			}
+			failed.Failure = &ExecutionFailure{
+				Code:     ErrorCodeInvalidRequest,
+				Category: ErrorCategoryInternal,
+				Message:  fmt.Sprintf("执行服务内部异常: %v", r),
+			}
+			record.replace(failed)
+			log.Printf("[ModelAudit-Service] 执行 %s panic: %v", record.result.ExecutionID, r)
+		}
+	}()
 
 	result := record.snapshot()
 	result.Status = StatusRunning

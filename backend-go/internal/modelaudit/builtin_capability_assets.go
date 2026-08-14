@@ -19,6 +19,21 @@ func versionedRefKey(ref VersionedRef) string {
 	return ref.ID + "\x00" + ref.SemanticVersion + "\x00" + ref.ImplementationVersion
 }
 
+// capabilityPresetModeOrder 返回预设 mode 的语义排序权重，
+// 确保目录中预设按 quick→standard→deep 的自然顺序展示。
+func capabilityPresetModeOrder(mode CapabilityPresetMode) int {
+	switch mode {
+	case CapabilityPresetQuick:
+		return 0
+	case CapabilityPresetStandard:
+		return 1
+	case CapabilityPresetDeep:
+		return 2
+	default:
+		return 3
+	}
+}
+
 type BuiltinCapabilityAssets struct {
 	mu                sync.RWMutex
 	packageSnapshot   CapabilityTaskPackageSnapshot
@@ -344,7 +359,11 @@ func (a *BuiltinCapabilityAssets) Catalog() AuditCapabilityAssetCatalog {
 		}
 		presetIDs = append(presetIDs, id)
 	}
-	sort.Strings(presetIDs)
+	// 按 mode 语义顺序排序（quick→standard→deep），而非 ID 字符串排序，
+	// 确保目录展示顺序稳定且符合用户认知。
+	sort.Slice(presetIDs, func(i, j int) bool {
+		return capabilityPresetModeOrder(a.presets[presetIDs[i]].Mode) < capabilityPresetModeOrder(a.presets[presetIDs[j]].Mode)
+	})
 	presets := make([]CapabilityRunPreset, 0, len(a.presets))
 	for _, id := range presetIDs {
 		preset := a.presets[id]

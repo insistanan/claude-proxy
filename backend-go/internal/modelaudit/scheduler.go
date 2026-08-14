@@ -120,11 +120,20 @@ func (s *AuditScheduler) loop(ctx context.Context, scanAfter time.Time, done cha
 			return
 		case <-ticker.C:
 			now := s.now().UTC()
-			if now.IsZero() || now.Before(scanAfter) {
-				s.reportErr(contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "审计调度器时钟发生回退"))
-				if !now.IsZero() {
-					scanAfter = now
+			if now.IsZero() {
+				s.reportErr(contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "审计调度器时钟无效"))
+				continue
+			}
+			// 允许小幅时钟回退（小于一个轮询周期）：NTP 校时很常见，
+			// 小幅回退不应中断扫描，仅将 scanAfter 对齐到 now 继续工作。
+			// 大幅回退才视为异常并告警。
+			if now.Before(scanAfter) {
+				backoff := scanAfter.Sub(now)
+				if backoff >= s.config.PollInterval {
+					s.reportErr(contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal,
+						fmt.Sprintf("审计调度器时钟大幅回退 %s", backoff)))
 				}
+				scanAfter = now
 				continue
 			}
 			if err := s.runCycle(ctx, scanAfter, now); err != nil && ctx.Err() == nil {

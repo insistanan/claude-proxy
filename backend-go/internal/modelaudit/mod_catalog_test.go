@@ -157,7 +157,7 @@ func writeAuditModFixture(t *testing.T, directory string, manifest AuditModManif
 	files := map[string]string{
 		"manifest.json":               string(encoded),
 		"probe-prompt.md":             "Return one integer.",
-		"rules.json":                  `{"rules":[],"fallback":{"verdict":"inconclusive","confidence":0}}`,
+		"rules.json":                  `{"rules":[],"fallback":{"verdict":"inconclusive","score":0,"confidence":0,"message":"No rule matched."}}`,
 		"analysis-prompt.md":          "Analyze {{analysis_data_json}}.",
 		"analysis-method.md":          "# Method\n\nAnalyze the current run only.",
 		"analysis-result.schema.json": `{"type":"object"}`,

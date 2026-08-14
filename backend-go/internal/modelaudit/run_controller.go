@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
 type AuditRunControllerConfig struct {
@@ -288,8 +290,14 @@ func (c *BuiltinAuditRunController) CancelRun(ctx context.Context, run AuditRun)
 	select {
 	case <-active.done:
 	case <-ctx.Done():
-		return AuditRun{}, contractError(ErrorCodeCancelled, ErrorCategoryRequest, "等待审计运行取消时请求已结束", ctx.Err())
+		// 请求上下文已结束，但 execute goroutine 可能仍在运行。
+		// 不阻塞返回，改用后台 goroutine 等待其完成后再清理，避免状态不一致。
+		go func() {
+			<-active.done
+		}()
 	}
+	// 无论上面哪个分支，都尝试从 DB 读取最新状态返回。
+	// 如果 execute 尚未完成写入，返回的 run 可能仍是 running——调用方可在后续轮询中看到终态。
 	updated, found, err := c.store.GetRun(context.Background(), run.ID)
 	if err != nil {
 		return AuditRun{}, err
@@ -451,6 +459,11 @@ type auditTargetWorkloadResult struct {
 func (c *BuiltinAuditRunController) execute(ctx context.Context, start AuditRunStart, active *activeAuditRun) {
 	go c.renewLease(ctx, start.Run.ID, active)
 	defer func() {
+		if r := recover(); r != nil {
+			c.reportBackgroundError(start.Run.ID, fmt.Errorf("审计运行 execute panic: %v", r))
+			// 尽力将 run 标记为失败终态，避免永远停留在 running
+			c.ensureTerminalRun(start, active, AuditRunStopFailure, "审计运行因内部异常而中止")
+		}
 		active.cancel()
 		active.stopLeaseRenewal()
 		c.mu.Lock()
@@ -474,6 +487,8 @@ func (c *BuiltinAuditRunController) execute(ctx context.Context, start AuditRunS
 	}
 	if err := c.store.SaveRun(context.Background(), activated, AuditRunPending, active.currentLease(), startedAt); err != nil {
 		c.reportBackgroundError(run.ID, err)
+		// SaveRun 失败时仍尝试写入终态，避免 run 永远停留在 pending
+		c.ensureTerminalRun(start, active, AuditRunStopFailure, "审计运行激活后持久化失败")
 		return
 	}
 	run = activated
@@ -530,6 +545,12 @@ func (c *BuiltinAuditRunController) execute(ctx context.Context, start AuditRunS
 
 func (c *BuiltinAuditRunController) renewLease(ctx context.Context, runID string, active *activeAuditRun) {
 	defer close(active.renewalDone)
+	defer func() {
+		if r := recover(); r != nil {
+			c.reportBackgroundError(runID, fmt.Errorf("审计运行租约续期 panic: %v", r))
+			active.markLeaseLost(fmt.Errorf("租约续期 panic: %v", r))
+		}
+	}()
 	interval := c.config.LeaseDuration / 3
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
@@ -643,7 +664,7 @@ func (c *BuiltinAuditRunController) executeIdentityTarget(
 				return auditTargetWorkloadResult{}, run, AuditRunStopCancelled, err
 			}
 			decision, err := CheckAuditRunBudget(run, AuditRequestBudget{
-				MaximumInputTokens:  int64(maxInt(1, len(plan.Execution.Input.Prompt))),
+				MaximumInputTokens:  int64(maxInt(1, utils.EstimateTokens(plan.Execution.Input.Prompt))),
 				MaximumOutputTokens: int64(plan.Execution.MaxOutputTokens),
 			})
 			if err != nil {
@@ -817,6 +838,9 @@ func (c *BuiltinAuditRunController) executeCapabilityTarget(
 				}
 				return auditTargetWorkloadResult{}, run, AuditRunStopNone, err
 			}
+			// 内置能力包的超时在 task 定义处统一为 30s，
+			// 但实际运行时上游响应可能较慢，这里对内置包做最小超时保障，
+			// 与原逻辑保持一致，避免破坏任务包哈希。
 			if instance.Package.ID == BuiltinCapabilityPackageID && instance.Execution.TimeoutMillis < auditSampleTimeoutMillis {
 				instance.Execution.TimeoutMillis = auditSampleTimeoutMillis
 			}
@@ -1070,6 +1094,8 @@ func (c *BuiltinAuditRunController) finishRun(
 	}
 	if err := c.store.CommitRunFinish(context.Background(), coordination, terminal, lease, start.Job.Revision); err != nil {
 		c.reportBackgroundError(run.ID, err)
+		// 终态提交失败时尝试强制兜底，避免 run 永远停留在 running
+		c.ensureTerminalRun(start, active, reason, failure)
 		return
 	}
 	for _, target := range terminal.Targets {
@@ -1082,6 +1108,50 @@ func (c *BuiltinAuditRunController) finishRun(
 		if _, err := c.store.SaveTargetReport(context.Background(), report); err != nil {
 			c.reportBackgroundError(run.ID, err)
 		}
+	}
+}
+
+// ensureTerminalRun 是终态兜底：当 finishRun 的正常终态提交失败时，
+// 尝试用宽松条件将 run 强制标记为终态，避免 run 永远停留在 running/pending。
+// 此方法尽力而为，失败仅记录日志，不返回错误。
+func (c *BuiltinAuditRunController) ensureTerminalRun(
+	start AuditRunStart,
+	active *activeAuditRun,
+	reason AuditRunStopReason,
+	failure string,
+) {
+	run := start.Run
+	finishedAt := c.now().UTC()
+
+	// 根据 run 当前状态选择合法的停止原因：
+	// - pending 状态只能用 cancelled
+	// - running 状态有用量用 interrupted（可恢复），否则用 failure
+	stopReason := reason
+	if stopReason == AuditRunStopNone {
+		stopReason = AuditRunStopFailure
+	}
+	if run.Status == AuditRunPending {
+		stopReason = AuditRunStopCancelled
+		failure = ""
+	} else if run.Status == AuditRunRunning {
+		if stopReason == AuditRunStopFailure && run.Usage != (AuditRunUsage{}) {
+			stopReason = AuditRunStopInterrupted
+			failure = ""
+		}
+	}
+
+	terminal, err := StopAuditRun(run, stopReason, failure, finishedAt)
+	if err != nil {
+		c.reportBackgroundError(run.ID, fmt.Errorf("终态兜底 StopAuditRun 失败: %w", err))
+		return
+	}
+	coordination, err := PrepareAuditRunFinish(start.Job, start.Job.Revision, terminal, active.currentLease(), finishedAt)
+	if err != nil {
+		c.reportBackgroundError(run.ID, fmt.Errorf("终态兜底 PrepareAuditRunFinish 失败: %w", err))
+		return
+	}
+	if err := c.store.CommitRunFinish(context.Background(), coordination, terminal, active.currentLease(), start.Job.Revision); err != nil {
+		c.reportBackgroundError(run.ID, fmt.Errorf("终态兜底 CommitRunFinish 失败: %w", err))
 	}
 }
 

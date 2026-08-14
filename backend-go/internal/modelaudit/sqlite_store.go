@@ -80,8 +80,11 @@ func NewAuditSQLiteStore(path string) (*AuditSQLiteStore, error) {
 	if err != nil {
 		return nil, contractError(ErrorCodeInvalidRequest, ErrorCategoryInternal, "打开审计数据库失败", err)
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// WAL 模式支持并发读，提高连接数以避免所有 RLock 查询串行化。
+	// 写操作仍由 store 内部的 mu 互斥锁串行化，连接数仅影响读并发。
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(0)
 	store := &AuditSQLiteStore{db: db}
 	if err := store.initSchema(); err != nil {
 		_ = db.Close()
