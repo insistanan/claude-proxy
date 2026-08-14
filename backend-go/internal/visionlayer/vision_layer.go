@@ -45,6 +45,7 @@ type visionImage struct {
 	cacheKey    string
 	memoryKey   string
 	call        *visionInflightCall
+	nonBlocking bool // 已在对话中出现过但缓存未命中（之前解析失败），失败时用占位文本替代而非阻塞请求
 }
 
 // visionAnalysisProfile 保存模型自行理解任务所需的受控上下文。
@@ -180,6 +181,12 @@ func PrepareRequest(
 	if conversationID == "" {
 		return wrapRequestError(http.StatusInternalServerError, "VISION_LAYER_INTERNAL_ERROR", fmt.Errorf("图片理解层缺少对话标识"))
 	}
+
+	// 查询对话中已记录的图片指纹。如果某图片指纹已在对话记录中但缓存未命中，
+	// 说明之前解析失败了。对这类图片采用非阻塞模式：失败时用占位文本替代，
+	// 不中断用户的对话请求。
+	knownFingerprints := loadKnownImageFingerprints(channelScheduler, conversationID)
+
 	descriptions := make(map[string]string, len(images))
 	pendingImages := make([]visionImage, 0, len(images))
 	waitingImages := make([]visionWaiter, 0, len(images))
@@ -196,7 +203,7 @@ func PrepareRequest(
 			continue
 		}
 
-		cacheKey := buildImageCacheKey(fingerprint, kind, visionChannelID, visionModelInput, profile.intentFingerprint)
+		cacheKey := buildImageCacheKey(fingerprint, kind, visionModelInput)
 		result, ok, err := loadCache(channelScheduler, conversationID, cacheKey)
 		if err != nil {
 			return wrapRequestError(http.StatusInternalServerError, "VISION_LAYER_CACHE_ERROR", fmt.Errorf("读取图片理解缓存失败: %w", err))
@@ -224,6 +231,7 @@ func PrepareRequest(
 			cacheKey:    cacheKey,
 			memoryKey:   memoryKey,
 			call:        call,
+			nonBlocking: knownFingerprints[fingerprint],
 		})
 	}
 
@@ -235,6 +243,24 @@ func PrepareRequest(
 		batch := pendingImages[start:end]
 		batchResult, err := describeImages(c, envCfg, cfgManager, channelScheduler, kind, targetUpstream.PoolID, visionChannelID, visionModelInput, profile, batch)
 		if err != nil {
+			// 检查这批图片是否全部为非阻塞模式（已在对话中出现过但缓存未命中）。
+			// 如果是，用占位文本替代而非中断请求——用户不应因之前已解析失败的图片
+			// 而在后续纯文本消息中反复被阻塞。
+			allNonBlocking := true
+			for _, img := range batch {
+				if !img.nonBlocking {
+					allNonBlocking = false
+					break
+				}
+			}
+			if allNonBlocking {
+				for _, img := range batch {
+					placeholder := "[图片理解暂时不可用，请基于上下文继续对话]"
+					descriptions[img.fingerprint] = placeholder
+					finishAnalysis(img.memoryKey, img.call, placeholder, nil)
+				}
+				continue
+			}
 			err = wrapRequestError(http.StatusBadGateway, "VISION_LAYER_UPSTREAM_ERROR", err)
 			failPendingAnalyses(pendingImages, err)
 			return err
@@ -294,26 +320,74 @@ func describeImages(
 	profile visionAnalysisProfile,
 	images []visionImage,
 ) (map[string]string, error) {
+	// 阶段一：用配置的图片理解渠道尝试，最多允许 2 次失败。
 	selection, err := channelScheduler.SelectVisionChannel(c.Request.Context(), kind, visionChannelID, targetPoolID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
+	if err == nil {
+		result, failCount, err := describeImagesOnChannel(c, envCfg, cfgManager, channelScheduler, kind, selection, visionModelInput, profile, images, 2)
 		if selection.Reserved {
 			channelScheduler.ReleaseChannelReservation(selection.Kind, selection.ChannelIndex)
 		}
-	}()
+		if err == nil {
+			return result, nil
+		}
+		if failCount < 2 {
+			// 未达到失败阈值就返回了错误（如不可重试的 HTTP 状态码），直接返回
+			return nil, err
+		}
+		// 失败次数达到阈值，尝试回退到公共图片理解渠道池
+	}
 
+	// 阶段二：从公共图片理解渠道池中寻找其他可用渠道
+	fallbacks := channelScheduler.ListFallbackVisionChannels(c.Request.Context(), kind, visionChannelID, targetPoolID)
+	var lastErr error
+	if err != nil {
+		lastErr = err
+	} else {
+		lastErr = fmt.Errorf("图片理解渠道 %q 不可用", visionChannelID)
+	}
+
+	for _, fb := range fallbacks {
+		result, failCount, ferr := describeImagesOnChannel(c, envCfg, cfgManager, channelScheduler, kind, fb, visionModelInput, profile, images, 2)
+		if fb.Reserved {
+			channelScheduler.ReleaseChannelReservation(fb.Kind, fb.ChannelIndex)
+		}
+		if ferr == nil {
+			return result, nil
+		}
+		lastErr = ferr
+		if failCount < 2 {
+			break
+		}
+	}
+
+	return nil, lastErr
+}
+
+// describeImagesOnChannel 在指定的图片理解渠道上尝试解析图片。
+// maxFailures 限制单个渠道上的最大失败次数（URL×Key 组合维度），达到阈值后不再继续。
+// 返回 (结果, 失败次数, 错误)。
+func describeImagesOnChannel(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	kind scheduler.ChannelKind,
+	selection *scheduler.SelectionResult,
+	visionModelInput string,
+	profile visionAnalysisProfile,
+	images []visionImage,
+	maxFailures int,
+) (map[string]string, int, error) {
 	upstream := selection.Upstream
 	provider := providers.GetProvider(upstream.ServiceType)
 	if provider == nil {
-		return nil, fmt.Errorf("图片理解渠道 %q 的服务类型 %q 不受支持", upstream.Name, upstream.ServiceType)
+		return nil, 0, fmt.Errorf("图片理解渠道 %q 的服务类型 %q 不受支持", upstream.Name, upstream.ServiceType)
 	}
 	// 图片理解模型必须按图片理解渠道自身的配置解析。文字渠道的协议、模型映射
 	// 和默认模型不应影响这里；解析后清空映射，防止 Provider 再次重定向模型。
 	visionModel := config.ResolveUpstreamModel(visionModelInput, upstream)
 	if visionModel == "" {
-		return nil, fmt.Errorf("图片理解渠道 %q 未能解析可用模型", upstream.Name)
+		return nil, 0, fmt.Errorf("图片理解渠道 %q 未能解析可用模型", upstream.Name)
 	}
 	visionUpstream := upstream.Clone()
 	visionUpstream.DefaultModel = visionModel
@@ -321,13 +395,14 @@ func describeImages(
 
 	visionBody, err := buildVisionRequest(visionModel, profile, images)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	visionRequestID := fmt.Sprintf("vision-%d", atomic.AddUint64(&visionCallCounter, 1))
 	failedKeys := make(map[string]bool)
 	urlResults := channelScheduler.GetSortedURLsForChannel(kind, selection.ChannelIndex, upstream.GetAllBaseURLs())
 	var lastErr error
+	failCount := 0
 
 	for _, urlResult := range urlResults {
 		baseURL := urlResult.URL
@@ -349,7 +424,11 @@ func describeImages(
 			if requestErr != nil {
 				lastErr = requestErr
 				failedKeys[apiKey] = true
+				failCount++
 				recordVisionAttempt(channelScheduler, kind, selection, upstream, visionRequestID, visionModel, baseURL, apiKey, "failed", 0, false, attemptStart, "build_request", requestErr.Error(), attempt > 0, nil)
+				if failCount >= maxFailures {
+					return nil, failCount, lastErr
+				}
 				continue
 			}
 
@@ -357,7 +436,7 @@ func describeImages(
 			client, clientErr := httpclient.GetManager().GetStandardClientForUpstream(timeout, cfgManager, upstream)
 			if clientErr != nil {
 				_ = request.Body.Close()
-				return nil, clientErr
+				return nil, failCount, clientErr
 			}
 			channelScheduler.RecordRequestStart(baseURL, apiKey, kind)
 			metricsRequestID := channelScheduler.RecordRequestConnected(baseURL, apiKey, visionModel, kind)
@@ -369,7 +448,11 @@ func describeImages(
 				cfgManager.MarkKeyAsFailed(apiKey, "VisionLayer")
 				failedKeys[apiKey] = true
 				lastErr = requestErr
+				failCount++
 				recordVisionAttempt(channelScheduler, kind, selection, upstream, visionRequestID, visionModel, baseURL, apiKey, "failed", 0, false, attemptStart, "network", requestErr.Error(), attempt > 0, nil)
+				if failCount >= maxFailures {
+					return nil, failCount, lastErr
+				}
 				continue
 			}
 
@@ -382,7 +465,11 @@ func describeImages(
 				cfgManager.MarkKeyAsFailed(apiKey, "VisionLayer")
 				failedKeys[apiKey] = true
 				lastErr = readErr
+				failCount++
 				recordVisionAttempt(channelScheduler, kind, selection, upstream, visionRequestID, visionModel, baseURL, apiKey, "failed", response.StatusCode, false, attemptStart, "read_response", readErr.Error(), attempt > 0, nil)
+				if failCount >= maxFailures {
+					return nil, failCount, lastErr
+				}
 				continue
 			}
 			body = utils.DecompressGzipIfNeeded(response, body)
@@ -399,9 +486,13 @@ func describeImages(
 				}
 				recordVisionAttempt(channelScheduler, kind, selection, upstream, visionRequestID, visionModel, baseURL, apiKey, "failed", response.StatusCode, false, attemptStart, "upstream", lastErr.Error(), attempt > 0, nil)
 				if retry {
+					failCount++
+					if failCount >= maxFailures {
+						return nil, failCount, lastErr
+					}
 					continue
 				}
-				return nil, lastErr
+				return nil, failCount, lastErr
 			}
 
 			claudeResponse, convertErr := provider.ConvertToClaudeResponse(&types.ProviderResponse{
@@ -415,7 +506,7 @@ func describeImages(
 				channelScheduler.MarkURLFailure(kind, selection.ChannelIndex, baseURL)
 				lastErr = fmt.Errorf("解析图片理解响应失败: %w", convertErr)
 				recordVisionAttempt(channelScheduler, kind, selection, upstream, visionRequestID, visionModel, baseURL, apiKey, "failed", response.StatusCode, false, attemptStart, "response_processing", lastErr.Error(), attempt > 0, nil)
-				return nil, lastErr
+				return nil, failCount, lastErr
 			}
 			rawResult := extractResponseText(claudeResponse)
 			if rawResult == "" {
@@ -423,7 +514,7 @@ func describeImages(
 				channelScheduler.RecordRequestEnd(baseURL, apiKey, kind)
 				lastErr = fmt.Errorf("图片理解渠道 %q 未返回文字结果", upstream.Name)
 				recordVisionAttempt(channelScheduler, kind, selection, upstream, visionRequestID, visionModel, baseURL, apiKey, "failed", response.StatusCode, false, attemptStart, "empty_response", lastErr.Error(), attempt > 0, nil)
-				return nil, lastErr
+				return nil, failCount, lastErr
 			}
 			result, parseErr := parseVisionBatchResponse(rawResult, images)
 			if parseErr != nil {
@@ -431,21 +522,21 @@ func describeImages(
 				channelScheduler.RecordRequestEnd(baseURL, apiKey, kind)
 				lastErr = fmt.Errorf("图片理解渠道 %q 返回的多图结果无效: %w", upstream.Name, parseErr)
 				recordVisionAttempt(channelScheduler, kind, selection, upstream, visionRequestID, visionModel, baseURL, apiKey, "failed", response.StatusCode, false, attemptStart, "invalid_batch_response", lastErr.Error(), attempt > 0, nil)
-				return nil, lastErr
+				return nil, failCount, lastErr
 			}
 
 			channelScheduler.RecordRequestFinalizeSuccess(baseURL, apiKey, metricsRequestID, claudeResponse.Usage, kind)
 			channelScheduler.RecordRequestEnd(baseURL, apiKey, kind)
 			channelScheduler.MarkURLSuccess(kind, selection.ChannelIndex, baseURL)
 			recordVisionAttempt(channelScheduler, kind, selection, upstream, visionRequestID, visionModel, baseURL, apiKey, "completed", response.StatusCode, true, attemptStart, "", "", attempt > 0, claudeResponse.Usage)
-			return result, nil
+			return result, failCount, nil
 		}
 	}
 
 	if lastErr == nil {
 		lastErr = fmt.Errorf("图片理解渠道 %q 没有可用的 BaseURL", upstream.Name)
 	}
-	return nil, lastErr
+	return nil, failCount, lastErr
 }
 
 func buildProviderRequest(
@@ -1177,13 +1268,15 @@ func extractResponseText(response *types.ClaudeResponse) string {
 	return strings.Join(parts, "\n")
 }
 
-func buildImageCacheKey(fingerprint string, kind scheduler.ChannelKind, channelID string, model string, intentFingerprint string) string {
+func buildImageCacheKey(fingerprint string, kind scheduler.ChannelKind, model string) string {
+	// 缓存键仅基于图片指纹、渠道类型和模型，不包含 channelID 和 intentFingerprint。
+	// 这样同一张图片在同一对话中只解析一次，不管：
+	// - 用哪个 vision channel 解析的（回退到其他渠道后仍能命中缓存）
+	// - 用户后续消息的文本内容如何变化（历史图片块重发时不会重新识图）
 	profile := strings.Join([]string{
 		visionPromptVersion,
 		string(kind),
-		strings.TrimSpace(channelID),
 		strings.TrimSpace(model),
-		strings.TrimSpace(intentFingerprint),
 		strings.TrimSpace(fingerprint),
 	}, "\n")
 	sum := sha256.Sum256([]byte(profile))
@@ -1192,6 +1285,31 @@ func buildImageCacheKey(fingerprint string, kind scheduler.ChannelKind, channelI
 
 func memoryCacheKey(conversationID string, key string) string {
 	return conversationID + "\x00" + key
+}
+
+// loadKnownImageFingerprints 返回当前对话中已记录的图片指纹集合。
+// 用于判断某张图片是否在之前的请求中出现过——如果出现过但缓存未命中，
+// 说明之前解析失败了，应对其采用非阻塞模式。
+func loadKnownImageFingerprints(channelScheduler *scheduler.ChannelScheduler, conversationID string) map[string]bool {
+	if channelScheduler == nil {
+		return nil
+	}
+	registry := channelScheduler.GetConversationRegistry()
+	if registry == nil {
+		return nil
+	}
+	record, ok := registry.Get(conversationID)
+	if !ok || record == nil {
+		return nil
+	}
+	result := make(map[string]bool, len(record.ImageFingerprints))
+	for _, fp := range record.ImageFingerprints {
+		fp = strings.TrimSpace(fp)
+		if fp != "" {
+			result[fp] = true
+		}
+	}
+	return result
 }
 
 func loadCache(channelScheduler *scheduler.ChannelScheduler, conversationID string, key string) (string, bool, error) {

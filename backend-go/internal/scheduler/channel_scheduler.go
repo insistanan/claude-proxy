@@ -932,6 +932,71 @@ func (s *ChannelScheduler) SelectVisionChannel(ctx context.Context, kind Channel
 	return nil, fmt.Errorf("图片理解渠道 %q 不存在", channelID)
 }
 
+// ListFallbackVisionChannels 返回公共图片理解渠道池中可用的渠道列表，
+// 排除已尝试过的渠道 ID。用于图片理解渠道失败后的自动回退。
+// 返回的渠道按健康度排序（健康优先）。
+func (s *ChannelScheduler) ListFallbackVisionChannels(ctx context.Context, kind ChannelKind, excludeChannelID string, ownerPoolID string) []*SelectionResult {
+	if ctx == nil {
+		return nil
+	}
+	channelID := strings.TrimSpace(excludeChannelID)
+	ownerPoolID = strings.TrimSpace(ownerPoolID)
+	if ownerPoolID == "" {
+		ownerPoolID = config.DefaultChannelPoolID
+	}
+
+	cfg := s.configManager.GetConfig()
+	var upstreams []config.UpstreamConfig
+	switch kind {
+	case ChannelKindMessages:
+		upstreams = cfg.Upstream
+	case ChannelKindResponses:
+		upstreams = cfg.ResponsesUpstream
+	case ChannelKindGemini:
+		upstreams = cfg.GeminiUpstream
+	case ChannelKindChat:
+		upstreams = cfg.ChatUpstream
+	case ChannelKindImages:
+		upstreams = cfg.ImagesUpstream
+	default:
+		return nil
+	}
+
+	var results []*SelectionResult
+	for index := range upstreams {
+		upstream := &upstreams[index]
+		if upstream.ID == channelID {
+			continue
+		}
+		// 必须标记为支持图片理解
+		if !upstream.VisionCapable {
+			continue
+		}
+		// 必须是公共图片理解渠道（ExcludeFromConversation=true）或同池渠道
+		targetPoolID := strings.TrimSpace(upstream.PoolID)
+		if targetPoolID == "" {
+			targetPoolID = config.DefaultChannelPoolID
+		}
+		if !upstream.ExcludeFromConversation && targetPoolID != ownerPoolID {
+			continue
+		}
+		// 必须可用且健康
+		if config.GetChannelStatus(upstream) != config.ChannelStatusActive || len(upstream.APIKeys) == 0 {
+			continue
+		}
+		metricsManager := s.getMetricsManager(kind)
+		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys) {
+			continue
+		}
+		results = append(results, &SelectionResult{
+			Upstream:     upstream.Clone(),
+			ChannelIndex: index,
+			Reason:       "vision_layer_fallback",
+		})
+	}
+	return results
+}
+
 // RecordSuccess 记录渠道成功（使用 baseURL + apiKey）
 func (s *ChannelScheduler) RecordSuccess(baseURL, apiKey string, kind ChannelKind) {
 	s.getMetricsManager(kind).RecordSuccess(baseURL, apiKey)
