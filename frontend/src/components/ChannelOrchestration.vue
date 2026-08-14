@@ -163,16 +163,25 @@
                 <v-icon size="14">mdi-open-in-new</v-icon>
               </v-btn>
               <span class="text-caption text-medium-emphasis ml-2">{{ element.serviceType }}</span>
-              <v-chip
+              <v-tooltip
                 v-if="formatChannelModelPreview(element)"
-                size="x-small"
-                color="secondary"
-                variant="tonal"
-                class="ml-2 model-preview-chip"
-                :title="formatChannelModelPreview(element)"
+                :text="formatModelMappingFull(element)"
+                location="top"
+                :open-delay="200"
+                :open-on-focus="false"
               >
-                {{ formatChannelModelPreview(element) }}
-              </v-chip>
+                <template #activator="{ props: tooltipProps }">
+                  <v-chip
+                    v-bind="tooltipProps"
+                    size="x-small"
+                    color="secondary"
+                    variant="tonal"
+                    class="ml-2 model-preview-chip"
+                  >
+                    {{ formatChannelModelPreview(element) }}
+                  </v-chip>
+                </template>
+              </v-tooltip>
               <span v-if="element.description" class="text-caption text-disabled ml-3 channel-description">{{ element.description }}</span>
               <!-- 展开图标 -->
               <v-icon
@@ -415,16 +424,25 @@
                 @keydown.space.prevent="$emit('edit', channel)"
               >{{ channel.name }}</span>
               <span class="text-caption text-disabled ml-2">{{ channel.serviceType }}</span>
-              <v-chip
+              <v-tooltip
                 v-if="formatChannelModelPreview(channel)"
-                size="x-small"
-                color="secondary"
-                variant="tonal"
-                class="ml-2 model-preview-chip"
-                :title="formatChannelModelPreview(channel)"
+                :text="formatModelMappingFull(channel)"
+                location="top"
+                :open-delay="200"
+                :open-on-focus="false"
               >
-                {{ formatChannelModelPreview(channel) }}
-              </v-chip>
+                <template #activator="{ props: tooltipProps }">
+                  <v-chip
+                    v-bind="tooltipProps"
+                    size="x-small"
+                    color="secondary"
+                    variant="tonal"
+                    class="ml-2 model-preview-chip"
+                  >
+                    {{ formatChannelModelPreview(channel) }}
+                  </v-chip>
+                </template>
+              </v-tooltip>
               <v-chip v-if="channel.temporary" size="x-small" color="warning" variant="tonal" class="ml-2">
                 临时 {{ formatDateTime(channel.temporaryUntil) }}
               </v-chip>
@@ -560,16 +578,25 @@
                 @keydown.space.prevent="$emit('edit', channel)"
               >{{ channel.name }}</span>
               <span class="text-caption text-disabled ml-2">{{ channel.serviceType }}</span>
-              <v-chip
+              <v-tooltip
                 v-if="formatChannelModelPreview(channel)"
-                size="x-small"
-                color="secondary"
-                variant="tonal"
-                class="ml-2 model-preview-chip"
-                :title="formatChannelModelPreview(channel)"
+                :text="formatModelMappingFull(channel)"
+                location="top"
+                :open-delay="200"
+                :open-on-focus="false"
               >
-                {{ formatChannelModelPreview(channel) }}
-              </v-chip>
+                <template #activator="{ props: tooltipProps }">
+                  <v-chip
+                    v-bind="tooltipProps"
+                    size="x-small"
+                    color="secondary"
+                    variant="tonal"
+                    class="ml-2 model-preview-chip"
+                  >
+                    {{ formatChannelModelPreview(channel) }}
+                  </v-chip>
+                </template>
+              </v-tooltip>
             </div>
             <div class="channel-info-desc text-caption text-disabled">
               弃用时间：{{ formatDateTime(channel.deprecatedAt) }}
@@ -1618,7 +1645,31 @@ const formatChannelModelPreview = (channel: Channel): string => {
   const preferred = pickPreferredModelMapping(entries, channel)
   if (!preferred) return ''
   const [source, target] = preferred
-  return source === target ? target : `${source} -> ${target}`
+  const base = source === target ? target : `${source} → ${target}`
+
+  // 有多条映射时追加数量提示，避免只展示一条造成"没展示完全"的误解
+  if (entries.length > 1) {
+    return `${base} +${entries.length - 1}`
+  }
+  return base
+}
+
+// 完整映射列表，用于 hover tooltip 展示全貌
+const formatModelMappingFull = (channel: Channel): string => {
+  const defaultModel = String(channel.defaultModel || '').trim()
+  const entries = normalizeModelMappingEntries(channel.modelMapping)
+
+  const lines: string[] = []
+  if (defaultModel) {
+    lines.push(`兜底 → ${defaultModel}`)
+  }
+  for (const [source, target] of entries) {
+    lines.push(`${source} → ${target}`)
+  }
+  if (lines.length === 0) {
+    return '无模型映射'
+  }
+  return lines.join('\n')
 }
 
 const normalizeModelMappingEntries = (
@@ -2201,8 +2252,8 @@ defineExpose({
 .metrics-tooltip-row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
 .metrics-tooltip-row span:first-child { color: rgba(var(--v-theme-on-surface), 0.55); }
 .metrics-tooltip-row span:last-child { font-weight: 500; color: rgb(var(--v-theme-on-surface)); }
-.model-preview-chip { max-width: 260px; overflow: hidden; }
-.model-preview-chip :deep(.v-chip__content) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-preview-chip { max-width: 360px; overflow: hidden; }
+.model-preview-chip :deep(.v-chip__content) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; }
 
 /* 日志对话框 */
 .channel-logs-dialog-card { max-height: calc(100vh - 48px); display: flex; flex-direction: column; }

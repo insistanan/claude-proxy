@@ -87,6 +87,7 @@ import {
   mdiLoading,
   mdiClockOutline,
   mdiChartLineVariant,
+  mdiChartBoxOutline,
   mdiMagnify,
   mdiCalendar,
   mdiPaperclip,
@@ -225,6 +226,7 @@ const iconMap: Record<string, string> = {
   'form-textbox': mdiFormTextbox,
   'clock-outline': mdiClockOutline,
   'chart-line-variant': mdiChartLineVariant,
+  'chart-box-outline': mdiChartBoxOutline,
   paperclip: mdiPaperclip,
   'eye-dropper': mdiEyedropper,
 
