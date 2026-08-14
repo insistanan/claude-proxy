@@ -211,6 +211,36 @@
                       </v-expand-transition>
                     </div>
 
+                    <!-- 上下文与输出限制（对应 DSH settings.yaml 的 contextWindow / maxTokens 字段） -->
+                    <v-row class="mt-4">
+                      <v-col cols="12" sm="6">
+                        <v-text-field
+                          v-model.number="model.contextWindow"
+                          label="最大上下文 (contextWindow)"
+                          variant="outlined"
+                          density="comfortable"
+                          type="number"
+                          min="1"
+                          placeholder="例如 131072"
+                          hint="上下文窗口上限（tokens），写入 settings.yaml 的 contextWindow；留空则不限制"
+                          persistent-hint
+                        />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-text-field
+                          v-model.number="model.maxTokens"
+                          label="最大输出长度 (maxTokens)"
+                          variant="outlined"
+                          density="comfortable"
+                          type="number"
+                          min="1"
+                          placeholder="例如 8192"
+                          hint="单次输出 token 上限，写入 settings.yaml 的 maxTokens；留空则不限制"
+                          persistent-hint
+                        />
+                      </v-col>
+                    </v-row>
+
                     <div class="d-flex justify-end mt-4">
                       <v-btn size="small" variant="text" color="error" prepend-icon="mdi-delete" @click="removeModel(selectedProvider, idx)">删除模型</v-btn>
                     </div>
@@ -531,6 +561,14 @@ const removeModel = (provider: DSHProvider, idx: number) => {
   syncModelFlags()
 }
 
+// 将最大上下文/最大输出长度的输入值归一化：空值、非正数或非法数值统一转为 undefined，
+// 回传后端时省略该字段，不写入 settings.yaml。
+const normalizeModelNumber = (value: unknown): number | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  if (value <= 0) return undefined
+  return Math.trunc(value)
+}
+
 // 从 UI 状态收集模型配置
 const collectModelConfig = (model: DSHModel, idx: number): DSHModel => {
   const key = model.id || `__${idx}`
@@ -558,8 +596,8 @@ const collectModelConfig = (model: DSHModel, idx: number): DSHModel => {
     name: model.name || undefined,
     input: input.length > 0 ? input : undefined,
     reasoningEfforts,
-    contextWindow: model.contextWindow ?? undefined,
-    maxTokens: model.maxTokens ?? undefined
+    contextWindow: normalizeModelNumber(model.contextWindow),
+    maxTokens: normalizeModelNumber(model.maxTokens)
   }
 }
 
