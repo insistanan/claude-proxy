@@ -102,8 +102,13 @@ func (cm *ConfigManager) ResolveUpstreamProxyURL(upstream *UpstreamConfig) (stri
 		return strings.TrimSpace(upstream.ProxyURL), nil
 	case ProxyModeInherit:
 		cm.mu.RLock()
-		proxyURL := strings.TrimSpace(cm.config.Settings.Network.UpstreamProxyURL)
+		network := cm.config.Settings.Network
 		cm.mu.RUnlock()
+		// 全局代理开关未启用时按直连处理，避免残留的代理地址强制走代理
+		if !network.UpstreamProxyEnabled {
+			return "", nil
+		}
+		proxyURL := strings.TrimSpace(network.UpstreamProxyURL)
 		if err := ValidateProxyURL(proxyURL); err != nil {
 			return "", fmt.Errorf("全局上游代理配置无效: %w", err)
 		}
@@ -141,15 +146,11 @@ func (cm *ConfigManager) UpdateSettings(settings SettingsConfig) error {
 	return nil
 }
 
+// UpdateNetworkSettings 全量设置网络分组。
+// 传入空 UpstreamProxyURL 表示清空全局代理地址；是否实际生效由
+// ResolveUpstreamProxyURL 依据 UpstreamProxyEnabled 开关统一判定。
 func (cm *ConfigManager) UpdateNetworkSettings(settings NetworkSettings) error {
-	cm.mu.RLock()
-	currentURL := cm.config.Settings.Network.UpstreamProxyURL
-	cm.mu.RUnlock()
-
 	settings.UpstreamProxyURL = strings.TrimSpace(settings.UpstreamProxyURL)
-	if settings.UpstreamProxyURL == "" && currentURL != "" {
-		settings.UpstreamProxyURL = currentURL
-	}
 	if err := ValidateProxyURL(settings.UpstreamProxyURL); err != nil {
 		return err
 	}

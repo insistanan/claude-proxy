@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -226,6 +227,19 @@ func (cm *ConfigManager) applyConfigDefaults(rawJSON []byte) bool {
 				} else if migrateContentSafetyConfig(&cm.config.Settings.ContentSafety, rawContentSafety) {
 					needSave = true
 					log.Printf("[Config-Migration] 内容安全配置已迁移到分离的 PII/凭据策略")
+				}
+				// 旧版全局代理配置只有代理地址没有启用开关（引入开关前的版本）：
+				// 地址非空表示此前一直生效，按“已启用”迁移，保持旧行为不因开关默认 false 而中断。
+				if rawNetwork, exists := settingsMap["network"]; exists {
+					var networkMap map[string]json.RawMessage
+					if err := json.Unmarshal(rawNetwork, &networkMap); err == nil {
+						if _, hasEnabled := networkMap["upstreamProxyEnabled"]; !hasEnabled &&
+							strings.TrimSpace(cm.config.Settings.Network.UpstreamProxyURL) != "" {
+							cm.config.Settings.Network.UpstreamProxyEnabled = true
+							needSave = true
+							log.Printf("[Config-Migration] 旧版全局代理配置缺少启用开关，按已启用迁移")
+						}
+					}
 				}
 			}
 		}

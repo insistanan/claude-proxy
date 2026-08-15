@@ -477,7 +477,8 @@ const saveNetworkSettings = async () => {
   try {
     const settings = await api.updateSettings({
       network: {
-        upstreamProxyUrl: proxyUrl.value.trim(),
+        // 提交规范化值：开关关闭时同步清空地址，避免后端残留旧代理地址强制生效
+        upstreamProxyUrl: normalizedProxyUrl.value,
         upstreamProxyEnabled: proxyEnabled.value
       }
     })
