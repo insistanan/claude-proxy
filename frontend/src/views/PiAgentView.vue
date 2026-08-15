@@ -69,7 +69,7 @@
                   </div>
                   <div class="agent-config-panel-actions">
                     <v-tooltip text="连通性测试"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-test-tube" size="small" variant="text" aria-label="测试供应商连通性" :disabled="!isExistingProvider || discovering" :loading="testing" @click="testProvider" /></template></v-tooltip>
-                    <v-tooltip text="发现 OpenAI 兼容模型"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-magnify" size="small" variant="text" aria-label="发现 OpenAI 兼容模型" :disabled="!isExistingProvider || testing || (selectedProvider.api && !['openai-completions', 'openai-responses'].includes(selectedProvider.api))" :loading="discovering" @click="discoverModels" /></template></v-tooltip>
+                    <v-tooltip text="发现 OpenAI 兼容模型"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-magnify" size="small" variant="text" aria-label="发现 OpenAI 兼容模型" :disabled="!isExistingProvider || testing || (Boolean(selectedProvider.api) && !['openai-completions', 'openai-responses'].includes(selectedProvider.api))" :loading="discovering" @click="discoverModels" /></template></v-tooltip>
                     <v-btn color="error" variant="text" size="small" prepend-icon="mdi-delete" :disabled="!isExistingProvider" @click="removeProvider(selectedProvider.id)">删除</v-btn>
                     <v-btn color="primary" size="small" prepend-icon="mdi-content-save" :loading="savingProvider" @click="saveSelectedProvider">保存</v-btn>
                   </div>
@@ -369,7 +369,7 @@
 import { computed, onMounted, ref } from 'vue'
 import AgentConfigHeader from '@/components/AgentConfigHeader.vue'
 import AgentConfigLocation from '@/components/AgentConfigLocation.vue'
-import { api, type ApiError, type PiAgentBackup, type PiAgentCredential, type PiAgentFileKind, type PiAgentStatus } from '@/services/api'
+import { api, type ApiError, type PiAgentBackup, type PiAgentCredential, type PiAgentFileKind, type PiAgentProvider, type PiAgentStatus } from '@/services/api'
 
 const loading = ref(false)
 const disabled = ref(false)
@@ -514,8 +514,8 @@ const toEditableModel = (m: Record<string, unknown>): EditableModel => {
 }
 
 // 后端 provider → 编辑 provider
-const toEditableProvider = (p: Record<string, unknown>): EditableProvider => {
-  const models = ((p.models as Record<string, unknown>[]) ?? []).map(toEditableModel)
+const toEditableProvider = (p: PiAgentProvider): EditableProvider => {
+  const models = ((p.models as unknown as Record<string, unknown>[]) ?? []).map(toEditableModel)
   return {
     localId: localID(),
     persisted: true,

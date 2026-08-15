@@ -600,7 +600,8 @@ const handleQuickTest = (channelId: number) => {
   const playgroundStore = usePlaygroundStore()
   const currentApiType = channelStore.activeTab
   const channel = channelStore.getChannelsByType(currentApiType).find(item => item.index === channelId)
-  if (!channel?.id) {
+  const stableChannelId = channel?.id
+  if (!stableChannelId) {
     showToast('渠道缺少稳定 ID，无法执行快捷测试', 'error')
     return
   }
@@ -629,7 +630,7 @@ const handleQuickTest = (channelId: number) => {
 
       await testChannel(
         currentApiType,
-        channel.id,
+        stableChannelId,
         '你好',
         (chunk: string) => {
           playgroundStore.updateLastMessage(
