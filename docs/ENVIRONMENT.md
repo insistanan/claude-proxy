@@ -1,29 +1,33 @@
 # 环境变量配置
 
+> 默认值以代码为准（`backend-go/internal/config/env.go` 的 `NewEnvConfig`）；`.env.example` 是推荐配置示例，与代码默认值允许不同（如 `ENV`、`ENABLE_CORS` 示例值即与默认值相反）。未设置的环境变量走下表"代码默认值"。
+
 ## 后端（Go）
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
+| 变量 | 代码默认值 | 说明 |
+|------|-----------|------|
 | `PORT` | 3000 | 服务器端口 |
-| `ENV` | development | 运行环境：`development` / `production` |
+| `ENV` | development（`NODE_ENV` 兼容） | 运行环境：`development` / `production`。`production` 关闭 /admin/dev/info 路由并收紧 CORS；`.env.example` 建议 production |
 | `PROXY_ACCESS_KEY` | your-proxy-access-key | 访问密钥（生产环境必须修改） |
-| `ENABLE_WEB_UI` | true | 是否启用管理界面 |
-| `LOG_LEVEL` | info | 日志级别：`debug` / `info` / `warn` / `error` |
-| `ENABLE_REQUEST_LOGS` | true | 记录请求日志 |
+| `ENABLE_WEB_UI` | true | 是否启用 Web 管理界面 |
+| `LOG_LEVEL` | info | 日志级别：`error` / `warn` / `info` / `debug` |
+| `ENABLE_REQUEST_LOGS` | true | 记录请求日志（`false` 才关闭） |
 | `ENABLE_RESPONSE_LOGS` | true | 记录响应日志 |
 | `QUIET_POLLING_LOGS` | true | 静默前端轮询日志 |
 | `RAW_LOG_OUTPUT` | false | 原始日志输出（不缩进、不截断） |
 | `SSE_DEBUG_LEVEL` | off | SSE 调试级别：`off` / `summary` / `full` |
-| `REWRITE_RESPONSE_MODEL` | false | 改写响应 model 字段为请求 model |
+| `REWRITE_RESPONSE_MODEL` | false | 改写响应 model 字段为请求 model（仅 Messages 流式响应） |
 | `REQUEST_TIMEOUT` | 300000 | 请求超时（毫秒） |
-| `MAX_REQUEST_BODY_SIZE_MB` | 50 | 请求体最大大小 |
-| `ENABLE_CORS` | true | 启用 CORS |
+| `MAX_REQUEST_BODY_SIZE_MB` | 50 | 请求体最大大小（MB） |
+| `ENABLE_CORS` | true | 启用 CORS（`.env.example` 建议 false） |
 | `CORS_ORIGIN` | * | CORS 允许的源 |
-| `METRICS_WINDOW_SIZE` | 10 | 熔断滑动窗口大小 |
+| `METRICS_WINDOW_SIZE` | 10 | 熔断滑动窗口大小（最小 3） |
 | `METRICS_FAILURE_THRESHOLD` | 0.5 | 熔断失败率阈值（0-1） |
 | `METRICS_PERSISTENCE_ENABLED` | true | 指标 SQLite 持久化 |
-| `METRICS_RETENTION_DAYS` | 7 | 指标保留天数（3-30） |
-| `RESPONSE_HEADER_TIMEOUT` | 60 | 等待响应头超时（秒） |
+| `METRICS_RETENTION_DAYS` | 7 | 指标保留天数（3-30，超出自动 clamp） |
+| `RESPONSE_HEADER_TIMEOUT` | 120 | 等待响应头超时（秒，30-300；默认 120，非流式请求） |
+| `STREAM_IDLE_TIMEOUT` | 300 | 流式响应空闲超时（秒，30-3600；默认 300，即 5 分钟） |
+| `FORCE_HTTP1` | -（已废弃） | 上游请求已固定使用 HTTP/1.1；该环境变量不再读取，保留仅为兼容说明。原因：HTTP/2 在部分代理/上游下会触发 `http2: timeout awaiting response headers` |
 | `LOG_DIR` | logs | 日志目录 |
 | `LOG_FILE` | app.log | 日志文件名 |
 | `LOG_MAX_SIZE` | 100 | 单个日志文件最大大小（MB） |
@@ -42,19 +46,20 @@
 
 ## 推荐生产配置
 
-``env
+```env
 ENV=production
 PROXY_ACCESS_KEY=<strong-random-key>
+ENABLE_CORS=false
 LOG_LEVEL=info
 ENABLE_REQUEST_LOGS=true
 ENABLE_RESPONSE_LOGS=false
-``
+```
 
 ## 推荐开发配置
 
-``env
+```env
 ENV=development
 LOG_LEVEL=debug
 ENABLE_REQUEST_LOGS=true
 ENABLE_RESPONSE_LOGS=true
-``
+```

@@ -1,51 +1,67 @@
-> ⚠️ **项目已重命名**: 本项目已重命名为 **[CCX](https://github.com/BenedictKing/ccx)**，请访问新仓库获取最新版本和更新。本仓库已归档，不再维护。
-
----
-
 # Claude / Codex / Gemini API Proxy
 
 [![GitHub release](https://img.shields.io/github/v/release/BenedictKing/claude-proxy)](https://github.com/BenedictKing/claude-proxy/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-一个高性能的 API 代理服务器，支持多种上游 AI 服务提供商（Claude、Codex、Gemini），提供故障转移、多 API 密钥管理和统一入口访问。
+一个高性能的多上游 AI 代理服务器：五协议统一入口（Messages / Responses / Gemini / Chat / Images），多渠道智能调度与故障转移，Web 管理面板单二进制部署。
 
 ## 🚀 功能特性
 
-- **🖥️ 一体化架构**: 后端集成前端，单容器部署，完全替代 Nginx
-- **🔐 统一认证**: 一个密钥保护所有入口（前端界面、管理 API、代理 API）
-- **📱 Web 管理面板**: 现代化可视化界面，支持渠道管理、实时监控和配置
-- **三 API 支持**: 同时支持 Claude Messages API (`/v1/messages`)、Codex Responses API (`/v1/responses`) 和 Gemini API
-- **统一入口**: 通过统一端点访问不同的 AI 服务
-- **多上游支持**: 支持 Claude、Codex 和 Gemini 等多种上游服务
-- **🔌 协议转换**: Messages API 支持协议自动转换，统一接入不同上游服务
-- **🎯 智能调度**: 多渠道智能调度器，支持优先级排序、健康检查和自动熔断
-- **📊 渠道编排**: 可视化渠道管理，拖拽调整优先级，实时查看健康状态
-- **🔄 Trace 亲和**: 同一用户会话自动绑定到同一渠道，提升一致性体验
-- **故障转移**: 自动切换到可用渠道，确保服务高可用
-- **多 API 密钥**: 每个上游可配置多个 API 密钥，自动轮换使用（推荐 failover 策略以最大化利用 Prompt Caching）
-- **🧠 缓存统计**: 按 Token 口径展示各渠道缓存读/写与命中率（命中率 = `cache_read_tokens / (cache_read_tokens + input_tokens)`）
-- **增强的稳定性**: 内置上游请求超时与重试机制，确保服务在网络波动时依然可靠
-- **自动重试与密钥降级**: 检测到额度/余额不足等错误时自动切换下一个可用密钥；若后续请求成功，再将失败密钥移动到末尾（降级）；所有密钥均失败时按上游原始错误返回
-- **⚡ 自动熔断**: 基于滑动窗口算法检测渠道健康度，失败率过高自动熔断，15 分钟后自动恢复
-- **双重配置**: 支持命令行工具和 Web 界面管理上游配置
-- **环境变量**: 通过 `.env` 文件灵活配置服务器参数
-- **健康检查**: 内置健康检查端点和实时状态监控
-- **日志系统**: 完整的请求/响应日志记录
-- **📡 支持流式和非流式响应**
-- **🛠️ 支持工具调用**
-- **💬 会话管理**: Responses API 支持多轮对话的会话跟踪和上下文保持
+- **🖥️ 一体化架构**: 后端（Go/Gin）集成前端（Vue 3 + Vuetify），单二进制/单容器部署
+- **五协议入口**: Claude Messages API (`/v1/messages`)、Responses API (`/v1/responses`)、Chat Completions (`/v1/chat/completions`)、Images (`/v1/images/*`)、模型列表 (`/v1beta/models/*`)
+- **🔌 协议转换**: 统一接入 Claude / OpenAI / Gemini 等多上游，Messages 支持协议自动转换
+- **🔐 统一认证**: 一个 `PROXY_ACCESS_KEY` 保护前端界面、管理 API、代理 API
+- **📊 智能调度**: 优先级排序、健康检查、滑动窗口自动熔断（失败率超阈值挂起 15 分钟自动恢复）、Trace 亲和（同用户绑同渠道）、促销渠道、对话路由覆盖
+- **🔄 故障转移**: 渠道 / key / 多 BaseURL 三级 failover，key 失败降级轮换
+- **🖼️ 图片理解**: 图片请求自动转分析描述文本（视觉分流 + 两级缓存 + 并发去重）
+- **🧠 内容安全**: 敏感词 / 凭据 / 危险命令检测管线，拦截记录可查
+- **💬 会话管理**: Responses 多轮会话（previous_response_id 链），SQLite 持久化
+- **🔍 模型审计**: 渠道/模型能力、身份、变形审计，任务 → 报告闭环
+- **🛠️ 工具调用**: 支持工具调用与流式/非流式响应
+- **🧾 缓存统计**: 按 Token 口径展示缓存读/写与命中率
+- **📱 Web 管理面板**: 渠道管理、实时监控、对话/日志/拦截记录、Skills、客户端配置（DSH / OpenCode / Claude Code / PiAgent）、Settings
+
+## 🚀 快速开始
+
+```bash
+# 1. 复制环境变量示例并设置强密钥
+cp backend-go/.env.example backend-go/.env
+# 编辑 .env：设置 PROXY_ACCESS_KEY=<strong-random-key>、ENV=production
+
+# 2. 构建（自动构建前端 + 版本注入，禁止裸 go build）
+make build
+
+# 3. 运行
+make run
+# 或直接运行产物 dist/claude-proxy-<platform>
+```
+
+开发模式见 `docs/DEVELOPMENT.md`（热重载 / 前端 dev server）。
 
 ## 🗂️ 运行时数据与清理
 
-运行时配置和本地数据默认保存在 `.config/` 目录：
+运行时配置和本地数据默认保存在 `.config/` 目录（`LOG_DIR` 默认 `logs/`）：
 
-| 文件 | 保存内容 | 是否可删除 |
+| 文件 / 目录 | 保存内容 | 是否可删除 |
 | --- | --- | --- |
-| `conversations.db` | 本地对话记录、会话上下文、对话名称、路由关联及图片理解缓存 | 可以。请先停止服务；删除后会自动重建，但历史对话和本地会话关联会清空。 |
-| `metrics.db` | 渠道和密钥的请求统计、延迟、RPM/TPM、健康状态及性能数据 | 可以。请先停止服务；删除后会自动重建，统计数据会从零开始重新积累。 |
-| `config.json` | 渠道、Base URL、API Key、模型映射、分组及图片理解等全部运行配置 | 不建议。删除等同于重置配置，需要重新配置渠道和密钥。 |
+| `config.json` | 渠道、Base URL、API Key、模型映射、分组等全部运行配置 | 不建议。删除等同于重置配置 |
+| `conversations.db` | 本地对话记录、会话上下文、路由关联及图片理解缓存 | 可以。停止服务后删除会自动重建，历史会话清空 |
+| `metrics.db` | 渠道和 key 的请求统计、延迟、RPM/TPM、健康状态及性能数据 | 可以。停止服务后删除会自动重建，统计重新积累 |
+| `model-audit.db` | 模型审计任务、样本、报告 | 可以。停止服务后删除会自动重建，审计历史清空 |
+| `blocked-logs.db` | 内容安全拦截记录 | 可以。停止服务后删除会自动重建 |
+| `model-audit/` | 审计计划产物（mods / cache / artifacts） | 可以。删除后对应报告不可复现 |
 
-删除或修改 `config.json` 前，请先保留 `.config/backups/` 中的配置备份。
+> 删除或修改 `config.json` 前，请先保留 `.config/backups/` 中的配置备份。
+
+## 📚 文档
+
+- 架构总览：`docs/ARCHITECTURE.md`
+- 关键数据流（主链路 / 视觉旁路 / 内容安全）：`docs/flows.md`
+- 术语表：`docs/glossary.md`（概念定义，禁止发明平行概念）
+- 能力注册表：`docs/capabilities.md`（写通用能力前先查，有现成实现一律复用）
+- 硬性规则：`docs/invariants.md`
+- 环境变量：`docs/ENVIRONMENT.md`
+- 开发 / 打包：`docs/DEVELOPMENT.md`、`docs/RELEASE.md`
 
 ## 🔗 友情链接
 

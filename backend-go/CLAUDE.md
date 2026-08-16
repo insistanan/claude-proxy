@@ -2,72 +2,28 @@
 
 [← 根目录](../CLAUDE.md)
 
-## 模块职责
+Go 后端核心服务：五协议代理入口（`/v1/messages`、`/v1/responses`、`/v1/chat`、`/v1/images`、`/v1beta/models/*`）、多渠道调度、协议转换、会话管理、内容安全、模型审计。整体链路见 `../docs/flows.md`，模块地图见 `../docs/ARCHITECTURE.md`，能力复用表见 `../docs/capabilities.md`。接口签名、路由清单以代码为准，本文件不复述。
 
-Go 后端核心服务：HTTP API、多上游适配、协议转换、智能调度、会话管理、配置热重载。
-
-## 启动命令
+## 命令
 
 ```bash
 make dev          # 热重载开发
 make test         # 运行测试
-make test-cover   # 测试 + 覆盖率
-make build        # 构建二进制
+make check        # gofmt 校验 + go vet + go test（提交前必跑）
+make build        # 构建生产版本
+make lint         # golangci-lint（首次运行自动安装）
+make fmt          # 格式化代码
 ```
 
-## API 端点
+## 扩展指南
 
-| 端点 | 方法 | 功能 |
-|------|------|------|
-| `/health` | GET | 健康检查（无需认证） |
-| `/v1/messages` | POST | Claude Messages API |
-| `/v1/messages/count_tokens` | POST | Token 计数 |
-| `/v1/responses` | POST | Codex Responses API |
-| `/v1/responses/compact` | POST | 精简版 Responses API |
-| `/api/messages/channels` | CRUD | Messages 渠道管理 |
-| `/api/responses/channels` | CRUD | Responses 渠道管理 |
-| `/api/messages/ping/:id` | GET | 渠道连通性测试 |
-| `/api/messages/channels/metrics` | GET | 渠道指标 |
-| `/api/messages/channels/scheduler/stats` | GET | 调度器统计 |
+- **新增上游服务**：在 `internal/providers/` 实现 `Provider` 接口（签名以 `provider.go` 为准），并在 `GetProvider()` 按 ServiceType 注册。messages 与 visionlayer 共用该注册表。
+- **新增协议 / 渠道能力**：五协议渠道路由经 `handlers.RegisterChannelRoutes` + `ProtocolSpec` 声明式注册（见 `../docs/ARCHITECTURE.md`）；渠道 CRUD/key/Ping 一律复用 `core/channelcrud`，禁止另写。
+- **调度策略**：优先级顺序（Trace 亲和 > 促销 > 优先级，过滤熔断）在 `internal/scheduler/channel_scheduler.go` 的 `SelectChannel`；改调度前先读 `../docs/flows.md`。
+- **内容安全**：钩子管线在 `internal/handlers/common/hook_pipeline.go`，检测实现在 `internal/sensitive`；main.go 组建管线注入各协议。
+- **视觉分流**：`internal/visionlayer`，在请求发送上游前自动执行（见 `../docs/flows.md` F2），勿绕过。
 
-## 指标历史数据聚合粒度
-
-`/api/messages/channels/:id/keys/metrics/history` 端点根据查询时间范围自动选择聚合间隔：
-
-| 时间范围 | 聚合间隔 | 数据点数 |
-|----------|----------|----------|
-| 1h       | 1 分钟   | ~60 点   |
-| 6h       | 5 分钟   | ~72 点   |
-| 24h      | 15 分钟  | ~96 点   |
-
-可通过 `interval` 参数手动指定（最小 1 分钟）。
-
-## Provider 接口
-
-所有上游服务实现 `internal/providers/Provider` 接口：
-
-```go
-type Provider interface {
-    ConvertToProviderRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string) (*http.Request, []byte, error)
-    ConvertToClaudeResponse(providerResp *types.ProviderResponse) (*types.ClaudeResponse, error)
-    HandleStreamResponse(body io.ReadCloser) (<-chan string, <-chan error, error)
-}
-```
-
-**实现**: `ClaudeProvider`, `OpenAIProvider`, `GeminiProvider`
-
-## 核心模块
-
-| 模块 | 职责 |
-|------|------|
-| `handlers/` | HTTP 处理器（proxy.go, responses.go） |
-| `providers/` | 上游适配器 |
-| `converters/` | 协议转换器（工厂模式） |
-| `scheduler/` | 多渠道调度（优先级、熔断） |
-| `session/` | 会话管理（Trace 亲和性） |
-| `config/` | 配置管理（热重载） |
-
-## 日志规范
+## 日志规范（标签唯一出处）
 
 所有日志输出使用 `[Component-Action]` 标签格式，禁止使用 emoji 符号（确保跨平台兼容性）。
 
@@ -96,24 +52,9 @@ log.Printf("[Component] 警告: 消息内容")
 | 压缩 | `[Gzip]` | Gzip 解压缩 |
 | Messages | `[Messages-Stream]` | Messages 流式处理 |
 | Messages | `[Messages-Stream-Token]` | Messages Token 统计 |
-| Messages | `[Messages-Models]` | Messages Models API 操作 |
 | Responses | `[Responses-Stream]` | Responses 流式处理 |
 | Responses | `[Responses-Stream-Token]` | Responses Token 统计 |
-| Responses | `[Responses-Models]` | Responses Models API 操作 |
 | Models | `[Models]` | 跨接口的模型列表合并操作 |
-
-## 扩展指南
-
-**添加新上游服务**:
-1. 在 `internal/providers/` 创建新文件
-2. 实现 `Provider` 接口
-3. 在 `GetProvider()` 注册
-
-**调度优先级规则**:
-1. 促销期渠道优先
-2. Priority 字段排序
-3. Trace 亲和性绑定
-4. 熔断状态过滤
 
 ## 工具使用注意事项
 

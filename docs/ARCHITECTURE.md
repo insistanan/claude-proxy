@@ -31,15 +31,19 @@ claude-proxy/
 │       ├── modelcatalog/     # 模型目录（别名解析、后缀剥离）
 │       ├── middleware/       # 认证、CORS、日志过滤、Web UI 门控
 │       ├── httpclient/       # HTTP 客户端 (含 IdleTimeoutReader 流式空闲超时)
-│       └── types/           # 共享类型定义
+│       ├── utils/            # 共享工具（脱敏、token 估算、流合成、客户端伪装）
+│       ├── visionlayer/      # 视觉分流（图片描述生成、缓存、请求改写）
+│       ├── sensitive/        # 内容安全检测（敏感词/凭据/命令）
+│       ├── modelaudit/       # 模型审计（能力/身份/变形审计）
+│       ├── piagent/          # Pi Agent 配置管理
+│       ├── logger/           # 日志封装
+│       └── types/            # 共享类型定义
 ├── frontend/                 # Vue 3 + Vuetify 3 管理界面
 │   └── src/
 │       ├── composables/     # Vue 组合式函数（useAutoRefresh 等共享逻辑）
 │       ├── components/      # Vue 组件
 │       └── services/        # API 封装（channelApiByType 工厂收敛五渠道 CRUD）
-├── docs/                     # 技术文档
-│   ├── adr/                 # 架构决策记录 (ADR-0001~0004)
-│   └── glossary.md          # 项目术语表
+├── docs/                     # 技术文档（glossary / capabilities / invariants / flows + 指南类文档）
 ├── .config/                  # 运行时配置（热重载）
 └── dist/                     # 发布构建产物
 ```
@@ -62,10 +66,10 @@ claude-proxy/
 上游适配器统一实现 `Provider` 接口（`internal/providers/`）。Messages 入口和 visionlayer 通过 `GetProvider(serviceType)` 获取对应适配器。
 
 ### 2. 渠道管理收敛模式
-渠道层的 CRUD、key 管理、Ping 通过 `core/channelcrud` 单份实现消除重复：各协议包导出 `Crud(cfgManager, sch)` 工厂返回 `*channelcrud.Handlers`，main.go 通过 `handlers.RegisterChannelRoutes` 声明式注册全部路由。新增协议 = 填 Ops + 导出工厂 + 注册一行（见 ADR-0002）。
+渠道层的 CRUD、key 管理、Ping 通过 `core/channelcrud` 单份实现消除重复：各协议包导出 `Crud(cfgManager, sch)` 工厂返回 `*channelcrud.Handlers`，main.go 通过 `handlers.RegisterChannelRoutes` 声明式注册全部路由。新增协议 = 填 Ops + 导出工厂 + 注册一行。
 
 ### 3. 流式防护三层防护
-1. **断连中止**：`HandleStreamResponseCtx` 生产 goroutine 在 send 时 `select ctx.Done()`，客户端断连立即中止（见 ADR-0003）
+1. **断连中止**：`HandleStreamResponseCtx` 生产 goroutine 在 send 时 `select ctx.Done()`，客户端断连立即中止
 2. **首字节超时**：`RESPONSE_HEADER_TIMEOUT`（默认 120s），限制"连接到响应头"时间
 3. **空闲超时**：`STREAM_IDLE_TIMEOUT`（默认 300s），`IdleTimeoutReader` 检测流中挂起
 
