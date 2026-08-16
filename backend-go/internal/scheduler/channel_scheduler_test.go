@@ -118,7 +118,7 @@ func TestPromotedChannelBypassesHealthCheck(t *testing.T) {
 	}
 
 	// 选择渠道 - 促销渠道应该被选中，即使它不健康
-	result, err := scheduler.SelectChannel(context.Background(), "test-user", make(map[int]bool), ChannelKindMessages, "", false)
+	result, err := scheduler.SelectChannel(context.Background(), "test-user", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("选择渠道失败: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestSchedulerScopesChannelCountAndSelectionToModelPool(t *testing.T) {
 		t.Fatalf("default channel count = %d, want 1", got)
 	}
 
-	selected, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{}, ChannelKindMessages, "claude-sonnet-4", true)
+	selected, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{}, ChannelKindMessages, "claude-sonnet-4")
 	if err != nil {
 		t.Fatalf("SelectChannel() error = %v", err)
 	}
@@ -188,7 +188,7 @@ func TestMatchedGroupPrecedesFallbackGroupAndFallsBackAfterFailure(t *testing.T)
 		t.Fatalf("deepseek 可尝试渠道数 = %d, want 2", got)
 	}
 
-	first, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{}, ChannelKindMessages, "deepseek-chat", false)
+	first, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{}, ChannelKindMessages, "deepseek-chat")
 	if err != nil {
 		t.Fatalf("首次选择渠道失败: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestMatchedGroupPrecedesFallbackGroupAndFallsBackAfterFailure(t *testing.T)
 	}
 	scheduler.ReleaseChannelReservation(first.Kind, first.ChannelIndex)
 
-	second, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{first.ChannelIndex: true}, ChannelKindMessages, "deepseek-chat", false)
+	second, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{first.ChannelIndex: true}, ChannelKindMessages, "deepseek-chat")
 	if err != nil {
 		t.Fatalf("命中分组渠道失败后的兜底选择失败: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestSchedulerUsesFallbackGroupWhenMatchedGroupHasNoActiveChannel(t *testing
 	scheduler, cleanup := createTestScheduler(t, cfg)
 	defer cleanup()
 
-	selected, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{}, ChannelKindMessages, "claude-sonnet-4", false)
+	selected, err := scheduler.SelectChannel(context.Background(), "pool-user", map[int]bool{}, ChannelKindMessages, "claude-sonnet-4")
 	if err != nil {
 		t.Fatalf("SelectChannel() error = %v", err)
 	}
@@ -262,7 +262,7 @@ func TestPromotedChannelSkippedAfterFailure(t *testing.T) {
 	failedChannels := map[int]bool{1: true}
 
 	// 选择渠道 - 应该跳过促销渠道，选择普通渠道
-	result, err := scheduler.SelectChannel(context.Background(), "test-user", failedChannels, ChannelKindMessages, "", false)
+	result, err := scheduler.SelectChannel(context.Background(), "test-user", failedChannels, ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("选择渠道失败: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestUnhealthyChannelSkipped(t *testing.T) {
 	}
 
 	// 选择渠道 - 应该跳过不健康的渠道，选择健康的渠道
-	result, err := scheduler.SelectChannel(context.Background(), "test-user", make(map[int]bool), ChannelKindMessages, "", false)
+	result, err := scheduler.SelectChannel(context.Background(), "test-user", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("选择渠道失败: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestExpiredPromotionNotBypassHealthCheck(t *testing.T) {
 	}
 
 	// 选择渠道 - 过期促销渠道不应该被优先选择，应该选择健康的渠道
-	result, err := scheduler.SelectChannel(context.Background(), "test-user", make(map[int]bool), ChannelKindMessages, "", false)
+	result, err := scheduler.SelectChannel(context.Background(), "test-user", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("选择渠道失败: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestSelectChannel_DuplicatePrioritiesNormalizeToFailoverOrder(t *testing.T)
 	defer cleanup()
 
 	// 使用不同 userID，避免 Trace 亲和把后续请求钉死在同一渠道
-	first, err := scheduler.SelectChannel(context.Background(), "user-1", make(map[int]bool), ChannelKindMessages, "", false)
+	first, err := scheduler.SelectChannel(context.Background(), "user-1", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("第一次选渠失败: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestSelectChannel_DuplicatePrioritiesNormalizeToFailoverOrder(t *testing.T)
 		t.Fatal("期望第一次选渠占用 in-flight 预留")
 	}
 
-	second, err := scheduler.SelectChannel(context.Background(), "user-2", make(map[int]bool), ChannelKindMessages, "", false)
+	second, err := scheduler.SelectChannel(context.Background(), "user-2", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("第二次选渠失败: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestSelectChannel_DuplicatePrioritiesNormalizeToFailoverOrder(t *testing.T)
 	}
 
 	failedChannels := map[int]bool{first.ChannelIndex: true}
-	third, err := scheduler.SelectChannel(context.Background(), "user-3", failedChannels, ChannelKindMessages, "", false)
+	third, err := scheduler.SelectChannel(context.Background(), "user-3", failedChannels, ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("第三次选渠失败: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestSelectChannel_DuplicatePrioritiesNormalizeToFailoverOrder(t *testing.T)
 	scheduler.ReleaseChannelReservation(second.Kind, second.ChannelIndex)
 	scheduler.ReleaseChannelReservation(third.Kind, third.ChannelIndex)
 	scheduler.ReleaseChannelReservation(first.Kind, first.ChannelIndex)
-	fourth, err := scheduler.SelectChannel(context.Background(), "user-4", make(map[int]bool), ChannelKindMessages, "", false)
+	fourth, err := scheduler.SelectChannel(context.Background(), "user-4", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("第四次选渠失败: %v", err)
 	}
@@ -483,11 +483,11 @@ func TestSelectChannel_ProtocolIsolation(t *testing.T) {
 	scheduler, cleanup := createTestScheduler(t, cfg)
 	defer cleanup()
 
-	msg1, err := scheduler.SelectChannel(context.Background(), "msg-user-1", make(map[int]bool), ChannelKindMessages, "", false)
+	msg1, err := scheduler.SelectChannel(context.Background(), "msg-user-1", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("messages 选渠失败: %v", err)
 	}
-	msg2, err := scheduler.SelectChannel(context.Background(), "msg-user-2", make(map[int]bool), ChannelKindMessages, "", false)
+	msg2, err := scheduler.SelectChannel(context.Background(), "msg-user-2", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("messages 第二次选渠失败: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestSelectChannel_ProtocolIsolation(t *testing.T) {
 	}
 
 	// responses 协议有独立渠道列表与 in-flight 计数，首次选择不应被 messages 占用影响
-	resp1, err := scheduler.SelectChannel(context.Background(), "resp-user-1", make(map[int]bool), ChannelKindResponses, "", false)
+	resp1, err := scheduler.SelectChannel(context.Background(), "resp-user-1", make(map[int]bool), ChannelKindResponses, "")
 	if err != nil {
 		t.Fatalf("responses 选渠失败: %v", err)
 	}
@@ -505,7 +505,7 @@ func TestSelectChannel_ProtocolIsolation(t *testing.T) {
 	}
 
 	// responses 也独立遵循自身严格优先级顺序
-	resp2, err := scheduler.SelectChannel(context.Background(), "resp-user-2", make(map[int]bool), ChannelKindResponses, "", false)
+	resp2, err := scheduler.SelectChannel(context.Background(), "resp-user-2", make(map[int]bool), ChannelKindResponses, "")
 	if err != nil {
 		t.Fatalf("responses 第二次选渠失败: %v", err)
 	}
@@ -561,11 +561,11 @@ func TestSelectChannel_AdaptiveRespectsFailoverPriority(t *testing.T) {
 		}
 	}
 
-	first, err := scheduler.SelectChannel(context.Background(), "adaptive-user-1", make(map[int]bool), ChannelKindMessages, "claude-sonnet-4", false)
+	first, err := scheduler.SelectChannel(context.Background(), "adaptive-user-1", make(map[int]bool), ChannelKindMessages, "claude-sonnet-4")
 	if err != nil {
 		t.Fatalf("adaptive 第一次选渠失败: %v", err)
 	}
-	second, err := scheduler.SelectChannel(context.Background(), "adaptive-user-2", make(map[int]bool), ChannelKindMessages, "claude-sonnet-4", false)
+	second, err := scheduler.SelectChannel(context.Background(), "adaptive-user-2", make(map[int]bool), ChannelKindMessages, "claude-sonnet-4")
 	if err != nil {
 		t.Fatalf("adaptive 第二次选渠失败: %v", err)
 	}

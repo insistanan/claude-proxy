@@ -247,13 +247,15 @@ func (s *ChannelScheduler) GetChannelInFlight(kind ChannelKind, channelIndex int
 // SelectChannel 选择最佳渠道
 // 优先级: 促销期渠道（忽略Trace亲和） > Trace亲和（仅在无促销时生效） > 自适应调度 > 渠道优先级顺序
 // 同一协议下并发新对话会尽量分摊到不同供应商，同时仍遵循优先级、健康与促销规则。
+//
+// 图片不参与选渠：是否直接处理图片或启用图片理解层，由被选中渠道的配置在
+// 请求发送前决定（见 prepareRequestForUpstream → visionlayer.PrepareRequest）。
 func (s *ChannelScheduler) SelectChannel(
 	ctx context.Context,
 	userID string,
 	failedChannels map[int]bool,
 	kind ChannelKind,
 	requestedModel string,
-	hasImage bool,
 ) (*SelectionResult, error) {
 	if ctx != nil {
 		select {
@@ -301,9 +303,8 @@ func (s *ChannelScheduler) SelectChannel(
 		log.Printf("[%s-GroupFallback] 命中分组已无可用渠道，切换到兜底分组", prefix)
 	}
 
-	// 图片不再改变最终回答渠道的选择。是否直接处理图片或启用图片理解层，
-	// 由选中的渠道配置在请求发送前决定。
-	_ = hasImage
+	// 图片不参与选渠：是否直接处理图片或启用图片理解层，由被选中渠道的配置在
+	// 请求发送前决定（见 prepareRequestForUpstream → visionlayer.PrepareRequest）。
 
 	// 获取对应类型的指标管理器
 	metricsManager := s.getMetricsManager(kind)

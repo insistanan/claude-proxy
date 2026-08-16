@@ -67,13 +67,6 @@ func Handler(
 			Stream:  responsesReq.Stream,
 		})
 
-		hasImage := utils.DetectImageContent(bodyBytes)
-		if responsesReq.PreviousResponseID != "" {
-			if sess, err := sessionManager.GetSessionByResponseID(responsesReq.PreviousResponseID); err == nil && sess.HasVisionContent {
-				hasImage = true
-			}
-		}
-
 		// 提取对话标识
 		prompts := common.ExtractPromptsFromResponsesInput(responsesReq.Input)
 		userID := common.ObserveConversationRequest(
@@ -108,7 +101,7 @@ func Handler(
 				})
 				return
 			}
-			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, upstream, channelIndex, startTime)
+			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, upstream, channelIndex, startTime)
 			return
 		}
 
@@ -116,9 +109,9 @@ func Handler(
 		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindResponses, responsesReq.Model)
 
 		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, startTime)
+			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, startTime)
 		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, startTime)
+			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, startTime)
 		}
 	})
 }
@@ -133,7 +126,6 @@ func handleMultiChannel(
 	bodyBytes []byte,
 	responsesReq types.ResponsesRequest,
 	userID string,
-	hasImage bool,
 	startTime time.Time,
 ) {
 	provider := &providers.ResponsesProvider{SessionManager: sessionManager}
@@ -147,7 +139,6 @@ func handleMultiChannel(
 		"Responses",
 		userID,
 		responsesReq.Model,
-		hasImage,
 		cfgManager.GetFuzzyModeEnabled(),
 		func(selection *scheduler.SelectionResult) common.MultiChannelAttemptResult {
 			upstream := selection.Upstream
@@ -193,7 +184,7 @@ func handleMultiChannel(
 					channelScheduler.MarkURLSuccess(scheduler.ChannelKindResponses, channelIndex, url)
 				},
 				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage, channelScheduler, userID)
+					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, channelScheduler, userID)
 				},
 				common.AttemptLogContext{
 					ChannelIndex:                      channelIndex,
@@ -244,7 +235,6 @@ func handleSingleChannel(
 	bodyBytes []byte,
 	responsesReq types.ResponsesRequest,
 	userID string,
-	hasImage bool,
 	startTime time.Time,
 ) {
 	upstream, channelIndex, err := cfgManager.GetCurrentResponsesUpstreamWithIndexForModel(responsesReq.Model)
@@ -256,7 +246,7 @@ func handleSingleChannel(
 		return
 	}
 
-	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, hasImage, upstream, channelIndex, startTime)
+	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, upstream, channelIndex, startTime)
 }
 
 func handleSingleChannelWithUpstream(
@@ -268,7 +258,6 @@ func handleSingleChannelWithUpstream(
 	bodyBytes []byte,
 	responsesReq types.ResponsesRequest,
 	userID string,
-	hasImage bool,
 	upstream *config.UpstreamConfig,
 	channelIndex int,
 	startTime time.Time,
@@ -323,7 +312,7 @@ func handleSingleChannelWithUpstream(
 		nil,
 		nil,
 		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, hasImage, channelScheduler, userID)
+			return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, channelScheduler, userID)
 		},
 		common.AttemptLogContext{
 			ChannelIndex:    channelIndex,
@@ -359,7 +348,6 @@ func handleSuccess(
 	startTime time.Time,
 	originalReq *types.ResponsesRequest,
 	originalRequestJSON []byte,
-	hasImage bool,
 	channelScheduler *scheduler.ChannelScheduler,
 	conversationID string,
 ) (*types.Usage, error) {
@@ -371,7 +359,7 @@ func handleSuccess(
 	}
 
 	if isStream {
-		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, hasImage, channelScheduler, conversationID)
+		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, channelScheduler, conversationID)
 	}
 
 	// 非流式响应处理
@@ -443,7 +431,7 @@ func handleSuccess(
 			turnItems := make([]types.ResponsesItem, 0, len(inputItems)+len(responsesResp.Output))
 			turnItems = append(turnItems, inputItems...)
 			turnItems = append(turnItems, responsesResp.Output...)
-			if err := sessionManager.CommitTurn(sess.ID, turnItems, responsesResp.Usage.TotalTokens, hasImage, responsesResp.ID); err != nil {
+			if err := sessionManager.CommitTurn(sess.ID, turnItems, responsesResp.Usage.TotalTokens, utils.DetectImageContent(originalRequestJSON), responsesResp.ID); err != nil {
 				log.Printf("[Session] 持久化 Responses 会话轮次失败: %v", err)
 			}
 
@@ -747,7 +735,6 @@ func handleStreamSuccess(
 	startTime time.Time,
 	originalReq *types.ResponsesRequest,
 	originalRequestJSON []byte,
-	hasImage bool,
 	channelScheduler *scheduler.ChannelScheduler,
 	conversationID string,
 ) (*types.Usage, error) {
@@ -1030,7 +1017,7 @@ func handleStreamSuccess(
 					Content: outputText,
 				})
 			}
-			if err := sessionManager.CommitTurn(sess.ID, turnItems, collectedUsage.TotalTokens, hasImage, streamResponseID); err != nil {
+			if err := sessionManager.CommitTurn(sess.ID, turnItems, collectedUsage.TotalTokens, utils.DetectImageContent(originalRequestJSON), streamResponseID); err != nil {
 				log.Printf("[Session] 持久化 Responses 流式会话轮次失败: %v", err)
 			}
 		} else {

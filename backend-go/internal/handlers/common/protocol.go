@@ -144,8 +144,7 @@ func RunProxyRequest(
 
 	// 8. 多渠道/单渠道分派
 	if channelScheduler.IsMultiChannelModeForModel(spec.Kind, model) {
-		hasImage := utils.DetectImageContent(bodyBytes)
-		handleMultiChannelProxy(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, hasImage, startTime)
+		handleMultiChannelProxy(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, startTime)
 	} else {
 		handleSingleChannelProxy(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, nil, 0, startTime)
 	}
@@ -268,7 +267,6 @@ func handleMultiChannelProxy(
 	model string,
 	stream bool,
 	userID string,
-	hasImage bool,
 	startTime time.Time,
 ) {
 	metricsManager := channelScheduler.MetricsManager(spec.Kind)
@@ -281,7 +279,6 @@ func handleMultiChannelProxy(
 		spec.LogName,
 		userID,
 		model,
-		hasImage,
 		cfgManager.GetFuzzyModeEnabled(),
 		func(selection *scheduler.SelectionResult) MultiChannelAttemptResult {
 			upstream := selection.Upstream

@@ -4,6 +4,21 @@
 
 ---
 
+## [v3.0.1] - 2026-08-16
+
+### 修复
+
+- **图片选渠死参数清理** — `SelectChannel` 的 `hasImage bool` 形参被函数体 `_ = hasImage` 直接丢弃,属无副作用死参数。移除该形参及其在 `HandleMultiChannelFailover` / `handleMultiChannelProxy` / `RunProxyRequest` 入口的整条传递链(含 `utils.DetectImageContent` 在 messages/chat/images/gemini 四协议入口处的冗余计算)。图片是否被处理仍由被选中渠道的 `visionCapable` / `visionLayerEnabled` 配置在 `prepareRequestForUpstream → visionlayer.PrepareRequest` 决定,行为不变
+- **Responses previous_response_id 自指透传移除** — Responses handler 入口处"当前请求无图但 `previous_response_id` 会话历史含图 → `hasImage=true`"的透传块被移除。该 `hasImage` 唯一作用是将 `session.HasVisionContent` 再写一次 true(本已为 true),属自指循环,无外部可观察行为变化
+- **`handleSuccess` / `handleStreamSuccess` 的 `CommitTurn` 图片检测修正** — 两处原先误用响应体变量 `bodyBytes` 调用 `utils.DetectImageContent`,改用请求体 `originalRequestJSON`,正确检测当前轮输入是否含图
+
+### 重构
+
+- `SelectChannel` 签名收敛为 `(ctx, userID, failedChannels, kind, requestedModel)`,减少一处无效耦合
+- `HasVisionContent` 字段 / `CommitTurn` 的 `hasVision` 形参 / SQLite `has_vision_content` 列保留(`CommitTurn` 仍通过 `utils.ResponsesItemHasVisionContent` 遍历 items 自动维护该标记),为未来"历史图描述重放"等场景留钩子
+
+---
+
 ## [v3.0.0] - 2026-08-15
 
 ### 重构
