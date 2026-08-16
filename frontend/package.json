@@ -1,6 +1,6 @@
 {
   "name": "claude-proxy-frontend",
-  "version": "2.6.1",
+  "version": "3.0.0",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -11,6 +11,9 @@
     "type-check": "vue-tsc --noEmit",
     "lint": "eslint . --ext .vue,.js,.ts",
     "lint:fix": "eslint . --ext .vue,.js,.ts --fix",
+    "check:icons": "node scripts/check-icons.mjs",
+    "check": "vue-tsc --noEmit && node scripts/check-icons.mjs",
+    "test": "vitest run",
     "format": "prettier --write \"src/**/*.{js,ts,vue,json,css,scss,md}\""
   },
   "dependencies": {

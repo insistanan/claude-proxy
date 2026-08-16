@@ -4,7 +4,7 @@ GREEN=\033[0;32m
 YELLOW=\033[0;33m
 NC=\033[0m
 
-.PHONY: help dev run build clean frontend-dev frontend-build embed-frontend
+.PHONY: help dev run build check clean frontend-dev frontend-build embed-frontend
 
 help:
 	@echo "$(GREEN)API Proxy - 可用命令:$(NC)"
@@ -18,6 +18,9 @@ help:
 	@echo "  make build          - 构建前端并编译 Go 后端"
 	@echo "  make frontend-build - 仅构建前端"
 	@echo "  make clean          - 清理构建文件"
+	@echo ""
+	@echo "$(YELLOW)门禁:$(NC)"
+	@echo "  make check          - 前端 type-check+图标扫描 & 后端 fmt+vet+test"
 
 dev:
 	@echo "$(GREEN)🚀 启动前后端开发模式...$(NC)"
@@ -47,3 +50,8 @@ frontend-dev:
 
 frontend-build:
 	@cd frontend && bun run build
+
+# 全量门禁: 前端 type-check + 图标扫描; 后端 gofmt + vet + test
+check:
+	@cd frontend && bun run check
+	@cd backend-go && $(MAKE) check

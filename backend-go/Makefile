@@ -16,7 +16,7 @@ GREEN=\033[0;32m
 YELLOW=\033[0;33m
 NC=\033[0m # No Color
 
-.PHONY: help dev build run clean install-air test copy-frontend
+.PHONY: help dev build run clean install-air test check copy-frontend
 
 # 默认目标 - 显示帮助
 help:
@@ -35,6 +35,7 @@ help:
 	@echo "$(YELLOW)测试命令:$(NC)"
 	@echo "  make test         - 运行测试"
 	@echo "  make test-cover   - 运行测试并生成覆盖率"
+	@echo "  make check        - 门禁: gofmt 校验 + go vet + go test"
 
 # 安装 Air 工具
 install-air:
@@ -88,6 +89,13 @@ test-cover:
 	@go test -v -cover -coverprofile=coverage.out ./...
 	@go tool cover -html=coverage.out -o coverage.html
 	@echo "$(GREEN)✅ 覆盖率报告已生成: coverage.html$(NC)"
+
+# 门禁检查: 提交前必跑（gofmt 校验 + go vet + go test）
+check:
+	@echo "$(GREEN)🔍 门禁检查: gofmt + vet + test$(NC)"
+	@test -z "$$(gofmt -l .)" || { echo "$(YELLOW)❌ 以下文件未格式化，请先 make fmt:$(NC)"; gofmt -l .; exit 1; }
+	@go vet ./...
+	@go test ./...
 
 # 清理构建文件
 clean:

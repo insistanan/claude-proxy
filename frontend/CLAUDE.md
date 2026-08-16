@@ -14,22 +14,13 @@ bun run build     # 生产构建
 bun run preview   # 预览构建
 ```
 
-## 核心组件
+## 核心视图与组件
 
-| 组件 | 职责 |
-|------|------|
-| `App.vue` | 根组件，认证和布局 |
-| `ChannelOrchestration.vue` | 渠道编排主界面 |
-| `ChannelCard.vue` | 渠道卡片（状态、密钥、指标） |
-| `AddChannelModal.vue` | 添加/编辑渠道对话框 |
+视图在 `src/views/`（渠道、对话、Playground、请求/拦截日志、审计、Skills、Claude Code / OpenCode / DSH / PiAgent 客户端配置、Settings），组件在 `src/components/`。完整清单以目录为准，本文件不复述。层级关系：views → stores（`stores/` Pinia）→ services（`services/api.ts`）。
 
 ## API 服务
 
-`src/services/api.ts` 封装后端交互：
-
-- `fetchChannels()` / `addChannel()` / `updateChannel()` / `deleteChannel()`
-- `pingChannel()` / `pingAllChannels()`
-- `reorderChannels()` / `setChannelStatus()`
+`src/services/api.ts`：`channelApiByType` 工厂供五协议渠道统一调用（对应后端 `RegisterChannelRoutes`）。不要在组件里拼裸 fetch，复用 store/api 封装。
 
 ## 主题配置
 
@@ -39,7 +30,7 @@ bun run preview   # 预览构建
 
 项目使用 **SVG 按需导入** 方案，从 `@mdi/js` 导入单个图标 path，而非完整字体文件，显著减小打包体积。
 
-**配置文件**: `src/plugins/vuetify.ts`
+**配置文件**: `src/plugins/vuetify.ts`（`iconMap`）
 
 **新增图标步骤**:
 1. 从 `@mdi/js` 添加导入（驼峰命名）
@@ -61,6 +52,8 @@ const iconMap = {
 ```
 
 **图标查找**: https://pictogrammers.com/library/mdi/
+
+**机器校验**: `bun run check:icons`（或 `bun run check`）会扫描全部 `mdi-*` 用法并对照 `iconMap`，未注册即报错。
 
 ## 构建产物
 
