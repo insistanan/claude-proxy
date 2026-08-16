@@ -1,9 +1,11 @@
 package httpclient
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,6 +14,66 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 )
+
+// ipv4Dialer 优先使用 IPv4 建立 TCP 连接。
+// 直接请求上游时，这会把上游域名解析到 IPv4（避免服务商/渠道只回 IPv6 导致连接异常）；
+// 走 HTTP/HTTPS/SOCKS5 代理时，http.Transport 的 DialContext 只负责连接代理服务器，
+// 因此这里强制的是“本机 -> 代理”这一段使用 IPv4，不会改变代理转发上游的原有逻辑。
+type ipv4Dialer struct {
+	d *net.Dialer
+}
+
+// DialContext 实现 net.ContextDialer。优先解析 A 记录并尝试 IPv4；仅当域名没有 IPv4 记录时回退默认拨号。
+func (d *ipv4Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if network != "tcp" && network != "tcp4" {
+		return d.d.DialContext(ctx, network, addr)
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return d.d.DialContext(ctx, network, addr)
+	}
+
+	// 已经是 IP 字面量时交给标准拨号器；IPv6 字面量不强改，避免完全不可达。
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.To4() != nil {
+			return d.d.DialContext(ctx, "tcp4", addr)
+		}
+		return d.d.DialContext(ctx, network, addr)
+	}
+
+	// 域名：优先取 IPv4 地址；若解析失败或没有 A 记录，再回退默认拨号（兼容纯 IPv6 上游）。
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", host)
+	if err != nil || len(ips) == 0 {
+		return d.d.DialContext(ctx, network, addr)
+	}
+
+	var lastErr error
+	for _, ip := range ips {
+		ipv4 := ip.To4()
+		if ipv4 == nil {
+			continue
+		}
+		ipv4Addr := net.JoinHostPort(ipv4.String(), port)
+		conn, dialErr := d.d.DialContext(ctx, "tcp4", ipv4Addr)
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return d.d.DialContext(ctx, network, addr)
+}
+
+// ipv4PreferredDialer 全局共享的 IPv4 优先拨号器。
+var ipv4PreferredDialer = &ipv4Dialer{
+	d: &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	},
+}
 
 // ClientManager HTTP 客户端管理器
 type ClientManager struct {
@@ -35,7 +97,7 @@ func (cm *ClientManager) GetStandardClient(timeout time.Duration, insecure bool,
 	responseHeaderTimeout := time.Duration(envConfig.ResponseHeaderTimeout) * time.Second
 	proxyURL = strings.TrimSpace(proxyURL)
 
-	key := fmt.Sprintf("standard-%d-%t-%d-%t-%s", timeout, insecure, envConfig.ResponseHeaderTimeout, envConfig.ForceHTTP1, proxyKey(proxyURL))
+	key := fmt.Sprintf("standard-%d-%t-%d-%s", timeout, insecure, envConfig.ResponseHeaderTimeout, proxyKey(proxyURL))
 
 	cm.mu.RLock()
 	if client, ok := cm.clients[key]; ok {
@@ -57,6 +119,7 @@ func (cm *ClientManager) GetStandardClient(timeout time.Duration, insecure bool,
 
 	transport := &http.Transport{
 		Proxy:                 proxyFunc,
+		DialContext:           ipv4PreferredDialer.DialContext,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
@@ -64,12 +127,12 @@ func (cm *ClientManager) GetStandardClient(timeout time.Duration, insecure bool,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: responseHeaderTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     !envConfig.ForceHTTP1,
+		// 统一走 HTTP/1.1，避免 HTTP/2 在部分代理/上游下触发 "http2: timeout awaiting response headers"
+		ForceAttemptHTTP2: false,
 	}
 
-	tlsCfg := &tls.Config{}
-	if envConfig.ForceHTTP1 {
-		tlsCfg.NextProtos = []string{"http/1.1"}
+	tlsCfg := &tls.Config{
+		NextProtos: []string{"http/1.1"},
 	}
 	if insecure {
 		tlsCfg.InsecureSkipVerify = true
@@ -105,7 +168,7 @@ func (cm *ClientManager) GetStreamClient(insecure bool, proxyURL string) (*http.
 	envConfig := config.NewEnvConfig()
 	proxyURL = strings.TrimSpace(proxyURL)
 
-	key := fmt.Sprintf("stream-%t-%t-%d-%s", insecure, envConfig.ForceHTTP1, envConfig.ResponseHeaderTimeout, proxyKey(proxyURL))
+	key := fmt.Sprintf("stream-%t-%d-%s", insecure, envConfig.ResponseHeaderTimeout, proxyKey(proxyURL))
 
 	cm.mu.RLock()
 	if client, ok := cm.clients[key]; ok {
@@ -127,6 +190,7 @@ func (cm *ClientManager) GetStreamClient(insecure bool, proxyURL string) (*http.
 
 	transport := &http.Transport{
 		Proxy:                 proxyFunc,
+		DialContext:           ipv4PreferredDialer.DialContext,
 		MaxIdleConns:          200,
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       120 * time.Second,
@@ -134,12 +198,12 @@ func (cm *ClientManager) GetStreamClient(insecure bool, proxyURL string) (*http.
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: time.Duration(envConfig.ResponseHeaderTimeout) * time.Second, // 首字节超时
 		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     !envConfig.ForceHTTP1,
+		// 统一走 HTTP/1.1，避免 HTTP/2 在部分代理/上游下触发 "http2: timeout awaiting response headers"
+		ForceAttemptHTTP2: false,
 	}
 
-	tlsCfg := &tls.Config{}
-	if envConfig.ForceHTTP1 {
-		tlsCfg.NextProtos = []string{"http/1.1"}
+	tlsCfg := &tls.Config{
+		NextProtos: []string{"http/1.1"},
 	}
 	if insecure {
 		tlsCfg.InsecureSkipVerify = true
