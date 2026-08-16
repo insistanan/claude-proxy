@@ -1287,7 +1287,7 @@ func buildClaudeChatPromptCacheKey(claudeReq *types.ClaudeRequest, upstream *con
 		"system":   extractSystemText(claudeReq.System),
 		"tools":    normalizeToolsForPromptCacheKey(claudeReq.Tools),
 	}
-	sum := sha256.Sum256([]byte(canonicalJSON(stableParts)))
+	sum := sha256.Sum256([]byte(utils.CanonicalJSON(stableParts)))
 	return "claude-chat-" + hex.EncodeToString(sum[:])[:24]
 }
 

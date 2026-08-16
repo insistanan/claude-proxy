@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -246,7 +245,7 @@ func buildClaudeResponsesPromptCacheKey(claudeReq *types.ClaudeRequest, upstream
 		"system":   extractSystemText(claudeReq.System),
 		"tools":    normalizeToolsForPromptCacheKey(claudeReq.Tools),
 	}
-	sum := sha256.Sum256([]byte(canonicalJSON(stableParts)))
+	sum := sha256.Sum256([]byte(utils.CanonicalJSON(stableParts)))
 	return "claude-resp-" + hex.EncodeToString(sum[:])[:24]
 }
 
@@ -267,58 +266,6 @@ func normalizeToolsForPromptCacheKey(tools []types.ClaudeTool) []map[string]inte
 		})
 	}
 	return out
-}
-
-func canonicalJSON(v interface{}) string {
-	switch value := v.(type) {
-	case nil:
-		return "null"
-	case string:
-		data, _ := json.Marshal(value)
-		return string(data)
-	case bool:
-		if value {
-			return "true"
-		}
-		return "false"
-	case float64, float32, int, int64, int32, uint, uint64, uint32, json.Number:
-		data, _ := json.Marshal(value)
-		return string(data)
-	case []types.ClaudeTool:
-		items := make([]interface{}, 0, len(value))
-		for _, item := range value {
-			items = append(items, item)
-		}
-		return canonicalJSON(items)
-	case []interface{}:
-		parts := make([]string, 0, len(value))
-		for _, item := range value {
-			parts = append(parts, canonicalJSON(item))
-		}
-		return "[" + strings.Join(parts, ",") + "]"
-	case map[string]interface{}:
-		keys := make([]string, 0, len(value))
-		for key := range value {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		parts := make([]string, 0, len(keys))
-		for _, key := range keys {
-			keyJSON, _ := json.Marshal(key)
-			parts = append(parts, string(keyJSON)+":"+canonicalJSON(value[key]))
-		}
-		return "{" + strings.Join(parts, ",") + "}"
-	default:
-		data, err := json.Marshal(value)
-		if err != nil {
-			return fmt.Sprint(value)
-		}
-		var normalized interface{}
-		if err := json.Unmarshal(data, &normalized); err != nil {
-			return string(data)
-		}
-		return canonicalJSON(normalized)
-	}
 }
 
 func buildResponsesURL(baseURL string) string {
@@ -1245,7 +1192,7 @@ func applyPreviousResponseIDChain(
 		return
 	}
 	systemFingerprint := extractSystemText(claudeReq.System)
-	toolsFingerprint := canonicalJSON(normalizeToolsForPromptCacheKey(claudeReq.Tools))
+	toolsFingerprint := utils.CanonicalJSON(normalizeToolsForPromptCacheKey(claudeReq.Tools))
 	if state.SystemFingerprint != systemFingerprint || state.ToolsFingerprint != toolsFingerprint {
 		session.DefaultResponseChainManager().Clear(conversationID)
 		return
@@ -1312,7 +1259,7 @@ func rememberResponsesChain(conversationID string, claudeReq *types.ClaudeReques
 		ResponseID:        responseID,
 		MessageCount:      len(claudeReq.Messages),
 		SystemFingerprint: extractSystemText(claudeReq.System),
-		ToolsFingerprint:  canonicalJSON(normalizeToolsForPromptCacheKey(claudeReq.Tools)),
+		ToolsFingerprint:  utils.CanonicalJSON(normalizeToolsForPromptCacheKey(claudeReq.Tools)),
 		BaseURL:           "",
 		Model:             model,
 	})

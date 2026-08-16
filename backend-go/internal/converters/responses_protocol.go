@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -337,54 +336,8 @@ func buildResponsesChatPromptCacheKey(model string, chatReq map[string]interface
 		"instructions": instructions,
 		"tools":        chatReq["tools"],
 	}
-	sum := sha256.Sum256([]byte(canonicalJSONForCacheKey(stableParts)))
+	sum := sha256.Sum256([]byte(utils.CanonicalJSON(stableParts)))
 	return "resp-chat-" + hex.EncodeToString(sum[:])[:24]
-}
-
-func canonicalJSONForCacheKey(value interface{}) string {
-	switch typed := value.(type) {
-	case nil:
-		return "null"
-	case string:
-		data, _ := json.Marshal(typed)
-		return string(data)
-	case bool:
-		if typed {
-			return "true"
-		}
-		return "false"
-	case float64, float32, int, int64, int32, uint, uint64, uint32, json.Number:
-		data, _ := json.Marshal(typed)
-		return string(data)
-	case []interface{}:
-		parts := make([]string, 0, len(typed))
-		for _, item := range typed {
-			parts = append(parts, canonicalJSONForCacheKey(item))
-		}
-		return "[" + strings.Join(parts, ",") + "]"
-	case map[string]interface{}:
-		keys := make([]string, 0, len(typed))
-		for key := range typed {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		parts := make([]string, 0, len(keys))
-		for _, key := range keys {
-			keyJSON, _ := json.Marshal(key)
-			parts = append(parts, string(keyJSON)+":"+canonicalJSONForCacheKey(typed[key]))
-		}
-		return "{" + strings.Join(parts, ",") + "}"
-	default:
-		data, err := json.Marshal(typed)
-		if err != nil {
-			return fmt.Sprint(typed)
-		}
-		var normalized interface{}
-		if err := json.Unmarshal(data, &normalized); err != nil {
-			return string(data)
-		}
-		return canonicalJSONForCacheKey(normalized)
-	}
 }
 
 func convertResponsesRequestWithStructConverter(serviceType string, sess *session.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
