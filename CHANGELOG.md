@@ -4,6 +4,20 @@
 
 ---
 
+## [v3.0.0] - 2026-08-15
+
+### 重构
+
+- **canonical JSON 收敛** — `providers/responses_messages.go` 与 `converters/responses_protocol.go` 各一份的缓存键规范化实现合并为统一入口 `utils.CanonicalJSON`，三处调用（Messages→Responses 缓存键、Responses→Chat 缓存键、OpenAI 缓存键）改走共享实现
+
+### 文档
+
+- **文档体系重建** — 重写 `README.md`（移除"已归档/CCX"过时声明，按五协议 + 各子系统现状全文重写）、`docs/ENVIRONMENT.md`（修正 `RESPONSE_HEADER_TIMEOUT=120`、补 `STREAM_IDLE_TIMEOUT`/`FORCE_HTTP1`）、`docs/RELEASE.md`（改为根 `VERSION` 单一版本真相源 + tag 触发 workflow）、`docs/glossary.md`、`docs/capabilities.md`、`docs/flows.md`
+- **版本号统一** — 版本单一事实源 = 根 `VERSION` = `v3.0.0`；`frontend/package.json` 对齐为 `3.0.0`；`CHANGELOG.md` 归档 v2.19.2
+- **上下架清理** — 移除五份过时/违规文档（`backend-go/DEV_GUIDE.md`、`backend-go/docs/MALFORMED_TOOLCALL_MEMO.md`、`frontend/ESLINT.md`、`docs/MODEL_AUDIT_UI_OPTIMIZATION.md`、`docs/123/`）；`docs/glossary.md` 登记 Pi Agent / 模型目录语义，`docs/capabilities.md` 新增「已知重复与待治理」附注与治理记录
+
+---
+
 ## [v2.19.2] - 2026-08-07
 
 ### 新增与优化
