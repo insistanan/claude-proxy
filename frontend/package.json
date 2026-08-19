@@ -1,6 +1,6 @@
 {
   "name": "claude-proxy-frontend",
-  "version": "3.0.1",
+  "version": "3.0.3",
   "license": "MIT",
   "private": true,
   "type": "module",
