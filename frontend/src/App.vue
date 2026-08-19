@@ -16,8 +16,11 @@
 
     <!-- 认证界面 -->
     <v-dialog v-model="showAuthDialog" persistent max-width="500">
-      <v-card class="pa-4">
-        <v-card-title class="text-h5 text-center mb-4"> 🔐 API Proxy 管理界面 </v-card-title>
+      <v-card class="auth-card pa-4">
+        <v-card-title class="auth-title">
+          <span class="auth-title-icon"><v-icon size="22">mdi-key</v-icon></span>
+          <span>API Proxy</span>
+        </v-card-title>
 
         <v-card-text>
           <v-alert v-if="authStore.authError" type="error" variant="tonal" class="mb-4">
@@ -37,25 +40,14 @@
               @keyup.enter="handleAuthSubmit"
             />
 
-            <v-btn type="submit" color="primary" block size="large" class="mt-4" :loading="authStore.authLoading">
-              访问管理界面
+            <v-btn type="submit" color="primary" variant="flat" block size="large" class="mt-4" :loading="authStore.authLoading">
+              验证并进入
             </v-btn>
           </v-form>
-
-          <v-divider class="my-4" />
-
-          <v-alert type="info" variant="tonal" density="compact" class="mb-0">
-            <div class="text-body-2">
-              <p class="mb-2"><strong>🔒 安全提示：</strong></p>
-              <ul class="ml-4 mb-0">
-                <li>访问密钥在服务器的 <code>PROXY_ACCESS_KEY</code> 环境变量中设置</li>
-                <li>密钥将安全保存在本地，下次访问将自动验证登录</li>
-                <li>请勿与他人分享您的访问密钥</li>
-                <li>如果怀疑密钥泄露，请立即更改服务器配置</li>
-                <li>连续 {{ MAX_AUTH_ATTEMPTS }} 次认证失败将锁定 5 分钟</li>
-              </ul>
-            </div>
-          </v-alert>
+          <div class="auth-footnote">
+            <v-icon size="15">mdi-shield-alert</v-icon>
+            <span>密钥仅保存在当前浏览器</span>
+          </div>
         </v-card-text>
       </v-card>
     </v-dialog>
@@ -68,62 +60,19 @@
         </div>
       </template>
 
-      <!-- 自定义标题容器 -->
-      <div class="header-title">
-        <div :class="$vuetify.display.mobile ? 'text-caption' : 'text-subtitle-2'" class="font-weight-semibold d-flex align-center">
-          <router-link to="/channels/messages" class="api-type-text" :class="{ active: topNavActive === 'messages' }">
-            Messages
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/channels/responses" class="api-type-text" :class="{ active: topNavActive === 'responses' }">
-            Responses
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/channels/gemini" class="api-type-text" :class="{ active: topNavActive === 'gemini' }">
-            Gemini
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/channels/chat" class="api-type-text" :class="{ active: topNavActive === 'chat' }">
-            Chat
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/channels/images" class="api-type-text" :class="{ active: topNavActive === 'images' }">
-            Images
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/conversations" class="api-type-text" :class="{ active: topNavActive === 'conversations' }">
-            对话
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/logs" class="api-type-text" :class="{ active: topNavActive === 'logs' }">
-            日志
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/blocked-logs" class="api-type-text" :class="{ active: topNavActive === 'blocked-logs' }">
-            拦截
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/skills" class="api-type-text" :class="{ active: topNavActive === 'skills' }">
-            Skills
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/opencode" class="api-type-text" :class="{ active: topNavActive === 'opencode' }">
-            OpenCode
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/claude-code" class="api-type-text" :class="{ active: topNavActive === 'claude-code' }">
-            Claude Code
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/pi-agent" class="api-type-text" :class="{ active: topNavActive === 'pi-agent' }">
-            pi-agent
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/dsh" class="api-type-text" :class="{ active: topNavActive === 'dsh' }">
-            DSH
+      <nav class="header-title" aria-label="主导航">
+        <div v-for="group in navGroups" :key="group.key" class="nav-group" role="group" :aria-label="group.label">
+          <router-link
+            v-for="item in group.items"
+            :key="item.key"
+            :to="item.to"
+            class="api-type-text"
+            :class="{ active: topNavActive === item.key }"
+          >
+            {{ item.label }}
           </router-link>
         </div>
-      </div>
+      </nav>
 
       <v-spacer/>
 
@@ -252,8 +201,7 @@
               </div>
               <div class="stat-card-content">
                 <div class="stat-card-value">{{ totalChannelsDisplay }}</div>
-                <div class="stat-card-label">总渠道数</div>
-                <div class="stat-card-desc">已配置的API渠道</div>
+                <div class="stat-card-label">渠道</div>
               </div>
               <div class="stat-card-glow"></div>
             </div>
@@ -268,8 +216,7 @@
                 <div class="stat-card-value">
                   {{ activeChannelCountDisplay }}<span class="stat-card-total">/{{ channelStore.failoverChannelCount }}</span>
                 </div>
-                <div class="stat-card-label">活跃渠道</div>
-                <div class="stat-card-desc">参与故障转移调度</div>
+                <div class="stat-card-label">活跃</div>
               </div>
               <div class="stat-card-glow"></div>
             </div>
@@ -285,8 +232,7 @@
               </div>
               <div class="stat-card-content">
                 <div class="stat-card-value">{{ systemStore.systemStatusText }}</div>
-                <div class="stat-card-label">系统状态</div>
-                <div class="stat-card-desc">{{ systemStore.systemStatusDesc }}</div>
+                <div class="stat-card-label">服务</div>
               </div>
               <div class="stat-card-glow"></div>
             </div>
@@ -318,9 +264,11 @@
               测试延迟
             </v-btn>
 
-            <v-btn size="large" prepend-icon="mdi-refresh" variant="text" class="action-btn" @click="refreshChannels">
-              刷新
-            </v-btn>
+            <v-tooltip text="刷新" location="bottom">
+              <template #activator="{ props }">
+                <v-btn v-bind="props" icon="mdi-refresh" size="large" variant="text" class="action-btn action-icon-btn" aria-label="刷新" @click="refreshChannels" />
+              </template>
+            </v-tooltip>
           </div>
 
           <div class="action-bar-right">
@@ -329,18 +277,21 @@
               <template #activator="{ props }">
                 <v-btn
                   v-bind="props"
-                  variant="tonal"
+                  :variant="clientDisguiseEnabled ? 'flat' : 'outlined'"
                   size="large"
                   :loading="systemStore.clientDisguiseLoading"
                   :disabled="systemStore.clientDisguiseLoadError"
-                  :color="systemStore.clientDisguiseLoadError ? 'error' : (clientDisguiseEnabled ? 'success' : 'default')"
-                  class="action-btn"
+                  :color="clientDisguiseEnabled ? 'success' : undefined"
+                  class="action-btn mode-control"
+                  :class="{ 'is-on': clientDisguiseEnabled, 'is-off': !clientDisguiseEnabled, 'is-unavailable': systemStore.clientDisguiseLoadError }"
+                  :aria-pressed="clientDisguiseEnabled"
                   @click="toggleClientDisguise"
                 >
                   <v-icon start size="20">
                     {{ systemStore.clientDisguiseLoadError ? 'mdi-alert-circle-outline' : (clientDisguiseEnabled ? 'mdi-robot' : 'mdi-robot-outline') }}
                   </v-icon>
                   {{ clientDisguiseLabel }}
+                  <span class="mode-state">{{ clientDisguiseEnabled ? '开' : '关' }}</span>
                 </v-btn>
               </template>
               <span>{{ clientDisguiseTooltip }}</span>
@@ -351,18 +302,21 @@
               <template #activator="{ props }">
                 <v-btn
                   v-bind="props"
-                  variant="tonal"
+                  :variant="preferencesStore.fuzzyModeEnabled ? 'flat' : 'outlined'"
                   size="large"
                   :loading="systemStore.fuzzyModeLoading"
                   :disabled="systemStore.fuzzyModeLoadError"
-                  :color="systemStore.fuzzyModeLoadError ? 'error' : (preferencesStore.fuzzyModeEnabled ? 'warning' : 'default')"
-                  class="action-btn"
+                  :color="preferencesStore.fuzzyModeEnabled ? 'warning' : undefined"
+                  class="action-btn mode-control"
+                  :class="{ 'is-on': preferencesStore.fuzzyModeEnabled, 'is-off': !preferencesStore.fuzzyModeEnabled, 'is-unavailable': systemStore.fuzzyModeLoadError }"
+                  :aria-pressed="preferencesStore.fuzzyModeEnabled"
                   @click="toggleFuzzyMode"
                 >
                   <v-icon start size="20">
                     {{ systemStore.fuzzyModeLoadError ? 'mdi-alert-circle-outline' : (preferencesStore.fuzzyModeEnabled ? 'mdi-shield-refresh' : 'mdi-shield-off-outline') }}
                   </v-icon>
                   Fuzzy
+                  <span class="mode-state">{{ preferencesStore.fuzzyModeEnabled ? '开' : '关' }}</span>
                 </v-btn>
               </template>
               <span>{{ systemStore.fuzzyModeLoadError ? '加载失败，请刷新页面' : (preferencesStore.fuzzyModeEnabled ? 'Fuzzy 模式已启用：模糊处理错误，自动尝试所有渠道' : 'Fuzzy 模式已关闭：固定首个渠道，仅重试其 Key 与地址') }}</span>
@@ -470,6 +424,40 @@ const isPiAgentPage = computed(() => route.name === 'pi-agent')
 const isDshPage = computed(() => route.name === 'dsh')
 const isSettingsPage = computed(() => route.name === 'settings')
 const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isDshPage.value || isSettingsPage.value)
+
+const navGroups = [
+  {
+    key: 'protocols',
+    label: '协议',
+    items: [
+      { key: 'messages', label: 'Messages', to: '/channels/messages' },
+      { key: 'responses', label: 'Responses', to: '/channels/responses' },
+      { key: 'gemini', label: 'Gemini', to: '/channels/gemini' },
+      { key: 'chat', label: 'Chat', to: '/channels/chat' },
+      { key: 'images', label: 'Images', to: '/channels/images' }
+    ]
+  },
+  {
+    key: 'workspace',
+    label: '工作台',
+    items: [
+      { key: 'conversations', label: '对话', to: '/conversations' },
+      { key: 'logs', label: '日志', to: '/logs' },
+      { key: 'blocked-logs', label: '拦截', to: '/blocked-logs' },
+      { key: 'skills', label: 'Skills', to: '/skills' }
+    ]
+  },
+  {
+    key: 'clients',
+    label: '客户端',
+    items: [
+      { key: 'opencode', label: 'OpenCode', to: '/opencode' },
+      { key: 'claude-code', label: 'Claude Code', to: '/claude-code' },
+      { key: 'pi-agent', label: 'pi-agent', to: '/pi-agent' },
+      { key: 'dsh', label: 'DSH', to: '/dsh' }
+    ]
+  }
+]
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -1003,6 +991,37 @@ onUnmounted(() => {
   overflow: visible !important;
 }
 
+.auth-card { overflow: hidden; }
+.auth-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 1.25rem;
+  font-weight: 750;
+}
+.auth-title-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  color: rgb(var(--v-theme-on-primary));
+  background: rgb(var(--v-theme-primary));
+  border-radius: 9px 3px 9px 3px;
+  box-shadow: 0 5px 14px rgba(var(--v-theme-primary), 0.28);
+}
+.auth-footnote {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 16px;
+  color: rgba(var(--v-theme-on-surface), 0.48);
+  font-size: 0.75rem;
+}
+
 .app-logo {
   width: 36px;
   height: 36px;
@@ -1029,9 +1048,19 @@ onUnmounted(() => {
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+  gap: 8px;
 }
 .header-title::-webkit-scrollbar { display: none; }
-.header-title > div { flex-wrap: nowrap; white-space: nowrap; }
+.nav-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(var(--v-theme-outline), 0.38);
+  border-radius: 10px 3px 10px 3px;
+  background: rgba(var(--v-theme-surface-variant), 0.38);
+}
 
 .api-type-text {
   cursor: pointer;
@@ -1047,7 +1076,7 @@ onUnmounted(() => {
 }
 
 a.api-type-text { display: inline-block; }
-.api-type-text:not(.separator):hover { opacity: 0.95; background: rgba(var(--v-theme-primary), 0.1); transform: translateY(-1px); }
+.api-type-text:hover { opacity: 0.95; background: rgba(var(--v-theme-primary), 0.1); transform: translateY(-1px); }
 .api-type-text.active {
   opacity: 1;
   font-weight: 800;
@@ -1056,11 +1085,13 @@ a.api-type-text { display: inline-block; }
   border-color: transparent;
   box-shadow: 0 2px 8px rgba(var(--v-theme-primary), 0.28);
 }
-.v-theme--dark .api-type-text:not(.separator):hover {
+.v-theme--dark .nav-group {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(var(--v-theme-outline), 0.62);
+}
+.v-theme--dark .api-type-text:hover {
   background: rgba(var(--v-theme-primary), 0.1);
 }
-
-.separator { opacity: 0.25; margin: 0 1px; cursor: default; padding: 0; font-weight: 800; }
 
 .header-btn {
   margin-left: 2px;
@@ -1267,8 +1298,6 @@ a.api-type-text { display: inline-block; }
   color: rgb(var(--v-theme-on-surface));
 }
 
-.stat-card-desc { font-size: 0.7rem; opacity: 0.45; margin-top: 2px; }
-
 .stat-card-icon .v-icon { color: rgb(var(--v-theme-surface)) !important; }
 .v-theme--dark .stat-card-icon .v-icon { color: rgb(var(--v-theme-background)) !important; }
 
@@ -1316,6 +1345,31 @@ a.api-type-text { display: inline-block; }
   font-weight: 700;
   transition: transform 0.15s var(--ease-out), box-shadow 0.15s ease;
 }
+
+.action-icon-btn { min-width: 48px !important; }
+.mode-control {
+  min-width: 148px;
+  justify-content: space-between;
+  gap: 10px;
+  border-width: 1px !important;
+}
+.mode-control.is-on { box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16) !important; }
+.mode-control.is-off {
+  color: rgba(var(--v-theme-on-surface), 0.65) !important;
+  border-color: rgba(var(--v-theme-outline), 0.72) !important;
+}
+.mode-control.is-unavailable { opacity: 0.46; cursor: not-allowed !important; }
+.mode-state {
+  min-width: 20px;
+  padding: 2px 5px;
+  border-radius: 4px 1px 4px 1px;
+  font-size: 10px;
+  line-height: 1.2;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  opacity: 0.8;
+}
+.mode-control.is-on .mode-state { background: rgba(255, 255, 255, 0.18); }
+.mode-control.is-off .mode-state { background: rgba(var(--v-theme-on-surface), 0.08); }
 
 .action-btn-primary {
   background: rgb(var(--v-theme-primary)) !important;
@@ -1380,13 +1434,14 @@ a.api-type-text { display: inline-block; }
   .v-main .v-container { padding-left: 10px !important; padding-right: 10px !important; }
   .app-header { padding: 0 12px !important; }
   .app-logo { width: 28px; height: 28px; margin-right: 6px; }
-  .api-type-text { padding: 2px 6px; font-size: 0.72rem; }
+  .header-title { gap: 5px; }
+  .nav-group { gap: 0; padding: 2px; }
+  .api-type-text { padding: 4px 7px; font-size: 0.72rem; }
   .stat-card { padding: 16px 14px; gap: 12px; min-height: 84px; box-shadow: 0 2px 7px rgba(24, 28, 38, 0.05); }
   .stat-card-icon { width: 38px; height: 38px; }
   .stat-card-icon .v-icon { font-size: 18px !important; }
   .stat-card-value { font-size: 1.3rem; }
   .stat-card-label { font-size: 0.68rem; }
-  .stat-card-desc { display: none; }
   .stat-cards-row { margin-bottom: 14px !important; }
   .stat-cards-row .v-col { padding: 4px !important; }
   .stat-cards-row .v-col:last-child { flex: 0 0 100%; max-width: 100%; }
@@ -1395,6 +1450,7 @@ a.api-type-text { display: inline-block; }
   .action-bar-left .action-btn { width: 100%; justify-content: center; }
   .action-bar-left .action-btn:nth-child(3) { grid-column: 1 / -1; }
   .action-bar-right { width: 100%; display: grid; grid-template-columns: auto 1fr; gap: 8px; }
+  .mode-control { min-width: 0; width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
