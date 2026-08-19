@@ -562,10 +562,10 @@ func managedSkillLocations() ([]skillLocation, error) {
 	}
 	locations := []skillLocation{
 		{Key: "project", Agent: "项目 Skills 目录", Path: projectDir, SourceType: "project", ReadOnly: false},
+		{Key: "agents", Agent: "通用 Agent Skills", Path: filepath.Join(home, ".agents", "skills"), SourceType: "user", ReadOnly: false},
 		{Key: "claude-code", Agent: "Claude Code 用户目录", Path: filepath.Join(claudeHome, "skills"), SourceType: "user", ReadOnly: false},
 		{Key: "codex", Agent: "Codex 用户目录", Path: filepath.Join(codexHome, "skills"), SourceType: "user", ReadOnly: false},
 		{Key: "opencode", Agent: "OpenCode 用户目录", Path: openCodeDir, SourceType: "user", ReadOnly: false},
-		{Key: "agents", Agent: "通用 Agent Skills", Path: filepath.Join(home, ".agents", "skills"), SourceType: "user", ReadOnly: false},
 		{Key: "cursor", Agent: "Cursor 用户目录", Path: filepath.Join(home, ".cursor", "skills"), SourceType: "user", ReadOnly: false},
 		{Key: "codex-system", Agent: "Codex 内置 Skill", Path: filepath.Join(codexHome, "skills", ".system"), SourceType: "codex-system", ReadOnly: true},
 	}

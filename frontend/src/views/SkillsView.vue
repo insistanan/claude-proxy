@@ -308,7 +308,7 @@ const loadSkills = async () => {
   } finally { loading.value = false }
 }
 
-const defaultInstallTargets = () => writableLocations.value.filter(location => location.key === 'project' || location.exists).map(location => location.key)
+const defaultInstallTargets = () => writableLocations.value.filter(location => location.key === 'project' || location.key === 'agents').map(location => location.key)
 const openImport = () => { importFile.value = null; importTargets.value = defaultInstallTargets(); importDialog.value = true }
 
 const consolidateInstalledSkills = async () => {
