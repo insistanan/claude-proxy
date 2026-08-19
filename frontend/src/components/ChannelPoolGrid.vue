@@ -1,9 +1,10 @@
 <template>
   <section class="pool-section">
     <header class="section-header">
-      <div>
+      <div class="section-heading-mark">
+        <v-icon size="20" color="primary">mdi-swap-horizontal</v-icon>
         <div class="text-subtitle-2 font-weight-bold">渠道分组</div>
-        <div class="text-caption text-medium-emphasis">优先使用模型匹配分组，未匹配或分组不可用时转入兜底分组</div>
+        <v-chip size="x-small" color="primary" variant="tonal">{{ pools.length }}</v-chip>
       </div>
       <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="openCreateDialog">
         新建分组
@@ -17,6 +18,7 @@
         v-for="{ pool, order } in column"
         :key="pool.id"
         class="pool-card"
+        :class="{ 'is-default': pool.id === 'default' }"
         :style="{ order }"
       >
         <header class="pool-card-header">
@@ -99,7 +101,7 @@
         <span class="text-subtitle-2">公用纯图片理解池</span>
         <v-chip size="x-small">{{ visionChannels.length }}</v-chip>
       </div>
-      <span class="text-caption text-medium-emphasis">仅供图片理解层调用，不参与常规对话调度</span>
+      <span class="section-inline-label">图片理解渠道</span>
     </header>
     <div class="vision-channel-list">
       <div v-for="channel in visionChannels" :key="channel.index" class="vision-channel-row" @click="emit('edit', channel)">
@@ -373,6 +375,13 @@ const deletePool = async () => {
 .section-header, .vision-pool-header {
   display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px;
 }
+.section-heading-mark { display: flex; align-items: center; gap: 8px; }
+.section-inline-label {
+  color: rgba(var(--v-theme-on-surface), 0.48);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .section-header {
   position: relative;
   min-height: 54px;
@@ -408,6 +417,7 @@ const deletePool = async () => {
   background: rgba(var(--v-theme-surface-variant), 0.6);
   position: relative;
 }
+.pool-card.is-default .pool-card-header { background: color-mix(in srgb, rgb(var(--v-theme-primary)) 8%, rgb(var(--v-theme-surface))); }
 /* 分组左侧刻度色轨 */
 .pool-card-header::before {
   content: '';
@@ -432,6 +442,7 @@ const deletePool = async () => {
   color: rgb(var(--v-theme-on-surface-variant));
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.pool-card.is-default .pool-rule::before { content: '兜底  /  '; color: rgb(var(--v-theme-primary)); font-weight: 700; }
 .pool-channel-list {
   padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 72px;
 }

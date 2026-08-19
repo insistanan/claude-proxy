@@ -110,7 +110,7 @@ const formatTime = (dateStr: string): string => {
   padding-left: 24px;
 }
 
-/* 在线状态灯 — LED 呼吸，提示渠道在线 */
+/* 在线状态灯 */
 .status-active .badge-content::before {
   content: '';
   position: absolute;
@@ -122,7 +122,7 @@ const formatTime = (dateStr: string): string => {
   border-radius: 50%;
   background: rgb(var(--v-theme-success));
   box-shadow: 0 0 8px 1px rgba(var(--v-theme-success), 0.85);
-  animation: led-blink 2.2s ease-in-out infinite;
+  animation: none;
 }
 
 /* 活跃状态环形脉冲 — 仅 hover 时扩散，避免整屏徽章同时脉动 */
@@ -147,7 +147,7 @@ const formatTime = (dateStr: string): string => {
   padding-left: 24px;
 }
 
-/* 熔断状态灯 — 琥珀色警示闪烁（稍快，提示暂停） */
+/* 熔断状态灯 */
 .status-suspended .badge-content::before {
   content: '';
   position: absolute;
@@ -159,7 +159,7 @@ const formatTime = (dateStr: string): string => {
   border-radius: 50%;
   background: rgb(var(--v-theme-warning));
   box-shadow: 0 0 7px 1px rgba(var(--v-theme-warning), 0.85);
-  animation: led-blink 1.6s ease-in-out infinite;
+  animation: none;
 }
 
 .status-disabled .badge-content {

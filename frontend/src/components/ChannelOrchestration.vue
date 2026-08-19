@@ -399,7 +399,7 @@
           备用资源池
           <v-chip size="x-small" class="ml-2">{{ inactiveChannels.length }}</v-chip>
         </div>
-        <span class="text-caption text-medium-emphasis">启用后将追加到活跃序列末尾</span>
+        <span class="section-inline-label">待启用</span>
       </div>
 
       <div v-if="inactiveChannels.length > 0" class="inactive-pool">
@@ -546,7 +546,7 @@
           弃用渠道池
           <v-chip size="x-small" class="ml-2">{{ deprecatedChannels.length }}</v-chip>
         </div>
-        <span class="text-caption text-medium-emphasis">每 12 小时清理一次，弃用超过 3 天自动删除</span>
+        <span class="section-inline-label">待清理</span>
       </div>
 
       <div v-if="deprecatedChannels.length > 0" class="inactive-pool deprecated-pool">
@@ -1801,6 +1801,12 @@ defineExpose({
       transparent 1px 8px),
     rgb(var(--v-theme-primary));
 }
+.section-inline-label {
+  color: rgba(var(--v-theme-on-surface), 0.48);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .channel-list { display: flex; flex-direction: column; gap: 8px; }
 .channel-item-wrapper { display: flex; flex-direction: column; }
 
@@ -1869,7 +1875,7 @@ defineExpose({
 .channel-row:hover {
   border-color: rgba(var(--v-theme-primary), 0.7);
   box-shadow: var(--shadow-2);
-  transform: translateY(-2px);
+  transform: translateX(2px);
 }
 
 .channel-row:active { transform: translateY(0); box-shadow: var(--shadow-1); }
@@ -1897,11 +1903,11 @@ defineExpose({
 /* SVG 活跃度波形背景 */
 .activity-chart-bg {
   position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-  pointer-events: none; z-index: 0; opacity: 0.45; overflow: hidden;
+  pointer-events: none; z-index: 0; opacity: 0.2; overflow: hidden;
   border-radius: inherit;
   transition: opacity 0.2s ease;
 }
-.channel-row:hover .activity-chart-bg { opacity: 0.62; }
+.channel-row:hover .activity-chart-bg { opacity: 0.34; }
 
 /* 柱子生长 — 从底部竖起（首次渲染播放一次） */
 .activity-bar {
@@ -1919,10 +1925,10 @@ defineExpose({
   animation: bar-rise 0.5s var(--ease-out) both, spark-blink 1.05s ease-in-out infinite;
 }
 
-/* 最新柱 — 高亮并持续闪烁，标记"当前实时" */
+/* 最新柱保持高亮，标记当前窗口 */
 .activity-bar-latest {
   filter: brightness(1.45) saturate(1.2);
-  animation: bar-rise 0.5s var(--ease-out) both, led-blink 1.6s ease-in-out infinite;
+  animation: bar-rise 0.5s var(--ease-out) both;
 }
 
 .channel-chart-wrapper { margin: 4px 0 8px 0; }
