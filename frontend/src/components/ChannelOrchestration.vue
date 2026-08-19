@@ -165,7 +165,6 @@
               <span class="text-caption text-medium-emphasis ml-2">{{ element.serviceType }}</span>
               <v-tooltip
                 v-if="formatChannelModelPreview(element)"
-                :text="formatModelMappingFull(element)"
                 location="top"
                 :open-delay="200"
                 :open-on-focus="false"
@@ -176,11 +175,18 @@
                     size="x-small"
                     color="secondary"
                     variant="tonal"
-                    class="ml-2 model-preview-chip"
+                    class="ml-2 model-mapping-chip"
                   >
-                    {{ formatChannelModelPreview(element) }}
+                    <v-icon start size="12">mdi-swap-horizontal</v-icon>
+                    <span class="model-mapping-preview">{{ formatChannelModelPreview(element) }}</span>
                   </v-chip>
                 </template>
+                <div class="model-mapping-tooltip">
+                  <div class="text-caption font-weight-bold mb-1">模型映射</div>
+                  <div v-for="(line, idx) in formatModelMappingFullLines(element)" :key="idx" class="model-mapping-line">
+                    {{ line }}
+                  </div>
+                </div>
               </v-tooltip>
               <span v-if="element.description" class="text-caption text-disabled ml-3 channel-description">{{ element.description }}</span>
               <!-- 展开图标 -->
@@ -418,7 +424,6 @@
               <span class="text-caption text-disabled ml-2">{{ channel.serviceType }}</span>
               <v-tooltip
                 v-if="formatChannelModelPreview(channel)"
-                :text="formatModelMappingFull(channel)"
                 location="top"
                 :open-delay="200"
                 :open-on-focus="false"
@@ -429,11 +434,18 @@
                     size="x-small"
                     color="secondary"
                     variant="tonal"
-                    class="ml-2 model-preview-chip"
+                    class="ml-2 model-mapping-chip"
                   >
-                    {{ formatChannelModelPreview(channel) }}
+                    <v-icon start size="12">mdi-swap-horizontal</v-icon>
+                    <span class="model-mapping-preview">{{ formatChannelModelPreview(channel) }}</span>
                   </v-chip>
                 </template>
+                <div class="model-mapping-tooltip">
+                  <div class="text-caption font-weight-bold mb-1">模型映射</div>
+                  <div v-for="(line, idx) in formatModelMappingFullLines(channel)" :key="idx" class="model-mapping-line">
+                    {{ line }}
+                  </div>
+                </div>
               </v-tooltip>
               <v-chip v-if="channel.temporary" size="x-small" color="warning" variant="tonal" class="ml-2">
                 临时 {{ formatDateTime(channel.temporaryUntil) }}
@@ -564,7 +576,6 @@
               <span class="text-caption text-disabled ml-2">{{ channel.serviceType }}</span>
               <v-tooltip
                 v-if="formatChannelModelPreview(channel)"
-                :text="formatModelMappingFull(channel)"
                 location="top"
                 :open-delay="200"
                 :open-on-focus="false"
@@ -575,11 +586,18 @@
                     size="x-small"
                     color="secondary"
                     variant="tonal"
-                    class="ml-2 model-preview-chip"
+                    class="ml-2 model-mapping-chip"
                   >
-                    {{ formatChannelModelPreview(channel) }}
+                    <v-icon start size="12">mdi-swap-horizontal</v-icon>
+                    <span class="model-mapping-preview">{{ formatChannelModelPreview(channel) }}</span>
                   </v-chip>
                 </template>
+                <div class="model-mapping-tooltip">
+                  <div class="text-caption font-weight-bold mb-1">模型映射</div>
+                  <div v-for="(line, idx) in formatModelMappingFullLines(channel)" :key="idx" class="model-mapping-line">
+                    {{ line }}
+                  </div>
+                </div>
               </v-tooltip>
             </div>
             <div class="channel-info-desc text-caption text-disabled">
@@ -1543,41 +1561,87 @@ const formatDateTime = (value?: string): string => {
 
 const formatChannelModelPreview = (channel: Channel): string => {
   const defaultModel = String(channel.defaultModel || '').trim()
-  if (defaultModel) {
-    return `兜底 ${defaultModel}`
+  const entries = normalizeModelMappingEntries(channel.modelMapping)
+
+  // 兜底模型 — 单独展示
+  if (defaultModel && entries.length === 0) {
+    return `⇣ ${truncateModel(defaultModel, 20)}`
   }
 
-  const entries = normalizeModelMappingEntries(channel.modelMapping)
+  // 无映射
   if (entries.length === 0) return ''
 
-  const preferred = pickPreferredModelMapping(entries, channel)
-  if (!preferred) return ''
-  const [source, target] = preferred
-  const base = source === target ? target : `${source} → ${target}`
-
-  // 有多条映射时追加数量提示，避免只展示一条造成"没展示完全"的误解
-  if (entries.length > 1) {
-    return `${base} +${entries.length - 1}`
+  // 单条映射 — 完整显示（最多 28 字符）
+  if (entries.length === 1) {
+    const [source, target] = entries[0]
+    if (source === target) {
+      return truncateModel(target, 28)
+    }
+    const mapping = `${source} → ${target}`
+    return truncateModel(mapping, 28)
   }
-  return base
+
+  // 多条映射 — 优先显示第一条前 15 字符 + 数量
+  const preferred = pickPreferredModelMapping(entries, channel)
+  if (!preferred) {
+    return `${entries.length} 条映射`
+  }
+
+  const [source, target] = preferred
+  const preview = source === target ? target : `${source} → ${target}`
+  const truncated = truncateModel(preview, 15)
+
+  return `${truncated} +${entries.length - 1}`
 }
 
-// 完整映射列表，用于 hover tooltip 展示全貌
-const formatModelMappingFull = (channel: Channel): string => {
+// 完整映射列表，用于 hover tooltip 展示全貌（返回数组）
+const formatModelMappingFullLines = (channel: Channel): string[] => {
   const defaultModel = String(channel.defaultModel || '').trim()
   const entries = normalizeModelMappingEntries(channel.modelMapping)
 
   const lines: string[] = []
+
+  // 兜底模型
   if (defaultModel) {
-    lines.push(`兜底 → ${defaultModel}`)
+    lines.push(`⇣ 兜底 → ${defaultModel}`)
   }
+
+  // 映射规则
   for (const [source, target] of entries) {
-    lines.push(`${source} → ${target}`)
+    if (source === target) {
+      lines.push(`${source}`)
+    } else {
+      lines.push(`${source} → ${target}`)
+    }
   }
+
   if (lines.length === 0) {
-    return '无模型映射'
+    return ['无模型映射']
   }
-  return lines.join('\n')
+
+  return lines
+}
+
+// 旧函数保留向后兼容（已不使用）
+const formatModelMappingFull = (channel: Channel): string => {
+  return formatModelMappingFullLines(channel).join('\n')
+}
+
+// 截断模型名称，保留关键部分
+const truncateModel = (text: string, maxLength: number): string => {
+  if (text.length <= maxLength) return text
+
+  // 优先保留后半部分（通常是版本号/变体）
+  if (text.includes('/')) {
+    const parts = text.split('/')
+    const last = parts[parts.length - 1]
+    if (last.length <= maxLength - 3) {
+      return `.../${last}`
+    }
+  }
+
+  // 直接截断
+  return text.slice(0, maxLength - 3) + '...'
 }
 
 const normalizeModelMappingEntries = (
@@ -2160,6 +2224,47 @@ defineExpose({
 .metrics-tooltip-row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
 .metrics-tooltip-row span:first-child { color: rgba(var(--v-theme-on-surface), 0.55); }
 .metrics-tooltip-row span:last-child { font-weight: 500; color: rgb(var(--v-theme-on-surface)); }
+
+/* 模型映射 Chip — 紧凑显示 + 固定最大宽度 */
+.model-mapping-chip {
+  max-width: 160px;
+  overflow: hidden;
+  cursor: help;
+}
+.model-mapping-chip :deep(.v-chip__content) {
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.model-mapping-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+}
+
+/* 模型映射 Tooltip — 结构化展示 */
+.model-mapping-tooltip {
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgb(var(--v-theme-on-surface));
+  min-width: 200px;
+  max-width: 420px;
+}
+.model-mapping-line {
+  padding: 3px 0;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  word-break: break-all;
+}
+.model-mapping-line:not(:last-child) {
+  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.15);
+}
+
+/* 旧 model-preview-chip 兼容样式（如有遗漏） */
 .model-preview-chip { max-width: 360px; overflow: hidden; }
 .model-preview-chip :deep(.v-chip__content) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; }
 
