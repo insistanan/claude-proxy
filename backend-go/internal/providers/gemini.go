@@ -80,7 +80,7 @@ func (p *GeminiProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	// 保留客户端的大部分 headers，只移除/替换必要的认证和代理相关 headers
 	req.Header = utils.PrepareUpstreamHeaders(c, req.URL.Host)
 
-	// 删除演练台模拟的客户端请求头（避免上游严格验证报错）
+	// 删除开发测试注入的客户端请求头，避免上游严格验证报错。
 	req.Header.Del("X-Codex-Window-Id")
 	req.Header.Del("X-Codex-Installation-Id")
 	req.Header.Del("X-Request-Id")
