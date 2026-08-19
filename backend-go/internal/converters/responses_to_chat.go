@@ -239,6 +239,8 @@ func ConvertResponsesToOpenAIChatRequestWithOptions(modelName string, inputRawJS
 			out, _ = sjson.Set(out, "reasoning_effort", "high")
 		case "xhigh":
 			out, _ = sjson.Set(out, "reasoning_effort", "xhigh")
+		case "max":
+			out, _ = sjson.Set(out, "reasoning_effort", "max")
 		}
 	}
 

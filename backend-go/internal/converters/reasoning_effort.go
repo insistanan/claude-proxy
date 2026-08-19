@@ -7,7 +7,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
 
-// 思考等级档位的统一内部表示：none/auto/minimal/low/medium/high/xhigh。
+// 思考等级档位的统一内部表示：none/auto/minimal/low/medium/high/xhigh/max。
 // 各协议入口解析后都必须归一化到该词汇表，再交给具体上游转换器渲染。
 //
 // 预算分界点（ReasoningBudgetTokens 与 EffortFromReasoningBudget 共用）：
@@ -15,7 +15,7 @@ import (
 //	minimal/low  -> 1024
 //	medium/auto  -> 4096
 //	high         -> 8192
-//	xhigh        -> 16384
+//	xhigh/max    -> 16384
 //
 // 反向阈值取相邻预算的中点（2560/6144/12288），保证
 // effort -> budget -> effort 的往返不发生档位漂移。
@@ -29,14 +29,15 @@ const (
 	reasoningBudgetHighUpper = 12288 // (< 12288 -> high)，>= 12288 -> xhigh
 )
 
-// NormalizeReasoningEffortForConstrainedUpstream 将 Codex 专有的高等级映射到转换上游可表达的最高等级。
-// 同时供 Chat / Gemini 等入口在转发前归一化客户端的 reasoning_effort 字段使用。
+// NormalizeReasoningEffortForConstrainedUpstream 将外部等级映射为内部标准档位。
+// 修复：保留 "max" 作为一个合法档位，因为部分国产模型或兼容网关（如硅基流动）
+// 的 OpenAPI 兼容层自己扩展了 "max" 值。强行折叠为 "xhigh" 会导致上游不识别。
 func NormalizeReasoningEffortForConstrainedUpstream(effort string) (string, error) {
 	switch effort {
-	case "", "none", "auto", "minimal", "low", "medium", "high", "xhigh":
+	case "", "none", "auto", "minimal", "low", "medium", "high", "xhigh", "max":
 		return effort, nil
-	case "max", "ultra":
-		return "xhigh", nil
+	case "ultra":
+		return "max", nil
 	default:
 		return "", fmt.Errorf("不支持的 reasoning.effort=%q", effort)
 	}
@@ -45,7 +46,7 @@ func NormalizeReasoningEffortForConstrainedUpstream(effort string) (string, erro
 // ReasoningBudgetTokens 把 effort 映射为 Claude thinking.budget_tokens。
 // maxOutputTokens <= 0 时使用档位默认预算；> 0 时按比例分配，并确保 budget < maxOutputTokens。
 //
-// high 与 xhigh 使用不同比例（0.8 / 0.9），保证 Responses->Claude 路径下二者可区分。
+// high 与 xhigh/max 使用不同比例（0.8 / 0.9），保证 Responses->Claude 路径下二者可区分。
 func ReasoningBudgetTokens(effort string, maxOutputTokens int) int {
 	if maxOutputTokens <= 0 {
 		switch effort {
@@ -55,7 +56,7 @@ func ReasoningBudgetTokens(effort string, maxOutputTokens int) int {
 			return reasoningBudgetMedium
 		case "high":
 			return reasoningBudgetHigh
-		case "xhigh":
+		case "xhigh", "max":
 			return reasoningBudgetXhigh
 		default:
 			return 0
@@ -69,8 +70,8 @@ func ReasoningBudgetTokens(effort string, maxOutputTokens int) int {
 		ratio = 0.5
 	case "high":
 		ratio = 0.8
-	case "xhigh":
-		// 预留约 10% 输出，其余给思考，区分 xhigh 与 high。
+	case "xhigh", "max":
+		// 预留约 10% 输出，其余给思考，区分 max 与 high。
 		ratio = 0.9
 	default:
 		return 0
@@ -112,7 +113,7 @@ func ReasoningEffortToOpenAIChatReasoningEffort(effort string) string {
 	switch effort {
 	case "", "auto":
 		return ""
-	case "none", "minimal", "low", "medium", "high", "xhigh":
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
 		return effort
 	default:
 		return ""
