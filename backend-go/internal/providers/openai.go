@@ -69,7 +69,8 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 	}
 
 	// 转换 thinking / output_config.effort → reasoning_effort
-	if effort := resolveClaudeReasoningEffort(&claudeReq); effort != "" {
+	// "auto" 在 OpenAI Chat Completions 无等价字段：省略即交由上游默认策略，避免硬塞无效值触发 400。
+	if effort := resolveClaudeReasoningEffort(&claudeReq); effort != "" && effort != "auto" {
 		openaiReq.ReasoningEffort = effort
 	}
 	// 稳定 prompt_cache_key：提升 OpenAI/兼容网关的缓存亲和；不支持端通常忽略。

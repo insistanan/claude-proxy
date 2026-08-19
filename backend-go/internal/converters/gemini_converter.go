@@ -55,6 +55,24 @@ func GeminiToClaudeRequest(geminiReq *types.GeminiRequest, model string) (map[st
 		if len(cfg.StopSequences) > 0 {
 			claudeReq["stop_sequences"] = cfg.StopSequences
 		}
+		// 转换 thinkingConfig -> Claude thinking（type=enabled + budget_tokens）。
+		// 之前完全漏读 ThinkingConfig，导致 Gemini 入口转 Claude 上游时思考配置被静默丢弃。
+		if cfg.ThinkingConfig != nil {
+			effort := EffortFromGeminiThinkingConfig(cfg.ThinkingConfig)
+			if effort != "" && effort != "none" {
+				maxTokens := cfg.MaxOutputTokens
+				if maxTokens <= 0 {
+					maxTokens = 65536
+				}
+				budget := ReasoningBudgetTokens(effort, maxTokens)
+				if budget > 0 {
+					claudeReq["thinking"] = map[string]interface{}{
+						"type":          "enabled",
+						"budget_tokens": budget,
+					}
+				}
+			}
+		}
 	}
 
 	// 4. 转换 tools -> tools
@@ -134,6 +152,14 @@ func GeminiToOpenAIRequest(geminiReq *types.GeminiRequest, model string) (map[st
 		}
 		if len(cfg.StopSequences) > 0 {
 			openaiReq["stop"] = cfg.StopSequences
+		}
+		// 转换 thinkingConfig -> reasoning_effort。之前完全漏读 ThinkingConfig，
+		// 导致 Gemini 入口转 OpenAI Chat 上游时思考配置被静默丢弃。
+		if cfg.ThinkingConfig != nil {
+			effort := EffortFromGeminiThinkingConfig(cfg.ThinkingConfig)
+			if reasoningEffort := ReasoningEffortToOpenAIChatReasoningEffort(effort); reasoningEffort != "" {
+				openaiReq["reasoning_effort"] = reasoningEffort
+			}
 		}
 	}
 

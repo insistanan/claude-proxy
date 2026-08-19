@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/converters"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
 	"github.com/BenedictKing/claude-proxy/internal/modelcatalog"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
@@ -244,6 +245,10 @@ func applyChatModelMapping(bodyBytes []byte, upstream *config.UpstreamConfig) ([
 	if mappedModel := config.ResolveUpstreamModel(model, upstream); strings.TrimSpace(mappedModel) != "" {
 		payload["model"] = mappedModel
 	}
+	// 归一化 reasoning_effort：把客户端可能传入的 max/ultra 折叠为上游可识别的 xhigh，
+	// 与 Responses 入口的 normalizeReasoningEffortForConstrainedUpstream 行为一致，
+	// 避免部分只接受 minimal/low/medium/high 的 OpenAI 兼容推理模型因 max 直接回 400。
+	normalizeChatReasoningEffort(payload)
 	if err := sanitizeOpenAIChatPayloadForUpstream(payload); err != nil {
 		return nil, err
 	}
@@ -255,6 +260,28 @@ func applyChatModelMapping(bodyBytes []byte, upstream *config.UpstreamConfig) ([
 	ensureChatStreamUsageOptions(payload)
 
 	return utils.MarshalJSONNoEscape(payload)
+}
+
+// normalizeChatReasoningEffort 就地归一化 Chat 请求顶层 reasoning_effort 字段。
+// 非法值（如 future）直接删除，避免原样透传触发上游 400；max/ultra 折叠为 xhigh。
+// auto 与空字符串同样省略字段，等价于交由上游默认策略。
+func normalizeChatReasoningEffort(payload map[string]interface{}) {
+	raw, exists := payload["reasoning_effort"]
+	if !exists {
+		return
+	}
+	effort, _ := raw.(string)
+	normalized, err := converters.NormalizeReasoningEffortForConstrainedUpstream(strings.TrimSpace(effort))
+	if err != nil {
+		delete(payload, "reasoning_effort")
+		return
+	}
+	switch normalized {
+	case "", "auto":
+		delete(payload, "reasoning_effort")
+	default:
+		payload["reasoning_effort"] = normalized
+	}
 }
 
 // stripChatRoutingMetadata removes proxy-only routing fields before forwarding

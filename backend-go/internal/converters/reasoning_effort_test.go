@@ -21,12 +21,12 @@ func TestNormalizeReasoningEffortForConstrainedUpstream(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := normalizeReasoningEffortForConstrainedUpstream(tt.effort)
+			got, err := NormalizeReasoningEffortForConstrainedUpstream(tt.effort)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("normalizeReasoningEffortForConstrainedUpstream() 错误 = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("NormalizeReasoningEffortForConstrainedUpstream() 错误 = %v, wantErr %v", err, tt.wantErr)
 			}
 			if got != tt.want {
-				t.Errorf("normalizeReasoningEffortForConstrainedUpstream() = %q, want %q", got, tt.want)
+				t.Errorf("NormalizeReasoningEffortForConstrainedUpstream() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -68,8 +68,9 @@ func TestCodexReasoningEffortConversions(t *testing.T) {
 			if !ok {
 				t.Fatalf("reasoning.effort=%q 转换结果类型为 %T，期望 map[string]interface{}", effort, thinking)
 			}
-			if got["budget_tokens"] != 8_000 {
-				t.Errorf("reasoning.effort=%q budget_tokens = %v, 期望 8000", effort, got["budget_tokens"])
+			// xhigh 与 high 区分：xhigh 使用 0.9 比例（high 为 0.8），max_output_tokens=10000 时得 9000。
+			if got["budget_tokens"] != 9_000 {
+				t.Errorf("reasoning.effort=%q budget_tokens = %v, 期望 9000", effort, got["budget_tokens"])
 			}
 		}
 	})

@@ -225,7 +225,7 @@ func ResponsesReasoningToClaudeThinking(raw interface{}, maxOutputTokens int) (i
 		return nil, fmt.Errorf("reasoning 必须是对象")
 	}
 	effort, _ := m["effort"].(string)
-	effort, err := normalizeReasoningEffortForConstrainedUpstream(effort)
+	effort, err := NormalizeReasoningEffortForConstrainedUpstream(effort)
 	if err != nil {
 		return nil, fmt.Errorf("Claude extended thinking %w", err)
 	}
@@ -235,48 +235,11 @@ func ResponsesReasoningToClaudeThinking(raw interface{}, maxOutputTokens int) (i
 	if maxOutputTokens > 0 && maxOutputTokens <= 1024 {
 		return nil, fmt.Errorf("Claude extended thinking 需要 max_output_tokens 大于 1024")
 	}
-	budget := reasoningBudgetTokens(effort, maxOutputTokens)
+	budget := ReasoningBudgetTokens(effort, maxOutputTokens)
 	if budget <= 0 {
 		return nil, fmt.Errorf("Claude extended thinking 无法转换 reasoning.effort=%q", effort)
 	}
 	return map[string]interface{}{"type": "enabled", "budget_tokens": budget}, nil
-}
-
-func reasoningBudgetTokens(effort string, maxOutputTokens int) int {
-	if maxOutputTokens <= 0 {
-		switch effort {
-		case "minimal", "low":
-			return 1024
-		case "medium", "auto":
-			return 4096
-		case "high", "xhigh":
-			return 8192
-		default:
-			return 0
-		}
-	}
-	ratio := 0.5
-	switch effort {
-	case "minimal", "low":
-		ratio = 0.25
-	case "medium", "auto":
-		ratio = 0.5
-	case "high", "xhigh":
-		ratio = 0.8
-	default:
-		return 0
-	}
-	budget := int(float64(maxOutputTokens) * ratio)
-	if budget < 1024 {
-		budget = 1024
-	}
-	if budget >= maxOutputTokens {
-		budget = maxOutputTokens - 1
-	}
-	if budget <= 0 {
-		return 0
-	}
-	return budget
 }
 
 func claudeContentBlockToResponsesItem(block map[string]interface{}) (types.ResponsesItem, bool, error) {

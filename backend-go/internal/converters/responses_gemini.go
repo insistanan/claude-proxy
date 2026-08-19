@@ -256,7 +256,7 @@ func ResponsesReasoningToGeminiThinking(model string, raw interface{}) (*types.G
 		return nil, fmt.Errorf("reasoning 必须是对象")
 	}
 	effort, _ := m["effort"].(string)
-	effort, err := normalizeReasoningEffortForConstrainedUpstream(effort)
+	effort, err := NormalizeReasoningEffortForConstrainedUpstream(effort)
 	if err != nil {
 		return nil, fmt.Errorf("Gemini thinking %w", err)
 	}

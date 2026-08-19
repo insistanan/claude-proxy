@@ -358,7 +358,7 @@ func responsesReasoningEffortToOpenAIChat(raw interface{}) (string, error) {
 	}
 
 	effort, _ := reasoning["effort"].(string)
-	normalizedEffort, err := normalizeReasoningEffortForConstrainedUpstream(effort)
+	normalizedEffort, err := NormalizeReasoningEffortForConstrainedUpstream(effort)
 	if err != nil {
 		return "", fmt.Errorf("OpenAI Chat %w", err)
 	}

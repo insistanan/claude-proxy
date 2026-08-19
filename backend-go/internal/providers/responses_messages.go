@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/converters"
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -530,7 +531,7 @@ func resolveClaudeReasoningEffort(claudeReq *types.ClaudeRequest) string {
 	if claudeReq.OutputConfig != nil {
 		if effort, _ := claudeReq.OutputConfig["effort"].(string); effort != "" {
 			switch strings.ToLower(effort) {
-			case "low", "medium", "high", "xhigh":
+			case "none", "auto", "minimal", "low", "medium", "high", "xhigh":
 				return strings.ToLower(effort)
 			case "max", "ultra":
 				return "xhigh"
@@ -547,24 +548,19 @@ func resolveClaudeReasoningEffort(claudeReq *types.ClaudeRequest) string {
 	}
 	typ, _ := obj["type"].(string)
 	if typ == "" || typ == "disabled" {
-		return ""
+		return "none"
 	}
 	switch typ {
 	case "adaptive":
-		return "xhigh"
+		return "auto"
 	case "enabled":
 		budget, ok := numericBudgetTokens(obj["budget_tokens"])
 		if !ok {
 			return "high"
 		}
-		switch {
-		case budget < 4000:
-			return "low"
-		case budget < 16000:
-			return "medium"
-		default:
-			return "high"
-		}
+		// 反向阈值与 converters.ReasoningBudgetTokens 的默认预算表对齐（相邻档位中点），
+		// 保证 effort -> budget -> effort 的往返不发生档位漂移。
+		return converters.EffortFromReasoningBudget(int(budget))
 	default:
 		return ""
 	}
