@@ -1557,7 +1557,7 @@ export const testChannelWithModel = async (
 
   const authStore = useAuthStore()
   const accessKey = authStore.apiKey?.trim() || ''
-  if (!accessKey) throw new Error('未检测到访问密钥，请先完成登录认证')
+  if (!accessKey) throw new Error('缺少访问密钥，请先完成登录认证')
 
   const baseUrl = import.meta.env.PROD ? '' : (import.meta.env.VITE_BACKEND_URL || '')
   const generateUUID = () => crypto.randomUUID()

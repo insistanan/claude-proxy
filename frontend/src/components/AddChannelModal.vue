@@ -1721,7 +1721,6 @@ const fetchTargetModels = async () => {
   fetchingModels.value = true
   fetchModelsError.value = ''
 
-  // 仅为未检测过的 API Key 发起请求
   const uncheckedKeys = keysToCheck.filter(key => !keyModelsStatus.value.has(key))
 
   if (uncheckedKeys.length === 0) {
@@ -1729,7 +1728,6 @@ const fetchTargetModels = async () => {
     return
   }
 
-  // 为每个未检测的 API Key 检测 models 状态
   const keyPromises = uncheckedKeys.map(async (apiKey) => {
     keyModelsStatus.value.set(apiKey, { loading: true, success: false })
 
