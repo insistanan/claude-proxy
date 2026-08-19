@@ -100,3 +100,26 @@ func TestApplyChatModelMapping_PrunesToolControlsWithoutTools(t *testing.T) {
 		t.Fatalf("没有 tools 时应移除 parallel_tool_calls: %#v", payload["parallel_tool_calls"])
 	}
 }
+
+func TestApplyChatModelMapping_NormalizesReasoningEffort(t *testing.T) {
+	input := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"ultra"}`)
+	out, err := applyChatModelMapping(input, &config.UpstreamConfig{})
+	if err != nil {
+		t.Fatalf("applyChatModelMapping 不应报错: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("解析结果失败: %v", err)
+	}
+	if got := payload["reasoning_effort"]; got != "max" {
+		t.Fatalf("reasoning_effort = %#v, 期望 max", got)
+	}
+}
+
+func TestApplyChatModelMapping_RejectsInvalidReasoningEffort(t *testing.T) {
+	input := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"future"}`)
+	if _, err := applyChatModelMapping(input, &config.UpstreamConfig{}); err == nil {
+		t.Fatal("非法 reasoning_effort 应返回错误")
+	}
+}

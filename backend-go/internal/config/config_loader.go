@@ -296,8 +296,8 @@ func migrateContentSafetyConfig(settings *ContentSafetyConfig, rawJSON []byte) b
 	} else {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(rawInfo, &fields) == nil {
-			if _, exists := fields["mode"]; !exists {
-				settings.SensitiveInfo.Mode = ContentSafetyModeMask
+			if _, exists := fields["mode"]; !exists || strings.TrimSpace(settings.SensitiveInfo.Mode) == "" {
+				settings.SensitiveInfo.Mode = defaults.SensitiveInfo.Mode
 				changed = true
 			}
 		}
@@ -310,15 +310,15 @@ func migrateContentSafetyConfig(settings *ContentSafetyConfig, rawJSON []byte) b
 	} else {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(raw["credential"], &fields) == nil {
-			if _, exists := fields["userInputMode"]; !exists {
+			if _, exists := fields["userInputMode"]; !exists || strings.TrimSpace(settings.Credential.UserInputMode) == "" {
 				settings.Credential.UserInputMode = defaults.Credential.UserInputMode
 				changed = true
 			}
-			if _, exists := fields["toolResultMode"]; !exists {
+			if _, exists := fields["toolResultMode"]; !exists || strings.TrimSpace(settings.Credential.ToolResultMode) == "" {
 				settings.Credential.ToolResultMode = defaults.Credential.ToolResultMode
 				changed = true
 			}
-			if _, exists := fields["toolArgumentMode"]; !exists {
+			if _, exists := fields["toolArgumentMode"]; !exists || strings.TrimSpace(settings.Credential.ToolArgumentMode) == "" {
 				settings.Credential.ToolArgumentMode = defaults.Credential.ToolArgumentMode
 				changed = true
 			}

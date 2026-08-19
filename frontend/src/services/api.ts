@@ -1440,238 +1440,6 @@ class ApiService {
   // Gemini Dashboard（使用后端统一接口）
 
   // ===== Images API =====
-
-  async getModelAuditCapabilities(): Promise<{ protocols: ModelAuditProtocolDescriptor[] }> {
-    return this.request('/model-audit/capabilities')
-  }
-
-  async createModelAuditExecution(payload: Record<string, unknown>): Promise<ModelAuditCreateResponse> {
-    return this.request('/model-audit/executions', { method: 'POST', body: JSON.stringify(payload) })
-  }
-
-  async getModelAuditExecution(executionId: string): Promise<ModelAuditExecutionDetail> {
-    return this.request(`/model-audit/executions/${encodeURIComponent(executionId)}`)
-  }
-
-  async cancelModelAuditExecution(executionId: string): Promise<void> {
-    await this.request(`/model-audit/executions/${encodeURIComponent(executionId)}/cancel`, { method: 'POST' })
-  }
-
-  async getModelAuditChannelSummary(channelKind: ApiTab, channelId: string): Promise<ModelAuditChannelSummaryResponse> {
-    const stableId = channelId.trim()
-    if (!stableId) throw new Error('渠道缺少稳定 ID，无法读取审计摘要')
-    return this.request(
-      `/model-audit/channels/${encodeURIComponent(channelKind)}/${encodeURIComponent(stableId)}/summary`
-    )
-  }
-
-  async getModelAuditReportDetail(
-    reportId: string,
-    samplePage = 1,
-    samplePageSize = 10,
-    strategyPage = 1,
-    strategyPageSize = 10
-  ): Promise<ModelAuditReportDetailResponse> {
-    const stableId = reportId.trim()
-    if (!stableId) throw new Error('报告 ID 不能为空')
-    const query = new URLSearchParams({
-      samplePage: String(samplePage),
-      samplePageSize: String(samplePageSize),
-      strategyPage: String(strategyPage),
-      strategyPageSize: String(strategyPageSize)
-    })
-    return this.request(`/model-audit/reports/${encodeURIComponent(stableId)}?${query}`)
-  }
-
-  async exportModelAuditReportHTML(reportId: string): Promise<string> {
-    const stableId = reportId.trim()
-    if (!stableId) throw new Error('报告 ID 不能为空')
-    return this.request(`/model-audit/reports/${encodeURIComponent(stableId)}/export.html`)
-  }
-
-  async getModelAuditJob(jobId: string): Promise<ModelAuditJobResponse> {
-    const stableId = jobId.trim()
-    if (!stableId) throw new Error('审计任务 ID 不能为空')
-    return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}`)
-  }
-
-  async listModelAuditJobs(
-    page = 1,
-    pageSize = 20,
-    workloadKind?: 'identity' | 'capability'
-  ): Promise<ModelAuditJobPageResponse> {
-    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
-    if (workloadKind) query.set('workloadKind', workloadKind)
-    return this.request(`/model-audit/jobs?${query}`)
-  }
-
-  async createModelAuditJob(
-    definition: ModelAuditJobDefinition,
-    initialStatus: Extract<ModelAuditJobStatus, 'draft' | 'enabled'>
-  ): Promise<ModelAuditJobResponse> {
-    return this.request('/model-audit/jobs', {
-      method: 'POST',
-      body: JSON.stringify({ definition, initialStatus })
-    })
-  }
-
-  async updateModelAuditJob(
-    jobId: string,
-    expectedRevision: number,
-    definition: ModelAuditJobDefinition
-  ): Promise<ModelAuditJobResponse> {
-    const stableId = jobId.trim()
-    if (!stableId || !Number.isInteger(expectedRevision) || expectedRevision <= 0) {
-      throw new Error('审计任务 ID 或版本无效')
-    }
-    return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ expectedRevision, definition })
-    })
-  }
-
-  async transitionModelAuditJob(
-    jobId: string,
-    expectedRevision: number,
-    status: ModelAuditJobStatus
-  ): Promise<ModelAuditJobResponse> {
-    const stableId = jobId.trim()
-    if (!stableId || !Number.isInteger(expectedRevision) || expectedRevision <= 0) {
-      throw new Error('审计任务 ID 或版本无效')
-    }
-    return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}/transition`, {
-      method: 'POST',
-      body: JSON.stringify({ expectedRevision, status })
-    })
-  }
-
-  async deleteModelAuditJob(jobId: string, expectedRevision: number): Promise<ModelAuditJobResponse> {
-    const stableId = jobId.trim()
-    if (!stableId || !Number.isInteger(expectedRevision) || expectedRevision <= 0) {
-      throw new Error('审计任务 ID 或版本无效')
-    }
-    const query = new URLSearchParams({ expectedRevision: String(expectedRevision) })
-    return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}?${query}`, { method: 'DELETE' })
-  }
-
-  async listModelAuditRuns(jobId: string, page = 1, pageSize = 20): Promise<ModelAuditRunPageResponse> {
-    const stableId = jobId.trim()
-    if (!stableId) throw new Error('审计任务 ID 不能为空')
-    const query = new URLSearchParams({ jobId: stableId, page: String(page), pageSize: String(pageSize) })
-    return this.request(`/model-audit/runs?${query}`)
-  }
-
-  async getModelAuditStrategies(): Promise<ModelAuditStrategyCatalogResponse> {
-    return this.request('/model-audit/strategies')
-  }
-
-  async getModelAuditCapabilityPresets(): Promise<ModelAuditCapabilityCatalogResponse> {
-    return this.request('/model-audit/capability-presets')
-  }
-
-  async getModelAuditIdentityPresets(): Promise<ModelAuditIdentityPresetCatalogResponse> {
-    return this.request('/model-audit/identity-presets')
-  }
-
-  async reloadModelEvaluationQuestionBanks(): Promise<ModelAuditCapabilityCatalogResponse> {
-    return this.request('/model-audit/question-banks/reload', { method: 'POST' })
-  }
-
-  async getModelAuditMods(): Promise<ModelAuditModCatalogResponse> {
-    return this.request('/model-audit/mods')
-  }
-
-  async reloadModelAuditMods(): Promise<ModelAuditModCatalogResponse> {
-    return this.request('/model-audit/mods/reload', { method: 'POST' })
-  }
-
-  async getModelAuditMod(modId: string): Promise<ModelAuditModResponse> {
-    const stableId = modId.trim()
-    if (!stableId) throw new Error('Mod ID 不能为空')
-    return this.request(`/model-audit/mods/${encodeURIComponent(stableId)}`)
-  }
-
-  async getModelAuditModExamples(): Promise<{ examples: ModelAuditModExample[] }> {
-    return this.request('/model-audit/mod-examples')
-  }
-
-  async createModelAuditMod(directoryName: string, files: Record<string, string>): Promise<ModelAuditModResponse> {
-    return this.request('/model-audit/mods', {
-      method: 'POST',
-      body: JSON.stringify({ directoryName, files })
-    })
-  }
-
-  async updateModelAuditMod(
-    modId: string,
-    directoryName: string,
-    expectedContentSha256: string,
-    files: Record<string, string>
-  ): Promise<ModelAuditModResponse> {
-    const stableId = modId.trim()
-    if (!stableId || !expectedContentSha256.trim()) throw new Error('Mod ID 或内容版本无效')
-    return this.request(`/model-audit/mods/${encodeURIComponent(stableId)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ directoryName, expectedContentSha256, files })
-    })
-  }
-
-  async importModelAuditMod(sourcePath: string, directoryName = ''): Promise<ModelAuditModResponse> {
-    return this.request('/model-audit/mods/import', {
-      method: 'POST',
-      body: JSON.stringify({ sourcePath, ...(directoryName.trim() ? { directoryName } : {}) })
-    })
-  }
-
-  async listModelAuditModAnalyses(runId: string, page = 1, pageSize = 100): Promise<ModelAuditModAnalysisPageResponse> {
-    const stableId = runId.trim()
-    if (!stableId) throw new Error('运行 ID 不能为空')
-    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
-    return this.request(`/model-audit/runs/${encodeURIComponent(stableId)}/analyses?${query}`)
-  }
-
-  async importManualModelAuditAnalysis(
-    analysisId: string,
-    result: Record<string, unknown>
-  ): Promise<{ analysis: ModelAuditModAnalysisRecord }> {
-    const stableId = analysisId.trim()
-    if (!stableId) throw new Error('分析记录 ID 不能为空')
-    return this.request(`/model-audit/analyses/${encodeURIComponent(stableId)}/manual-result`, {
-      method: 'POST',
-      body: JSON.stringify({ result })
-    })
-  }
-
-  async rerunModelAuditAnalysis(analysisId: string): Promise<{ analysis: ModelAuditModAnalysisRecord }> {
-    const stableId = analysisId.trim()
-    if (!stableId) throw new Error('分析记录 ID 不能为空')
-    return this.request(`/model-audit/analyses/${encodeURIComponent(stableId)}/rerun`, { method: 'POST' })
-  }
-
-  async startModelAuditJobRun(jobId: string, expectedRevision: number): Promise<ModelAuditRunResponse> {
-    const stableId = jobId.trim()
-    if (!stableId || !Number.isInteger(expectedRevision) || expectedRevision <= 0) {
-      throw new Error('审计任务 ID 或版本无效')
-    }
-    return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}/runs`, {
-      method: 'POST',
-      body: JSON.stringify({ expectedRevision })
-    })
-  }
-
-  async retryModelAuditJob(jobId: string, expectedRevision: number): Promise<{ job: ModelAuditJob; run: ModelAuditRunPresentation }> {
-    const stableId = jobId.trim()
-    if (!stableId || !Number.isInteger(expectedRevision) || expectedRevision <= 0) throw new Error('审计任务 ID 或版本无效')
-    return this.request(`/model-audit/jobs/${encodeURIComponent(stableId)}/retry`, {
-      method: 'POST', body: JSON.stringify({ expectedRevision })
-    })
-  }
-
-  async cancelModelAuditRun(runId: string): Promise<ModelAuditRunResponse> {
-    const stableId = runId.trim()
-    if (!stableId) throw new Error('运行 ID 不能为空')
-    return this.request(`/model-audit/runs/${encodeURIComponent(stableId)}/cancel`, { method: 'POST' })
-  }
 }
 
 // 健康检查响应类型
@@ -1720,691 +1488,6 @@ export function fetchUpstreamModels(
  */
 export type ApiTab = 'messages' | 'responses' | 'gemini' | 'chat' | 'images'
 
-export type ModelAuditSummaryStatus =
-  | 'not_detected'
-  | 'running'
-  | 'failed'
-  | 'partial'
-  | 'unsupported'
-  | 'insufficient_evidence'
-  | 'stale'
-  | 'complete'
-
-export interface ModelAuditVersionedRef {
-  id: string
-  semanticVersion: string
-  implementationVersion: string
-}
-
-export interface ModelAuditMixtureComponent {
-  candidate: string
-  proportion: number
-  lower: number
-  upper: number
-}
-
-export interface ModelAuditIdentitySummary {
-  conclusion:
-    | 'matched'
-    | 'suspected_substitution'
-    | 'suspected_mixture'
-    | 'unknown'
-    | 'insufficient_evidence'
-    | 'unsupported'
-  formal: boolean
-  confidence: number
-  consistencyScore: number
-  sampleCount: number
-  mixture?: {
-    components: ModelAuditMixtureComponent[]
-    logLikelihood: number
-    iterations: number
-    converged: boolean
-  }
-}
-
-export interface ModelAuditCapabilitySummary {
-  status: 'complete' | 'provisional' | 'partial_budget' | 'insufficient_evidence'
-  formal: boolean
-  index?: number
-  indexInterval?: {
-    lower: number
-    upper: number
-    level: number
-    resamples: number
-    sampleCount: number
-    method: string
-  }
-  coverage: number
-  scoredDimensions: number
-  dimension?: ModelAuditCapabilityDimension['dimension']
-  score?: number
-}
-
-export interface ModelAuditFreshness {
-  state: 'fresh' | 'stale'
-  policy: {
-    ref: ModelAuditVersionedRef
-    maxAgeMs: number
-  }
-  reportedAt: string
-  staleAt: string
-  evaluatedAt: string
-}
-
-export interface ModelAuditChannelSummary {
-  channelId: string
-  channelKind: ApiTab
-  primaryStatus: ModelAuditSummaryStatus
-  activeRunId?: string
-  activeRunCount: number
-  reportId?: string
-  runId?: string
-  resultStatus?: 'complete' | 'partial' | 'failed' | 'unsupported' | 'insufficient_evidence'
-  protocol?: ApiTab
-  resolvedModel?: string
-  thinking?: string
-  sampleCount: number
-  freshness?: ModelAuditFreshness
-  identity?: ModelAuditIdentitySummary
-  capability?: ModelAuditCapabilitySummary
-  reportedAt?: string
-}
-
-export interface ModelAuditChannelSummaryResponse {
-  summary: ModelAuditChannelSummary
-}
-
-export interface ModelAuditRunUsage {
-  requests: number
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-}
-
-export interface ModelAuditRunPresentation {
-  id: string
-  jobId: string
-  jobRevision: number
-  trigger: 'manual' | 'scheduled'
-  scheduledFor?: string
-  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
-  stopReason?: 'budget_exhausted' | 'cancelled' | 'execution_failed' | 'interrupted'
-  budget: {
-    maxRequests: number
-    maxInputTokens: number
-    maxOutputTokens: number
-    maxTotalTokens: number
-    maxConcurrentRequests: number
-  }
-  usage: ModelAuditRunUsage
-  targetCount: number
-  createdAt: string
-  startedAt?: string
-  finishedAt?: string
-  failureHidden: boolean
-  failureMessage?: string
-  result?: {
-    reportId: string
-    resultStatus: 'complete' | 'partial' | 'failed' | 'unsupported' | 'insufficient_evidence'
-    capability?: ModelAuditCapabilitySummary
-    reportedAt: string
-  }
-}
-
-export interface ModelAuditRunResponse {
-  run: ModelAuditRunPresentation
-}
-
-export type ModelAuditJobStatus = 'draft' | 'enabled' | 'running' | 'paused' | 'expired' | 'deleted'
-
-export interface ModelAuditStrategySelection {
-  strategyId: string
-  ref?: ModelAuditVersionedRef
-  enabled: boolean
-  config: Record<string, unknown>
-}
-
-export interface ModelAuditWorkload {
-  kind: 'identity' | 'capability'
-  strategySetVersion?: string
-  strategies?: ModelAuditStrategySelection[]
-  capabilityPreset?: ModelAuditVersionedRef
-}
-
-export interface ModelAuditJobTarget {
-  id: string
-  channelId: string
-  channelKind: ApiTab
-  protocol: ApiTab
-  model?: string
-  thinking?: string
-  requestProfile: string
-}
-
-export interface ModelAuditSchedule {
-  startAt: string
-  endAt?: string
-  durationMs?: number
-  intervalMs: number
-  timeZone: string
-  jitterMs: number
-  oneShot?: boolean
-}
-
-export interface ModelAuditRunBudget {
-  maxRequests: number
-  maxInputTokens: number
-  maxOutputTokens: number
-  maxTotalTokens: number
-  maxConcurrentRequests: number
-}
-
-export interface ModelAuditAnalysisTarget {
-  channelId: string
-  channelKind: ApiTab
-  protocol: ApiTab
-  model: string
-  thinking: string
-  requestProfile: string
-}
-
-export interface ModelAuditJobDefinition {
-  name: string
-  workload: ModelAuditWorkload
-  targets: ModelAuditJobTarget[]
-  schedule: ModelAuditSchedule
-  budget: ModelAuditRunBudget
-  analyzer?: ModelAuditAnalysisTarget
-}
-
-export interface ModelAuditJob extends ModelAuditJobDefinition {
-  id: string
-  revision: number
-  status: ModelAuditJobStatus
-  createdAt: string
-  updatedAt: string
-  deletedAt?: string
-}
-
-export interface ModelAuditJobResponse {
-  job: ModelAuditJob
-}
-
-export interface ModelAuditJobPageResponse {
-  page: {
-    jobs: ModelAuditJob[]
-    total: number
-    page: number
-    pageSize: number
-  }
-  latestRuns: Record<string, ModelAuditRunPresentation>
-}
-
-export interface ModelAuditRunPageResponse {
-  page: {
-    runs: ModelAuditRunPresentation[]
-    total: number
-    page: number
-    pageSize: number
-  }
-}
-
-export interface ModelAuditStrategyDescriptor {
-  ref: ModelAuditVersionedRef
-  kind: 'identity'
-  description: string
-  configSchema: {
-    type?: string
-    properties?: Record<
-      string,
-      { type?: string; minimum?: number; maximum?: number; multipleOf?: number; default?: unknown }
-    >
-    required?: string[]
-    additionalProperties?: boolean
-  }
-  applicability: {
-    modelFamilies?: string[]
-    models?: string[]
-    protocols?: ApiTab[]
-    requestProfiles?: string[]
-    thinkingLevels?: string[]
-  }
-  maximumSamples: number
-  estimatedMaxTokens: number
-  estimatedMaxCostMicros?: number
-  formalEligible: boolean
-  disclosureRisk: 'low' | 'medium' | 'high'
-}
-
-export interface ModelAuditStrategyCatalogResponse {
-  available: boolean
-  reason?: string
-  strategies: ModelAuditStrategyDescriptor[]
-}
-
-export type ModelAuditModAnalysisMode = 'llm' | 'python' | 'manual'
-
-export interface ModelAuditModReference {
-  id: string
-  version: string
-  contentSha256: string
-}
-
-export interface ModelAuditModDescriptor {
-  reference: ModelAuditModReference
-  name: string
-  description: string
-  analysisMode: ModelAuditModAnalysisMode
-  sourcePath: string
-  snapshotPath: string
-  loadedAt: string
-}
-
-export interface ModelAuditModCatalogResponse {
-  catalog: {
-    mods: ModelAuditModDescriptor[]
-    issues: Array<{ directory: string; modId?: string; message: string }>
-    loadedAt: string
-  }
-}
-
-export interface ModelAuditModEditable {
-  descriptor: ModelAuditModDescriptor
-  manifest: Record<string, unknown>
-  files: Record<string, string>
-  binaryFiles?: string[]
-}
-
-export interface ModelAuditModResponse {
-  mod: ModelAuditModEditable
-}
-
-export interface ModelAuditModExample {
-  id: string
-  name: string
-  description: string
-  mode: ModelAuditModAnalysisMode
-  files: Record<string, string>
-}
-
-export interface ModelAuditModAnalysisRecord {
-  id: string
-  revision: number
-  runId: string
-  targetId: string
-  mod: ModelAuditModReference
-  mode: ModelAuditModAnalysisMode
-  status: 'pending' | 'running' | 'awaiting_manual' | 'completed' | 'failed'
-  analyzer?: ModelAuditAnalysisTarget
-  sourceDirectory?: string
-  snapshotDirectory?: string
-  workingDirectory?: string
-  method?: string
-  interpreter?: string
-  interpreterVersion?: string
-  command?: string[]
-  exitCode?: number
-  stdout?: string
-  stderr?: string
-  input: Record<string, unknown>
-  inputSha256: string
-  result?: Record<string, unknown>
-  resultSha256?: string
-  usage: ModelAuditRunUsage
-  failure?: string
-  createdAt: string
-  startedAt?: string
-  finishedAt?: string
-}
-
-export interface ModelAuditModAnalysisPageResponse {
-  page: {
-    analyses: ModelAuditModAnalysisRecord[]
-    total: number
-    page: number
-    pageSize: number
-  }
-}
-
-export interface ModelAuditCapabilityPreset {
-  ref: ModelAuditVersionedRef
-  mode: 'quick' | 'standard' | 'deep'
-  package: ModelAuditVersionedRef
-  formalEligible: boolean
-  tasks: Array<{ taskId: string; repetitions: number }>
-  limits: { requests: number; inputTokens: number; outputTokens: number; totalTokens: number }
-}
-
-export interface ModelAuditCapabilityEvaluationOption {
-  id: string
-  bankId: string
-  bankName: string
-  label: string
-  dimension?: ModelAuditCapabilityDimension['dimension']
-  questionCount: number
-  preset: ModelAuditVersionedRef
-  limits: { requests: number; inputTokens: number; outputTokens: number; totalTokens: number }
-}
-
-export interface ModelAuditIdentityPreset {
-  ref: ModelAuditVersionedRef
-  level: 'low' | 'medium' | 'high'
-  description: string
-  formalEligible: boolean
-  strategies: ModelAuditStrategySelection[]
-  estimateTokens: number
-  estimateRequests: number
-}
-
-export interface ModelAuditIdentityPresetCatalogResponse {
-  presets: ModelAuditIdentityPreset[]
-}
-
-export interface ModelEvaluationQuestionBankDescriptor {
-  id: string
-  version: string
-  name: string
-  description: string
-  contentSha256: string
-  questionCount: number
-  sourcePath: string
-  snapshotPath: string
-  loadedAt: string
-}
-
-export interface ModelAuditCapabilityCatalogResponse {
-  catalog: {
-    available: boolean
-    reason?: string
-    packages: unknown[]
-    presets: ModelAuditCapabilityPreset[]
-    evaluationOptions: ModelAuditCapabilityEvaluationOption[]
-    questionBanks: {
-      banks: ModelEvaluationQuestionBankDescriptor[]
-      issues: Array<{ directory: string; bankId?: string; message: string }>
-      loadedAt: string
-    }
-  }
-}
-
-export interface ModelAuditEvidenceReference {
-  id: string
-  kind: string
-  sha256: string
-  redacted: boolean
-}
-
-export interface ModelAuditBaselineRef {
-  id: string
-  version: string
-  sha256: string
-}
-
-export interface ModelAuditIdentitySignal {
-  id: string
-  kind: string
-  correlationGroup: string
-  status: 'observed' | 'skipped' | 'insufficient_evidence' | 'unsupported' | 'failed'
-  reason?: string
-  sampleCount: number
-  reliability: number
-  score?: number
-  candidateScores?: Record<string, number>
-  baseline?: ModelAuditBaselineRef
-  evidence?: ModelAuditEvidenceReference[]
-}
-
-export interface ModelAuditIdentityReport extends ModelAuditIdentitySummary {
-  aggregator: ModelAuditVersionedRef
-  declaredModel?: string
-  requestedModel?: string
-  returnedModels?: string[]
-  applicableSignals: number
-  correlationGroups: number
-  signals: ModelAuditIdentitySignal[]
-  candidateFit: {
-    bestCandidate?: string
-    ood: boolean
-    fits: Array<{ candidate: string; jsd: number; logLikelihood: number }>
-  }
-  qualification: {
-    eligible: boolean
-    eligibleSignals: number
-    correlationGroups: number
-    compatibleBaselines: number
-    reasons?: string[]
-  }
-  baselineChecks?: Array<{
-    signalId: string
-    required: boolean
-    baseline?: ModelAuditBaselineRef
-    compatible: boolean
-    reasons?: string[]
-  }>
-  alternativeExplanations?: string[]
-}
-
-export interface ModelAuditResultCounts {
-  planned: number
-  scored: number
-  skipped: number
-  unsupported: number
-  indeterminate: number
-  executionFailed: number
-  scoringFailed: number
-  missing: number
-}
-
-export interface ModelAuditCapabilityDimension {
-  dimension:
-    | 'math_logic'
-    | 'code'
-    | 'instruction_following'
-    | 'tool_use'
-    | 'long_context_multiturn'
-    | 'knowledge_factuality'
-    | 'repeatability'
-  weight: number
-  score?: number
-  interval?: ModelAuditCapabilitySummary['indexInterval']
-  coverage: number
-  formal: boolean
-  counts: ModelAuditResultCounts
-  tasks: Array<{
-    task: ModelAuditVersionedRef
-    dimension: string
-    weight: number
-    score?: number
-    coverage: number
-    counts: ModelAuditResultCounts
-    reasons?: string[]
-  }>
-  reasons?: string[]
-}
-
-export interface ModelAuditCapabilityReport extends ModelAuditCapabilitySummary {
-  aggregator: ModelAuditVersionedRef
-  package: ModelAuditVersionedRef
-  packageSha256: string
-  formalDimensions: number
-  counts: ModelAuditResultCounts
-  dimensions: ModelAuditCapabilityDimension[]
-  reasons?: string[]
-  stopReason?: 'budget_exhausted'
-}
-
-export interface ModelAuditTargetReport {
-  schema: ModelAuditVersionedRef
-  id: string
-  runId: string
-  jobId: string
-  jobRevision: number
-  jobSnapshotSha256: string
-  target: {
-    targetId: string
-    requested: {
-      id: string
-      channelId: string
-      channelKind: ApiTab
-      protocol: ApiTab
-      model?: string
-      thinking?: string
-      requestProfile: string
-    }
-    resolved?: ModelAuditTargetSnapshot
-    resolutionError?: string
-  }
-  resultStatus: 'complete' | 'partial' | 'failed' | 'unsupported' | 'insufficient_evidence'
-  runStatus: ModelAuditRunPresentation['status']
-  stopReason?: ModelAuditRunPresentation['stopReason']
-  usage: ModelAuditRunUsage
-  sampleCount: number
-  identity?: ModelAuditIdentityReport
-  capability?: ModelAuditCapabilityReport
-  evidence?: ModelAuditEvidenceReference[]
-  freshnessPolicy: ModelAuditFreshness['policy']
-  createdAt: string
-}
-
-export interface ModelAuditEvidenceMetadata {
-  id: string
-  runId: string
-  targetId: string
-  kind: 'sample' | 'strategy_result'
-  schema: ModelAuditVersionedRef
-  sha256: string
-  createdAt: string
-}
-
-export interface ModelAuditEvidencePage {
-  evidence: ModelAuditEvidenceMetadata[]
-  total: number
-  page: number
-  pageSize: number
-}
-
-export interface ModelAuditReportDetailResult {
-  detail: {
-    schema: ModelAuditVersionedRef
-    workloadKind: 'identity' | 'capability'
-    summary: ModelAuditChannelSummary
-    run: ModelAuditRunPresentation
-    report: ModelAuditTargetReport
-  }
-  samples: ModelAuditEvidencePage
-  strategyResults: ModelAuditEvidencePage
-}
-
-export interface ModelAuditReportDetailResponse {
-  result: ModelAuditReportDetailResult
-}
-
-export type ModelAuditPurpose = 'quick_test' | 'playground' | 'identity_probe' | 'capability_eval' | 'audit_analysis'
-export type ModelAuditSupport = 'official' | 'channel_profile' | 'unsupported'
-export type ModelAuditStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'incomplete'
-  | 'empty_output'
-  | 'stream_truncated'
-  | 'timeout'
-  | 'cancelled'
-  | 'unsupported'
-  | 'protocol_error'
-
-export interface ModelAuditThinkingMapping {
-  level: string
-  support: ModelAuditSupport
-  parameter: string
-  mode?: string
-  effort?: string
-  budgetTokens?: number
-}
-
-export interface ModelAuditProtocolDescriptor {
-  protocol: ApiTab
-  channelKind: ApiTab
-  streaming: { level: ModelAuditSupport; note?: string }
-  tools: { level: ModelAuditSupport; note?: string }
-  images: { level: ModelAuditSupport; note?: string }
-  multiTurn: { level: ModelAuditSupport; note?: string }
-  thinking: {
-    support: ModelAuditSupport
-    mappings: ModelAuditThinkingMapping[]
-    note?: string
-  }
-  profiles: Array<{ id: string; support: ModelAuditSupport; source: string }>
-  completionSignals: string[]
-}
-
-export interface ModelAuditTargetSnapshot {
-  channelId: string
-  channelKind: ApiTab
-  channelName: string
-  channelStatus: string
-  serviceType: string
-  protocol: ApiTab
-  wireProtocol: ApiTab
-  requestedModel?: string
-  resolvedModel: string
-  defaultModel?: string
-  thinking?: string
-  thinkingMapping?: ModelAuditThinkingMapping
-  requestProfile: string
-  capturedAt: string
-}
-
-export interface ModelAuditExecutionResult {
-  executionId: string
-  purpose: ModelAuditPurpose
-  target: ModelAuditTargetSnapshot
-  status: ModelAuditStatus
-  httpStatus?: number
-  protocolTerminal?: 'completed' | 'failed' | 'incomplete'
-  responseId?: string
-  declaredModel?: string
-  returnedModel?: string
-  text?: string
-  structuredOutput?: unknown
-  toolCalls?: Array<{ id?: string; name: string; arguments?: unknown }>
-  usage: {
-    inputTokens?: number
-    outputTokens?: number
-    reasoningTokens?: number
-    cachedTokens?: number
-    totalTokens?: number
-  }
-  timing: { firstByteMs?: number; totalMs: number }
-  sseEvents?: Array<{ sequence: number; type: string; bytes?: number }>
-  retry: { attempts: number; reasons?: string[] }
-  requestSummary: {
-    profile: string
-    inputBytes: number
-    promptSha256?: string
-    toolCount: number
-    imageCount: number
-    headerNames?: string[]
-    protocolFields?: string[]
-  }
-  error?: { code: string; category: string; message: string; retryable: boolean; statusCode?: number }
-  evidence?: Array<{ id: string; kind: string; sha256: string; redacted: boolean }>
-  startedAt: string
-  finishedAt?: string
-}
-
-export interface ModelAuditCreateResponse {
-  executionId: string
-  status: ModelAuditStatus
-  target: ModelAuditTargetSnapshot
-}
-
-export interface ModelAuditExecutionDetail {
-  result: ModelAuditExecutionResult
-}
-
 /**
  * 某一种渠道类型的统一 API 方法集。
  * 收敛前：getChannels / getResponsesChannels / getChatChannels / getGeminiChannels / getImagesChannels
@@ -2445,7 +1528,8 @@ export function channelApiByType(type: ApiTab): ChannelApi {
 }
 
 export interface TestChannelContext {
-  purpose?: 'quick_test' | 'playground'
+  purpose?: 'quick_test'
+  channelIndex?: number
   thinking?: string
   sessionId?: string
   threadId?: string
@@ -2453,37 +1537,8 @@ export interface TestChannelContext {
   onInteractionId?: (_id: string) => void
   responseId?: string
   onResponseId?: (_id: string) => void
-  onResult?: (_result: ModelAuditExecutionResult) => void
   signal?: AbortSignal
   messages?: Array<{ role: 'user' | 'assistant'; content: string }>
-}
-
-const defaultAuditProfiles: Record<ApiTab, string> = {
-  messages: 'messages.standard.v1',
-  responses: 'responses.standard.v1',
-  gemini: 'gemini.standard.v1',
-  chat: 'chat.standard.v1',
-  images: 'images.generation.v1'
-}
-
-const terminalAuditStatuses = new Set<ModelAuditStatus>([
-  'completed',
-  'failed',
-  'incomplete',
-  'empty_output',
-  'stream_truncated',
-  'timeout',
-  'cancelled',
-  'unsupported',
-  'protocol_error'
-])
-
-const auditPollDelay = (milliseconds: number) => new Promise(resolve => window.setTimeout(resolve, milliseconds))
-
-const formatAuditOutput = (result: ModelAuditExecutionResult): string => {
-  if (result.text) return result.text
-  if (result.structuredOutput) return JSON.stringify(result.structuredOutput, null, 2)
-  return ''
 }
 
 export const testChannelWithModel = async (
@@ -2495,51 +1550,129 @@ export const testChannelWithModel = async (
   sessionContext?: TestChannelContext
 ): Promise<void> => {
   if (!channelId.trim()) throw new Error('渠道缺少稳定 ID，无法执行测试')
-  const execution = await api.createModelAuditExecution({
-    purpose: sessionContext?.purpose || 'quick_test',
-    channelId: channelId.trim(),
-    channelKind: apiType,
-    protocol: apiType,
-    model: model?.trim() || undefined,
-    thinking: sessionContext?.thinking || '',
-    requestProfile: defaultAuditProfiles[apiType],
-    stream: apiType !== 'images',
-    timeoutMs: 120_000,
-    maxOutputTokens: 1024,
-    features: { tools: false, images: false },
-    input: {
-      prompt: message,
-      messages: apiType === 'images' ? undefined : sessionContext?.messages
-    },
-    conversation: {
-      previousResponseId: sessionContext?.responseId,
-      previousInteractionId: sessionContext?.interactionId
-    },
-    redaction: 'digest'
-  })
+  const channelIndex = sessionContext?.channelIndex ?? Number(channelId)
+  if (!Number.isInteger(channelIndex) || channelIndex < 0) {
+    throw new Error('快捷测试缺少有效的渠道索引')
+  }
 
-  while (true) {
-    if (sessionContext?.signal?.aborted) {
-      await api.cancelModelAuditExecution(execution.executionId).catch(() => undefined)
-      throw new Error('测试已取消')
+  const authStore = useAuthStore()
+  const accessKey = authStore.apiKey?.trim() || ''
+  if (!accessKey) throw new Error('未检测到访问密钥，请先完成登录认证')
+
+  const baseUrl = import.meta.env.PROD ? '' : (import.meta.env.VITE_BACKEND_URL || '')
+  const generateUUID = () => crypto.randomUUID()
+  const sessionId = sessionContext?.sessionId || generateUUID()
+  const threadId = sessionContext?.threadId || `thread-${generateUUID()}`
+  const selectedModel = model?.trim() || ''
+  if (!selectedModel) throw new Error('请选择或输入用于快捷测试的模型')
+  const metadata = {
+    channel_index: channelIndex,
+    user_id: sessionId,
+    session_id: sessionId,
+    thread_id: threadId
+  }
+
+  let endpoint = ''
+  let body: Record<string, unknown> = {}
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-api-key': accessKey
+  }
+
+  switch (apiType) {
+    case 'messages':
+      endpoint = '/v1/messages'
+      body = { model: selectedModel, max_tokens: 1024, messages: [{ role: 'user', content: message }], metadata, stream: true }
+      break
+    case 'responses':
+      endpoint = '/v1/responses'
+      body = { model: selectedModel, input: message, metadata, stream: true }
+      if (sessionContext?.responseId) body.previous_response_id = sessionContext.responseId
+      break
+    case 'gemini':
+      endpoint = `/v1beta/models/${encodeURIComponent(selectedModel.replace(/^models\//, ''))}:streamGenerateContent`
+      body = { contents: [{ role: 'user', parts: [{ text: message }] }], metadata }
+      if (sessionContext?.interactionId) body.previous_interaction_id = sessionContext.interactionId
+      break
+    case 'chat':
+      endpoint = '/v1/chat/completions'
+      body = { model: selectedModel, messages: [{ role: 'user', content: message }], metadata, user: sessionId, stream: true }
+      break
+    case 'images':
+      endpoint = '/v1/images/generations'
+      body = { model: selectedModel, prompt: message, metadata, n: 1, response_format: 'url' }
+      break
+  }
+
+  const response = await fetch(`${baseUrl}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: sessionContext?.signal
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    let detail = ''
+    try {
+      const parsed = JSON.parse(text)
+      detail = parsed.error?.message || parsed.error || parsed.message || ''
+    } catch {
+      detail = text
     }
-    const detail = await api.getModelAuditExecution(execution.executionId)
-    const result = detail.result
-    if (!terminalAuditStatuses.has(result.status)) {
-      await auditPollDelay(200)
-      continue
-    }
-    sessionContext?.onResult?.(result)
-    if (result.responseId) {
-      sessionContext?.onResponseId?.(result.responseId)
-      sessionContext?.onInteractionId?.(result.responseId)
-    }
-    if (result.status !== 'completed') {
-      throw new Error(result.error?.message || `测试以 ${result.status} 状态结束`)
-    }
-    const output = formatAuditOutput(result)
-    if (output) onChunk(output)
+    throw new Error(detail || `请求失败: ${response.status} ${response.statusText}`)
+  }
+
+  if (apiType === 'images') {
+    const result = await response.json()
+    const outputs = Array.isArray(result.data)
+      ? result.data.map((item: any) => item.url || item.revised_prompt || (item.b64_json ? '[base64 image data]' : '')).filter(Boolean)
+      : []
+    onChunk(outputs.length > 0 ? outputs.join('\n') : JSON.stringify(result, null, 2))
     return
+  }
+
+  if (!response.body) throw new Error('上游响应缺少响应体')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const processLine = (line: string) => {
+    if (!line.trim() || !line.startsWith('data:')) return
+    const data = line.slice(5).trim()
+    if (data === '[DONE]') return
+    let parsed: any
+    try {
+      parsed = JSON.parse(data)
+    } catch {
+      return
+    }
+    if (apiType === 'responses' && parsed.type === 'response.completed' && parsed.response?.id) {
+      sessionContext?.onResponseId?.(parsed.response.id)
+      sessionContext?.onInteractionId?.(parsed.response.id)
+    }
+    if (apiType === 'gemini' && parsed.id) sessionContext?.onInteractionId?.(parsed.id)
+    const content = apiType === 'messages'
+      ? parsed.delta?.text
+      : apiType === 'responses'
+        ? (parsed.type === 'response.output_text.delta' ? parsed.delta : parsed.completion)
+        : apiType === 'gemini'
+          ? parsed.candidates?.[0]?.content?.parts?.[0]?.text
+          : parsed.choices?.[0]?.delta?.content
+    if (typeof content === 'string' && content) onChunk(content)
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      lines.forEach(processLine)
+    }
+    buffer += decoder.decode()
+    if (buffer) processLine(buffer)
+  } finally {
+    reader.releaseLock()
   }
 }
 

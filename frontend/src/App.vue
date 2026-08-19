@@ -107,18 +107,6 @@
             Skills
           </router-link>
           <span class="api-type-text separator">/</span>
-          <router-link to="/playground" class="api-type-text" :class="{ active: topNavActive === 'playground' }">
-            演练台
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/audit/jobs" class="api-type-text" :class="{ active: topNavActive === 'audit' }">
-            审计
-          </router-link>
-          <span class="api-type-text separator">/</span>
-          <router-link to="/evaluation" class="api-type-text" :class="{ active: topNavActive === 'evaluation' }">
-            能力评测
-          </router-link>
-          <span class="api-type-text separator">/</span>
           <router-link to="/opencode" class="api-type-text" :class="{ active: topNavActive === 'opencode' }">
             OpenCode
           </router-link>
@@ -391,7 +379,6 @@
               @edit="editChannel"
               @delete="deleteChannel"
               @ping="pingChannel"
-              @quick-test="handleQuickTest"
               @refresh="refreshChannels"
               @error="showErrorToast"
               @success="showSuccessToast"
@@ -439,14 +426,13 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme } from 'vuetify'
-import { api, fetchHealth, ApiError, testChannel, channelApiByType, type Channel } from './services/api'
+import { api, fetchHealth, ApiError, channelApiByType, type Channel } from './services/api'
 import { versionService } from './services/version'
 import { useAuthStore } from './stores/auth'
 import { useChannelStore } from './stores/channel'
 import { usePreferencesStore } from './stores/preferences'
 import { useDialogStore } from './stores/dialog'
 import { useSystemStore } from './stores/system'
-import { usePlaygroundStore } from './stores/playground'
 import { useToast } from './composables/useToast'
 import AddChannelModal from './components/AddChannelModal.vue'
 import GlobalStatsChart from './components/GlobalStatsChart.vue'
@@ -483,9 +469,7 @@ const isClaudeCodePage = computed(() => route.name === 'claude-code')
 const isPiAgentPage = computed(() => route.name === 'pi-agent')
 const isDshPage = computed(() => route.name === 'dsh')
 const isSettingsPage = computed(() => route.name === 'settings')
-const isAuditPage = computed(() => route.name === 'audit-jobs' || route.name === 'audit-report')
-const isEvaluationPage = computed(() => route.name === 'model-evaluation' || route.name === 'evaluation-report')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isDshPage.value || isSettingsPage.value || isAuditPage.value || isEvaluationPage.value)
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isDshPage.value || isSettingsPage.value)
 
 // 偏好设置 Store
 const preferencesStore = usePreferencesStore()
@@ -514,15 +498,6 @@ const topNavActive = computed(() => {
   }
   if (isSkillsPage.value) {
     return 'skills'
-  }
-  if (route.path === '/playground') {
-    return 'playground'
-  }
-  if (isAuditPage.value) {
-    return 'audit'
-  }
-  if (isEvaluationPage.value) {
-    return 'evaluation'
   }
   if (isOpenCodePage.value) {
     return 'opencode'
@@ -594,69 +569,6 @@ const pingChannel = async (channelId: number) => {
   } catch (error) {
     showToast(`延迟测试失败: ${error instanceof Error ? error.message : '未知错误'}`, 'error')
   }
-}
-
-const handleQuickTest = (channelId: number) => {
-  const playgroundStore = usePlaygroundStore()
-  const currentApiType = channelStore.activeTab
-  const channel = channelStore.getChannelsByType(currentApiType).find(item => item.index === channelId)
-  const stableChannelId = channel?.id
-  if (!stableChannelId) {
-    showToast('渠道缺少稳定 ID，无法执行快捷测试', 'error')
-    return
-  }
-  
-  // 设置演练台参数
-  playgroundStore.setApiType(currentApiType)
-  playgroundStore.setChannel(channelId)
-  
-  // 自动发送"你好"
-  playgroundStore.addMessage({
-    role: 'user',
-    content: '你好'
-  })
-  
-  // 跳转到演练台
-  router.push('/playground')
-  
-  // 延迟执行发送，确保组件已加载
-  setTimeout(async () => {
-    try {
-      playgroundStore.setStreaming(true)
-      playgroundStore.addMessage({
-        role: 'assistant',
-        content: ''
-      })
-
-      await testChannel(
-        currentApiType,
-        stableChannelId,
-        '你好',
-        (chunk: string) => {
-          playgroundStore.updateLastMessage(
-            playgroundStore.messages[playgroundStore.messages.length - 1].content + chunk
-          )
-        },
-        {
-          sessionId: playgroundStore.sessionId || undefined,
-          threadId: playgroundStore.threadId || undefined,
-          interactionId: playgroundStore.interactionId || undefined,
-          responseId: playgroundStore.responseId || undefined,
-          onInteractionId: (id: string) => {
-            playgroundStore.setInteractionId(id)
-          },
-          onResponseId: (id: string) => {
-            playgroundStore.setResponseId(id)
-          }
-        }
-      )
-    } catch (error: any) {
-      showToast(error.message || '测试失败', 'error')
-      playgroundStore.messages.pop()
-    } finally {
-      playgroundStore.setStreaming(false)
-    }
-  }, 500)
 }
 
 const pingAllChannels = async () => {

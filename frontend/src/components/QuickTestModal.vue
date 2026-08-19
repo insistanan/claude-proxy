@@ -24,7 +24,7 @@
           item-title="title"
           item-value="value"
           :return-object="false"
-          label="模型（留空使用渠道默认值）"
+          label="模型"
           variant="outlined"
           prepend-inner-icon="mdi-robot"
           density="comfortable"
@@ -64,7 +64,6 @@
           density="comfortable"
           class="mb-4"
           :disabled="isSending"
-          :error-messages="capabilityLoadError"
         />
 
         <!-- 测试输入 -->
@@ -100,10 +99,6 @@
           </v-card-title>
           <v-divider />
           <v-card-text class="pa-4" style="max-height: 300px; overflow-y: auto;">
-            <div v-if="executionResult" class="text-caption text-medium-emphasis mb-2" aria-live="polite">
-              {{ executionResult.returnedModel || '未返回模型' }} · {{ executionResult.timing.totalMs }} ms ·
-              {{ executionResult.protocolTerminal || executionResult.status }}
-            </div>
             <div v-if="responseError" class="error-message" role="alert">
               <v-icon color="error" class="mr-2">mdi-alert-circle</v-icon>
               <span class="text-error">{{ responseError }}</span>
@@ -122,7 +117,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import type { Channel, ModelAuditExecutionResult, ModelAuditProtocolDescriptor } from '@/services/api'
+import type { Channel } from '@/services/api'
 import { api, testChannelWithModel } from '@/services/api'
 
 const props = defineProps<{
@@ -145,40 +140,23 @@ const selectedModel = ref<string | null>(null)
 const isLoadingModels = ref(false)
 const modelLoadError = ref('')
 const selectedThinking = ref('')
-const protocolCapability = ref<ModelAuditProtocolDescriptor | null>(null)
-const capabilityLoadError = ref('')
 const testMessage = ref('请用一句完整的话说明你当前能完成什么任务。')
 const isSending = ref(false)
 const responseText = ref('')
 const responseError = ref<string | null>(null)
-const executionResult = ref<ModelAuditExecutionResult | null>(null)
 let modelLoadRequestId = 0
 
 const thinkingOptions = computed(() => [
-  { title: '使用协议默认值', value: '' },
-  ...(protocolCapability.value?.thinking.mappings || []).map(mapping => ({
-    title: mapping.level,
-    value: mapping.level
-  }))
+  { title: '使用协议默认值', value: '' }
 ])
 
 const canSend = computed(() => {
-  return !!(props.channel?.id && testMessage.value.trim() && !isSending.value)
+  return !!(props.channel?.id && selectedModel.value?.trim() && testMessage.value.trim() && !isSending.value)
 })
 
 const close = () => {
   modelLoadRequestId++
   isOpen.value = false
-}
-
-const loadCapabilities = async () => {
-  capabilityLoadError.value = ''
-  try {
-    const capabilities = await api.getModelAuditCapabilities()
-    protocolCapability.value = capabilities.protocols.find(item => item.protocol === props.apiType) || null
-  } catch (error) {
-    capabilityLoadError.value = error instanceof Error ? error.message : '加载协议能力失败'
-  }
 }
 
 const loadModels = async () => {
@@ -214,8 +192,11 @@ const loadModels = async () => {
     const models = Array.from(new Set([defaultModel, ...discoveredModels].filter(Boolean)))
 
     modelOptions.value = models.map(model => ({ title: model, value: model }))
+    if (!selectedModel.value && models.length > 0) {
+      selectedModel.value = models[0]
+    }
     if (discoveredModels.length === 0) {
-      modelLoadError.value = '上游未返回可用模型，可直接输入模型名称或留空使用渠道默认值。'
+      modelLoadError.value = '上游未返回可用模型，请直接输入模型名称。'
     }
   } catch (error) {
     if (requestId !== modelLoadRequestId) return
@@ -234,7 +215,6 @@ const sendTest = async () => {
   isSending.value = true
   responseText.value = ''
   responseError.value = null
-  executionResult.value = null
 
   try {
     await testChannelWithModel(
@@ -247,10 +227,8 @@ const sendTest = async () => {
       },
       {
         purpose: 'quick_test',
-        thinking: selectedThinking.value,
-        onResult: result => {
-          executionResult.value = result
-        }
+        channelIndex: props.channel.index,
+        thinking: selectedThinking.value
       }
     )
   } catch (error: any) {
@@ -268,17 +246,13 @@ watch([() => props.modelValue, () => props.channel?.id], ([newVal]) => {
     modelLoadRequestId++
     responseText.value = ''
     responseError.value = null
-    executionResult.value = null
     testMessage.value = '请用一句完整的话说明你当前能完成什么任务。'
     selectedModel.value = props.channel.defaultModel || null
     modelOptions.value = props.channel.defaultModel
       ? [{ title: props.channel.defaultModel, value: props.channel.defaultModel }]
       : []
     selectedThinking.value = ''
-    protocolCapability.value = null
-    capabilityLoadError.value = ''
     modelLoadError.value = ''
-    void loadCapabilities()
     void loadModels()
   } else {
     modelLoadRequestId++

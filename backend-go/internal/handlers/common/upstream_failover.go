@@ -403,7 +403,7 @@ func TryUpstreamWithAllKeys(
 	requireReasoningContent := upstream.RequireReasoningContent
 
 	// 强制探测模式：基于本次优先尝试的 BaseURL 判断（避免 BaseURL/BaseURLs 不一致导致误判）
-	forceProbeMode := AreAllKeysSuspended(metricsManager, urlResults[0].URL, upstream.APIKeys)
+	forceProbeMode := AreAllKeysSuspended(metricsManager, urlResults[0].URL, upstream.APIKeys, logCtx.ChannelIndex)
 	if forceProbeMode {
 		log.Printf("[%s-ForceProbe] 渠道 %s 所有 Key 都被熔断，启用强制探测模式", apiType, upstream.Name)
 	}
@@ -428,7 +428,7 @@ func TryUpstreamWithAllKeys(
 			}
 
 			// 检查熔断状态
-			if !forceProbeMode && metricsManager.ShouldSuspendKey(currentBaseURL, apiKey) {
+			if !forceProbeMode && metricsManager.ShouldSuspendKey(currentBaseURL, apiKey, logCtx.ChannelIndex) {
 				failedKeys[apiKey] = true
 				log.Printf("[%s-Circuit] 跳过熔断中的 Key: %s", apiType, utils.MaskAPIKey(apiKey))
 				continue
@@ -450,7 +450,7 @@ func TryUpstreamWithAllKeys(
 			if err != nil {
 				lastError = err
 				failedKeys[apiKey] = true
-				channelScheduler.RecordFailure(currentBaseURL, apiKey, kind)
+				channelScheduler.RecordFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "build_request", err.Error(), true, isStream, nil)
 				continue
 			}
@@ -483,7 +483,7 @@ func TryUpstreamWithAllKeys(
 				return true, "", 0, nil, nil, err
 			}
 			// 记录请求开始
-			channelScheduler.RecordRequestStart(currentBaseURL, apiKey, kind)
+			channelScheduler.RecordRequestStart(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 
 			// 性能画像：开始追踪请求
 			profileReqID := nextProfileRequestID()
@@ -493,11 +493,11 @@ func TryUpstreamWithAllKeys(
 			}
 
 			// TCP 建连开始即计数：将活跃度统计提前到发起上游请求之前
-			requestID := metricsManager.RecordRequestConnected(currentBaseURL, apiKey, logCtx.Model)
+			requestID := metricsManager.RecordRequestConnected(currentBaseURL, apiKey, logCtx.ChannelIndex, logCtx.Model)
 			finishRetryContentSafety := func(preparationErr error) {
 				status := handleContentSafetyPreparationError(c, apiType, preparationErr)
-				metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
-				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+				metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 				if pm := channelScheduler.GetProfileManager(); pm != nil {
 					pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
 				}
@@ -514,8 +514,8 @@ func TryUpstreamWithAllKeys(
 				// 区分客户端取消和真实渠道故障（统一口径）
 				if isClientSideError(err) {
 					// 客户端取消：不计入失败，不触发 failover
-					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 					if pm := channelScheduler.GetProfileManager(); pm != nil {
 						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
 					}
@@ -526,8 +526,8 @@ func TryUpstreamWithAllKeys(
 				// 真实渠道故障：计入失败，继续 failover
 				failedKeys[apiKey] = true
 				cfgManager.MarkKeyAsFailed(apiKey, apiType)
-				metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
-				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+				metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 				if pm := channelScheduler.GetProfileManager(); pm != nil {
 					pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
 				}
@@ -551,8 +551,8 @@ func TryUpstreamWithAllKeys(
 				retrySucceeded := false
 
 				if IsUpstreamModelCapacityError(respBodyBytes) {
-					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 					if pm := channelScheduler.GetProfileManager(); pm != nil {
 						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
 					}
@@ -705,8 +705,8 @@ func TryUpstreamWithAllKeys(
 					// 内容审核与当前请求正文、上游策略相关。不要换 Key，也不要计入渠道故障；
 					// 多渠道可用时把原始错误交给外层继续选渠。
 					if logCtx.AllowContentPolicyChannelFailover && shouldFailoverToNextChannel(respBodyBytes, channelScheduler.GetActiveChannelCountForModel(kind, logCtx.Model)) {
-						metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
-						channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+						metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+						channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 						if pm := channelScheduler.GetProfileManager(); pm != nil {
 							pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
 						}
@@ -723,8 +723,8 @@ func TryUpstreamWithAllKeys(
 						lastError = fmt.Errorf("上游错误: %d", resp.StatusCode)
 						failedKeys[apiKey] = true
 						cfgManager.MarkKeyAsFailed(apiKey, apiType)
-						metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
-						channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+						metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+						channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 						if pm := channelScheduler.GetProfileManager(); pm != nil {
 							pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
 						}
@@ -746,8 +746,8 @@ func TryUpstreamWithAllKeys(
 					}
 
 					// 非 failover 错误，记录失败指标后返回（请求已处理）
-					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 					if pm := channelScheduler.GetProfileManager(); pm != nil {
 						pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
 					}
@@ -770,16 +770,16 @@ func TryUpstreamWithAllKeys(
 				// 区分客户端错误和渠道故障
 				if isClientSideError(err) {
 					// 客户端取消/断开：计入总请求数但不计入失败
-					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 					if pm := channelScheduler.GetProfileManager(); pm != nil {
 						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
 					}
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", resp.StatusCode, false, attemptStart, "client_cancelled", err.Error(), false, isStream, usage)
 					log.Printf("[%s-Cancel] 请求已取消，停止渠道 failover", apiType)
 				} else if safetyErr := contentSafetyError(err); safetyErr != nil {
-					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 					if pm := channelScheduler.GetProfileManager(); pm != nil {
 						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
 					}
@@ -795,8 +795,8 @@ func TryUpstreamWithAllKeys(
 						}
 					}
 				} else if hookErr := contentSafetyHookError(err); hookErr != nil {
-					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 					if pm := channelScheduler.GetProfileManager(); pm != nil {
 						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
 					}
@@ -813,8 +813,8 @@ func TryUpstreamWithAllKeys(
 						})
 					}
 				} else if isRetrySameCandidateError(err) && !c.Writer.Written() {
-					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 					if pm := channelScheduler.GetProfileManager(); pm != nil {
 						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
 					}
@@ -835,8 +835,8 @@ func TryUpstreamWithAllKeys(
 				} else {
 					// 真实渠道故障：计入失败指标
 					cfgManager.MarkKeyAsFailed(apiKey, apiType)
-					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
+					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 					if pm := channelScheduler.GetProfileManager(); pm != nil {
 						pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
 					}
@@ -862,8 +862,8 @@ func TryUpstreamWithAllKeys(
 				markURLSuccess(currentBaseURL)
 			}
 
-			metricsManager.RecordRequestFinalizeSuccess(currentBaseURL, apiKey, requestID, usage)
-			channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, kind)
+			metricsManager.RecordRequestFinalizeSuccess(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID, usage)
+			channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 			if pm := channelScheduler.GetProfileManager(); pm != nil {
 				var outputTokens int64
 				if usage != nil {

@@ -119,6 +119,7 @@ func TestContentSafetyVerificationSurfaceEndToEnd(t *testing.T) {
 	t.Run("关闭赌博分类后对应敏感词不再拦截", func(t *testing.T) {
 		settings := cfgManager.GetSettings()
 		settings.ContentSafety.SensitiveWord.GamblingEnabled = false
+		settings.ContentSafety.SensitiveWord.Enabled = false
 		if err := cfgManager.UpdateSettings(settings); err != nil {
 			t.Fatalf("关闭赌博分类失败: %v", err)
 		}
@@ -136,7 +137,7 @@ func TestContentSafetyVerificationSurfaceEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("拦截记录 API 返回三次真实拦截", func(t *testing.T) {
+	t.Run("安全处置记录 API 返回四次真实处置", func(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, "/api/blocked-logs?page=1&pageSize=20&apiType=messages", nil)
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
@@ -148,8 +149,8 @@ func TestContentSafetyVerificationSurfaceEndToEnd(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
 			t.Fatalf("解析拦截记录失败: %v，响应 = %s", err, response.Body.String())
 		}
-		if page.Total != 3 || len(page.Logs) != 3 {
-			t.Fatalf("拦截记录数量 = %d/%d，期望 3: %+v", page.Total, len(page.Logs), page.Logs)
+		if page.Total != 4 || len(page.Logs) != 4 {
+			t.Fatalf("安全处置记录数量 = %d/%d，期望 4: %+v", page.Total, len(page.Logs), page.Logs)
 		}
 
 		byRequestID := make(map[string]sensitive.BlockedLog, len(page.Logs))
@@ -157,6 +158,7 @@ func TestContentSafetyVerificationSurfaceEndToEnd(t *testing.T) {
 			byRequestID[entry.RequestID] = entry
 		}
 		assertContentSafetyBlockedLog(t, byRequestID["req-sensitive-word"], sensitive.BlockTypeSensitiveWord, "gambling")
+		assertContentSafetyBlockedLog(t, byRequestID["req-mask-phone"], sensitive.BlockTypeSensitiveInfo, config.SensitiveInfoRulePhone)
 		assertContentSafetyBlockedLog(t, byRequestID["req-dangerous-normal"], sensitive.BlockTypeDangerousCmd, config.DangerousCmdRuleDestructive)
 		assertContentSafetyBlockedLog(t, byRequestID["req-dangerous-stream"], sensitive.BlockTypeDangerousCmd, config.DangerousCmdRuleDestructive)
 		if _, exists := byRequestID["req-gambling-disabled"]; exists {

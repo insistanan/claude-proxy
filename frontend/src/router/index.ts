@@ -30,12 +30,6 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
-    path: '/playground',
-    name: 'playground',
-    component: () => import('@/views/PlaygroundView.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
     path: '/opencode',
     name: 'opencode',
     component: () => import('@/views/OpenCodeView.vue'),
@@ -63,32 +57,6 @@ const routes = [
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/audit/jobs',
-    name: 'audit-jobs',
-    component: () => import('@/views/AuditJobsView.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/evaluation',
-    name: 'model-evaluation',
-    component: () => import('@/views/AuditJobsView.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/audit/reports/:reportId',
-    name: 'audit-report',
-    component: () => import('@/views/AuditReportView.vue'),
-    props: true,
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/evaluation/reports/:reportId',
-    name: 'evaluation-report',
-    component: () => import('@/views/AuditReportView.vue'),
-    props: true,
     meta: { requiresAuth: true }
   },
   {

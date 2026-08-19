@@ -15,13 +15,13 @@ func TestToResponse_TimeWindowsIncludesCacheStats(t *testing.T) {
 	key1 := "k1"
 	key2 := "k2"
 
-	m.RecordSuccessWithUsage(baseURL, key1, &types.Usage{
+	m.RecordSuccessWithUsage(baseURL, key1, 0, &types.Usage{
 		InputTokens:              100,
 		OutputTokens:             10,
 		CacheCreationInputTokens: 20,
 		CacheReadInputTokens:     50,
 	})
-	m.RecordSuccessWithUsage(baseURL, key2, &types.Usage{
+	m.RecordSuccessWithUsage(baseURL, key2, 0, &types.Usage{
 		InputTokens:  200,
 		OutputTokens: 20,
 	})
@@ -58,7 +58,7 @@ func TestRecordSuccessWithUsage_CacheCreationFallbackFromTTLBreakdown(t *testing
 	key := "k1"
 
 	// 上游有时只返回 TTL 细分字段（5m/1h），不返回 cache_creation_input_tokens。
-	m.RecordSuccessWithUsage(baseURL, key, &types.Usage{
+	m.RecordSuccessWithUsage(baseURL, key, 0, &types.Usage{
 		InputTokens:                100,
 		OutputTokens:               10,
 		CacheCreationInputTokens:   0,

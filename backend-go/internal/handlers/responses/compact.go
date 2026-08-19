@@ -171,13 +171,13 @@ func handleMultiChannelCompact(
 		}
 
 		// 每个渠道尝试所有 key
-		success, successKey, compactErr := tryCompactChannelWithAllKeys(c, upstream, cfgManager, channelScheduler, bodyBytes, envCfg)
+		success, successKey, compactErr := tryCompactChannelWithAllKeys(c, upstream, channelIndex, cfgManager, channelScheduler, bodyBytes, envCfg)
 
 		if success {
 			releaseReservation()
 			// compact 不产生 usage，但仍需记录成功以更新熔断器/权重
 			if successKey != "" {
-				channelScheduler.RecordSuccessWithUsage(upstream.BaseURL, successKey, nil, scheduler.ChannelKindResponses)
+				channelScheduler.RecordSuccessWithUsage(upstream.BaseURL, successKey, channelIndex, nil, scheduler.ChannelKindResponses)
 				// 只有真正成功的请求才设置 Trace 亲和
 				channelScheduler.SetTraceAffinityForKind(scheduler.ChannelKindResponses, userID, channelIndex)
 				channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindResponses)
@@ -228,6 +228,7 @@ func compactRequestModel(body []byte) string {
 func tryCompactChannelWithAllKeys(
 	c *gin.Context,
 	upstream *config.UpstreamConfig,
+	channelIndex int,
 	cfgManager *config.ConfigManager,
 	channelScheduler *scheduler.ChannelScheduler,
 	bodyBytes []byte,
@@ -243,7 +244,7 @@ func tryCompactChannelWithAllKeys(
 	var lastErr *compactError
 
 	// 强制探测模式
-	forceProbeMode := common.AreAllKeysSuspended(metricsManager, upstream.BaseURL, upstream.APIKeys)
+	forceProbeMode := common.AreAllKeysSuspended(metricsManager, upstream.BaseURL, upstream.APIKeys, channelIndex)
 	if forceProbeMode {
 		log.Printf("[Compact-Probe] 渠道 %s 所有 Key 都被熔断，启用强制探测模式", upstream.Name)
 	}
@@ -255,7 +256,7 @@ func tryCompactChannelWithAllKeys(
 		}
 
 		// 检查熔断状态
-		if !forceProbeMode && metricsManager.ShouldSuspendKey(upstream.BaseURL, apiKey) {
+		if !forceProbeMode && metricsManager.ShouldSuspendKey(upstream.BaseURL, apiKey, channelIndex) {
 			failedKeys[apiKey] = true
 			log.Printf("[Compact-Key] 跳过熔断中的 Key: %s", utils.MaskAPIKey(apiKey))
 			continue
@@ -274,7 +275,7 @@ func tryCompactChannelWithAllKeys(
 			if compactErr.shouldFailover {
 				failedKeys[apiKey] = true
 				cfgManager.MarkKeyAsFailed(apiKey, "Responses")
-				channelScheduler.RecordFailure(upstream.BaseURL, apiKey, scheduler.ChannelKindResponses)
+				channelScheduler.RecordFailure(upstream.BaseURL, apiKey, channelIndex, scheduler.ChannelKindResponses)
 				continue
 			}
 			// 非故障转移错误，返回但标记渠道成功（请求已处理）

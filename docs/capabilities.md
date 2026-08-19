@@ -34,7 +34,6 @@
 | 敏感信息脱敏（日志用） | `utils.MaskAPIKey` / `MaskSensitiveHeaders` / `FormatJSONBytesForLog` | 日志输出一律走这里 |
 | gzip 解压 | `utils.DecompressGzipIfNeeded` | 上游响应 body |
 | 客户端伪装 | 头伪装 `utils/headers.go`（`ApplyClaudeCodeDisguise` / `ApplyCodexDisguise` / `PrepareUpstreamHeaders`）；请求体伪装 `utils/claude_disguise.go`（`ApplyClaudeCodeBodyDisguise`） | 两个文件分工：头 vs body，勿混用 |
-| 模型审计（能力/身份/变形审计、任务与报告） | `modelaudit` | 路由经 `modelaudit.RegisterRoutes` 注册 `/api/model-audit`（main.go 挂载）；前端 `Audit*View` 配套 |
 | Pi Agent 配置管理 | `piagent` | settings/providers/credentials/backups；路由在 main.go 直接注册 `/api/settings/pi-agent/*`（16 端点） |
 
 ## 前端（frontend/src）

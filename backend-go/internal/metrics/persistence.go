@@ -25,7 +25,7 @@ type PersistenceStore interface {
 
 // PersistentRecord 持久化记录结构
 type PersistentRecord struct {
-	MetricsKey          string    // hash(baseURL + apiKey)
+	MetricsKey          string    // hash(baseURL + apiKey + channelIndex)
 	BaseURL             string    // 上游 BaseURL
 	KeyMask             string    // 脱敏的 API Key
 	Timestamp           time.Time // 请求时间

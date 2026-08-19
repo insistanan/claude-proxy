@@ -166,13 +166,13 @@ func LogOriginalRequest(c *gin.Context, bodyBytes []byte, envCfg *config.EnvConf
 
 // AreAllKeysSuspended 检查渠道的所有 Key 是否都处于熔断状态
 // 用于判断是否需要启用强制探测模式
-func AreAllKeysSuspended(metricsManager *metrics.MetricsManager, baseURL string, apiKeys []string) bool {
+func AreAllKeysSuspended(metricsManager *metrics.MetricsManager, baseURL string, apiKeys []string, channelIndex int) bool {
 	if len(apiKeys) == 0 {
 		return false
 	}
 
 	for _, apiKey := range apiKeys {
-		if !metricsManager.ShouldSuspendKey(baseURL, apiKey) {
+		if !metricsManager.ShouldSuspendKey(baseURL, apiKey, channelIndex) {
 			return false
 		}
 	}

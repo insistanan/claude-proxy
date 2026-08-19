@@ -385,8 +385,8 @@ func (s *ChannelScheduler) SelectChannel(
 						affinityInvalidated = true
 						continue
 					}
-					if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys) {
-						failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+					if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, preferredIdx) {
+						failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, preferredIdx)
 						prefix := kindSchedulerLogPrefix(kind)
 						log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 不健康 (失败率: %.1f%%, user: %s)", prefix, preferredIdx, ch.Name, failureRate*100, maskUserID(userID))
 						affinityInvalidated = true
@@ -473,8 +473,8 @@ func (s *ChannelScheduler) SelectChannel(
 		}
 
 		// 跳过失败率过高的渠道（已熔断或即将熔断）
-		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys) {
-			failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, ch.Index) {
+			failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, ch.Index)
 			prefix := kindSchedulerLogPrefix(kind)
 			log.Printf("[%s-Channel] 警告: 跳过不健康渠道: [%d] %s (失败率: %.1f%%)", prefix, ch.Index, ch.Name, failureRate*100)
 			continue
@@ -571,7 +571,7 @@ func (s *ChannelScheduler) selectPromotedChannel(
 		selected := s.pickLeastLoadedChannel(promotedCandidates, kind)
 		upstream := s.getUpstreamByIndex(selected.Index, kind)
 		metricsManager := s.getMetricsManager(kind)
-		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, selected.Index)
 		prefix := kindSchedulerLogPrefix(kind)
 		log.Printf("[%s-Promotion] 促销期优先选择渠道: [%d] %s (失败率: %.1f%%, inFlight: %d, candidates: %d)",
 			prefix, selected.Index, upstream.Name, failureRate*100, s.GetChannelInFlight(kind, selected.Index), len(promotedCandidates))
@@ -644,7 +644,7 @@ func (s *ChannelScheduler) selectFallbackChannel(
 			continue
 		}
 
-		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, ch.Index)
 		load := s.GetChannelInFlight(kind, ch.Index)
 		if failureRate < bestFailureRate ||
 			(failureRate == bestFailureRate && load < bestLoad) ||
@@ -688,19 +688,19 @@ type ChannelInfo struct {
 // - 失败率 50%：50 分
 // - 失败率 80%：20 分
 // - 失败率 100%：0 分
-func (s *ChannelScheduler) calculateChannelScore(upstream *config.UpstreamConfig, kind ChannelKind) float64 {
+func (s *ChannelScheduler) calculateChannelScore(upstream *config.UpstreamConfig, channelIndex int, kind ChannelKind) float64 {
 	if upstream == nil || len(upstream.APIKeys) == 0 {
 		return 0
 	}
 
 	metricsManager := s.getMetricsManager(kind)
-	failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys)
+	failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, channelIndex)
 
 	// 计算基础分数：100 * (1 - failureRate)
 	baseScore := 100 * (1 - failureRate)
 
 	// 检查请求数，如果请求数小于 5，给予新渠道奖励（避免因样本不足被低估）
-	requestCount := metricsManager.GetChannelRequestCount(upstream.BaseURL, upstream.APIKeys)
+	requestCount := metricsManager.GetChannelRequestCount(upstream.BaseURL, upstream.APIKeys, channelIndex)
 	if requestCount < 5 {
 		// 新渠道给予满分
 		return 100
@@ -785,7 +785,7 @@ func (s *ChannelScheduler) getActiveChannelsByPool(kind ChannelKind, poolIDs []s
 
 		// 计算渠道动态分数
 		upstreamCopy := upstream
-		score := s.calculateChannelScore(&upstreamCopy, kind)
+		score := s.calculateChannelScore(&upstreamCopy, i, kind)
 		channel := ChannelInfo{
 			Index:    i,
 			Name:     upstream.Name,
@@ -920,7 +920,7 @@ func (s *ChannelScheduler) SelectVisionChannel(ctx context.Context, kind Channel
 			return nil, fmt.Errorf("图片理解渠道 %q 当前不可用", upstream.Name)
 		}
 		metricsManager := s.getMetricsManager(kind)
-		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys) {
+		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, index) {
 			return nil, fmt.Errorf("图片理解渠道 %q 当前不健康", upstream.Name)
 		}
 		return s.reserveAndReturn(&SelectionResult{
@@ -986,7 +986,7 @@ func (s *ChannelScheduler) ListFallbackVisionChannels(ctx context.Context, kind 
 			continue
 		}
 		metricsManager := s.getMetricsManager(kind)
-		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys) {
+		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, index) {
 			continue
 		}
 		results = append(results, &SelectionResult{
@@ -998,49 +998,49 @@ func (s *ChannelScheduler) ListFallbackVisionChannels(ctx context.Context, kind 
 	return results
 }
 
-// RecordSuccess 记录渠道成功（使用 baseURL + apiKey）
-func (s *ChannelScheduler) RecordSuccess(baseURL, apiKey string, kind ChannelKind) {
-	s.getMetricsManager(kind).RecordSuccess(baseURL, apiKey)
+// RecordSuccess 记录渠道成功（使用 baseURL + apiKey + channelIndex）
+func (s *ChannelScheduler) RecordSuccess(baseURL, apiKey string, channelIndex int, kind ChannelKind) {
+	s.getMetricsManager(kind).RecordSuccess(baseURL, apiKey, channelIndex)
 }
 
 // RecordSuccessWithUsage 记录渠道成功（带 Usage 数据）
-func (s *ChannelScheduler) RecordSuccessWithUsage(baseURL, apiKey string, usage *types.Usage, kind ChannelKind) {
-	s.getMetricsManager(kind).RecordSuccessWithUsage(baseURL, apiKey, usage)
+func (s *ChannelScheduler) RecordSuccessWithUsage(baseURL, apiKey string, channelIndex int, usage *types.Usage, kind ChannelKind) {
+	s.getMetricsManager(kind).RecordSuccessWithUsage(baseURL, apiKey, channelIndex, usage)
 }
 
-// RecordFailure 记录渠道失败（使用 baseURL + apiKey）
-func (s *ChannelScheduler) RecordFailure(baseURL, apiKey string, kind ChannelKind) {
-	s.getMetricsManager(kind).RecordFailure(baseURL, apiKey)
+// RecordFailure 记录渠道失败（使用 baseURL + apiKey + channelIndex）
+func (s *ChannelScheduler) RecordFailure(baseURL, apiKey string, channelIndex int, kind ChannelKind) {
+	s.getMetricsManager(kind).RecordFailure(baseURL, apiKey, channelIndex)
 }
 
 // RecordRequestStart 记录请求开始
-func (s *ChannelScheduler) RecordRequestStart(baseURL, apiKey string, kind ChannelKind) {
-	s.getMetricsManager(kind).RecordRequestStart(baseURL, apiKey)
+func (s *ChannelScheduler) RecordRequestStart(baseURL, apiKey string, channelIndex int, kind ChannelKind) {
+	s.getMetricsManager(kind).RecordRequestStart(baseURL, apiKey, channelIndex)
 }
 
 // RecordRequestEnd 记录请求结束
-func (s *ChannelScheduler) RecordRequestEnd(baseURL, apiKey string, kind ChannelKind) {
-	s.getMetricsManager(kind).RecordRequestEnd(baseURL, apiKey)
+func (s *ChannelScheduler) RecordRequestEnd(baseURL, apiKey string, channelIndex int, kind ChannelKind) {
+	s.getMetricsManager(kind).RecordRequestEnd(baseURL, apiKey, channelIndex)
 }
 
 // RecordRequestConnected 记录已经开始连接上游的请求，用于实时活跃度和调用历史。
-func (s *ChannelScheduler) RecordRequestConnected(baseURL, apiKey, model string, kind ChannelKind) uint64 {
-	return s.getMetricsManager(kind).RecordRequestConnected(baseURL, apiKey, model)
+func (s *ChannelScheduler) RecordRequestConnected(baseURL, apiKey, model string, channelIndex int, kind ChannelKind) uint64 {
+	return s.getMetricsManager(kind).RecordRequestConnected(baseURL, apiKey, channelIndex, model)
 }
 
 // RecordRequestFinalizeSuccess 回写已连接请求的成功结果与用量。
-func (s *ChannelScheduler) RecordRequestFinalizeSuccess(baseURL, apiKey string, requestID uint64, usage *types.Usage, kind ChannelKind) {
-	s.getMetricsManager(kind).RecordRequestFinalizeSuccess(baseURL, apiKey, requestID, usage)
+func (s *ChannelScheduler) RecordRequestFinalizeSuccess(baseURL, apiKey string, channelIndex int, requestID uint64, usage *types.Usage, kind ChannelKind) {
+	s.getMetricsManager(kind).RecordRequestFinalizeSuccess(baseURL, apiKey, channelIndex, requestID, usage)
 }
 
 // RecordRequestFinalizeFailure 回写已连接请求的失败结果。
-func (s *ChannelScheduler) RecordRequestFinalizeFailure(baseURL, apiKey string, requestID uint64, kind ChannelKind) {
-	s.getMetricsManager(kind).RecordRequestFinalizeFailure(baseURL, apiKey, requestID)
+func (s *ChannelScheduler) RecordRequestFinalizeFailure(baseURL, apiKey string, channelIndex int, requestID uint64, kind ChannelKind) {
+	s.getMetricsManager(kind).RecordRequestFinalizeFailure(baseURL, apiKey, channelIndex, requestID)
 }
 
 // ShouldSuspendKey 返回指定 Key 是否因熔断而不应继续使用。
-func (s *ChannelScheduler) ShouldSuspendKey(baseURL, apiKey string, kind ChannelKind) bool {
-	return s.getMetricsManager(kind).ShouldSuspendKey(baseURL, apiKey)
+func (s *ChannelScheduler) ShouldSuspendKey(baseURL, apiKey string, channelIndex int, kind ChannelKind) bool {
+	return s.getMetricsManager(kind).ShouldSuspendKey(baseURL, apiKey, channelIndex)
 }
 
 // SetTraceAffinity 设置 Trace 亲和
@@ -1242,7 +1242,7 @@ func (s *ChannelScheduler) ResetChannelMetrics(channelIndex int, kind ChannelKin
 	metricsManager := s.getMetricsManager(kind)
 	for _, baseURL := range upstream.GetAllBaseURLs() {
 		for _, apiKey := range upstream.APIKeys {
-			metricsManager.ResetKeyFailureState(baseURL, apiKey)
+			metricsManager.ResetKeyFailureState(baseURL, apiKey, channelIndex)
 		}
 	}
 	prefix := kindSchedulerLogPrefix(kind)
@@ -1250,13 +1250,14 @@ func (s *ChannelScheduler) ResetChannelMetrics(channelIndex int, kind ChannelKin
 }
 
 // ResetKeyMetrics 重置单个 Key 的指标
-func (s *ChannelScheduler) ResetKeyMetrics(baseURL, apiKey string, kind ChannelKind) {
-	s.getMetricsManager(kind).ResetKey(baseURL, apiKey)
+func (s *ChannelScheduler) ResetKeyMetrics(baseURL, apiKey string, channelIndex int, kind ChannelKind) {
+	s.getMetricsManager(kind).ResetKey(baseURL, apiKey, channelIndex)
 }
 
 // DeleteChannelMetrics 删除渠道的所有指标数据（内存 + 持久化）
 // 用于删除渠道时清理相关的统计数据
-func (s *ChannelScheduler) DeleteChannelMetrics(upstream *config.UpstreamConfig, kind ChannelKind) {
+// channelIndex 用于区分同 URL 同 Key 的不同渠道（指标键的一部分）
+func (s *ChannelScheduler) DeleteChannelMetrics(upstream *config.UpstreamConfig, channelIndex int, kind ChannelKind) {
 	if upstream == nil {
 		return
 	}
@@ -1265,9 +1266,9 @@ func (s *ChannelScheduler) DeleteChannelMetrics(upstream *config.UpstreamConfig,
 	allKeys := append([]string{}, upstream.APIKeys...)
 	allKeys = append(allKeys, upstream.HistoricalAPIKeys...)
 	// MetricsManager 内部已有 apiType，无需外部传递
-	metricsManager.DeleteChannelMetrics(upstream.GetAllBaseURLs(), allKeys)
+	metricsManager.DeleteChannelMetrics(upstream.GetAllBaseURLs(), allKeys, channelIndex)
 	prefix := kindSchedulerLogPrefix(kind)
-	log.Printf("[%s-Delete] 渠道 %s 的指标数据已清理", prefix, upstream.Name)
+	log.Printf("[%s-Delete] 渠道 %s [%d] 的指标数据已清理", prefix, upstream.Name, channelIndex)
 }
 
 // GetActiveChannelCount 获取活跃渠道数量

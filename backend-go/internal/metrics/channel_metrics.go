@@ -3,6 +3,7 @@ package metrics
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -31,7 +32,7 @@ type RequestRecord struct {
 
 // KeyMetrics 单个 Key 的指标（绑定到 BaseURL + Key 组合）
 type KeyMetrics struct {
-	MetricsKey          string     `json:"metricsKey"`          // hash(baseURL + apiKey)
+	MetricsKey          string     `json:"metricsKey"`          // hash(baseURL + apiKey + channelIndex)
 	BaseURL             string     `json:"baseUrl"`             // 用于显示
 	KeyMask             string     `json:"keyMask"`             // 脱敏的 key（用于显示）
 	RequestCount        int64      `json:"requestCount"`        // 总请求数
@@ -85,7 +86,7 @@ type TimeWindowStats struct {
 // MetricsManager 指标管理器
 type MetricsManager struct {
 	mu                  sync.RWMutex
-	keyMetrics          map[string]*KeyMetrics // key: hash(baseURL + apiKey)
+	keyMetrics          map[string]*KeyMetrics // key: hash(baseURL + apiKey + channelIndex)
 	windowSize          int                    // 滑动窗口大小
 	failureThreshold    float64                // 失败率阈值
 	circuitRecoveryTime time.Duration          // 熔断恢复时间
@@ -258,16 +259,21 @@ func (m *MetricsManager) getOrCreateKeyLocked(baseURL, metricsKey, keyMask strin
 	return metrics
 }
 
-// generateMetricsKey 生成指标键 hash(baseURL + apiKey)（内部使用）
-func generateMetricsKey(baseURL, apiKey string) string {
+// generateMetricsKey 生成指标键 hash(baseURL + apiKey + channelIndex)（内部使用）
+func generateMetricsKey(baseURL, apiKey string, channelIndex int) string {
 	h := sha256.New()
-	h.Write([]byte(baseURL + "|" + apiKey))
+	if channelIndex == 0 {
+		// 索引 0 沿用旧键格式，保留升级前 SQLite 中的历史指标；其他索引仍独立隔离。
+		h.Write([]byte(baseURL + "|" + apiKey))
+	} else {
+		h.Write([]byte(fmt.Sprintf("%s|%s|%d", baseURL, apiKey, channelIndex)))
+	}
 	return hex.EncodeToString(h.Sum(nil))[:16] // 取前16位作为键
 }
 
 // getOrCreateKey 获取或创建 Key 指标
-func (m *MetricsManager) getOrCreateKey(baseURL, apiKey string) *KeyMetrics {
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+func (m *MetricsManager) getOrCreateKey(baseURL, apiKey string, channelIndex int) *KeyMetrics {
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	if metrics, exists := m.keyMetrics[metricsKey]; exists {
 		return metrics
 	}
@@ -282,21 +288,21 @@ func (m *MetricsManager) getOrCreateKey(baseURL, apiKey string) *KeyMetrics {
 	return metrics
 }
 
-// RecordSuccess 记录成功请求（新方法，使用 baseURL + apiKey）
-func (m *MetricsManager) RecordSuccess(baseURL, apiKey string) {
-	m.RecordSuccessWithUsage(baseURL, apiKey, nil)
+// RecordSuccess 记录成功请求（新方法，使用 baseURL + apiKey + channelIndex）
+func (m *MetricsManager) RecordSuccess(baseURL, apiKey string, channelIndex int) {
+	m.RecordSuccessWithUsage(baseURL, apiKey, channelIndex, nil)
 }
 
 // RecordSuccessWithUsage 记录成功请求（带 Usage 数据）
-func (m *MetricsManager) RecordSuccessWithUsage(baseURL, apiKey string, usage *types.Usage) {
+func (m *MetricsManager) RecordSuccessWithUsage(baseURL, apiKey string, channelIndex int, usage *types.Usage) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.recordSuccessWithUsageLocked(baseURL, apiKey, usage, time.Now())
+	m.recordSuccessWithUsageLocked(baseURL, apiKey, channelIndex, usage, time.Now())
 }
 
-func (m *MetricsManager) recordSuccessWithUsageLocked(baseURL, apiKey string, usage *types.Usage, now time.Time) {
-	metrics := m.getOrCreateKey(baseURL, apiKey)
+func (m *MetricsManager) recordSuccessWithUsageLocked(baseURL, apiKey string, channelIndex int, usage *types.Usage, now time.Time) {
+	metrics := m.getOrCreateKey(baseURL, apiKey, channelIndex)
 	metrics.RequestCount++
 	metrics.SuccessCount++
 	metrics.ConsecutiveFailures = 0
@@ -345,16 +351,16 @@ func (m *MetricsManager) recordSuccessWithUsageLocked(baseURL, apiKey string, us
 	}
 }
 
-// RecordFailure 记录失败请求（新方法，使用 baseURL + apiKey）
-func (m *MetricsManager) RecordFailure(baseURL, apiKey string) {
+// RecordFailure 记录失败请求（新方法，使用 baseURL + apiKey + channelIndex）
+func (m *MetricsManager) RecordFailure(baseURL, apiKey string, channelIndex int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.recordFailureLocked(baseURL, apiKey, time.Now())
+	m.recordFailureLocked(baseURL, apiKey, channelIndex, time.Now())
 }
 
-func (m *MetricsManager) recordFailureLocked(baseURL, apiKey string, now time.Time) {
-	metrics := m.getOrCreateKey(baseURL, apiKey)
+func (m *MetricsManager) recordFailureLocked(baseURL, apiKey string, channelIndex int, now time.Time) {
+	metrics := m.getOrCreateKey(baseURL, apiKey, channelIndex)
 	metrics.RequestCount++
 	metrics.FailureCount++
 	metrics.ConsecutiveFailures++
@@ -392,16 +398,16 @@ func (m *MetricsManager) recordFailureLocked(baseURL, apiKey string, now time.Ti
 
 // RecordRequestConnected 记录“开始发起上游请求（TCP 建连阶段）”的请求（用于更实时的活跃度统计）。
 // 返回 requestID，用于后续在请求结束时回写成功/失败与 token。
-func (m *MetricsManager) RecordRequestConnected(baseURL, apiKey string, model string) uint64 {
-	return m.RecordRequestConnectedAt(baseURL, apiKey, model, time.Now())
+func (m *MetricsManager) RecordRequestConnected(baseURL, apiKey string, channelIndex int, model string) uint64 {
+	return m.RecordRequestConnectedAt(baseURL, apiKey, channelIndex, model, time.Now())
 }
 
 // RecordRequestConnectedAt 与 RecordRequestConnected 相同，但允许注入时间戳（用于测试）。
-func (m *MetricsManager) RecordRequestConnectedAt(baseURL, apiKey string, model string, timestamp time.Time) uint64 {
+func (m *MetricsManager) RecordRequestConnectedAt(baseURL, apiKey string, channelIndex int, model string, timestamp time.Time) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	metrics := m.getOrCreateKey(baseURL, apiKey)
+	metrics := m.getOrCreateKey(baseURL, apiKey, channelIndex)
 	// RequestCount 改为在 finalize 阶段统一增加，避免 fallback 路径二次计数
 
 	m.nextRequestID++
@@ -425,20 +431,20 @@ func (m *MetricsManager) RecordRequestConnectedAt(baseURL, apiKey string, model 
 }
 
 // RecordRequestFinalizeSuccess 回写成功结果与 token（requestID 来自 RecordRequestConnected）。
-func (m *MetricsManager) RecordRequestFinalizeSuccess(baseURL, apiKey string, requestID uint64, usage *types.Usage) {
+func (m *MetricsManager) RecordRequestFinalizeSuccess(baseURL, apiKey string, channelIndex int, requestID uint64, usage *types.Usage) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	metrics, exists := m.keyMetrics[metricsKey]
 	if !exists {
-		m.recordSuccessWithUsageLocked(baseURL, apiKey, usage, time.Now())
+		m.recordSuccessWithUsageLocked(baseURL, apiKey, channelIndex, usage, time.Now())
 		return
 	}
 
 	idx, ok := metrics.pendingHistoryIdx[requestID]
 	if !ok || idx < 0 || idx >= len(metrics.requestHistory) {
-		m.recordSuccessWithUsageLocked(baseURL, apiKey, usage, time.Now())
+		m.recordSuccessWithUsageLocked(baseURL, apiKey, channelIndex, usage, time.Now())
 		return
 	}
 	delete(metrics.pendingHistoryIdx, requestID)
@@ -500,20 +506,20 @@ func (m *MetricsManager) RecordRequestFinalizeSuccess(baseURL, apiKey string, re
 }
 
 // RecordRequestFinalizeFailure 回写失败结果（requestID 来自 RecordRequestConnected）。
-func (m *MetricsManager) RecordRequestFinalizeFailure(baseURL, apiKey string, requestID uint64) {
+func (m *MetricsManager) RecordRequestFinalizeFailure(baseURL, apiKey string, channelIndex int, requestID uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	metrics, exists := m.keyMetrics[metricsKey]
 	if !exists {
-		m.recordFailureLocked(baseURL, apiKey, time.Now())
+		m.recordFailureLocked(baseURL, apiKey, channelIndex, time.Now())
 		return
 	}
 
 	idx, ok := metrics.pendingHistoryIdx[requestID]
 	if !ok || idx < 0 || idx >= len(metrics.requestHistory) {
-		m.recordFailureLocked(baseURL, apiKey, time.Now())
+		m.recordFailureLocked(baseURL, apiKey, channelIndex, time.Now())
 		return
 	}
 	delete(metrics.pendingHistoryIdx, requestID)
@@ -561,20 +567,20 @@ func (m *MetricsManager) RecordRequestFinalizeFailure(baseURL, apiKey string, re
 }
 
 // RecordRequestFinalizeNeutral 结束不代表上游质量的请求，不计入成功率或熔断。
-func (m *MetricsManager) RecordRequestFinalizeNeutral(baseURL, apiKey string, requestID uint64) {
-	m.recordRequestFinalizeNeutral(baseURL, apiKey, requestID, false)
+func (m *MetricsManager) RecordRequestFinalizeNeutral(baseURL, apiKey string, channelIndex int, requestID uint64) {
+	m.recordRequestFinalizeNeutral(baseURL, apiKey, channelIndex, requestID, false)
 }
 
 // RecordRequestFinalizeClientCancel 记录客户端取消（计入总请求数，但不计入成功率窗口）。
-func (m *MetricsManager) RecordRequestFinalizeClientCancel(baseURL, apiKey string, requestID uint64) {
-	m.recordRequestFinalizeNeutral(baseURL, apiKey, requestID, true)
+func (m *MetricsManager) RecordRequestFinalizeClientCancel(baseURL, apiKey string, channelIndex int, requestID uint64) {
+	m.recordRequestFinalizeNeutral(baseURL, apiKey, channelIndex, requestID, true)
 }
 
-func (m *MetricsManager) recordRequestFinalizeNeutral(baseURL, apiKey string, requestID uint64, countRequest bool) {
+func (m *MetricsManager) recordRequestFinalizeNeutral(baseURL, apiKey string, channelIndex int, requestID uint64, countRequest bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	metrics, exists := m.keyMetrics[metricsKey]
 	if !exists {
 		return
@@ -600,20 +606,20 @@ func (m *MetricsManager) recordRequestFinalizeNeutral(baseURL, apiKey string, re
 }
 
 // RecordRequestStart 记录请求开始（增加进行中计数）
-func (m *MetricsManager) RecordRequestStart(baseURL, apiKey string) {
+func (m *MetricsManager) RecordRequestStart(baseURL, apiKey string, channelIndex int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	metrics := m.getOrCreateKey(baseURL, apiKey)
+	metrics := m.getOrCreateKey(baseURL, apiKey, channelIndex)
 	metrics.ActiveRequests++
 }
 
 // RecordRequestEnd 记录请求结束（减少进行中计数）
-func (m *MetricsManager) RecordRequestEnd(baseURL, apiKey string) {
+func (m *MetricsManager) RecordRequestEnd(baseURL, apiKey string, channelIndex int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	if metrics, exists := m.keyMetrics[metricsKey]; exists {
 		if metrics.ActiveRequests > 0 {
 			metrics.ActiveRequests--
@@ -732,11 +738,11 @@ func (m *MetricsManager) appendToHistoryKeyWithUsage(metrics *KeyMetrics, timest
 }
 
 // IsKeyHealthy 判断单个 Key 是否健康
-func (m *MetricsManager) IsKeyHealthy(baseURL, apiKey string) bool {
+func (m *MetricsManager) IsKeyHealthy(baseURL, apiKey string, channelIndex int) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	metrics, exists := m.keyMetrics[metricsKey]
 	if !exists || len(metrics.recentResults) == 0 {
 		return true // 没有记录，默认健康
@@ -754,7 +760,7 @@ func (m *MetricsManager) IsKeyHealthy(baseURL, apiKey string) bool {
 //   - 所有 Key 都样本不足时默认健康（给新渠道/新 Key 机会）
 //
 // activeKeys: 当前渠道配置的所有活跃 API Keys
-func (m *MetricsManager) IsChannelHealthyWithKeys(baseURL string, activeKeys []string) bool {
+func (m *MetricsManager) IsChannelHealthyWithKeys(baseURL string, activeKeys []string, channelIndex int) bool {
 	if len(activeKeys) == 0 {
 		return false
 	}
@@ -767,7 +773,7 @@ func (m *MetricsManager) IsChannelHealthyWithKeys(baseURL string, activeKeys []s
 	hasKeyWithEnoughData := false
 
 	for _, apiKey := range activeKeys {
-		metricsKey := generateMetricsKey(baseURL, apiKey)
+		metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 		metrics, exists := m.keyMetrics[metricsKey]
 		if !exists || len(metrics.recentResults) == 0 {
 			continue
@@ -802,12 +808,12 @@ func (m *MetricsManager) IsChannelHealthyWithKeys(baseURL string, activeKeys []s
 }
 
 // IsChannelHealthyMultiURL 判断多 BaseURL 渠道是否还有可用端点。
-func (m *MetricsManager) IsChannelHealthyMultiURL(baseURLs []string, activeKeys []string) bool {
+func (m *MetricsManager) IsChannelHealthyMultiURL(baseURLs []string, activeKeys []string, channelIndex int) bool {
 	if len(baseURLs) == 0 || len(activeKeys) == 0 {
 		return false
 	}
 	for _, baseURL := range baseURLs {
-		if m.IsChannelHealthyWithKeys(baseURL, activeKeys) {
+		if m.IsChannelHealthyWithKeys(baseURL, activeKeys, channelIndex) {
 			return true
 		}
 	}
@@ -815,11 +821,11 @@ func (m *MetricsManager) IsChannelHealthyMultiURL(baseURLs []string, activeKeys 
 }
 
 // CalculateKeyFailureRate 计算单个 Key 的失败率
-func (m *MetricsManager) CalculateKeyFailureRate(baseURL, apiKey string) float64 {
+func (m *MetricsManager) CalculateKeyFailureRate(baseURL, apiKey string, channelIndex int) float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	metrics, exists := m.keyMetrics[metricsKey]
 	if !exists || len(metrics.recentResults) == 0 {
 		return 0
@@ -830,7 +836,7 @@ func (m *MetricsManager) CalculateKeyFailureRate(baseURL, apiKey string) float64
 
 // CalculateChannelFailureRate 计算渠道聚合失败率
 // GetChannelRequestCount 获取渠道的总请求数（所有 Key 聚合）
-func (m *MetricsManager) GetChannelRequestCount(baseURL string, activeKeys []string) int64 {
+func (m *MetricsManager) GetChannelRequestCount(baseURL string, activeKeys []string, channelIndex int) int64 {
 	if len(activeKeys) == 0 {
 		return 0
 	}
@@ -840,7 +846,7 @@ func (m *MetricsManager) GetChannelRequestCount(baseURL string, activeKeys []str
 
 	var totalCount int64
 	for _, apiKey := range activeKeys {
-		metricsKey := generateMetricsKey(baseURL, apiKey)
+		metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 		if metrics, exists := m.keyMetrics[metricsKey]; exists {
 			totalCount += metrics.RequestCount
 		}
@@ -849,7 +855,7 @@ func (m *MetricsManager) GetChannelRequestCount(baseURL string, activeKeys []str
 	return totalCount
 }
 
-func (m *MetricsManager) CalculateChannelFailureRate(baseURL string, activeKeys []string) float64 {
+func (m *MetricsManager) CalculateChannelFailureRate(baseURL string, activeKeys []string, channelIndex int) float64 {
 	if len(activeKeys) == 0 {
 		return 0
 	}
@@ -859,7 +865,7 @@ func (m *MetricsManager) CalculateChannelFailureRate(baseURL string, activeKeys 
 
 	var totalResults []bool
 	for _, apiKey := range activeKeys {
-		metricsKey := generateMetricsKey(baseURL, apiKey)
+		metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 		if metrics, exists := m.keyMetrics[metricsKey]; exists {
 			totalResults = append(totalResults, metrics.recentResults...)
 		}
@@ -880,11 +886,11 @@ func (m *MetricsManager) CalculateChannelFailureRate(baseURL string, activeKeys 
 }
 
 // GetKeyMetrics 获取单个 Key 的指标
-func (m *MetricsManager) GetKeyMetrics(baseURL, apiKey string) *KeyMetrics {
+func (m *MetricsManager) GetKeyMetrics(baseURL, apiKey string, channelIndex int) *KeyMetrics {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	if metrics, exists := m.keyMetrics[metricsKey]; exists {
 		// 返回副本
 		return &KeyMetrics{
@@ -916,7 +922,7 @@ func (m *MetricsManager) GetChannelAggregatedMetrics(channelIndex int, baseURL s
 	var maxConsecutiveFailures int64
 
 	for _, apiKey := range activeKeys {
-		metricsKey := generateMetricsKey(baseURL, apiKey)
+		metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 		if metrics, exists := m.keyMetrics[metricsKey]; exists {
 			aggregated.RequestCount += metrics.RequestCount
 			aggregated.SuccessCount += metrics.SuccessCount
@@ -958,14 +964,14 @@ type KeyUsageInfo struct {
 
 // GetChannelKeyUsageInfo 获取渠道下所有 Key 的使用信息（用于排序筛选）
 // 返回的 keys 已按最近使用时间排序
-func (m *MetricsManager) GetChannelKeyUsageInfo(baseURL string, apiKeys []string) []KeyUsageInfo {
+func (m *MetricsManager) GetChannelKeyUsageInfo(baseURL string, apiKeys []string, channelIndex int) []KeyUsageInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	infos := make([]KeyUsageInfo, 0, len(apiKeys))
 
 	for _, apiKey := range apiKeys {
-		metricsKey := generateMetricsKey(baseURL, apiKey)
+		metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 		metrics, exists := m.keyMetrics[metricsKey]
 
 		var keyMask string
@@ -1011,7 +1017,7 @@ func (m *MetricsManager) GetChannelKeyUsageInfo(baseURL string, apiKeys []string
 }
 
 // GetChannelKeyUsageInfoMultiURL 获取渠道 Key 使用信息（支持多 URL 聚合）
-func (m *MetricsManager) GetChannelKeyUsageInfoMultiURL(baseURLs []string, apiKeys []string) []KeyUsageInfo {
+func (m *MetricsManager) GetChannelKeyUsageInfoMultiURL(baseURLs []string, apiKeys []string, channelIndex int) []KeyUsageInfo {
 	if len(baseURLs) == 0 {
 		return []KeyUsageInfo{}
 	}
@@ -1029,7 +1035,7 @@ func (m *MetricsManager) GetChannelKeyUsageInfoMultiURL(baseURLs []string, apiKe
 
 		// 遍历所有 BaseURL 聚合同一 Key 的指标
 		for _, baseURL := range baseURLs {
-			metricsKey := generateMetricsKey(baseURL, apiKey)
+			metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 			if metrics, exists := m.keyMetrics[metricsKey]; exists {
 				hasMetrics = true
 				if keyMask == "" {
@@ -1145,11 +1151,11 @@ func (m *MetricsManager) GetAllKeyMetrics() []*KeyMetrics {
 }
 
 // GetTimeWindowStatsForKey 获取指定 Key 在时间窗口内的统计
-func (m *MetricsManager) GetTimeWindowStatsForKey(baseURL, apiKey string, duration time.Duration) TimeWindowStats {
+func (m *MetricsManager) GetTimeWindowStatsForKey(baseURL, apiKey string, channelIndex int, duration time.Duration) TimeWindowStats {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	metrics, exists := m.keyMetrics[metricsKey]
 	if !exists {
 		return TimeWindowStats{SuccessRate: 100}
@@ -1183,22 +1189,22 @@ func (m *MetricsManager) GetTimeWindowStatsForKey(baseURL, apiKey string, durati
 }
 
 // GetAllTimeWindowStatsForKey 获取单个 Key 所有时间窗口的统计
-func (m *MetricsManager) GetAllTimeWindowStatsForKey(baseURL, apiKey string) map[string]TimeWindowStats {
+func (m *MetricsManager) GetAllTimeWindowStatsForKey(baseURL, apiKey string, channelIndex int) map[string]TimeWindowStats {
 	return map[string]TimeWindowStats{
-		"15m": m.GetTimeWindowStatsForKey(baseURL, apiKey, 15*time.Minute),
-		"1h":  m.GetTimeWindowStatsForKey(baseURL, apiKey, 1*time.Hour),
-		"6h":  m.GetTimeWindowStatsForKey(baseURL, apiKey, 6*time.Hour),
-		"24h": m.GetTimeWindowStatsForKey(baseURL, apiKey, 24*time.Hour),
+		"15m": m.GetTimeWindowStatsForKey(baseURL, apiKey, channelIndex, 15*time.Minute),
+		"1h":  m.GetTimeWindowStatsForKey(baseURL, apiKey, channelIndex, 1*time.Hour),
+		"6h":  m.GetTimeWindowStatsForKey(baseURL, apiKey, channelIndex, 6*time.Hour),
+		"24h": m.GetTimeWindowStatsForKey(baseURL, apiKey, channelIndex, 24*time.Hour),
 	}
 }
 
 // ResetKeyFailureState 重置单个 Key 的熔断/失败状态（保留历史统计与总量计数）。
 // 用于“恢复熔断”场景：清零连续失败、清空滑动窗口、解除熔断标记。
-func (m *MetricsManager) ResetKeyFailureState(baseURL, apiKey string) {
+func (m *MetricsManager) ResetKeyFailureState(baseURL, apiKey string, channelIndex int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	if metrics, exists := m.keyMetrics[metricsKey]; exists {
 		metrics.ConsecutiveFailures = 0
 		metrics.recentResults = make([]bool, 0, m.windowSize)
@@ -1208,11 +1214,11 @@ func (m *MetricsManager) ResetKeyFailureState(baseURL, apiKey string) {
 }
 
 // ResetKey 重置单个 Key 的指标
-func (m *MetricsManager) ResetKey(baseURL, apiKey string) {
+func (m *MetricsManager) ResetKey(baseURL, apiKey string, channelIndex int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	if metrics, exists := m.keyMetrics[metricsKey]; exists {
 		// 完全重置所有字段
 		metrics.RequestCount = 0
@@ -1250,8 +1256,9 @@ func (m *MetricsManager) Stop() {
 // DeleteKeysForChannel 删除指定渠道的所有内存指标
 // baseURLs: 渠道的所有 BaseURL（支持多端点 failover）
 // apiKeys: 渠道的所有 API Key
+// channelIndex: 渠道索引（与渠道一一对应，用于区分同 URL 同 Key 的不同渠道）
 // 返回所有可能的 metricsKey 列表（无论内存中是否存在，用于后续清理持久化数据）
-func (m *MetricsManager) DeleteKeysForChannel(baseURLs, apiKeys []string) []string {
+func (m *MetricsManager) DeleteKeysForChannel(baseURLs, apiKeys []string, channelIndex int) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -1260,7 +1267,7 @@ func (m *MetricsManager) DeleteKeysForChannel(baseURLs, apiKeys []string) []stri
 
 	for _, baseURL := range baseURLs {
 		for _, apiKey := range apiKeys {
-			metricsKey := generateMetricsKey(baseURL, apiKey)
+			metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 			allKeys = append(allKeys, metricsKey)
 			if _, exists := m.keyMetrics[metricsKey]; exists {
 				delete(m.keyMetrics, metricsKey)
@@ -1279,10 +1286,11 @@ func (m *MetricsManager) DeleteKeysForChannel(baseURLs, apiKeys []string) []stri
 // DeleteChannelMetrics 删除渠道的所有指标数据（内存 + 持久化）
 // baseURLs: 渠道的所有 BaseURL（支持多端点 failover）
 // apiKeys: 渠道的所有 API Key
+// channelIndex: 渠道索引
 // 返回被删除的持久化记录数
-func (m *MetricsManager) DeleteChannelMetrics(baseURLs, apiKeys []string) int64 {
+func (m *MetricsManager) DeleteChannelMetrics(baseURLs, apiKeys []string, channelIndex int) int64 {
 	// 1. 删除内存指标，获取 metricsKey 列表
-	deletedKeys := m.DeleteKeysForChannel(baseURLs, apiKeys)
+	deletedKeys := m.DeleteKeysForChannel(baseURLs, apiKeys, channelIndex)
 
 	// 2. 删除持久化数据（使用内部 apiType，避免外部误传）
 	if m.store != nil && len(deletedKeys) > 0 {
@@ -1464,7 +1472,7 @@ func (m *MetricsManager) ToResponseMultiURL(channelIndex int, baseURLs []string,
 	// 遍历所有 BaseURL 和 Key 的组合
 	for _, baseURL := range baseURLs {
 		for _, apiKey := range activeKeys {
-			metricsKey := generateMetricsKey(baseURL, apiKey)
+			metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 			if metrics, exists := m.keyMetrics[metricsKey]; exists {
 				resp.RequestCount += metrics.RequestCount
 				resp.SuccessCount += metrics.SuccessCount
@@ -1515,7 +1523,7 @@ func (m *MetricsManager) ToResponseMultiURL(channelIndex int, baseURLs []string,
 	if len(historicalKeys) > 0 && len(historicalKeys[0]) > 0 {
 		for _, baseURL := range baseURLs {
 			for _, apiKey := range historicalKeys[0] {
-				metricsKey := generateMetricsKey(baseURL, apiKey)
+				metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 				if metrics, exists := m.keyMetrics[metricsKey]; exists {
 					resp.RequestCount += metrics.RequestCount
 					resp.SuccessCount += metrics.SuccessCount
@@ -1581,7 +1589,7 @@ func (m *MetricsManager) ToResponseMultiURL(channelIndex int, baseURLs []string,
 	resp.KeyMetrics = keyResponses
 
 	// 计算聚合的时间窗口统计（多 URL 版本）
-	resp.TimeWindows = m.calculateAggregatedTimeWindowsMultiURL(baseURLs, activeKeys)
+	resp.TimeWindows = m.calculateAggregatedTimeWindowsMultiURL(baseURLs, activeKeys, channelIndex)
 
 	return resp
 }
@@ -1608,7 +1616,7 @@ func (m *MetricsManager) ToResponse(channelIndex int, baseURL string, activeKeys
 	var maxConsecutiveFailures int64
 
 	for _, apiKey := range activeKeys {
-		metricsKey := generateMetricsKey(baseURL, apiKey)
+		metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 		if metrics, exists := m.keyMetrics[metricsKey]; exists {
 			resp.RequestCount += metrics.RequestCount
 			resp.SuccessCount += metrics.SuccessCount
@@ -1681,13 +1689,13 @@ func (m *MetricsManager) ToResponse(channelIndex int, baseURL string, activeKeys
 	resp.KeyMetrics = keyResponses
 
 	// 计算聚合的时间窗口统计
-	resp.TimeWindows = m.calculateAggregatedTimeWindowsInternal(baseURL, activeKeys)
+	resp.TimeWindows = m.calculateAggregatedTimeWindowsInternal(baseURL, activeKeys, channelIndex)
 
 	return resp
 }
 
 // calculateAggregatedTimeWindowsInternal 计算聚合的时间窗口统计（内部方法，调用前需持有锁）
-func (m *MetricsManager) calculateAggregatedTimeWindowsInternal(baseURL string, activeKeys []string) map[string]TimeWindowStats {
+func (m *MetricsManager) calculateAggregatedTimeWindowsInternal(baseURL string, activeKeys []string, channelIndex int) map[string]TimeWindowStats {
 	windows := map[string]time.Duration{
 		"15m": 15 * time.Minute,
 		"1h":  1 * time.Hour,
@@ -1704,7 +1712,7 @@ func (m *MetricsManager) calculateAggregatedTimeWindowsInternal(baseURL string, 
 		var inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int64
 
 		for _, apiKey := range activeKeys {
-			metricsKey := generateMetricsKey(baseURL, apiKey)
+			metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 			if metrics, exists := m.keyMetrics[metricsKey]; exists {
 				for _, record := range metrics.requestHistory {
 					if record.Timestamp.After(cutoff) {
@@ -1751,7 +1759,7 @@ func (m *MetricsManager) calculateAggregatedTimeWindowsInternal(baseURL string, 
 }
 
 // calculateAggregatedTimeWindowsMultiURL 计算聚合的时间窗口统计（多 URL 版本，内部方法，调用前需持有锁）
-func (m *MetricsManager) calculateAggregatedTimeWindowsMultiURL(baseURLs []string, activeKeys []string) map[string]TimeWindowStats {
+func (m *MetricsManager) calculateAggregatedTimeWindowsMultiURL(baseURLs []string, activeKeys []string, channelIndex int) map[string]TimeWindowStats {
 	windows := map[string]time.Duration{
 		"15m": 15 * time.Minute,
 		"1h":  1 * time.Hour,
@@ -1770,7 +1778,7 @@ func (m *MetricsManager) calculateAggregatedTimeWindowsMultiURL(baseURLs []strin
 		// 遍历所有 BaseURL 和 Key 的组合
 		for _, baseURL := range baseURLs {
 			for _, apiKey := range activeKeys {
-				metricsKey := generateMetricsKey(baseURL, apiKey)
+				metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 				if metrics, exists := m.keyMetrics[metricsKey]; exists {
 					for _, record := range metrics.requestHistory {
 						if record.Timestamp.After(cutoff) {
@@ -1873,11 +1881,11 @@ func (m *MetricsManager) ShouldSuspend(channelIndex int) bool {
 }
 
 // ShouldSuspendKey 判断单个 Key 是否应该熔断
-func (m *MetricsManager) ShouldSuspendKey(baseURL, apiKey string) bool {
+func (m *MetricsManager) ShouldSuspendKey(baseURL, apiKey string, channelIndex int) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	metrics, exists := m.keyMetrics[metricsKey]
 	if !exists {
 		return false
@@ -1921,7 +1929,7 @@ type KeyHistoryDataPoint struct {
 // GetHistoricalStats 获取历史统计数据（按时间间隔聚合）
 // duration: 查询时间范围 (如 1h, 6h, 24h)
 // interval: 聚合间隔 (如 5m, 15m, 1h)
-func (m *MetricsManager) GetHistoricalStats(baseURL string, activeKeys []string, duration, interval time.Duration) []HistoryDataPoint {
+func (m *MetricsManager) GetHistoricalStats(baseURL string, activeKeys []string, channelIndex int, duration, interval time.Duration) []HistoryDataPoint {
 	// 参数验证
 	if interval <= 0 || duration <= 0 {
 		return []HistoryDataPoint{}
@@ -1951,7 +1959,7 @@ func (m *MetricsManager) GetHistoricalStats(baseURL string, activeKeys []string,
 
 	// 收集所有相关 Key 的请求历史并放入对应桶
 	for _, apiKey := range activeKeys {
-		metricsKey := generateMetricsKey(baseURL, apiKey)
+		metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 		if metrics, exists := m.keyMetrics[metricsKey]; exists {
 			for _, record := range metrics.requestHistory {
 				// 使用 [startTime, endTime) 的区间，避免 endTime 处 offset 越界
@@ -1994,7 +2002,7 @@ func (m *MetricsManager) GetHistoricalStats(baseURL string, activeKeys []string,
 }
 
 // GetHistoricalStatsMultiURL 获取多 URL 聚合的历史统计数据
-func (m *MetricsManager) GetHistoricalStatsMultiURL(baseURLs []string, activeKeys []string, duration, interval time.Duration) []HistoryDataPoint {
+func (m *MetricsManager) GetHistoricalStatsMultiURL(baseURLs []string, activeKeys []string, channelIndex int, duration, interval time.Duration) []HistoryDataPoint {
 	// 参数验证
 	if interval <= 0 || duration <= 0 || len(baseURLs) == 0 {
 		return []HistoryDataPoint{}
@@ -2025,7 +2033,7 @@ func (m *MetricsManager) GetHistoricalStatsMultiURL(baseURLs []string, activeKey
 	// 收集所有 BaseURL 和 Key 组合的请求历史并放入对应桶
 	for _, baseURL := range baseURLs {
 		for _, apiKey := range activeKeys {
-			metricsKey := generateMetricsKey(baseURL, apiKey)
+			metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 			if metrics, exists := m.keyMetrics[metricsKey]; exists {
 				for _, record := range metrics.requestHistory {
 					// 使用 [startTime, endTime) 的区间，避免 endTime 处 offset 越界
@@ -2188,7 +2196,7 @@ func (m *MetricsManager) GetAllKeysHistoricalStats(duration, interval time.Durat
 // }
 
 // GetKeyHistoricalStats 获取单个 Key 的历史统计数据（包含 Token 和 Cache 数据）
-func (m *MetricsManager) GetKeyHistoricalStats(baseURL, apiKey string, duration, interval time.Duration) []KeyHistoryDataPoint {
+func (m *MetricsManager) GetKeyHistoricalStats(baseURL, apiKey string, channelIndex int, duration, interval time.Duration) []KeyHistoryDataPoint {
 	// 参数验证
 	if interval <= 0 || duration <= 0 {
 		return []KeyHistoryDataPoint{}
@@ -2216,7 +2224,7 @@ func (m *MetricsManager) GetKeyHistoricalStats(baseURL, apiKey string, duration,
 	}
 
 	// 获取 Key 的指标
-	metricsKey := generateMetricsKey(baseURL, apiKey)
+	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 	metrics, exists := m.keyMetrics[metricsKey]
 	if !exists {
 		// Key 不存在，返回空数据点
@@ -2277,7 +2285,7 @@ func (m *MetricsManager) GetKeyHistoricalStats(baseURL, apiKey string, duration,
 }
 
 // GetKeyHistoricalStatsMultiURL 获取单个 Key 的多 URL 聚合历史统计
-func (m *MetricsManager) GetKeyHistoricalStatsMultiURL(baseURLs []string, apiKey string, duration, interval time.Duration) []KeyHistoryDataPoint {
+func (m *MetricsManager) GetKeyHistoricalStatsMultiURL(baseURLs []string, apiKey string, channelIndex int, duration, interval time.Duration) []KeyHistoryDataPoint {
 	// 参数验证
 	if interval <= 0 || duration <= 0 || len(baseURLs) == 0 {
 		return []KeyHistoryDataPoint{}
@@ -2307,7 +2315,7 @@ func (m *MetricsManager) GetKeyHistoricalStatsMultiURL(baseURLs []string, apiKey
 	// 遍历所有 BaseURL 聚合同一 Key 的历史数据
 	hasData := false
 	for _, baseURL := range baseURLs {
-		metricsKey := generateMetricsKey(baseURL, apiKey)
+		metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 		metrics, exists := m.keyMetrics[metricsKey]
 		if !exists {
 			continue
@@ -2645,7 +2653,7 @@ func (m *MetricsManager) GetRecentActivityMultiURL(channelIndex int, baseURLs []
 	// 遍历所有 BaseURL 和 Key 的组合
 	for _, baseURL := range baseURLs {
 		for _, apiKey := range activeKeys {
-			metricsKey := generateMetricsKey(baseURL, apiKey)
+			metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
 			metrics, exists := m.keyMetrics[metricsKey]
 			if !exists {
 				continue
@@ -2707,7 +2715,7 @@ func (m *MetricsManager) SyncToProfile(pm *ProfileManager, baseURL string, apiKe
 	var recentSuccessCount int
 
 	for _, key := range apiKeys {
-		metricsKey := generateMetricsKey(baseURL, key)
+		metricsKey := generateMetricsKey(baseURL, key, channelIdx)
 		if km, exists := m.keyMetrics[metricsKey]; exists {
 			totalReq += km.RequestCount
 			totalSuccess += km.SuccessCount
@@ -2731,7 +2739,7 @@ func (m *MetricsManager) SyncToProfile(pm *ProfileManager, baseURL string, apiKe
 	// 从现有指标的滑动窗口计算最近成功率
 	totalRecent := 0
 	for _, key := range apiKeys {
-		metricsKey := generateMetricsKey(baseURL, key)
+		metricsKey := generateMetricsKey(baseURL, key, channelIdx)
 		if km, exists := m.keyMetrics[metricsKey]; exists {
 			totalRecent += len(km.recentResults)
 		}

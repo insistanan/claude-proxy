@@ -44,7 +44,7 @@ func TestGetRecentActivityMultiURL_SegmentBoundaries(t *testing.T) {
 	// 模拟在不同时间点的请求
 	now := time.Now()
 	m.mu.Lock()
-	metrics := m.getOrCreateKey(baseURL, apiKey)
+	metrics := m.getOrCreateKey(baseURL, apiKey, 1)
 
 	// 添加当前 6 秒段的请求（应该在最后一个 segment）
 	metrics.requestHistory = append(metrics.requestHistory, RequestRecord{
@@ -122,7 +122,7 @@ func TestGetRecentActivityMultiURL_FailureCount(t *testing.T) {
 
 	now := time.Now()
 	m.mu.Lock()
-	metrics := m.getOrCreateKey(baseURL, apiKey)
+	metrics := m.getOrCreateKey(baseURL, apiKey, 0)
 
 	// 添加 2 个成功和 1 个失败
 	metrics.requestHistory = append(metrics.requestHistory,
@@ -168,14 +168,14 @@ func TestGetRecentActivityMultiURL_MultipleURLs(t *testing.T) {
 
 	now := time.Now()
 	m.mu.Lock()
-	metrics1 := m.getOrCreateKey(baseURL1, apiKey)
+	metrics1 := m.getOrCreateKey(baseURL1, apiKey, 0)
 	metrics1.requestHistory = append(metrics1.requestHistory, RequestRecord{
 		Timestamp:    now,
 		Success:      true,
 		OutputTokens: 100,
 	})
 
-	metrics2 := m.getOrCreateKey(baseURL2, apiKey)
+	metrics2 := m.getOrCreateKey(baseURL2, apiKey, 0)
 	metrics2.requestHistory = append(metrics2.requestHistory, RequestRecord{
 		Timestamp:    now,
 		Success:      true,
@@ -211,14 +211,14 @@ func TestGetRecentActivityMultiURL_MultipleKeys(t *testing.T) {
 
 	now := time.Now()
 	m.mu.Lock()
-	metrics1 := m.getOrCreateKey(baseURL, apiKey1)
+	metrics1 := m.getOrCreateKey(baseURL, apiKey1, 0)
 	metrics1.requestHistory = append(metrics1.requestHistory, RequestRecord{
 		Timestamp:    now,
 		Success:      true,
 		OutputTokens: 150,
 	})
 
-	metrics2 := m.getOrCreateKey(baseURL, apiKey2)
+	metrics2 := m.getOrCreateKey(baseURL, apiKey2, 0)
 	metrics2.requestHistory = append(metrics2.requestHistory, RequestRecord{
 		Timestamp:    now,
 		Success:      true,
@@ -256,7 +256,7 @@ func TestGetRecentActivityMultiURL_MultipleURLsAndKeys(t *testing.T) {
 	now := time.Now()
 	m.mu.Lock()
 	// URL1 + Key1
-	metrics11 := m.getOrCreateKey(baseURL1, apiKey1)
+	metrics11 := m.getOrCreateKey(baseURL1, apiKey1, 0)
 	metrics11.requestHistory = append(metrics11.requestHistory, RequestRecord{
 		Timestamp:    now,
 		Success:      true,
@@ -264,7 +264,7 @@ func TestGetRecentActivityMultiURL_MultipleURLsAndKeys(t *testing.T) {
 	})
 
 	// URL1 + Key2
-	metrics12 := m.getOrCreateKey(baseURL1, apiKey2)
+	metrics12 := m.getOrCreateKey(baseURL1, apiKey2, 0)
 	metrics12.requestHistory = append(metrics12.requestHistory, RequestRecord{
 		Timestamp:    now,
 		Success:      true,
@@ -272,7 +272,7 @@ func TestGetRecentActivityMultiURL_MultipleURLsAndKeys(t *testing.T) {
 	})
 
 	// URL2 + Key1
-	metrics21 := m.getOrCreateKey(baseURL2, apiKey1)
+	metrics21 := m.getOrCreateKey(baseURL2, apiKey1, 0)
 	metrics21.requestHistory = append(metrics21.requestHistory, RequestRecord{
 		Timestamp:    now,
 		Success:      false,
@@ -280,7 +280,7 @@ func TestGetRecentActivityMultiURL_MultipleURLsAndKeys(t *testing.T) {
 	})
 
 	// URL2 + Key2
-	metrics22 := m.getOrCreateKey(baseURL2, apiKey2)
+	metrics22 := m.getOrCreateKey(baseURL2, apiKey2, 0)
 	metrics22.requestHistory = append(metrics22.requestHistory, RequestRecord{
 		Timestamp:    now,
 		Success:      true,

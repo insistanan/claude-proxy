@@ -44,7 +44,7 @@ func (as *AdaptiveScheduler) SelectBestChannel(
 	failedChannels map[int]bool,
 	kind ChannelKind,
 	requestedModel string, // 用户请求的模型名
-	isHealthyFunc func(baseURLs []string, apiKeys []string) bool,
+	isHealthyFunc func(baseURLs []string, apiKeys []string, channelIndex int) bool,
 	getUpstreamFunc func(int, ChannelKind) *config.UpstreamConfig,
 	getInFlightFunc func(channelIndex int) int64,
 ) *SelectionResult {
@@ -91,7 +91,7 @@ func (as *AdaptiveScheduler) selectFromGroup(
 	failedChannels map[int]bool,
 	kind ChannelKind,
 	requestedModel string,
-	isHealthyFunc func(baseURLs []string, apiKeys []string) bool,
+	isHealthyFunc func(baseURLs []string, apiKeys []string, channelIndex int) bool,
 	getUpstreamFunc func(int, ChannelKind) *config.UpstreamConfig,
 	getInFlightFunc func(channelIndex int) int64,
 ) *AdaptiveSelectionResult {
@@ -108,7 +108,7 @@ func (as *AdaptiveScheduler) selectFromGroup(
 			continue
 		}
 		baseURLs := upstream.GetAllBaseURLs()
-		if isHealthyFunc != nil && !isHealthyFunc(baseURLs, upstream.APIKeys) {
+		if isHealthyFunc != nil && !isHealthyFunc(baseURLs, upstream.APIKeys, ch.Index) {
 			continue
 		}
 

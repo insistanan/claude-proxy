@@ -16,7 +16,7 @@ bun run preview   # 预览构建
 
 ## 核心视图与组件
 
-视图在 `src/views/`（渠道、对话、Playground、请求/拦截日志、审计、Skills、Claude Code / OpenCode / DSH / PiAgent 客户端配置、Settings），组件在 `src/components/`。完整清单以目录为准，本文件不复述。层级关系：views → stores（`stores/` Pinia）→ services（`services/api.ts`）。
+视图在 `src/views/`（渠道、对话、请求/拦截日志、Skills、Claude Code / OpenCode / DSH / PiAgent 客户端配置、Settings），组件在 `src/components/`。完整清单以目录为准，本文件不复述。层级关系：views → stores（`stores/` Pinia）→ services（`services/api.ts`）。
 
 ## API 服务
 

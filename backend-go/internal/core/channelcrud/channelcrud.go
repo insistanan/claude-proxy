@@ -173,7 +173,7 @@ func (h *Handlers) DeleteUpstream(c *gin.Context) {
 
 	// 删除成功后清理指标数据与 trace 亲和性绑定
 	if h.sch != nil {
-		h.sch.DeleteChannelMetrics(removed, h.ops.Kind)
+		h.sch.DeleteChannelMetrics(removed, id, h.ops.Kind)
 		h.sch.GetTraceAffinityManager().RemoveByChannelForKind(string(h.ops.Kind), id)
 	}
 

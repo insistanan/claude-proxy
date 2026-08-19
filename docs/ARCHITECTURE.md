@@ -34,7 +34,6 @@ claude-proxy/
 │       ├── utils/            # 共享工具（脱敏、token 估算、流合成、客户端伪装）
 │       ├── visionlayer/      # 视觉分流（图片描述生成、缓存、请求改写）
 │       ├── sensitive/        # 内容安全检测（敏感词/凭据/命令）
-│       ├── modelaudit/       # 模型审计（能力/身份/变形审计）
 │       ├── piagent/          # Pi Agent 配置管理
 │       ├── logger/           # 日志封装
 │       └── types/            # 共享类型定义

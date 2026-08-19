@@ -140,8 +140,8 @@ func normalizeModel(model string) string {
 	return model
 }
 
-// generateProfileKey 生成画像键（包含模型维度）
-func generateProfileKey(baseURL string, apiKeys []string, model string) string {
+// generateProfileKey 生成画像键（包含模型与渠道维度）
+func generateProfileKey(baseURL string, apiKeys []string, model string, channelIdx int) string {
 	// 排序 keys 确保一致性
 	sorted := make([]string, len(apiKeys))
 	copy(sorted, apiKeys)
@@ -157,12 +157,12 @@ func generateProfileKey(baseURL string, apiKeys []string, model string) string {
 	}
 	combined += "|" + normalizedModel
 
-	return generateMetricsKey(baseURL, combined)
+	return generateMetricsKey(baseURL, combined, channelIdx)
 }
 
 // GetOrCreateProfile 获取或创建性能画像（模型级别）
 func (pm *ProfileManager) GetOrCreateProfile(baseURL string, apiKeys []string, model string, channelIdx int) *PerformanceProfile {
-	key := generateProfileKey(baseURL, apiKeys, model)
+	key := generateProfileKey(baseURL, apiKeys, model, channelIdx)
 
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -196,8 +196,8 @@ func (pm *ProfileManager) GetOrCreateProfile(baseURL string, apiKeys []string, m
 }
 
 // GetProfile 获取已存在的性能画像（不创建）
-func (pm *ProfileManager) GetProfile(baseURL string, apiKeys []string, model string) *PerformanceProfile {
-	key := generateProfileKey(baseURL, apiKeys, model)
+func (pm *ProfileManager) GetProfile(baseURL string, apiKeys []string, model string, channelIdx int) *PerformanceProfile {
+	key := generateProfileKey(baseURL, apiKeys, model, channelIdx)
 
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -215,8 +215,8 @@ const (
 )
 
 // GetProfileSnapshot 获取已存在画像的只读快照。
-func (pm *ProfileManager) GetProfileSnapshot(baseURL string, apiKeys []string, model string) (PerformanceSnapshotView, bool) {
-	profile := pm.GetProfile(baseURL, apiKeys, model)
+func (pm *ProfileManager) GetProfileSnapshot(baseURL string, apiKeys []string, model string, channelIdx int) (PerformanceSnapshotView, bool) {
+	profile := pm.GetProfile(baseURL, apiKeys, model, channelIdx)
 	if profile == nil {
 		return PerformanceSnapshotView{}, false
 	}
@@ -225,7 +225,7 @@ func (pm *ProfileManager) GetProfileSnapshot(baseURL string, apiKeys []string, m
 
 // GetProfileSnapshotOrDefault 获取画像快照；新组合尚无样本时返回保守默认值。
 func (pm *ProfileManager) GetProfileSnapshotOrDefault(baseURL string, apiKeys []string, model string, channelIdx int) PerformanceSnapshotView {
-	if snapshot, ok := pm.GetProfileSnapshot(baseURL, apiKeys, model); ok {
+	if snapshot, ok := pm.GetProfileSnapshot(baseURL, apiKeys, model, channelIdx); ok {
 		return snapshot
 	}
 	normalizedModel := normalizeModel(model)
@@ -250,7 +250,7 @@ func (pm *ProfileManager) GetAggregateProfileSnapshot(baseURLs []string, apiKeys
 
 	snapshots := make([]PerformanceSnapshotView, 0, len(baseURLs))
 	for _, baseURL := range baseURLs {
-		if snapshot, ok := pm.GetProfileSnapshot(baseURL, apiKeys, model); ok {
+		if snapshot, ok := pm.GetProfileSnapshot(baseURL, apiKeys, model, channelIdx); ok {
 			snapshots = append(snapshots, snapshot)
 		}
 	}

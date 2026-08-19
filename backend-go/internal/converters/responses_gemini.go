@@ -283,7 +283,7 @@ func responsesReasoningToGemini3Thinking(modelLower string, effort string) (*typ
 		if strings.Contains(modelLower, "pro") {
 			level = "high"
 		}
-	case "high", "xhigh":
+	case "high", "xhigh", "max":
 		level = "high"
 	case "auto":
 		return &types.GeminiThinkingConfig{IncludeThoughts: true}, nil
@@ -310,7 +310,7 @@ func responsesReasoningToGemini25Thinking(modelLower string, effort string) (*ty
 		budget = 4096
 	case "high":
 		budget = 8192
-	case "xhigh":
+	case "xhigh", "max":
 		budget = 16384
 	default:
 		return nil, fmt.Errorf("不支持的 reasoning.effort: %s", effort)

@@ -65,5 +65,5 @@
 ## 模块间通信约定
 
 - 同 JVM：包间直接调用；跨层依赖在 main.go 组装注入，不在业务包内 new 全局单例。
-- 持久化：metrics / session / blocked / audit 各自带 sqlite_store，路径由 main.go 注入。
+- 持久化：metrics / session / blocked 各自带 sqlite_store，路径由 main.go 注入。
 - 路由总表：main.go 是路由唯一真相；文档不复制路由清单。

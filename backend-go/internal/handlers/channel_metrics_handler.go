@@ -456,7 +456,7 @@ func GetChannelMetricsHistoryByKind(metricsManager *metrics.MetricsManager, cfgM
 		result := make([]MetricsHistoryResponse, 0, len(upstreams))
 		for i, upstream := range upstreams {
 			// 使用多 URL 聚合方法获取历史数据（支持 failover 多端点场景）
-			dataPoints := metricsManager.GetHistoricalStatsMultiURL(upstream.GetAllBaseURLs(), upstream.APIKeys, duration, interval)
+			dataPoints := metricsManager.GetHistoricalStatsMultiURL(upstream.GetAllBaseURLs(), upstream.APIKeys, i, duration, interval)
 
 			result = append(result, MetricsHistoryResponse{
 				ChannelIndex: i,
@@ -578,7 +578,7 @@ func GetChannelKeyMetricsHistoryByKind(metricsManager *metrics.MetricsManager, c
 		// 获取所有 Key 的使用信息并筛选（最多显示 10 个）
 		const maxDisplayKeys = 10
 		// 使用多 URL 聚合方法获取 Key 使用信息（支持 failover 多端点场景）
-		allKeyInfos := metricsManager.GetChannelKeyUsageInfoMultiURL(upstream.GetAllBaseURLs(), upstream.APIKeys)
+		allKeyInfos := metricsManager.GetChannelKeyUsageInfoMultiURL(upstream.GetAllBaseURLs(), upstream.APIKeys, channelID)
 		displayKeys := metrics.SelectTopKeys(allKeyInfos, maxDisplayKeys)
 
 		// 构建响应
@@ -591,7 +591,7 @@ func GetChannelKeyMetricsHistoryByKind(metricsManager *metrics.MetricsManager, c
 		// 为筛选后的 Key 获取历史数据
 		for i, keyInfo := range displayKeys {
 			// 使用多 URL 聚合方法获取单个 Key 的历史数据（支持 failover 多端点场景）
-			dataPoints := metricsManager.GetKeyHistoricalStatsMultiURL(upstream.GetAllBaseURLs(), keyInfo.APIKey, duration, interval)
+			dataPoints := metricsManager.GetKeyHistoricalStatsMultiURL(upstream.GetAllBaseURLs(), keyInfo.APIKey, channelID, duration, interval)
 
 			// 获取 Key 的颜色
 			color := keyColors[i%len(keyColors)]

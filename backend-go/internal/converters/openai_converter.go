@@ -365,7 +365,7 @@ func responsesReasoningEffortToOpenAIChat(raw interface{}) (string, error) {
 	switch normalizedEffort {
 	case "", "auto":
 		return "", nil
-	case "none", "minimal", "low", "medium", "high", "xhigh":
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
 		return normalizedEffort, nil
 	default:
 		return "", fmt.Errorf("OpenAI Chat 不支持 reasoning.effort=%q", effort)

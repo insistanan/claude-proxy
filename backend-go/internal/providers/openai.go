@@ -427,7 +427,8 @@ func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 		msg := choice.Message
 		visibleContent := ""
 		if content, ok := msg.Content.(string); ok {
-			visibleContent, embeddedReasoning := splitEmbeddedReasoning(content)
+			var embeddedReasoning string
+			visibleContent, embeddedReasoning = splitEmbeddedReasoning(content)
 			if embeddedReasoning != "" {
 				cacheMessage := msg
 				cacheMessage.Content = visibleContent

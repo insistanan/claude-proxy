@@ -245,10 +245,11 @@ func applyChatModelMapping(bodyBytes []byte, upstream *config.UpstreamConfig) ([
 	if mappedModel := config.ResolveUpstreamModel(model, upstream); strings.TrimSpace(mappedModel) != "" {
 		payload["model"] = mappedModel
 	}
-	// 归一化 reasoning_effort：把客户端可能传入的 max/ultra 折叠为上游可识别的 xhigh，
-	// 与 Responses 入口的 normalizeReasoningEffortForConstrainedUpstream 行为一致，
-	// 避免部分只接受 minimal/low/medium/high 的 OpenAI 兼容推理模型因 max 直接回 400。
-	normalizeChatReasoningEffort(payload)
+	// 归一化 reasoning_effort：保留兼容网关扩展的 max，并将 ultra 归一化为 max。
+	// 未知值显式报错，避免静默删除后让调用方误以为思考档位已经生效。
+	if err := normalizeChatReasoningEffort(payload); err != nil {
+		return nil, err
+	}
 	if err := sanitizeOpenAIChatPayloadForUpstream(payload); err != nil {
 		return nil, err
 	}
@@ -263,18 +264,19 @@ func applyChatModelMapping(bodyBytes []byte, upstream *config.UpstreamConfig) ([
 }
 
 // normalizeChatReasoningEffort 就地归一化 Chat 请求顶层 reasoning_effort 字段。
-// 非法值（如 future）直接删除，避免原样透传触发上游 400；max/ultra 折叠为 xhigh。
 // auto 与空字符串同样省略字段，等价于交由上游默认策略。
-func normalizeChatReasoningEffort(payload map[string]interface{}) {
+func normalizeChatReasoningEffort(payload map[string]interface{}) error {
 	raw, exists := payload["reasoning_effort"]
 	if !exists {
-		return
+		return nil
 	}
-	effort, _ := raw.(string)
+	effort, ok := raw.(string)
+	if !ok {
+		return fmt.Errorf("reasoning_effort 必须是字符串")
+	}
 	normalized, err := converters.NormalizeReasoningEffortForConstrainedUpstream(strings.TrimSpace(effort))
 	if err != nil {
-		delete(payload, "reasoning_effort")
-		return
+		return err
 	}
 	switch normalized {
 	case "", "auto":
@@ -282,6 +284,7 @@ func normalizeChatReasoningEffort(payload map[string]interface{}) {
 	default:
 		payload["reasoning_effort"] = normalized
 	}
+	return nil
 }
 
 // stripChatRoutingMetadata removes proxy-only routing fields before forwarding

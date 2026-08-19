@@ -534,7 +534,7 @@ func resolveClaudeReasoningEffort(claudeReq *types.ClaudeRequest) string {
 			case "none", "auto", "minimal", "low", "medium", "high", "xhigh":
 				return strings.ToLower(effort)
 			case "max", "ultra":
-				return "xhigh"
+				return "max"
 			default:
 				return ""
 			}

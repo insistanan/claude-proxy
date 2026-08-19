@@ -2,7 +2,7 @@
 
 [← 根目录](../CLAUDE.md)
 
-Go 后端核心服务：五协议代理入口（`/v1/messages`、`/v1/responses`、`/v1/chat`、`/v1/images`、`/v1beta/models/*`）、多渠道调度、协议转换、会话管理、内容安全、模型审计。整体链路见 `../docs/flows.md`，模块地图见 `../docs/ARCHITECTURE.md`，能力复用表见 `../docs/capabilities.md`。接口签名、路由清单以代码为准，本文件不复述。
+Go 后端核心服务：五协议代理入口（`/v1/messages`、`/v1/responses`、`/v1/chat`、`/v1/images`、`/v1beta/models/*`）、多渠道调度、协议转换、会话管理、内容安全。整体链路见 `../docs/flows.md`，模块地图见 `../docs/ARCHITECTURE.md`，能力复用表见 `../docs/capabilities.md`。接口签名、路由清单以代码为准，本文件不复述。
 
 ## 命令
 
