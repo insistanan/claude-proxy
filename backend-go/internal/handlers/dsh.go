@@ -41,14 +41,14 @@ type DSHDefaultModel struct {
 
 // dshSettingsResponse 是 GET /settings/dsh 的响应。
 type dshSettingsResponse struct {
-	DSHHome      string                  `json:"dshHome"`
-	Path         string                  `json:"path"`
-	Exists       bool                    `json:"exists"`
-	Writable     bool                    `json:"writable"`
-	Providers    map[string]DSHProvider  `json:"providers"`
-	ProviderKeys []string                `json:"providerKeys"` // 有序列表，保持文件顺序
-	DefaultModel *DSHDefaultModel        `json:"defaultModel"`
-	Theme        string                  `json:"theme"`
+	DSHHome      string                 `json:"dshHome"`
+	Path         string                 `json:"path"`
+	Exists       bool                   `json:"exists"`
+	Writable     bool                   `json:"writable"`
+	Providers    map[string]DSHProvider `json:"providers"`
+	ProviderKeys []string               `json:"providerKeys"` // 有序列表，保持文件顺序
+	DefaultModel *DSHDefaultModel       `json:"defaultModel"`
+	Theme        string                 `json:"theme"`
 }
 
 // saveDSHSettingsRequest 是 PUT /settings/dsh 的请求体。
