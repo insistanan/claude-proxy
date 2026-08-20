@@ -11,6 +11,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
@@ -150,6 +151,72 @@ func RunProxyRequest(
 	}
 }
 
+// buildProtocolAttempt 构造五协议共享的 UpstreamAttempt 骨架：公共字段与
+// 五个协议级闭包（NextAPIKey/BuildRequest/DeprioritizeKey/HandleSuccess/
+// LogContext）只写一份，调用方只补差异点。差异经参数表达：
+//   - urlResults：单渠道为配置序（BuildDefaultURLResults），多渠道为延迟排序序
+//   - deprioritizeKind：密钥降级目标池，多渠道修复为按实际 kind 写池
+//     （历史 bug：曾硬编码 "messages"，跨池降级写错渠道池）
+//   - markURL：多渠道需回写 URL 健康状态（MarkURLFailure/Success），
+//     单渠道不参与 URL 健康统计，传 nil 即省略
+func buildProtocolAttempt(
+	c *gin.Context,
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	spec ProtocolSpec,
+	bodyBytes []byte,
+	model string,
+	stream bool,
+	userID string,
+	upstream *config.UpstreamConfig,
+	channelIndex int,
+	startTime time.Time,
+	urlResults []urlhealth.URLLatencyResult,
+	deprioritizeKind scheduler.ChannelKind,
+	markURLFailure func(url string),
+	markURLSuccess func(url string),
+) UpstreamAttempt {
+	return UpstreamAttempt{
+		Context:            c,
+		EnvConfig:          envCfg,
+		ConfigManager:      cfgManager,
+		ChannelScheduler:   channelScheduler,
+		Kind:               spec.Kind,
+		APIType:            spec.LogName,
+		MetricsManager:     channelScheduler.MetricsManager(spec.Kind),
+		Upstream:           upstream,
+		RequestedModel:     model,
+		AllowModelFailover: cfgManager.GetFuzzyModeEnabled(),
+		URLResults:         urlResults,
+		RequestBody:        bodyBytes,
+		IsStream:           stream,
+		NextAPIKey: func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			return cfgManager.GetNextAPIKey(up, failedKeys, spec.LogName)
+		},
+		BuildRequest: func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			return spec.BuildUpstreamRequest(c, upstreamCopy, apiKey, bodyBytes)
+		},
+		DeprioritizeKey: func(apiKey string) {
+			if err := cfgManager.MoveAPIKeyToBottomForKind(string(deprioritizeKind), channelIndex, apiKey); err != nil {
+				log.Printf("[%s-Key] 警告: 密钥降级失败: %v", spec.LogName, err)
+			}
+		},
+		MarkURLFailure: markURLFailure,
+		MarkURLSuccess: markURLSuccess,
+		HandleSuccess: func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+			return spec.HandleSuccess(c, resp, upstreamCopy, apiKey, bodyBytes, startTime)
+		},
+		LogContext: AttemptLogContext{
+			ChannelIndex:    channelIndex,
+			Model:           model,
+			ConversationID:  userID,
+			LogStore:        channelScheduler.GetChannelLogStore(spec.Kind),
+			RequestLogStore: channelScheduler.GetRequestLogStore(),
+		},
+	}
+}
+
 // handleSingleChannelProxy 处理单渠道代理请求。
 // 当 upstream 为 nil 时，从配置中获取当前可用渠道。
 func handleSingleChannelProxy(
@@ -195,46 +262,12 @@ func handleSingleChannelProxy(
 		return
 	}
 
-	metricsManager := channelScheduler.MetricsManager(spec.Kind)
 	baseURLs := upstream.GetAllBaseURLs()
 	urlResults := BuildDefaultURLResults(baseURLs)
 
-	result := (UpstreamAttempt{
-		Context:            c,
-		EnvConfig:          envCfg,
-		ConfigManager:      cfgManager,
-		ChannelScheduler:   channelScheduler,
-		Kind:               spec.Kind,
-		APIType:            spec.LogName,
-		MetricsManager:     metricsManager,
-		Upstream:           upstream,
-		RequestedModel:     model,
-		AllowModelFailover: cfgManager.GetFuzzyModeEnabled(),
-		URLResults:         urlResults,
-		RequestBody:        bodyBytes,
-		IsStream:           stream,
-		NextAPIKey: func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-			return cfgManager.GetNextAPIKey(up, failedKeys, spec.LogName)
-		},
-		BuildRequest: func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-			return spec.BuildUpstreamRequest(c, upstreamCopy, apiKey, bodyBytes)
-		},
-		DeprioritizeKey: func(apiKey string) {
-			if err := cfgManager.MoveAPIKeyToBottomForKind(string(spec.Kind), channelIndex, apiKey); err != nil {
-				log.Printf("[%s-Key] 警告: 密钥降级失败: %v", spec.LogName, err)
-			}
-		},
-		HandleSuccess: func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return spec.HandleSuccess(c, resp, upstreamCopy, apiKey, bodyBytes, startTime)
-		},
-		LogContext: AttemptLogContext{
-			ChannelIndex:    channelIndex,
-			Model:           model,
-			ConversationID:  userID,
-			LogStore:        channelScheduler.GetChannelLogStore(spec.Kind),
-			RequestLogStore: channelScheduler.GetRequestLogStore(),
-		},
-	}).TryWithModelMappingFailover()
+	// 单渠道：URL 用配置序，不参与 URL 健康统计（markURL 传 nil），
+	// 密钥降级按本协议渠道池写。
+	result := buildProtocolAttempt(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, upstream, channelIndex, startTime, urlResults, spec.Kind, nil, nil).TryWithModelMappingFailover()
 	if result.Handled {
 		if result.SuccessKey != "" {
 			MarkConversationSuccess(channelScheduler, userID, spec.Kind, channelIndex, upstream.Name)
@@ -267,8 +300,6 @@ func handleMultiChannelProxy(
 	userID string,
 	startTime time.Time,
 ) {
-	metricsManager := channelScheduler.MetricsManager(spec.Kind)
-
 	HandleMultiChannelFailover(
 		c,
 		envCfg,
@@ -289,48 +320,12 @@ func handleMultiChannelProxy(
 			baseURLs := upstream.GetAllBaseURLs()
 			sortedURLResults := channelScheduler.GetSortedURLsForChannel(spec.Kind, channelIndex, baseURLs)
 
-			result := (UpstreamAttempt{
-				Context:            c,
-				EnvConfig:          envCfg,
-				ConfigManager:      cfgManager,
-				ChannelScheduler:   channelScheduler,
-				Kind:               spec.Kind,
-				APIType:            spec.LogName,
-				MetricsManager:     metricsManager,
-				Upstream:           upstream,
-				RequestedModel:     model,
-				AllowModelFailover: cfgManager.GetFuzzyModeEnabled(),
-				URLResults:         sortedURLResults,
-				RequestBody:        bodyBytes,
-				IsStream:           stream,
-				NextAPIKey: func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-					return cfgManager.GetNextAPIKey(up, failedKeys, spec.LogName)
-				},
-				BuildRequest: func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-					return spec.BuildUpstreamRequest(c, upstreamCopy, apiKey, bodyBytes)
-				},
-				DeprioritizeKey: func(apiKey string) {
-					if err := cfgManager.MoveAPIKeyToBottom(channelIndex, apiKey); err != nil {
-						log.Printf("[%s-Key] 警告: 密钥降级失败: %v", spec.LogName, err)
-					}
-				},
-				MarkURLFailure: func(url string) {
-					channelScheduler.MarkURLFailure(spec.Kind, channelIndex, url)
-				},
-				MarkURLSuccess: func(url string) {
-					channelScheduler.MarkURLSuccess(spec.Kind, channelIndex, url)
-				},
-				HandleSuccess: func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return spec.HandleSuccess(c, resp, upstreamCopy, apiKey, bodyBytes, startTime)
-				},
-				LogContext: AttemptLogContext{
-					ChannelIndex:    channelIndex,
-					Model:           model,
-					ConversationID:  userID,
-					LogStore:        channelScheduler.GetChannelLogStore(spec.Kind),
-					RequestLogStore: channelScheduler.GetRequestLogStore(),
-				},
-			}).TryWithModelMappingFailover()
+			// 多渠道：URL 用延迟排序序，回写 URL 健康状态；密钥降级按实际
+			// kind 写池（修复历史 bug：曾硬编码 messages 池，跨池降级写错渠道）。
+			result := buildProtocolAttempt(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, upstream, channelIndex, startTime, sortedURLResults, spec.Kind,
+				func(url string) { channelScheduler.MarkURLFailure(spec.Kind, channelIndex, url) },
+				func(url string) { channelScheduler.MarkURLSuccess(spec.Kind, channelIndex, url) },
+			).TryWithModelMappingFailover()
 
 			return MultiChannelAttemptResult{
 				Handled:           result.Handled,

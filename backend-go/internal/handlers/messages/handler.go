@@ -171,14 +171,22 @@ func handleNormalResponse(
 		}
 	}
 
-	// 监听客户端断开连接
+	// 监听客户端断开连接。
+	// 通过 channel 传递"响应已写出"信号，goroutine 内不再访问 c.Writer：
+	// request context 在 handler 返回后随即取消，而 gin.Context 会被归还
+	// sync.Pool 回收复用，届时读取 c.Writer.Written() 是 use-after-recycle 竞态。
+	responded := make(chan struct{})
 	ctx := c.Request.Context()
+	statusCode := resp.StatusCode
 	go func() {
 		<-ctx.Done()
-		if !c.Writer.Written() {
+		select {
+		case <-responded:
+			// 响应已写出，正常结束
+		default:
 			if envCfg.EnableResponseLogs {
 				responseTime := time.Since(startTime).Milliseconds()
-				log.Printf("[Messages-Timing] 响应中断: %dms, 状态: %d", responseTime, resp.StatusCode)
+				log.Printf("[Messages-Timing] 响应中断: %dms, 状态: %d", responseTime, statusCode)
 			}
 		}
 	}()
@@ -207,6 +215,7 @@ func handleNormalResponse(
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 	common.MarkRequestLogFirstToken(c)
 	c.Data(http.StatusOK, "application/json", clientBody)
+	close(responded) // 响应已写出，解除断连监听 goroutine 的等待条件
 
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
