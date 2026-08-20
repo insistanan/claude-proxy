@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/tidwall/gjson"
@@ -25,7 +24,7 @@ const (
 
 // ConvertResponsesRequestToUpstream converts a Responses entry request to the target upstream protocol.
 // upstream may be nil (tests); when set it drives history-thinking and prompt_cache_key options.
-func ConvertResponsesRequestToUpstream(serviceType string, model string, bodyBytes []byte, stream bool, sess *session.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
+func ConvertResponsesRequestToUpstream(serviceType string, model string, bodyBytes []byte, stream bool, sess *types.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
 	switch serviceType {
 	case ResponsesUpstreamResponses:
 		return convertResponsesPassthroughRequest(model, bodyBytes, upstream)
@@ -124,7 +123,7 @@ func convertResponsesPassthroughRequest(model string, bodyBytes []byte, upstream
 	return result, nil
 }
 
-func convertResponsesRequestToOpenAIChat(model string, bodyBytes []byte, stream bool, sess *session.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
+func convertResponsesRequestToOpenAIChat(model string, bodyBytes []byte, stream bool, sess *types.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
 	if err := ValidateResponsesToOpenAIChatRequest(bodyBytes); err != nil {
 		return nil, err
 	}
@@ -190,7 +189,7 @@ func convertResponsesRequestToOpenAIChat(model string, bodyBytes []byte, stream 
 	return out, nil
 }
 
-func buildOpenAIHistoryMessages(sess *session.Session, includeHistoryThinking bool) []interface{} {
+func buildOpenAIHistoryMessages(sess *types.Session, includeHistoryThinking bool) []interface{} {
 	if sess == nil || len(sess.Messages) == 0 {
 		return nil
 	}
@@ -340,7 +339,7 @@ func buildResponsesChatPromptCacheKey(model string, chatReq map[string]interface
 	return "resp-chat-" + hex.EncodeToString(sum[:])[:24]
 }
 
-func convertResponsesRequestWithStructConverter(serviceType string, sess *session.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
+func convertResponsesRequestWithStructConverter(serviceType string, sess *types.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
 	converter, err := NewConverterStrict(serviceType)
 	if err != nil {
 		return nil, err

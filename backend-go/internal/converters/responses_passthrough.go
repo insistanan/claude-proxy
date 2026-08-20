@@ -3,7 +3,6 @@ package converters
 import (
 	"encoding/json"
 
-	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
 
@@ -14,7 +13,7 @@ import (
 type ResponsesPassthroughConverter struct{}
 
 // ToProviderRequest 透传 Responses 请求（不做转换）
-func (c *ResponsesPassthroughConverter) ToProviderRequest(sess *session.Session, req *types.ResponsesRequest) (interface{}, error) {
+func (c *ResponsesPassthroughConverter) ToProviderRequest(sess *types.Session, req *types.ResponsesRequest) (interface{}, error) {
 	// 直接返回原始请求，保留所有字段
 	result := map[string]interface{}{
 		"model":                req.Model,

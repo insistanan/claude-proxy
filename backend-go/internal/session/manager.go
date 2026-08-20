@@ -13,17 +13,10 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
-// Session 会话数据结构
-type Session struct {
-	ID               string                // sess_xxxxx
-	ConversationID   string                // 对话注册表中的 conv_xxxxx
-	Messages         []types.ResponsesItem // 完整对话历史
-	LastResponseID   string                // 最后一个 response ID
-	CreatedAt        time.Time
-	LastAccessAt     time.Time
-	TotalTokens      int
-	HasVisionContent bool // 会话历史是否包含图片内容
-}
+// Session 会话数据结构。
+// 定义已下沉到 types（纯数据体，converters 依赖它做参数类型），
+// 此处保留别名以兼容 session 包内外的既有引用。
+type Session = types.Session
 
 // SessionManager 会话管理器
 type SessionManager struct {

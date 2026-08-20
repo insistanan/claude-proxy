@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -10,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -84,27 +82,8 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 		return nil, originalBodyBytes, fmt.Errorf("序列化OpenAI请求体失败: %w", err)
 	}
 
-	// 构建URL - baseURL可能已包含版本号(如/v1, /v2, /v1beta, /v2alpha等),需要智能拼接
-	// 如果 baseURL 以 # 结尾，则跳过自动添加 /v1
-	baseURL := upstream.GetEffectiveBaseURL()
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
-	// 检查baseURL是否以版本号结尾(如/v1, /v2, /v1beta, /v2alpha等)
-	// 使用正则表达式匹配 /v\d+[a-z]* 的模式(v后跟数字,可选字母后缀)
-	versionPattern := regexp.MustCompile(`/v\d+[a-z]*$`)
-	hasVersionSuffix := versionPattern.MatchString(baseURL)
-
-	// 如果baseURL已经包含版本号或以#结尾,直接拼接/chat/completions
-	// 否则拼接/v1/chat/completions
-	endpoint := "/chat/completions"
-	if !hasVersionSuffix && !skipVersionPrefix {
-		endpoint = "/v1" + endpoint
-	}
-	url := baseURL + endpoint
+	// 构建URL（"#"后缀与版本前缀约定见 utils.BuildUpstreamURL）
+	url := utils.BuildUpstreamURL(upstream.GetEffectiveBaseURL(), "/v1", "/chat/completions")
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), "POST", url, bytes.NewReader(reqBodyBytes))
 	if err != nil {
@@ -503,35 +482,18 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 // 修复：所有向 eventChan 的发送都通过 send() 包装，select ctx.Done()，
 // 客户端断连时立即停止读取上游并退出，杜绝"缓冲写满后永久阻塞"的 goroutine 泄漏。
 func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
-	eventChan := make(chan string, 100)
-	errChan := make(chan error, 1)
+	pump := newStreamPump(ctx)
+	eventChan, errChan := pump.eventChan, pump.errChan
 
 	go func() {
 		defer close(eventChan)
-		// defer close(errChan) // 移除此行，避免竞态条件
+		defer close(errChan)
 		defer body.Close()
 
-		// send 向 eventChan 发送一个事件；若客户端断连（ctx 取消）返回 false，调用方应立即退出。
-		send := func(event string) bool {
-			select {
-			case eventChan <- event:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
-		// fail 向 errChan 发送错误；客户端断连时不阻塞。
-		fail := func(err error) {
-			select {
-			case errChan <- err:
-			case <-ctx.Done():
-			}
-		}
+		send := pump.send
+		fail := pump.fail
 
-		scanner := bufio.NewScanner(body)
-		// 设置更大的 buffer (1MB) 以处理大 JSON chunk，避免默认 64KB 限制
-		const maxScannerBufferSize = 1024 * 1024 // 1MB
-		scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBufferSize)
+		scanner := pump.newScanner(body)
 
 		toolCallAccumulator := make(map[int]*ToolCallAccumulator)
 		assistantToolCalls := make(map[int]types.OpenAIToolCall)
@@ -916,10 +878,7 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		}
 
 		if err := scanner.Err(); err != nil {
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "broken pipe") ||
-				strings.Contains(errMsg, "connection reset") ||
-				strings.Contains(errMsg, "EOF") {
+			if isDisconnectLikeError(err) {
 				// 客户端主动断开，仍然发送 message_stop
 				finishStream()
 				return

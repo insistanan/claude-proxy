@@ -5,12 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
-func ConvertResponsesToGeminiRequest(model string, sess *session.Session, req *types.ResponsesRequest) ([]byte, error) {
+func ConvertResponsesToGeminiRequest(model string, sess *types.Session, req *types.ResponsesRequest) ([]byte, error) {
 	items, err := parseResponsesInput(req.Input)
 	if err != nil {
 		return nil, err

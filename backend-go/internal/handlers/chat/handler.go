@@ -11,7 +11,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -24,8 +23,6 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
-
-var chatVersionPattern = regexp.MustCompile(`/v\d+[a-z]*$`)
 
 const chatToolSearchProxyName = "tool_search"
 const chatWebSearchProxyName = "web_search"
@@ -315,17 +312,7 @@ func ensureChatStreamUsageOptions(payload map[string]interface{}) {
 }
 
 func buildChatCompletionsURL(baseURL string) string {
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
-	endpoint := "/chat/completions"
-	if !skipVersionPrefix && !chatVersionPattern.MatchString(baseURL) {
-		endpoint = "/v1" + endpoint
-	}
-	return baseURL + endpoint
+	return utils.BuildUpstreamURL(baseURL, "/v1", "/chat/completions")
 }
 
 func handleSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig, startTime time.Time, isStream bool, originalBody []byte) (*types.Usage, error) {

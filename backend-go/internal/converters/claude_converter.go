@@ -2,7 +2,6 @@ package converters
 
 import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
 
@@ -16,7 +15,7 @@ type ClaudeConverter struct {
 }
 
 // ToProviderRequest 将 Responses 请求转换为 Claude Messages 格式
-func (c *ClaudeConverter) ToProviderRequest(sess *session.Session, req *types.ResponsesRequest) (interface{}, error) {
+func (c *ClaudeConverter) ToProviderRequest(sess *types.Session, req *types.ResponsesRequest) (interface{}, error) {
 	includeHistoryThinking := c != nil && c.Upstream != nil && c.Upstream.IncludeHistoryThinking
 
 	// 转换 messages 和 system

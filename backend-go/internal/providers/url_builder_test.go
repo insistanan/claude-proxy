@@ -1,46 +1,15 @@
 package providers
 
 import (
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
-// buildOpenAIURL 模拟 openai.go 中的 URL 构建逻辑
-func buildOpenAIURL(baseURL string) string {
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
-	versionPattern := regexp.MustCompile(`/v\d+[a-z]*$`)
-	hasVersionSuffix := versionPattern.MatchString(baseURL)
-
-	endpoint := "/chat/completions"
-	if !hasVersionSuffix && !skipVersionPrefix {
-		endpoint = "/v1" + endpoint
-	}
-	return baseURL + endpoint
-}
-
-// buildClaudeURL 模拟 claude.go 中的 URL 构建逻辑
-func buildClaudeURL(baseURL, requestPath string) string {
-	endpoint := strings.TrimPrefix(requestPath, "/v1")
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
-	versionPattern := regexp.MustCompile(`/v\d+[a-z]*$`)
-	if versionPattern.MatchString(baseURL) || skipVersionPrefix {
-		return baseURL + endpoint
-	}
-	return baseURL + "/v1" + endpoint
-}
+// "#"后缀与版本前缀约定的行为锚点测试。单一出处是 utils.BuildUpstreamURL；
+// 本文件用各 provider 的真实构建函数（而非旧逻辑的本地模拟副本）验证约定，
+// 另在 utils 包内测试通用入口本身。
 
 func TestOpenAIURL_SkipVersionWithHash(t *testing.T) {
 	tests := []struct {
@@ -57,9 +26,9 @@ func TestOpenAIURL_SkipVersionWithHash(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildOpenAIURL(tt.baseURL)
+			got := utils.BuildUpstreamURL(tt.baseURL, "/v1", "/chat/completions")
 			if got != tt.want {
-				t.Errorf("buildOpenAIURL(%q) = %q, want %q", tt.baseURL, got, tt.want)
+				t.Errorf("BuildUpstreamURL(%q, /v1, /chat/completions) = %q, want %q", tt.baseURL, got, tt.want)
 			}
 		})
 	}
@@ -82,9 +51,12 @@ func TestClaudeURL_SkipVersionWithHash(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildClaudeURL(tt.baseURL, tt.requestPath)
+			// ClaudeProvider 的 URL 构建内联在 ConvertToProviderRequest 中
+			//（endpoint = TrimPrefix(path, "/v1")），此处等价复现该规整后测通用入口。
+			endpoint := tt.requestPath[len("/v1"):]
+			got := utils.BuildUpstreamURL(tt.baseURL, "/v1", endpoint)
 			if got != tt.want {
-				t.Errorf("buildClaudeURL(%q, %q) = %q, want %q", tt.baseURL, tt.requestPath, got, tt.want)
+				t.Errorf("BuildUpstreamURL(%q, /v1, %q) = %q, want %q", tt.baseURL, endpoint, got, tt.want)
 			}
 		})
 	}
@@ -130,6 +102,31 @@ func TestBuildTargetURL_SkipVersionWithHash(t *testing.T) {
 			got := p.buildTargetURL(upstream)
 			if got != tt.want {
 				t.Errorf("buildTargetURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGeminiURL_VersionPrefixDefaults 验证 Gemini 默认版本段为 /v1beta 且约定一致。
+func TestGeminiURL_VersionPrefixDefaults(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		model   string
+		stream  bool
+		want    string
+	}{
+		{"default_v1beta", "https://generativelanguage.googleapis.com", "gemini-2.0-flash", false, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"},
+		{"explicit_v1", "https://generativelanguage.googleapis.com/v1", "gemini-2.0-flash", false, "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent"},
+		{"hash_skip", "https://proxy.example.com#", "gemini-2.0-flash", true, "https://proxy.example.com/models/gemini-2.0-flash:streamGenerateContent?alt=sse"},
+		{"tuned_model_prefix_preserved", "https://generativelanguage.googleapis.com", "tunedModels/my-tune", false, "https://generativelanguage.googleapis.com/v1beta/tunedModels/my-tune:generateContent"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildGeminiGenerateContentURL(tt.baseURL, tt.model, tt.stream)
+			if got != tt.want {
+				t.Errorf("buildGeminiGenerateContentURL(%q, %q, %v) = %q, want %q", tt.baseURL, tt.model, tt.stream, got, tt.want)
 			}
 		})
 	}

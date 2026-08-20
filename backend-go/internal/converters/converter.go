@@ -1,7 +1,6 @@
 package converters
 
 import (
-	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
 
@@ -69,7 +68,7 @@ func OpenAIFinishReasonToResponses(reason string) string {
 type ResponsesConverter interface {
 	// ToProviderRequest 将 Responses 请求转换为上游服务的请求格式
 	// 返回：请求体（map 或其他类型）、错误
-	ToProviderRequest(sess *session.Session, req *types.ResponsesRequest) (interface{}, error)
+	ToProviderRequest(sess *types.Session, req *types.ResponsesRequest) (interface{}, error)
 
 	// FromProviderResponse 将上游服务的响应转换为 Responses 格式
 	// 返回：Responses 响应、错误

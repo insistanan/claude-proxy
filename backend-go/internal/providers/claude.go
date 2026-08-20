@@ -1,13 +1,11 @@
 package providers
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -64,30 +62,9 @@ func (p *ClaudeProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 		bodyBytes = redirectModelInBody(bodyBytes, upstream)
 	}
 
-	// 构建目标URL
-	// 智能拼接逻辑：
-	// 1. 如果 baseURL 以 # 结尾，跳过自动添加 /v1
-	// 2. 如果 baseURL 已包含版本号后缀（如 /v1, /v2, /v3），直接拼接端点路径
-	// 3. 如果 baseURL 不包含版本号后缀，自动添加 /v1 再拼接端点路径
+	// 构建目标URL（"#"后缀与版本前缀约定见 utils.BuildUpstreamURL）
 	endpoint := strings.TrimPrefix(c.Request.URL.Path, "/v1")
-	baseURL := upstream.GetEffectiveBaseURL()
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
-	// 使用正则表达式检测 baseURL 是否以版本号结尾（/v1, /v2, /v1beta, /v2alpha等）
-	versionPattern := regexp.MustCompile(`/v\d+[a-z]*$`)
-
-	var targetURL string
-	if versionPattern.MatchString(baseURL) || skipVersionPrefix {
-		// baseURL 已包含版本号或以#结尾，直接拼接
-		targetURL = baseURL + endpoint
-	} else {
-		// baseURL 不包含版本号，添加 /v1
-		targetURL = baseURL + "/v1" + endpoint
-	}
+	targetURL := utils.BuildUpstreamURL(upstream.GetEffectiveBaseURL(), "/v1", endpoint)
 
 	if c.Request.URL.RawQuery != "" {
 		targetURL += "?" + c.Request.URL.RawQuery
@@ -158,28 +135,17 @@ func (p *ClaudeProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 // 客户端断连（消费者不再消费）时立即停止读取上游并退出，杜绝
 // "上游持续产出 > 缓冲容量(100) 后 goroutine 永久阻塞在 channel send"的泄漏。
 func (p *ClaudeProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
-	eventChan := make(chan string, 100)
-	errChan := make(chan error, 1)
+	pump := newStreamPump(ctx)
+	eventChan, errChan := pump.eventChan, pump.errChan
 
 	go func() {
 		defer close(eventChan)
 		defer close(errChan)
 		defer body.Close()
 
-		// trySend 向 eventChan 发送一个事件；若客户端断连（ctx 取消）则返回 false，调用方应立即退出。
-		trySend := func(event string) bool {
-			select {
-			case eventChan <- event:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
+		trySend := pump.send
 
-		scanner := bufio.NewScanner(body)
-		// 设置更大的 buffer (1MB) 以处理大 JSON chunk，避免默认 64KB 限制
-		const maxScannerBufferSize = 1024 * 1024 // 1MB
-		scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBufferSize)
+		scanner := pump.newScanner(body)
 
 		toolUseStopEmitted := false
 
@@ -232,17 +198,11 @@ func (p *ClaudeProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		if err := scanner.Err(); err != nil {
 			// 在 tool_use 场景下，客户端主动断开是正常行为
 			// 如果已经发送了 tool_use stop 事件，并且错误是连接断开相关的，则忽略该错误
-			errMsg := err.Error()
-			if toolUseStopEmitted && (strings.Contains(errMsg, "broken pipe") ||
-				strings.Contains(errMsg, "connection reset") ||
-				strings.Contains(errMsg, "EOF")) {
+			if toolUseStopEmitted && isDisconnectLikeError(err) {
 				// 这是预期的客户端行为，不报告错误
 				return
 			}
-			select {
-			case errChan <- err:
-			case <-ctx.Done():
-			}
+			pump.fail(err)
 		}
 	}()
 

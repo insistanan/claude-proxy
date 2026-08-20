@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -10,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -102,12 +100,6 @@ func (p *GeminiProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 }
 
 func buildGeminiGenerateContentURL(baseURL string, model string, stream bool) string {
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
 	modelPath := strings.TrimPrefix(strings.TrimSpace(model), "/")
 	if !strings.HasPrefix(modelPath, "models/") && !strings.HasPrefix(modelPath, "tunedModels/") {
 		modelPath = "models/" + modelPath
@@ -118,12 +110,8 @@ func buildGeminiGenerateContentURL(baseURL string, model string, stream bool) st
 		action = "streamGenerateContent?alt=sse"
 	}
 
-	endpoint := fmt.Sprintf("/%s:%s", modelPath, action)
-	versionPattern := regexp.MustCompile(`/v\d+[a-z]*$`)
-	if !skipVersionPrefix && !versionPattern.MatchString(baseURL) {
-		endpoint = "/v1beta" + endpoint
-	}
-	return baseURL + endpoint
+	// "#"后缀与版本前缀约定见 utils.BuildUpstreamURL；Gemini 默认版本段为 /v1beta
+	return utils.BuildUpstreamURL(baseURL, "/v1beta", fmt.Sprintf("/%s:%s", modelPath, action))
 }
 
 func buildGeminiShadowProviderID(upstream *config.UpstreamConfig) string {
@@ -1344,35 +1332,20 @@ func (p *GeminiProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 // 修复：所有向 eventChan 的发送都通过 send() 包装，select ctx.Done()，
 // 客户端断连时立即停止读取上游并退出，杜绝"缓冲写满后永久阻塞"的 goroutine 泄漏。
 func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
-	eventChan := make(chan string, 100)
-	errChan := make(chan error, 1)
+	pump := newStreamPump(ctx)
+	eventChan, errChan := pump.eventChan, pump.errChan
 	shadowProviderID := p.shadowProviderID
 	shadowSessionID := p.shadowSessionID
 
 	go func() {
 		defer close(eventChan)
+		defer close(errChan)
 		defer body.Close()
 
-		// send 向 eventChan 发送一个事件；若客户端断连（ctx 取消）返回 false，调用方应立即退出。
-		send := func(event string) bool {
-			select {
-			case eventChan <- event:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
-		// fail 向 errChan 发送错误；客户端断连时不阻塞。
-		fail := func(err error) {
-			select {
-			case errChan <- err:
-			case <-ctx.Done():
-			}
-		}
+		send := pump.send
+		fail := pump.fail
 
-		scanner := bufio.NewScanner(body)
-		const maxScannerBufferSize = 1024 * 1024 // 1MB
-		scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBufferSize)
+		scanner := pump.newScanner(body)
 
 		nextBlockIndex := 0
 
@@ -1684,10 +1657,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		}
 
 		if err := scanner.Err(); err != nil {
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "broken pipe") ||
-				strings.Contains(errMsg, "connection reset") ||
-				strings.Contains(errMsg, "EOF") {
+			if isDisconnectLikeError(err) {
 				emitMessageStop()
 				return
 			}

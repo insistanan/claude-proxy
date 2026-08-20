@@ -10,7 +10,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"regexp"
 	"strings"
 	"time"
 
@@ -21,8 +20,6 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
-
-var chatVersionPattern = regexp.MustCompile(`/v\d+[a-z]*$`)
 
 // Handler Images API 代理处理器
 // 使用通用 RunProxyRequest 骨架，通过 ProtocolSpec 注入协议特有逻辑。
@@ -176,16 +173,7 @@ func cloneMIMEHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
 }
 
 func buildOpenAIEndpointURL(baseURL string, endpoint string) string {
-	endpoint = "/" + strings.TrimLeft(endpoint, "/")
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-	if !skipVersionPrefix && !chatVersionPattern.MatchString(baseURL) {
-		endpoint = "/v1" + endpoint
-	}
-	return baseURL + endpoint
+	return utils.BuildUpstreamURL(baseURL, "/v1", endpoint)
 }
 
 func handleImagesSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig, startTime time.Time, requestedStream bool) (*types.Usage, error) {

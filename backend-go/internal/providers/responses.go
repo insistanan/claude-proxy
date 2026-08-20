@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/converters"
@@ -118,17 +116,6 @@ func (p *ResponsesProvider) buildTargetURL(upstream *config.UpstreamConfig) stri
 }
 
 func (p *ResponsesProvider) buildTargetURLWithModel(upstream *config.UpstreamConfig, model string, stream bool) string {
-	baseURL := upstream.BaseURL
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
-	// 使用正则表达式检测 baseURL 是否以版本号结尾（/v1, /v2, /v1beta, /v2alpha等）
-	versionPattern := regexp.MustCompile(`/v\d+[a-z]*$`)
-	hasVersionSuffix := versionPattern.MatchString(baseURL)
-
 	// 根据 ServiceType 确定端点路径
 	var endpoint string
 	switch upstream.ServiceType {
@@ -149,12 +136,8 @@ func (p *ResponsesProvider) buildTargetURLWithModel(upstream *config.UpstreamCon
 		endpoint = "/chat/completions"
 	}
 
-	// 如果 baseURL 已包含版本号或以#结尾，直接拼接端点
-	// 否则添加 /v1 再拼接端点
-	if hasVersionSuffix || skipVersionPrefix {
-		return baseURL + endpoint
-	}
-	return baseURL + "/v1" + endpoint
+	// "#"后缀与版本前缀约定见 utils.BuildUpstreamURL
+	return utils.BuildUpstreamURL(upstream.BaseURL, "/v1", endpoint)
 }
 
 // ConvertToClaudeResponse 将上游响应转换为 Responses 格式（实际上不再需要 Claude 格式）
