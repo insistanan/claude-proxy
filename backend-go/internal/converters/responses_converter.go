@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
@@ -16,7 +15,7 @@ import (
 // ResponsesToClaudeMessagesWithOptions converts Responses history+input to Claude messages.
 // includeHistoryThinking materializes type=reasoning as assistant text; default false skips it.
 // When session history exists and client input already replays the same prefix, avoid double-append.
-func ResponsesToClaudeMessagesWithOptions(sess *session.Session, newInput interface{}, instructions string, includeHistoryThinking bool) ([]types.ClaudeMessage, string, error) {
+func ResponsesToClaudeMessagesWithOptions(sess *types.Session, newInput interface{}, instructions string, includeHistoryThinking bool) ([]types.ClaudeMessage, string, error) {
 	messages := []types.ClaudeMessage{}
 
 	newItems, err := parseResponsesInput(newInput)
@@ -167,7 +166,7 @@ func ClaudeResponseToResponses(claudeResp map[string]interface{}, sessionID stri
 // ============== Responses → OpenAI Chat ==============
 
 // ResponsesToOpenAIChatMessages 将 Responses 格式转换为 OpenAI Chat 格式
-func ResponsesToOpenAIChatMessages(sess *session.Session, newInput interface{}, instructions string) ([]map[string]interface{}, error) {
+func ResponsesToOpenAIChatMessages(sess *types.Session, newInput interface{}, instructions string) ([]map[string]interface{}, error) {
 	messages := []map[string]interface{}{}
 
 	// 1. 处理 instructions（如果存在）
@@ -922,38 +921,6 @@ func getCurrentTimestamp() int64 {
 	return time.Now().UnixNano() / 1e6
 }
 
-// ExtractTextFromResponses 从 Responses 消息中提取纯文本（用于 OpenAI Completions）
-func ExtractTextFromResponses(sess *session.Session, newInput interface{}) (string, error) {
-	texts := []string{}
-
-	// 历史消息
-	if sess != nil {
-		for _, item := range sess.Messages {
-			if item.Type == "text" {
-				if text, ok := item.Content.(string); ok {
-					texts = append(texts, text)
-				}
-			}
-		}
-	}
-
-	// 新输入
-	newItems, err := parseResponsesInput(newInput)
-	if err != nil {
-		return "", err
-	}
-
-	for _, item := range newItems {
-		if item.Type == "text" {
-			if text, ok := item.Content.(string); ok {
-				texts = append(texts, text)
-			}
-		}
-	}
-
-	return strings.Join(texts, "\n"), nil
-}
-
 func buildClaudeMessageContent(content interface{}) []map[string]interface{} {
 	if text, ok := content.(string); ok && text != "" {
 		return []map[string]interface{}{
@@ -1027,52 +994,6 @@ func buildOpenAIMessageContent(content interface{}) interface{} {
 		return strings.Join(textParts, "\n")
 	}
 	return nil
-}
-
-// OpenAICompletionsResponseToResponses OpenAI Completions 响应转 Responses
-func OpenAICompletionsResponseToResponses(completionsResp map[string]interface{}, sessionID string) (*types.ResponsesResponse, error) {
-	model, _ := completionsResp["model"].(string)
-	choices, _ := completionsResp["choices"].([]interface{})
-
-	output := []types.ResponsesItem{}
-	status := "completed"
-	if len(choices) > 0 {
-		choice, ok := choices[0].(map[string]interface{})
-		if ok {
-			if finishReason, _ := choice["finish_reason"].(string); finishReason != "" {
-				status = OpenAIFinishReasonToResponses(finishReason)
-			}
-			text, _ := choice["text"].(string)
-			output = append(output, types.ResponsesItem{
-				Type:   "message",
-				Status: "completed",
-				Role:   "assistant",
-				Content: []map[string]interface{}{
-					{
-						"type":        "output_text",
-						"text":        text,
-						"annotations": []interface{}{},
-						"logprobs":    []interface{}{},
-					},
-				},
-			})
-		}
-	}
-
-	// 提取 usage（使用统一入口自动检测格式）
-	usage := ExtractUsageMetrics(completionsResp["usage"])
-
-	responseID := generateResponseID()
-
-	return &types.ResponsesResponse{
-		ID:         responseID,
-		Object:     "response",
-		Model:      model,
-		Output:     output,
-		Status:     status,
-		PreviousID: "",
-		Usage:      usage,
-	}, nil
 }
 
 // JSONToMap 将 JSON 字节转为 map

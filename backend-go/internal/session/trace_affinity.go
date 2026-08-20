@@ -51,11 +51,6 @@ func newTraceAffinityManagerWithTTL(ttl time.Duration) *TraceAffinityManager {
 	return mgr
 }
 
-// GetPreferredChannel 保留旧调用的 Messages 兼容入口。
-func (m *TraceAffinityManager) GetPreferredChannel(userID string) (int, bool) {
-	return m.GetPreferredChannelForKind(defaultTraceAffinityKind, userID)
-}
-
 // GetPreferredChannelForKind 获取指定渠道池内的 user_id 偏好渠道。
 func (m *TraceAffinityManager) GetPreferredChannelForKind(kind string, userID string) (int, bool) {
 	if userID == "" {
@@ -76,11 +71,6 @@ func (m *TraceAffinityManager) GetPreferredChannelForKind(kind string, userID st
 	}
 
 	return affinity.ChannelIndex, true
-}
-
-// SetPreferredChannel 保留旧调用的 Messages 兼容入口。
-func (m *TraceAffinityManager) SetPreferredChannel(userID string, channelIndex int) {
-	m.SetPreferredChannelForKind(defaultTraceAffinityKind, userID, channelIndex)
 }
 
 // SetPreferredChannelForKind 设置指定渠道池内的 user_id 偏好渠道。
@@ -115,30 +105,6 @@ func (m *TraceAffinityManager) SetPreferredChannelForKind(kind string, userID st
 	}
 }
 
-// UpdateLastUsed 保留旧调用的 Messages 兼容入口。
-func (m *TraceAffinityManager) UpdateLastUsed(userID string) {
-	m.UpdateLastUsedForKind(defaultTraceAffinityKind, userID)
-}
-
-// UpdateLastUsedForKind 更新指定渠道池内的亲和记录。
-func (m *TraceAffinityManager) UpdateLastUsedForKind(kind string, userID string) {
-	if userID == "" {
-		return
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if affinity, exists := m.affinity[traceAffinityKey(kind, userID)]; exists {
-		affinity.LastUsedAt = time.Now()
-	}
-}
-
-// Remove 保留旧调用的 Messages 兼容入口。
-func (m *TraceAffinityManager) Remove(userID string) {
-	m.RemoveForKind(defaultTraceAffinityKind, userID)
-}
-
 // RemoveForKind 移除指定渠道池内的亲和记录。
 func (m *TraceAffinityManager) RemoveForKind(kind string, userID string) {
 	var oldChannel int
@@ -167,11 +133,6 @@ func normalizedAffinityKind(kind string) string {
 
 func traceAffinityKey(kind string, userID string) string {
 	return normalizedAffinityKind(kind) + "\x00" + userID
-}
-
-// RemoveByChannel 保留旧调用的 Messages 兼容入口。
-func (m *TraceAffinityManager) RemoveByChannel(channelIndex int) {
-	m.RemoveByChannelForKind(defaultTraceAffinityKind, channelIndex)
 }
 
 // RemoveByChannelForKind 移除指定渠道池中某个渠道的所有亲和记录。
@@ -228,16 +189,14 @@ func (m *TraceAffinityManager) cleanupLoop() {
 	}
 }
 
-// Stop 停止清理 goroutine，释放资源
+// Stop 停止清理 goroutine，释放资源（幂等，重复调用安全）
 func (m *TraceAffinityManager) Stop() {
-	close(m.stopCh)
-}
-
-// Size 返回当前亲和记录数量
-func (m *TraceAffinityManager) Size() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.affinity)
+	select {
+	case <-m.stopCh:
+		// already closed
+	default:
+		close(m.stopCh)
+	}
 }
 
 // SizeForKind 返回指定渠道池的亲和记录数量。
@@ -258,18 +217,6 @@ func (m *TraceAffinityManager) SizeForKind(kind string) int {
 // GetTTL 获取 TTL 设置
 func (m *TraceAffinityManager) GetTTL() time.Duration {
 	return m.ttl
-}
-
-// GetAll 获取所有亲和记录（用于调试）
-func (m *TraceAffinityManager) GetAll() map[string]TraceAffinity {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	result := make(map[string]TraceAffinity, len(m.affinity))
-	for userID, affinity := range m.affinity {
-		result[userID] = *affinity
-	}
-	return result
 }
 
 // maskUserID 掩码 user_id（保护隐私）

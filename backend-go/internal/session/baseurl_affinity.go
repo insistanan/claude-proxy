@@ -96,28 +96,6 @@ func (manager *BaseURLAffinityManager) SetPreferredBaseURL(sessionKey string, ba
 	}
 }
 
-// UpdateLastUsed 续期会话 BaseURL 亲和。
-func (manager *BaseURLAffinityManager) UpdateLastUsed(sessionKey string) {
-	if manager == nil || sessionKey == "" {
-		return
-	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	if entry, exists := manager.affinity[sessionKey]; exists {
-		entry.LastUsedAt = time.Now()
-	}
-}
-
-// Remove 移除会话亲和。
-func (manager *BaseURLAffinityManager) Remove(sessionKey string) {
-	if manager == nil || sessionKey == "" {
-		return
-	}
-	manager.mu.Lock()
-	delete(manager.affinity, sessionKey)
-	manager.mu.Unlock()
-}
-
 // Cleanup 清理过期记录。
 func (manager *BaseURLAffinityManager) Cleanup() int {
 	if manager == nil {
@@ -163,14 +141,4 @@ func (manager *BaseURLAffinityManager) Stop() {
 	default:
 		close(manager.stopCh)
 	}
-}
-
-// Size 当前记录数。
-func (manager *BaseURLAffinityManager) Size() int {
-	if manager == nil {
-		return 0
-	}
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	return len(manager.affinity)
 }

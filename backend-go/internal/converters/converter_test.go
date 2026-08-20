@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
 
@@ -140,7 +139,7 @@ func TestExtractUsageMetrics_ClaudeCacheReadDoesNotDoubleSubtract(t *testing.T) 
 
 func TestOpenAIChatConverter_WithInstructions(t *testing.T) {
 	converter := &OpenAIChatConverter{}
-	sess := &session.Session{
+	sess := &types.Session{
 		ID:       "sess_test",
 		Messages: []types.ResponsesItem{},
 	}
@@ -233,7 +232,7 @@ func TestOpenAIChatConverter_WithInstructions(t *testing.T) {
 
 func TestOpenAIChatConverter_WithMessageType(t *testing.T) {
 	converter := &OpenAIChatConverter{}
-	sess := &session.Session{
+	sess := &types.Session{
 		ID:       "sess_test",
 		Messages: []types.ResponsesItem{},
 	}
@@ -367,7 +366,7 @@ func TestOpenAIChatResponseToResponses_WithCustomToolContext(t *testing.T) {
 }
 
 func TestResponsesToOpenAIChatMessages_CollapseSystemAndCustomToolReplay(t *testing.T) {
-	sess := &session.Session{
+	sess := &types.Session{
 		ID: "sess_test",
 		Messages: []types.ResponsesItem{
 			{Type: "message", Role: "system", Content: "历史系统提示"},
@@ -405,34 +404,6 @@ func TestResponsesToOpenAIChatMessages_CollapseSystemAndCustomToolReplay(t *test
 
 	if messages[2]["role"] != "tool" {
 		t.Fatalf("第三条消息应为 tool，实际为 %v", messages[2]["role"])
-	}
-}
-
-func TestOpenAICompletionsConverter_MaxOutputTokensAndUnsupportedTools(t *testing.T) {
-	converter := &OpenAICompletionsConverter{}
-	req := &types.ResponsesRequest{
-		Model:           "gpt-3.5-turbo-instruct",
-		Input:           "Hello!",
-		MaxTokens:       100,
-		MaxOutputTokens: 256,
-	}
-
-	result, err := converter.ToProviderRequest(nil, req)
-	if err != nil {
-		t.Fatalf("转换失败: %v", err)
-	}
-
-	resultMap, ok := result.(map[string]interface{})
-	if !ok {
-		t.Fatal("结果不是 map[string]interface{}")
-	}
-	if resultMap["max_tokens"] != 256 {
-		t.Errorf("max_tokens 应优先使用 max_output_tokens")
-	}
-
-	req.Tools = []map[string]interface{}{{"name": "lookup"}}
-	if _, err := converter.ToProviderRequest(nil, req); err == nil {
-		t.Fatal("OpenAI Completions 不支持 tools，应返回错误")
 	}
 }
 
@@ -634,7 +605,7 @@ func TestResponsesToOpenAIChatMessages_CustomToolOutputReplay(t *testing.T) {
 
 func TestClaudeConverter_WithInstructions(t *testing.T) {
 	converter := &ClaudeConverter{}
-	sess := &session.Session{
+	sess := &types.Session{
 		ID:       "sess_test",
 		Messages: []types.ResponsesItem{},
 	}
@@ -734,7 +705,7 @@ func TestConverterFactory(t *testing.T) {
 
 func TestOpenAIChatConverter_WithSessionHistory(t *testing.T) {
 	converter := &OpenAIChatConverter{}
-	sess := &session.Session{
+	sess := &types.Session{
 		ID: "sess_test",
 		Messages: []types.ResponsesItem{
 			{

@@ -32,6 +32,10 @@ type ChannelScheduler struct {
 	// inFlightByKind 记录选渠后、真正发出上游请求前的在途预留。
 	// 让并发对话在 StartRequest 之前就能看到彼此占用，从而分摊到不同供应商。
 	inFlightByKind map[ChannelKind]map[int]int64
+
+	// stopOnce 保证 Stop 幂等：下属组件的 Stop（BaseURLAffinityManager 除外）
+	// 是裸 close(channel)，重复调用会 panic。
+	stopOnce sync.Once
 }
 
 // ChannelKind 标识调度器所处理的渠道类型
@@ -84,6 +88,34 @@ func NewChannelScheduler(
 // getMetricsManager 根据类型获取对应的指标管理器
 func (s *ChannelScheduler) getMetricsManager(kind ChannelKind) *metrics.MetricsManager {
 	return s.metricsManagers[kind]
+}
+
+// Stop 停止调度器聚合的后台组件（各 MetricsManager 清理循环、Trace/BaseURL
+// 亲和清理、性能画像更新），消除进程关闭后残留的 ticker goroutine。
+// 幂等，可安全多次调用；必须在 main 关闭持久化存储（metricsStore 等）之前
+// 调用，保证"先停数据生产者、再关存储"的顺序。
+// 不含 conversationRegistry / sessionManager 等由 main 直接创建并 defer
+// 停止的组件；AdaptiveScheduler 与 URLManager 为纯内存计算，无后台循环。
+func (s *ChannelScheduler) Stop() {
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() {
+		for _, mm := range s.metricsManagers {
+			if mm != nil {
+				mm.Stop()
+			}
+		}
+		if s.traceAffinity != nil {
+			s.traceAffinity.Stop()
+		}
+		if s.baseURLAffinity != nil {
+			s.baseURLAffinity.Stop()
+		}
+		if s.profileManager != nil {
+			s.profileManager.Stop()
+		}
+	})
 }
 
 func (s *ChannelScheduler) GetChannelLogStore(kind ChannelKind) *metrics.ChannelLogStore {
@@ -154,16 +186,6 @@ func (s *ChannelScheduler) SetAdaptiveScheduler(as *AdaptiveScheduler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.adaptiveScheduler = as
-}
-
-// GetAdaptiveScheduler 获取自适应调度器
-func (s *ChannelScheduler) GetAdaptiveScheduler() *AdaptiveScheduler {
-	if s == nil {
-		return nil
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.adaptiveScheduler
 }
 
 // SelectionResult 渠道选择结果
@@ -1099,11 +1121,6 @@ func (s *ChannelScheduler) ShouldSuspendKey(baseURL, apiKey string, channelIndex
 	return s.getMetricsManager(kind).ShouldSuspendKey(baseURL, apiKey, channelIndex)
 }
 
-// SetTraceAffinity 设置 Trace 亲和
-func (s *ChannelScheduler) SetTraceAffinity(userID string, channelIndex int) {
-	s.SetTraceAffinityForKind(ChannelKindMessages, userID, channelIndex)
-}
-
 func (s *ChannelScheduler) SetTraceAffinityForKind(kind ChannelKind, userID string, channelIndex int) {
 	if userID != "" {
 		s.traceAffinity.SetPreferredChannelForKind(string(kind), userID, channelIndex)
@@ -1164,17 +1181,6 @@ func (s *ChannelScheduler) ConsumePromotionCount(channelIndex int, kind ChannelK
 		channelType = "images"
 	}
 	s.configManager.ConsumePromotionCount(channelIndex, channelType)
-}
-
-// UpdateTraceAffinity 更新 Trace 亲和时间（续期）
-func (s *ChannelScheduler) UpdateTraceAffinity(userID string) {
-	s.UpdateTraceAffinityForKind(ChannelKindMessages, userID)
-}
-
-func (s *ChannelScheduler) UpdateTraceAffinityForKind(kind ChannelKind, userID string) {
-	if userID != "" {
-		s.traceAffinity.UpdateLastUsedForKind(string(kind), userID)
-	}
 }
 
 func (s *ChannelScheduler) ValidateFixedChannel(userID string, kind ChannelKind, channelIndex int) error {
@@ -1305,11 +1311,6 @@ func (s *ChannelScheduler) ResetChannelMetrics(channelIndex int, kind ChannelKin
 	log.Printf("[%s-Reset] 渠道 [%d] %s 的熔断状态已重置（保留历史统计）", prefix, channelIndex, upstream.Name)
 }
 
-// ResetKeyMetrics 重置单个 Key 的指标
-func (s *ChannelScheduler) ResetKeyMetrics(baseURL, apiKey string, channelIndex int, kind ChannelKind) {
-	s.getMetricsManager(kind).ResetKey(baseURL, apiKey, channelIndex)
-}
-
 // DeleteChannelMetrics 删除渠道的所有指标数据（内存 + 持久化）
 // 用于删除渠道时清理相关的统计数据
 // channelIndex 用于区分同 URL 同 Key 的不同渠道（指标键的一部分）
@@ -1402,21 +1403,6 @@ func (s *ChannelScheduler) MarkURLFailure(kind ChannelKind, channelIndex int, ur
 	if s.urlManager != nil {
 		s.urlManager.MarkFailure(urlManagerChannelKey(kind, channelIndex), url)
 	}
-}
-
-// InvalidateURLCache 使渠道 URL 状态失效
-func (s *ChannelScheduler) InvalidateURLCache(kind ChannelKind, channelIndex int) {
-	if s.urlManager != nil {
-		s.urlManager.InvalidateChannel(urlManagerChannelKey(kind, channelIndex))
-	}
-}
-
-// GetURLManagerStats 获取 URL 管理器统计
-func (s *ChannelScheduler) GetURLManagerStats() map[string]interface{} {
-	if s.urlManager != nil {
-		return s.urlManager.GetStats()
-	}
-	return nil
 }
 
 func kindSchedulerLogPrefix(kind ChannelKind) string {

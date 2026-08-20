@@ -232,51 +232,10 @@ func (m *URLManager) sortURLs(state *ChannelURLState) {
 	})
 }
 
-// InvalidateChannel 使渠道状态失效
-func (m *URLManager) InvalidateChannel(channelIndex int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.channelStates, channelIndex)
-	log.Printf("[URLManager] 渠道 [%d] 状态已清除", channelIndex)
-}
-
 // InvalidateAll 清除所有状态
 func (m *URLManager) InvalidateAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.channelStates = make(map[int]*ChannelURLState)
 	log.Printf("[URLManager] 所有渠道状态已清除")
-}
-
-// GetStats 获取统计信息
-func (m *URLManager) GetStats() map[string]interface{} {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	channelStats := make(map[int]interface{})
-	for idx, state := range m.channelStates {
-		urlStats := make([]map[string]interface{}, len(state.URLs))
-		for i, urlState := range state.URLs {
-			urlStats[i] = map[string]interface{}{
-				"url":               urlState.URL,
-				"original_idx":      urlState.OriginalIdx,
-				"fail_count":        urlState.FailCount,
-				"total_requests":    urlState.TotalRequests,
-				"total_failures":    urlState.TotalFailures,
-				"last_fail_time":    urlState.LastFailTime,
-				"last_success_time": urlState.LastSuccessTime,
-			}
-		}
-		channelStats[idx] = map[string]interface{}{
-			"urls":       urlStats,
-			"updated_at": state.UpdatedAt,
-		}
-	}
-
-	return map[string]interface{}{
-		"total_channels":   len(m.channelStates),
-		"failure_cooldown": m.failureCooldown.String(),
-		"max_fail_count":   m.maxFailCount,
-		"channels":         channelStats,
-	}
 }

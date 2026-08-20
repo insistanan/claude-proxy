@@ -700,3 +700,13 @@ func TestSelectChannel_AdaptiveRespectsFailoverPriority(t *testing.T) {
 	scheduler.ReleaseChannelReservation(first.Kind, first.ChannelIndex)
 	scheduler.ReleaseChannelReservation(second.Kind, second.ChannelIndex)
 }
+
+// TestChannelScheduler_StopIdempotent 验证：聚合 Stop 幂等，重复调用不 panic
+// （下属组件的 Stop 是裸 close(channel)，幂等由调度器的 sync.Once 保证）。
+func TestChannelScheduler_StopIdempotent(t *testing.T) {
+	s, cleanup := createTestScheduler(t, config.Config{})
+	defer cleanup()
+
+	s.Stop()
+	s.Stop() // 第二次调用不应 panic
+}

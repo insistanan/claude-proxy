@@ -1213,33 +1213,6 @@ func (m *MetricsManager) ResetKeyFailureState(baseURL, apiKey string, channelInd
 	}
 }
 
-// ResetKey 重置单个 Key 的指标
-func (m *MetricsManager) ResetKey(baseURL, apiKey string, channelIndex int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	metricsKey := generateMetricsKey(baseURL, apiKey, channelIndex)
-	if metrics, exists := m.keyMetrics[metricsKey]; exists {
-		// 完全重置所有字段
-		metrics.RequestCount = 0
-		metrics.SuccessCount = 0
-		metrics.FailureCount = 0
-		metrics.ConsecutiveFailures = 0
-		metrics.ActiveRequests = 0
-		metrics.LastSuccessAt = nil
-		metrics.LastFailureAt = nil
-		metrics.CircuitBrokenAt = nil
-		metrics.recentResults = make([]bool, 0, m.windowSize)
-		metrics.requestHistory = nil
-		if metrics.pendingHistoryIdx != nil {
-			for id := range metrics.pendingHistoryIdx {
-				delete(metrics.pendingHistoryIdx, id)
-			}
-		}
-		log.Printf("[Metrics-Reset] Key [%s] (%s) 指标已完全重置", metrics.KeyMask, metrics.BaseURL)
-	}
-}
-
 // ResetAll 重置所有指标
 func (m *MetricsManager) ResetAll() {
 	m.mu.Lock()
@@ -1248,9 +1221,14 @@ func (m *MetricsManager) ResetAll() {
 	m.keyMetrics = make(map[string]*KeyMetrics)
 }
 
-// Stop 停止后台清理任务
+// Stop 停止后台清理任务（幂等，重复调用安全）
 func (m *MetricsManager) Stop() {
-	close(m.stopCh)
+	select {
+	case <-m.stopCh:
+		// already closed
+	default:
+		close(m.stopCh)
+	}
 }
 
 // DeleteKeysForChannel 删除指定渠道的所有内存指标
@@ -1823,61 +1801,6 @@ func (m *MetricsManager) calculateAggregatedTimeWindowsMultiURL(baseURLs []strin
 	}
 
 	return result
-}
-
-// ============ 废弃的旧方法（保留签名以便编译，但标记为废弃）============
-
-// Deprecated: 使用 IsChannelHealthyWithKeys 代替
-// IsChannelHealthy 判断渠道是否健康（旧方法，不再使用 channelIndex）
-// 此方法保留是为了兼容，但始终返回 true，调用方应迁移到新方法
-func (m *MetricsManager) IsChannelHealthy(channelIndex int) bool {
-	log.Printf("[Metrics-Deprecated] 警告: 调用了废弃的 IsChannelHealthy(channelIndex=%d)，请迁移到 IsChannelHealthyWithKeys", channelIndex)
-	return true // 默认健康，避免影响现有逻辑
-}
-
-// Deprecated: 使用 CalculateChannelFailureRate 代替
-func (m *MetricsManager) CalculateFailureRate(channelIndex int) float64 {
-	return 0
-}
-
-// Deprecated: 使用 CalculateChannelFailureRate 代替
-func (m *MetricsManager) CalculateSuccessRate(channelIndex int) float64 {
-	return 1
-}
-
-// Deprecated: 使用 ResetKey 代替
-func (m *MetricsManager) Reset(channelIndex int) {
-	log.Printf("[Metrics-Deprecated] 警告: 调用了废弃的 Reset(channelIndex=%d)，请迁移到 ResetKey", channelIndex)
-}
-
-// Deprecated: 使用 GetChannelAggregatedMetrics 代替
-func (m *MetricsManager) GetMetrics(channelIndex int) *ChannelMetrics {
-	return nil
-}
-
-// Deprecated: 使用 GetAllKeyMetrics 代替
-func (m *MetricsManager) GetAllMetrics() []*ChannelMetrics {
-	return nil
-}
-
-// Deprecated: 使用 GetTimeWindowStatsForKey 代替
-func (m *MetricsManager) GetTimeWindowStats(channelIndex int, duration time.Duration) TimeWindowStats {
-	return TimeWindowStats{SuccessRate: 100}
-}
-
-// Deprecated: 使用 GetAllTimeWindowStatsForKey 代替
-func (m *MetricsManager) GetAllTimeWindowStats(channelIndex int) map[string]TimeWindowStats {
-	return map[string]TimeWindowStats{
-		"15m": {SuccessRate: 100},
-		"1h":  {SuccessRate: 100},
-		"6h":  {SuccessRate: 100},
-		"24h": {SuccessRate: 100},
-	}
-}
-
-// Deprecated: 使用新的 ShouldSuspendKey 代替
-func (m *MetricsManager) ShouldSuspend(channelIndex int) bool {
-	return false
 }
 
 // ShouldSuspendKey 判断单个 Key 是否应该熔断

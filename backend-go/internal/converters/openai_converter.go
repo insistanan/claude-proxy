@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
 
@@ -18,7 +17,7 @@ const openAIChatWebSearchName = "web_search"
 type OpenAIChatConverter struct{}
 
 // ToProviderRequest 将 Responses 请求转换为 OpenAI Chat Completions 格式
-func (c *OpenAIChatConverter) ToProviderRequest(sess *session.Session, req *types.ResponsesRequest) (interface{}, error) {
+func (c *OpenAIChatConverter) ToProviderRequest(sess *types.Session, req *types.ResponsesRequest) (interface{}, error) {
 	// 转换 messages
 	messages, err := ResponsesToOpenAIChatMessages(sess, req.Input, req.Instructions)
 	if err != nil {
@@ -98,82 +97,6 @@ func (c *OpenAIChatConverter) FromProviderResponse(resp map[string]interface{}, 
 func (c *OpenAIChatConverter) GetProviderName() string {
 	return "OpenAI Chat Completions"
 }
-
-// ============== OpenAI Completions 转换器 ==============
-
-// OpenAICompletionsConverter 实现 Responses → OpenAI Completions 转换
-type OpenAICompletionsConverter struct{}
-
-// ToProviderRequest 将 Responses 请求转换为 OpenAI Completions 格式
-func (c *OpenAICompletionsConverter) ToProviderRequest(sess *session.Session, req *types.ResponsesRequest) (interface{}, error) {
-	// 提取纯文本（Completions API 不支持 messages）
-	prompt, err := ExtractTextFromResponses(sess, req.Input)
-	if err != nil {
-		return nil, err
-	}
-
-	// 如果有 instructions，添加到 prompt 前面
-	if req.Instructions != "" {
-		prompt = req.Instructions + "\n\n" + prompt
-	}
-
-	// 构建 OpenAI Completions 请求
-	completionsReq := map[string]interface{}{
-		"model":  req.Model,
-		"prompt": prompt,
-		"stream": req.Stream,
-	}
-
-	// 复制其他参数
-	if req.MaxOutputTokens > 0 {
-		completionsReq["max_tokens"] = req.MaxOutputTokens
-	} else if req.MaxTokens > 0 {
-		completionsReq["max_tokens"] = req.MaxTokens
-	}
-	if req.Temperature > 0 {
-		completionsReq["temperature"] = req.Temperature
-	}
-	if req.TopP > 0 {
-		completionsReq["top_p"] = req.TopP
-	}
-	if req.FrequencyPenalty != 0 {
-		completionsReq["frequency_penalty"] = req.FrequencyPenalty
-	}
-	if req.PresencePenalty != 0 {
-		completionsReq["presence_penalty"] = req.PresencePenalty
-	}
-	if req.Stop != nil {
-		completionsReq["stop"] = req.Stop
-	}
-	if req.User != "" {
-		completionsReq["user"] = req.User
-	}
-	if req.Tools != nil {
-		return nil, fmt.Errorf("OpenAI Completions 不支持 tools 字段")
-	}
-	if req.ToolChoice != nil {
-		return nil, fmt.Errorf("OpenAI Completions 不支持 tool_choice 字段")
-	}
-	if req.ParallelToolCalls != nil {
-		return nil, fmt.Errorf("OpenAI Completions 不支持 parallel_tool_calls 字段")
-	}
-	if req.Reasoning != nil {
-		return nil, fmt.Errorf("OpenAI Completions 不支持 reasoning 字段")
-	}
-
-	return completionsReq, nil
-}
-
-// FromProviderResponse 将 OpenAI Completions 响应转换为 Responses 格式
-func (c *OpenAICompletionsConverter) FromProviderResponse(resp map[string]interface{}, sessionID string) (*types.ResponsesResponse, error) {
-	return OpenAICompletionsResponseToResponses(resp, sessionID)
-}
-
-// GetProviderName 获取上游服务名称
-func (c *OpenAICompletionsConverter) GetProviderName() string {
-	return "OpenAI Completions"
-}
-
 func responsesToolsToOpenAIChatTools(raw interface{}) ([]map[string]interface{}, error) {
 	tools, err := collectResponsesToolDefinitions(raw)
 	if err != nil {
@@ -199,7 +122,7 @@ func responsesToolDefinitionsToOpenAIChatTools(tools []map[string]interface{}) (
 	return out, nil
 }
 
-func sessionResponseItems(sess *session.Session) interface{} {
+func sessionResponseItems(sess *types.Session) interface{} {
 	if sess == nil || len(sess.Messages) == 0 {
 		return nil
 	}

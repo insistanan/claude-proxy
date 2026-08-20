@@ -120,21 +120,6 @@ func ReasoningEffortToOpenAIChatReasoningEffort(effort string) string {
 	}
 }
 
-// ReasoningEffortToGeminiThinkingLevel 把内部 effort 映射为 Gemini 3 thinkingLevel。
-// auto 由调用方单独处理（仅设置 IncludeThoughts）。
-func ReasoningEffortToGeminiThinkingLevel(effort string) string {
-	switch effort {
-	case "minimal", "low":
-		return "low"
-	case "medium":
-		return "medium"
-	case "high", "xhigh", "max":
-		return "high"
-	default:
-		return ""
-	}
-}
-
 // EffortFromGeminiThinkingConfig 把 Gemini 入口请求的 thinkingConfig 解析为内部 effort。
 // 优先级：thinkingLevel > thinkingBudget > includeThoughts。返回空串表示未配置思考参数。
 //
