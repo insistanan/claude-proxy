@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
@@ -133,6 +134,129 @@ func TestPromotedChannelBypassesHealthCheck(t *testing.T) {
 
 	if result.Upstream.Name != "promoted-channel" {
 		t.Errorf("期望选择 promoted-channel，实际选择了 %s", result.Upstream.Name)
+	}
+}
+
+func TestSelectChannel_PromotionPrecedesTraceAffinity(t *testing.T) {
+	promotionUntil := time.Now().Add(5 * time.Minute)
+	cfg := config.Config{
+		Upstream: []config.UpstreamConfig{
+			{
+				Name:     "affinity-channel",
+				BaseURL:  "https://affinity.example.com",
+				APIKeys:  []string{"sk-affinity"},
+				Status:   "active",
+				Priority: 1,
+			},
+			{
+				Name:           "promoted-channel",
+				BaseURL:        "https://promoted.example.com",
+				APIKeys:        []string{"sk-promoted"},
+				Status:         "active",
+				Priority:       2,
+				PromotionUntil: &promotionUntil,
+			},
+		},
+	}
+
+	scheduler, cleanup := createTestScheduler(t, cfg)
+	defer cleanup()
+
+	const userID = "promotion-before-affinity"
+	scheduler.SetTraceAffinityForKind(ChannelKindMessages, userID, 0)
+
+	result, err := scheduler.SelectChannel(context.Background(), userID, map[int]bool{}, ChannelKindMessages, "")
+	if err != nil {
+		t.Fatalf("SelectChannel() error = %v", err)
+	}
+	defer scheduler.ReleaseChannelReservation(result.Kind, result.ChannelIndex)
+
+	if result.ChannelIndex != 1 || result.Reason != "promotion_priority" {
+		t.Fatalf("促销应优先于 Trace 亲和，got index=%d reason=%s", result.ChannelIndex, result.Reason)
+	}
+}
+
+func TestSelectChannel_ConversationOverridePrecedesPromotion(t *testing.T) {
+	promotionUntil := time.Now().Add(5 * time.Minute)
+	cfg := config.Config{
+		Upstream: []config.UpstreamConfig{
+			{
+				Name:     "override-channel",
+				BaseURL:  "https://override.example.com",
+				APIKeys:  []string{"sk-override"},
+				Status:   "active",
+				Priority: 1,
+			},
+			{
+				Name:           "promoted-channel",
+				BaseURL:        "https://promoted.example.com",
+				APIKeys:        []string{"sk-promoted"},
+				Status:         "active",
+				Priority:       2,
+				PromotionUntil: &promotionUntil,
+			},
+		},
+	}
+
+	scheduler, cleanup := createTestScheduler(t, cfg)
+	defer cleanup()
+
+	registry := conversation.NewRegistry()
+	defer registry.Stop()
+	record := registry.ObserveRequest(conversation.Observation{
+		APIKind:        string(ChannelKindMessages),
+		ConversationID: "override-before-promotion",
+	})
+	if _, err := registry.SetRouteOverride(record.ID, string(ChannelKindMessages), 0, "override-channel"); err != nil {
+		t.Fatalf("SetRouteOverride() error = %v", err)
+	}
+	scheduler.SetConversationRegistry(registry)
+
+	result, err := scheduler.SelectChannel(context.Background(), record.ID, map[int]bool{}, ChannelKindMessages, "")
+	if err != nil {
+		t.Fatalf("SelectChannel() error = %v", err)
+	}
+	defer scheduler.ReleaseChannelReservation(result.Kind, result.ChannelIndex)
+
+	if result.ChannelIndex != 0 || result.Reason != "conversation_route_override" {
+		t.Fatalf("对话路由覆盖应优先于促销，got index=%d reason=%s", result.ChannelIndex, result.Reason)
+	}
+}
+
+func TestSelectChannel_UsesTraceAffinityWithoutPromotion(t *testing.T) {
+	cfg := config.Config{
+		Upstream: []config.UpstreamConfig{
+			{
+				Name:     "priority-channel",
+				BaseURL:  "https://priority.example.com",
+				APIKeys:  []string{"sk-priority"},
+				Status:   "active",
+				Priority: 1,
+			},
+			{
+				Name:     "affinity-channel",
+				BaseURL:  "https://affinity.example.com",
+				APIKeys:  []string{"sk-affinity"},
+				Status:   "active",
+				Priority: 2,
+			},
+		},
+	}
+
+	scheduler, cleanup := createTestScheduler(t, cfg)
+	defer cleanup()
+
+	const userID = "affinity-without-promotion"
+	scheduler.SetTraceAffinityForKind(ChannelKindMessages, userID, 1)
+
+	result, err := scheduler.SelectChannel(context.Background(), userID, map[int]bool{}, ChannelKindMessages, "")
+	if err != nil {
+		t.Fatalf("SelectChannel() error = %v", err)
+	}
+	defer scheduler.ReleaseChannelReservation(result.Kind, result.ChannelIndex)
+
+	if result.ChannelIndex != 1 || result.Reason != "trace_affinity" {
+		t.Fatalf("无促销时应使用 Trace 亲和，got index=%d reason=%s", result.ChannelIndex, result.Reason)
 	}
 }
 

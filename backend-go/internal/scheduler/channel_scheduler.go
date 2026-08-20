@@ -309,35 +309,10 @@ func (s *ChannelScheduler) SelectChannel(
 	// 获取对应类型的指标管理器
 	metricsManager := s.getMetricsManager(kind)
 
-	if userID != "" && registry != nil {
-		if override, ok := registry.GetRouteOverride(userID); ok {
-			if override.Kind != string(kind) {
-				return nil, fmt.Errorf("该对话已固定到 %s 渠道池，当前请求为 %s", override.Kind, kind)
-			}
-			for _, ch := range routedChannels {
-				if ch.Index != override.ChannelIndex {
-					continue
-				}
-				if failedChannels[ch.Index] {
-					return nil, fmt.Errorf("对话固定渠道 [%d] %s 已在本次请求中失败", ch.Index, ch.Name)
-				}
-				if ch.Status != "active" {
-					return nil, fmt.Errorf("对话固定渠道 [%d] %s 当前状态为 %s", ch.Index, ch.Name, ch.Status)
-				}
-				upstream := s.getUpstreamByIndex(ch.Index, kind)
-				if upstream == nil || len(upstream.APIKeys) == 0 {
-					return nil, fmt.Errorf("对话固定渠道 [%d] %s 没有可用 API 密钥", ch.Index, ch.Name)
-				}
-				prefix := kindSchedulerLogPrefix(kind)
-				log.Printf("[%s-Override] 对话固定渠道: [%d] %s", prefix, ch.Index, ch.Name)
-				return s.reserveAndReturn(&SelectionResult{
-					Upstream:     upstream,
-					ChannelIndex: ch.Index,
-					Reason:       "conversation_route_override",
-				}, kind), nil
-			}
-			return nil, fmt.Errorf("对话固定渠道 [%d] 当前不可用", override.ChannelIndex)
-		}
+	if selected, hasOverride, err := s.selectConversationRouteOverride(userID, kind, routedChannels, failedChannels, registry); err != nil {
+		return nil, err
+	} else if hasOverride {
+		return s.reserveAndReturn(selected, kind), nil
 	}
 
 	// 1. 检查当前分组的促销渠道（促销期优先，忽略 Trace 亲和性；同优先级内按在途负载分摊）
@@ -346,102 +321,195 @@ func (s *ChannelScheduler) SelectChannel(
 	}
 
 	if len(activeChannels) == 0 {
-		switch kind {
-		case ChannelKindMessages:
-			return nil, fmt.Errorf("没有可用的活跃 Messages 渠道")
-		case ChannelKindGemini:
-			return nil, fmt.Errorf("没有可用的活跃 Gemini 渠道")
-		case ChannelKindResponses:
-			return nil, fmt.Errorf("没有可用的活跃 Responses 渠道")
-		case ChannelKindChat:
-			return nil, fmt.Errorf("没有可用的活跃 Chat 渠道")
-		case ChannelKindImages:
-			return nil, fmt.Errorf("没有可用的活跃 Images 渠道")
-		default:
-			return nil, fmt.Errorf("不支持的渠道类型: %s", kind)
-		}
+		return nil, noActiveChannelError(kind)
 	}
 
 	// 2. 检查 Trace 亲和性（仅在无促销渠道时生效，保证同一会话连续性）
-	if userID != "" {
-		if preferredIdx, ok := s.traceAffinity.GetPreferredChannelForKind(string(kind), userID); ok {
-			foundPreferredChannel := false
-			affinityInvalidated := false
-			for _, ch := range activeChannels {
-				if ch.Index == preferredIdx && !failedChannels[preferredIdx] {
-					foundPreferredChannel = true
-					// 检查渠道状态：只有 active 状态才使用亲和性
-					if ch.Status != "active" {
-						prefix := kindSchedulerLogPrefix(kind)
-						log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 状态为 %s (user: %s)", prefix, preferredIdx, ch.Name, ch.Status, maskUserID(userID))
-						affinityInvalidated = true
-						continue
-					}
-					// 检查渠道是否健康
-					upstream := s.getUpstreamByIndex(preferredIdx, kind)
-					if upstream == nil || len(upstream.APIKeys) == 0 {
-						prefix := kindSchedulerLogPrefix(kind)
-						log.Printf("[%s-Affinity] 跳过亲和渠道 [%d]: 无可用密钥 (user: %s)", prefix, preferredIdx, maskUserID(userID))
-						affinityInvalidated = true
-						continue
-					}
-					if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, preferredIdx) {
-						failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, preferredIdx)
-						prefix := kindSchedulerLogPrefix(kind)
-						log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 不健康 (失败率: %.1f%%, user: %s)", prefix, preferredIdx, ch.Name, failureRate*100, maskUserID(userID))
-						affinityInvalidated = true
-						continue
-					}
-					// 渠道健康，使用 Trace 亲和性
-					prefix := kindSchedulerLogPrefix(kind)
-					log.Printf("[%s-Affinity] 使用 Trace 亲和渠道: [%d] %s (user: %s)", prefix, preferredIdx, ch.Name, maskUserID(userID))
-					return s.reserveAndReturn(&SelectionResult{
-						Upstream:     upstream,
-						ChannelIndex: preferredIdx,
-						Reason:       "trace_affinity",
-					}, kind), nil
-				}
-			}
-			// 亲和渠道不存在或已失效，清除亲和性记录
-			if !foundPreferredChannel || affinityInvalidated {
-				s.traceAffinity.RemoveForKind(string(kind), userID)
-				prefix := kindSchedulerLogPrefix(kind)
-				if affinityInvalidated {
-					log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: user=%s, channel=%d (渠道不健康或状态异常)", prefix, maskUserID(userID), preferredIdx)
-				} else {
-					log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: user=%s, channel=%d (渠道不存在)", prefix, maskUserID(userID), preferredIdx)
-				}
-			}
-		}
+	if selected := s.selectTraceAffinity(activeChannels, failedChannels, kind, userID, metricsManager); selected != nil {
+		return s.reserveAndReturn(selected, kind), nil
 	}
 
 	// 3. 尝试使用自适应调度器（基于性能画像 + 在途预留）
-	s.mu.RLock()
-	adaptiveScheduler := s.adaptiveScheduler
-	s.mu.RUnlock()
-
-	if adaptiveScheduler != nil {
-		result := adaptiveScheduler.SelectBestChannel(
-			activeChannels,
-			failedChannels,
-			kind,
-			requestedModel,
-			metricsManager.IsChannelHealthyMultiURL,
-			s.getUpstreamByIndex,
-			func(channelIndex int) int64 {
-				return s.GetChannelInFlight(kind, channelIndex)
-			},
-		)
-		if result != nil {
-			return s.reserveAndReturn(result, kind), nil
-		}
-		// 自适应调度未找到可用渠道（可能所有渠道都不支持该模型），降级到原有逻辑
-		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Adaptive] 自适应调度未找到可用渠道，降级到优先级调度", prefix)
+	if selected := s.selectAdaptiveChannel(activeChannels, failedChannels, kind, requestedModel, metricsManager); selected != nil {
+		return s.reserveAndReturn(selected, kind), nil
 	}
 
 	// 4. 按优先级遍历活跃渠道（降级方案）
 	// 同优先级内收集候选，再按 in-flight 选负载最低者，避免并发新对话全打到第一家供应商。
+	if selected := s.selectPriorityChannel(activeChannels, failedChannels, kind, requestedModel, metricsManager); selected != nil {
+		return s.reserveAndReturn(selected, kind), nil
+	}
+
+	// 5. 当前分组所有健康渠道都失败，选择失败率最低的作为降级
+	fallback, err := s.selectFallbackChannel(activeChannels, failedChannels, kind)
+	if err != nil {
+		return nil, err
+	}
+	return s.reserveAndReturn(fallback, kind), nil
+}
+
+func (s *ChannelScheduler) selectConversationRouteOverride(
+	userID string,
+	kind ChannelKind,
+	routedChannels []ChannelInfo,
+	failedChannels map[int]bool,
+	registry *conversation.Registry,
+) (*SelectionResult, bool, error) {
+	if userID == "" || registry == nil {
+		return nil, false, nil
+	}
+	override, ok := registry.GetRouteOverride(userID)
+	if !ok {
+		return nil, false, nil
+	}
+	if override.Kind != string(kind) {
+		return nil, true, fmt.Errorf("该对话已固定到 %s 渠道池，当前请求为 %s", override.Kind, kind)
+	}
+	for _, ch := range routedChannels {
+		if ch.Index != override.ChannelIndex {
+			continue
+		}
+		if failedChannels[ch.Index] {
+			return nil, true, fmt.Errorf("对话固定渠道 [%d] %s 已在本次请求中失败", ch.Index, ch.Name)
+		}
+		if ch.Status != "active" {
+			return nil, true, fmt.Errorf("对话固定渠道 [%d] %s 当前状态为 %s", ch.Index, ch.Name, ch.Status)
+		}
+		upstream := s.getUpstreamByIndex(ch.Index, kind)
+		if upstream == nil || len(upstream.APIKeys) == 0 {
+			return nil, true, fmt.Errorf("对话固定渠道 [%d] %s 没有可用 API 密钥", ch.Index, ch.Name)
+		}
+		prefix := kindSchedulerLogPrefix(kind)
+		log.Printf("[%s-Override] 对话固定渠道: [%d] %s", prefix, ch.Index, ch.Name)
+		return &SelectionResult{
+			Upstream:     upstream,
+			ChannelIndex: ch.Index,
+			Reason:       "conversation_route_override",
+		}, true, nil
+	}
+	return nil, true, fmt.Errorf("对话固定渠道 [%d] 当前不可用", override.ChannelIndex)
+}
+
+func noActiveChannelError(kind ChannelKind) error {
+	switch kind {
+	case ChannelKindMessages:
+		return fmt.Errorf("没有可用的活跃 Messages 渠道")
+	case ChannelKindGemini:
+		return fmt.Errorf("没有可用的活跃 Gemini 渠道")
+	case ChannelKindResponses:
+		return fmt.Errorf("没有可用的活跃 Responses 渠道")
+	case ChannelKindChat:
+		return fmt.Errorf("没有可用的活跃 Chat 渠道")
+	case ChannelKindImages:
+		return fmt.Errorf("没有可用的活跃 Images 渠道")
+	default:
+		return fmt.Errorf("不支持的渠道类型: %s", kind)
+	}
+}
+
+func (s *ChannelScheduler) selectTraceAffinity(
+	activeChannels []ChannelInfo,
+	failedChannels map[int]bool,
+	kind ChannelKind,
+	userID string,
+	metricsManager *metrics.MetricsManager,
+) *SelectionResult {
+	if userID == "" {
+		return nil
+	}
+	preferredIdx, ok := s.traceAffinity.GetPreferredChannelForKind(string(kind), userID)
+	if !ok {
+		return nil
+	}
+
+	foundPreferredChannel := false
+	affinityInvalidated := false
+	for _, ch := range activeChannels {
+		if ch.Index != preferredIdx || failedChannels[preferredIdx] {
+			continue
+		}
+		foundPreferredChannel = true
+		if ch.Status != "active" {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 状态为 %s (user: %s)", prefix, preferredIdx, ch.Name, ch.Status, maskUserID(userID))
+			affinityInvalidated = true
+			continue
+		}
+		upstream := s.getUpstreamByIndex(preferredIdx, kind)
+		if upstream == nil || len(upstream.APIKeys) == 0 {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Affinity] 跳过亲和渠道 [%d]: 无可用密钥 (user: %s)", prefix, preferredIdx, maskUserID(userID))
+			affinityInvalidated = true
+			continue
+		}
+		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, preferredIdx) {
+			failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, preferredIdx)
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 不健康 (失败率: %.1f%%, user: %s)", prefix, preferredIdx, ch.Name, failureRate*100, maskUserID(userID))
+			affinityInvalidated = true
+			continue
+		}
+		prefix := kindSchedulerLogPrefix(kind)
+		log.Printf("[%s-Affinity] 使用 Trace 亲和渠道: [%d] %s (user: %s)", prefix, preferredIdx, ch.Name, maskUserID(userID))
+		return &SelectionResult{
+			Upstream:     upstream,
+			ChannelIndex: preferredIdx,
+			Reason:       "trace_affinity",
+		}
+	}
+
+	if !foundPreferredChannel || affinityInvalidated {
+		s.traceAffinity.RemoveForKind(string(kind), userID)
+		prefix := kindSchedulerLogPrefix(kind)
+		if affinityInvalidated {
+			log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: user=%s, channel=%d (渠道不健康或状态异常)", prefix, maskUserID(userID), preferredIdx)
+		} else {
+			log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: user=%s, channel=%d (渠道不存在)", prefix, maskUserID(userID), preferredIdx)
+		}
+	}
+	return nil
+}
+
+func (s *ChannelScheduler) selectAdaptiveChannel(
+	activeChannels []ChannelInfo,
+	failedChannels map[int]bool,
+	kind ChannelKind,
+	requestedModel string,
+	metricsManager *metrics.MetricsManager,
+) *SelectionResult {
+	s.mu.RLock()
+	adaptiveScheduler := s.adaptiveScheduler
+	s.mu.RUnlock()
+	if adaptiveScheduler == nil {
+		return nil
+	}
+
+	result := adaptiveScheduler.SelectBestChannel(
+		activeChannels,
+		failedChannels,
+		kind,
+		requestedModel,
+		metricsManager.IsChannelHealthyMultiURL,
+		s.getUpstreamByIndex,
+		func(channelIndex int) int64 {
+			return s.GetChannelInFlight(kind, channelIndex)
+		},
+	)
+	if result != nil {
+		return result
+	}
+	prefix := kindSchedulerLogPrefix(kind)
+	log.Printf("[%s-Adaptive] 自适应调度未找到可用渠道，降级到优先级调度", prefix)
+	return nil
+}
+
+func (s *ChannelScheduler) selectPriorityChannel(
+	activeChannels []ChannelInfo,
+	failedChannels map[int]bool,
+	kind ChannelKind,
+	requestedModel string,
+	metricsManager *metrics.MetricsManager,
+) *SelectionResult {
 	type priorityCandidate struct {
 		channel  ChannelInfo
 		upstream *config.UpstreamConfig
@@ -450,12 +518,9 @@ func (s *ChannelScheduler) SelectChannel(
 	currentPriority := -1
 
 	for _, ch := range activeChannels {
-		// 跳过本次请求已经失败的渠道
 		if failedChannels[ch.Index] {
 			continue
 		}
-
-		// 跳过非 active 状态的渠道（suspended 等）
 		if ch.Status != "active" {
 			prefix := kindSchedulerLogPrefix(kind)
 			log.Printf("[%s-Channel] 跳过非活跃渠道: [%d] %s (状态: %s)", prefix, ch.Index, ch.Name, ch.Status)
@@ -471,8 +536,6 @@ func (s *ChannelScheduler) SelectChannel(
 			log.Printf("[%s-Channel] 跳过不支持模型的渠道: [%d] %s (模型: %s)", prefix, ch.Index, ch.Name, requestedModel)
 			continue
 		}
-
-		// 跳过失败率过高的渠道（已熔断或即将熔断）
 		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, ch.Index) {
 			failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, ch.Index)
 			prefix := kindSchedulerLogPrefix(kind)
@@ -483,7 +546,6 @@ func (s *ChannelScheduler) SelectChannel(
 		if len(samePriorityCandidates) == 0 {
 			currentPriority = ch.Priority
 		} else if ch.Priority != currentPriority {
-			// activeChannels 已按优先级排序，遇到下一优先级时停止收集
 			break
 		}
 		samePriorityCandidates = append(samePriorityCandidates, priorityCandidate{
@@ -492,32 +554,26 @@ func (s *ChannelScheduler) SelectChannel(
 		})
 	}
 
-	if len(samePriorityCandidates) > 0 {
-		best := samePriorityCandidates[0]
-		bestLoad := s.GetChannelInFlight(kind, best.channel.Index)
-		for _, candidate := range samePriorityCandidates[1:] {
-			candidateLoad := s.GetChannelInFlight(kind, candidate.channel.Index)
-			if candidateLoad < bestLoad || (candidateLoad == bestLoad && candidate.channel.Index < best.channel.Index) {
-				best = candidate
-				bestLoad = candidateLoad
-			}
+	if len(samePriorityCandidates) == 0 {
+		return nil
+	}
+	best := samePriorityCandidates[0]
+	bestLoad := s.GetChannelInFlight(kind, best.channel.Index)
+	for _, candidate := range samePriorityCandidates[1:] {
+		candidateLoad := s.GetChannelInFlight(kind, candidate.channel.Index)
+		if candidateLoad < bestLoad || (candidateLoad == bestLoad && candidate.channel.Index < best.channel.Index) {
+			best = candidate
+			bestLoad = candidateLoad
 		}
-		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Channel] 选择渠道: [%d] %s (配置优先级: %d, 动态分数: %.1f, inFlight: %d, samePriorityCandidates: %d)",
-			prefix, best.channel.Index, best.upstream.Name, best.channel.Priority, best.channel.Score, bestLoad, len(samePriorityCandidates))
-		return s.reserveAndReturn(&SelectionResult{
-			Upstream:     best.upstream,
-			ChannelIndex: best.channel.Index,
-			Reason:       "priority_order",
-		}, kind), nil
 	}
-
-	// 5. 当前分组所有健康渠道都失败，选择失败率最低的作为降级
-	fallback, err := s.selectFallbackChannel(activeChannels, failedChannels, kind)
-	if err != nil {
-		return nil, err
+	prefix := kindSchedulerLogPrefix(kind)
+	log.Printf("[%s-Channel] 选择渠道: [%d] %s (配置优先级: %d, 动态分数: %.1f, inFlight: %d, samePriorityCandidates: %d)",
+		prefix, best.channel.Index, best.upstream.Name, best.channel.Priority, best.channel.Score, bestLoad, len(samePriorityCandidates))
+	return &SelectionResult{
+		Upstream:     best.upstream,
+		ChannelIndex: best.channel.Index,
+		Reason:       "priority_order",
 	}
-	return s.reserveAndReturn(fallback, kind), nil
 }
 
 // hasAttemptableChannel 判断当前分组是否仍有渠道值得在本次请求中尝试。
