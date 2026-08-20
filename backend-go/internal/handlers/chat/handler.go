@@ -126,60 +126,59 @@ func handleRoutedChat(
 
 	metricsManager := channelScheduler.GetChatMetricsManager()
 	urlResults := common.BuildDefaultURLResults([]string{route.BaseURL})
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
-		c,
-		envCfg,
-		cfgManager,
-		channelScheduler,
-		scheduler.ChannelKindChat,
-		"Chat",
-		metricsManager,
-		upstream,
-		model, // 添加 requestedModel 参数
-		cfgManager.GetFuzzyModeEnabled(),
-		urlResults,
-		routedBody,
-		stream,
-		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+	result := (common.UpstreamAttempt{
+		Context:            c,
+		EnvConfig:          envCfg,
+		ConfigManager:      cfgManager,
+		ChannelScheduler:   channelScheduler,
+		Kind:               scheduler.ChannelKindChat,
+		APIType:            "Chat",
+		MetricsManager:     metricsManager,
+		Upstream:           upstream,
+		RequestedModel:     model,
+		AllowModelFailover: cfgManager.GetFuzzyModeEnabled(),
+		URLResults:         urlResults,
+		RequestBody:        routedBody,
+		IsStream:           stream,
+		NextAPIKey: func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
 			if failedKeys[route.APIKey] {
 				return "", fmt.Errorf("路由模型 %s 指定的 API Key 已失败", route.Alias)
 			}
 			return route.APIKey, nil
 		},
-		func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+		BuildRequest: func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
 			return buildChatDirectRequest(c, upstreamCopy, apiKey, routedBody)
 		},
-		nil,
-		func(url string) {
+		MarkURLFailure: func(url string) {
 			channelScheduler.MarkURLFailure(scheduler.ChannelKindChat, route.ChannelIndex, url)
 		},
-		func(url string) {
+		MarkURLSuccess: func(url string) {
 			channelScheduler.MarkURLSuccess(scheduler.ChannelKindChat, route.ChannelIndex, url)
 		},
-		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+		HandleSuccess: func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
 			return handleSuccess(c, resp, envCfg, startTime, stream, routedBody)
 		},
-		common.AttemptLogContext{
+		LogContext: common.AttemptLogContext{
 			ChannelIndex:    route.ChannelIndex,
 			Model:           model,
 			ConversationID:  userID,
 			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
 			RequestLogStore: channelScheduler.GetRequestLogStore(),
 		},
-	)
-	if handled {
-		if successKey != "" {
+	}).TryWithModelMappingFailover()
+	if result.Handled {
+		if result.SuccessKey != "" {
 			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, route.ChannelIndex, route.ChannelName)
 			channelScheduler.ConsumePromotionCount(route.ChannelIndex, scheduler.ChannelKindChat)
-		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
+		} else if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
 		}
 		return
 	}
 
 	log.Printf("[Chat-Route] 路由模型失败: alias=%s channel=%d key=%s", route.Alias, route.ChannelIndex, route.KeyID)
-	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, lastError)
-	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Chat")
+	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
+	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), result.FailoverError, result.LastError, "Chat")
 }
 
 func chatRouteUpstream(cfgManager *config.ConfigManager, route modelcatalog.ChatRoute) (*config.UpstreamConfig, error) {

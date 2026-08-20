@@ -122,9 +122,199 @@ func MarkRequestLogFirstToken(c *gin.Context) {
 	c.Set(requestLogFirstTokenAtKey, time.Now())
 }
 
-// TryUpstreamWithModelMappingFailover 在模型映射级别进行 failover。
-// 非 Fuzzy 模式下仅尝试首个映射模型，避免跨模型故障转移。
-// 返回值与 TryUpstreamWithAllKeys 相同
+// UpstreamAttempt 聚合一次上游故障转移所需的依赖、目标和协议回调。
+// Context、回调和观测字段属于单次请求生命周期，不应被长期保存。
+type UpstreamAttempt struct {
+	Context           *gin.Context
+	EnvConfig         *config.EnvConfig
+	ConfigManager     *config.ConfigManager
+	ChannelScheduler  *scheduler.ChannelScheduler
+	Kind              scheduler.ChannelKind
+	APIType           string
+	MetricsManager    *metrics.MetricsManager
+	Upstream          *config.UpstreamConfig
+	RequestedModel    string
+	AllowModelFailover bool
+	URLResults        []urlhealth.URLLatencyResult
+	RequestBody       []byte
+	IsStream          bool
+	NextAPIKey        NextAPIKeyFunc
+	BuildRequest      BuildRequestFunc
+	DeprioritizeKey   DeprioritizeKeyFunc
+	MarkURLFailure    func(url string)
+	MarkURLSuccess    func(url string)
+	HandleSuccess     HandleSuccessFunc
+	LogContext        AttemptLogContext
+}
+
+// UpstreamAttemptResult 是一次上游尝试的命名结果，避免调用方依赖位置返回值。
+type UpstreamAttemptResult struct {
+	Handled           bool
+	SuccessKey        string
+	SuccessBaseURLIdx int
+	FailoverError     *FailoverError
+	Usage             *types.Usage
+	LastError         error
+}
+
+// candidateRetryState 收拢单个 BaseURL 生命周期内的 Key 失败和同候选重试状态。
+// 每进入一个 BaseURL 都必须创建新的实例，避免候选状态跨 BaseURL 泄漏。
+type candidateRetryState struct {
+	failedKeys              map[string]bool
+	sameCandidateRetries    map[string]int
+	maxSameCandidateRetries int
+	maxRetries              int
+}
+
+type upstreamFailureAction uint8
+
+const (
+	upstreamFailureRespond upstreamFailureAction = iota
+	upstreamFailureTryNextKey
+	upstreamFailureTryNextChannel
+)
+
+type upstreamFailureDecision struct {
+	action       upstreamFailureAction
+	quotaRelated bool
+	errorType    string
+}
+
+type responseProcessingAction uint8
+
+const (
+	responseProcessingClientCancelled responseProcessingAction = iota
+	responseProcessingContentSafety
+	responseProcessingContentSafetyHook
+	responseProcessingRetryCandidate
+	responseProcessingChannelFailure
+)
+
+type responseProcessingDecision struct {
+	action    responseProcessingAction
+	safetyErr *ContentSafetyError
+	hookErr   *ContentSafetyHookError
+}
+
+func newCandidateRetryState(apiKeyCount int) candidateRetryState {
+	const maxSameCandidateRetries = 1
+
+	return candidateRetryState{
+		failedKeys:              make(map[string]bool),
+		sameCandidateRetries:    make(map[string]int),
+		maxSameCandidateRetries: maxSameCandidateRetries,
+		maxRetries:              apiKeyCount * (maxSameCandidateRetries + 1),
+	}
+}
+
+func (s *candidateRetryState) markKeyFailed(apiKey string) {
+	if s == nil {
+		return
+	}
+	s.failedKeys[apiKey] = true
+}
+
+func (s *candidateRetryState) canRetryCandidate(candidate string, ctx context.Context) bool {
+	if s == nil || s.sameCandidateRetries[candidate] >= s.maxSameCandidateRetries {
+		return false
+	}
+	return ctx != nil && ctx.Err() == nil
+}
+
+func (s *candidateRetryState) recordCandidateRetry(candidate string) int {
+	if s == nil {
+		return 0
+	}
+	s.sameCandidateRetries[candidate]++
+	return s.sameCandidateRetries[candidate]
+}
+
+func (a UpstreamAttempt) decideUpstreamFailure(statusCode int, body []byte) upstreamFailureDecision {
+	if a.LogContext.AllowContentPolicyChannelFailover && shouldFailoverToNextChannel(
+		body,
+		a.ChannelScheduler.GetActiveChannelCountForModel(a.Kind, a.LogContext.Model),
+	) {
+		return upstreamFailureDecision{
+			action:    upstreamFailureTryNextChannel,
+			errorType: "content_policy",
+		}
+	}
+
+	shouldFailover, quotaRelated := ShouldRetryWithNextKey(
+		statusCode,
+		body,
+		a.ConfigManager.GetFuzzyModeEnabled(),
+		a.APIType,
+	)
+	if shouldFailover {
+		return upstreamFailureDecision{
+			action:       upstreamFailureTryNextKey,
+			quotaRelated: quotaRelated,
+			errorType:    classifyUpstreamError(statusCode, quotaRelated),
+		}
+	}
+
+	return upstreamFailureDecision{
+		action:    upstreamFailureRespond,
+		errorType: classifyUpstreamError(statusCode, false),
+	}
+}
+
+func classifyResponseProcessingError(err error, responseWritten bool) responseProcessingDecision {
+	if isClientSideError(err) {
+		return responseProcessingDecision{action: responseProcessingClientCancelled}
+	}
+	if safetyErr := contentSafetyError(err); safetyErr != nil {
+		return responseProcessingDecision{
+			action:    responseProcessingContentSafety,
+			safetyErr: safetyErr,
+		}
+	}
+	if hookErr := contentSafetyHookError(err); hookErr != nil {
+		return responseProcessingDecision{
+			action:  responseProcessingContentSafetyHook,
+			hookErr: hookErr,
+		}
+	}
+	if isRetrySameCandidateError(err) && !responseWritten {
+		return responseProcessingDecision{action: responseProcessingRetryCandidate}
+	}
+	return responseProcessingDecision{action: responseProcessingChannelFailure}
+}
+
+func (r UpstreamAttemptResult) legacyValues() (bool, string, int, *FailoverError, *types.Usage, error) {
+	return r.Handled, r.SuccessKey, r.SuccessBaseURLIdx, r.FailoverError, r.Usage, r.LastError
+}
+
+func newUpstreamAttemptResult(
+	handled bool,
+	successKey string,
+	successBaseURLIdx int,
+	failoverErr *FailoverError,
+	usage *types.Usage,
+	lastError error,
+) UpstreamAttemptResult {
+	return UpstreamAttemptResult{
+		Handled:           handled,
+		SuccessKey:        successKey,
+		SuccessBaseURLIdx: successBaseURLIdx,
+		FailoverError:     failoverErr,
+		Usage:             usage,
+		LastError:         lastError,
+	}
+}
+
+// TryWithModelMappingFailover 按模型映射执行上游故障转移。
+func (a UpstreamAttempt) TryWithModelMappingFailover() UpstreamAttemptResult {
+	return a.tryWithModelMappingFailover()
+}
+
+// TryWithAllKeys 按当前上游的所有 Key 和 BaseURL 执行故障转移。
+func (a UpstreamAttempt) TryWithAllKeys() UpstreamAttemptResult {
+	return a.tryWithAllKeys()
+}
+
+// TryUpstreamWithModelMappingFailover 保留长参数入口，供现有外部调用方兼容使用。
 func TryUpstreamWithModelMappingFailover(
 	c *gin.Context,
 	envCfg *config.EnvConfig,
@@ -134,7 +324,7 @@ func TryUpstreamWithModelMappingFailover(
 	apiType string,
 	metricsManager *metrics.MetricsManager,
 	upstream *config.UpstreamConfig,
-	requestedModel string, // 客户端请求的原始模型
+	requestedModel string,
 	allowModelFailover bool,
 	urlResults []urlhealth.URLLatencyResult,
 	requestBody []byte,
@@ -147,31 +337,53 @@ func TryUpstreamWithModelMappingFailover(
 	handleSuccess HandleSuccessFunc,
 	logCtx AttemptLogContext,
 ) (handled bool, successKey string, successBaseURLIdx int, failoverErr *FailoverError, usage *types.Usage, lastError error) {
+	return UpstreamAttempt{
+		Context:            c,
+		EnvConfig:          envCfg,
+		ConfigManager:      cfgManager,
+		ChannelScheduler:   channelScheduler,
+		Kind:               kind,
+		APIType:            apiType,
+		MetricsManager:     metricsManager,
+		Upstream:           upstream,
+		RequestedModel:     requestedModel,
+		AllowModelFailover: allowModelFailover,
+		URLResults:         urlResults,
+		RequestBody:        requestBody,
+		IsStream:           isStream,
+		NextAPIKey:         nextAPIKey,
+		BuildRequest:       buildRequest,
+		DeprioritizeKey:    deprioritizeKey,
+		MarkURLFailure:     markURLFailure,
+		MarkURLSuccess:     markURLSuccess,
+		HandleSuccess:      handleSuccess,
+		LogContext:         logCtx,
+	}.TryWithModelMappingFailover().legacyValues()
+}
+
+// tryWithModelMappingFailover 在模型映射级别进行 failover。
+// 非 Fuzzy 模式下仅尝试首个映射模型，避免跨模型故障转移。
+func (a UpstreamAttempt) tryWithModelMappingFailover() UpstreamAttemptResult {
 	// 获取该模型的映射列表
-	targetModels := config.ResolveUpstreamModelList(requestedModel, upstream)
+	targetModels := config.ResolveUpstreamModelList(a.RequestedModel, a.Upstream)
 
 	if len(targetModels) == 0 {
 		// 没有映射，直接使用原始模型
-		targetModels = []string{requestedModel}
+		targetModels = []string{a.RequestedModel}
 	}
-	if !allowModelFailover && len(targetModels) > 1 {
+	if !a.AllowModelFailover && len(targetModels) > 1 {
 		targetModels = targetModels[:1]
 	} else {
-		targetModels = rankTargetModelsForChannel(channelScheduler, upstream, targetModels, urlResults, logCtx.ChannelIndex)
+		targetModels = rankTargetModelsForChannel(a.ChannelScheduler, a.Upstream, targetModels, a.URLResults, a.LogContext.ChannelIndex)
 	}
 
 	// 如果只有一个目标模型，直接调用原有逻辑
 	if len(targetModels) == 1 {
-		return TryUpstreamWithAllKeys(
-			c, envCfg, cfgManager, channelScheduler, kind, apiType,
-			metricsManager, upstream, urlResults, requestBody, isStream,
-			nextAPIKey, buildRequest, deprioritizeKey,
-			markURLFailure, markURLSuccess, handleSuccess, logCtx,
-		)
+		return a.tryWithAllKeys()
 	}
 
 	// 多个目标模型：依次尝试
-	log.Printf("[%s-ModelMapping] 模型 %s 映射到 %d 个备选: %v", apiType, requestedModel, len(targetModels), targetModels)
+	log.Printf("[%s-ModelMapping] 模型 %s 映射到 %d 个备选: %v", a.APIType, a.RequestedModel, len(targetModels), targetModels)
 
 	var lastFailoverError *FailoverError
 	var lastErr error
@@ -179,57 +391,51 @@ func TryUpstreamWithModelMappingFailover(
 	for modelIdx, targetModel := range targetModels {
 		// 检查客户端是否已取消
 		select {
-		case <-c.Request.Context().Done():
-			log.Printf("[%s-Cancel] 客户端已取消，停止模型 failover", apiType)
-			return true, "", 0, nil, nil, context.Canceled
+		case <-a.Context.Request.Context().Done():
+			log.Printf("[%s-Cancel] 客户端已取消，停止模型 failover", a.APIType)
+			return newUpstreamAttemptResult(true, "", 0, nil, nil, context.Canceled)
 		default:
 		}
 
 		log.Printf("[%s-ModelMapping] 尝试备选模型 %d/%d: %s -> %s",
-			apiType, modelIdx+1, len(targetModels), requestedModel, targetModel)
+			a.APIType, modelIdx+1, len(targetModels), a.RequestedModel, targetModel)
 
 		// 创建上游副本，临时覆盖模型映射为当前尝试的单一模型
-		upstreamCopy := upstream.Clone()
+		upstreamCopy := a.Upstream.Clone()
 		upstreamCopy.ModelMapping = map[string][]string{
-			requestedModel: {targetModel},
+			a.RequestedModel: {targetModel},
 		}
 
-		// 保留客户端原始模型，由临时映射决定本次实际上游模型。
-		modelLogCtx := logCtx
+		modelAttempt := a
+		modelAttempt.Upstream = upstreamCopy
+		result := modelAttempt.tryWithAllKeys()
 
-		handled, successKey, successBaseURLIdx, failoverErr, usage, err := TryUpstreamWithAllKeys(
-			c, envCfg, cfgManager, channelScheduler, kind, apiType,
-			metricsManager, upstreamCopy, urlResults, requestBody, isStream,
-			nextAPIKey, buildRequest, deprioritizeKey,
-			markURLFailure, markURLSuccess, handleSuccess, modelLogCtx,
-		)
-
-		if handled {
-			if successKey != "" {
+		if result.Handled {
+			if result.SuccessKey != "" {
 				// 成功
 				log.Printf("[%s-ModelMapping] 模型 %s (备选 %d/%d) 请求成功",
-					apiType, targetModel, modelIdx+1, len(targetModels))
-				return handled, successKey, successBaseURLIdx, failoverErr, usage, err
+					a.APIType, targetModel, modelIdx+1, len(targetModels))
+				return result
 			}
 			// handled=true 但 successKey 为空：非 failover 错误（如客户端取消、参数错误等）
-			return handled, successKey, successBaseURLIdx, failoverErr, usage, err
+			return result
 		}
 
 		// 未处理（failover 错误），保存错误信息并尝试下一个模型
-		if failoverErr != nil {
-			lastFailoverError = failoverErr
+		if result.FailoverError != nil {
+			lastFailoverError = result.FailoverError
 		}
-		if err != nil {
-			lastErr = err
+		if result.LastError != nil {
+			lastErr = result.LastError
 		}
 
 		log.Printf("[%s-ModelMapping] 模型 %s (备选 %d/%d) 失败，尝试下一个备选模型",
-			apiType, targetModel, modelIdx+1, len(targetModels))
+			a.APIType, targetModel, modelIdx+1, len(targetModels))
 	}
 
 	// 所有模型都失败
-	log.Printf("[%s-ModelMapping] 所有 %d 个备选模型都失败", apiType, len(targetModels))
-	return false, "", 0, lastFailoverError, nil, lastErr
+	log.Printf("[%s-ModelMapping] 所有 %d 个备选模型都失败", a.APIType, len(targetModels))
+	return newUpstreamAttemptResult(false, "", 0, lastFailoverError, nil, lastErr)
 }
 
 func rankTargetModelsForChannel(
@@ -290,6 +496,206 @@ func rankTargetModelsForChannel(
 		ordered = append(ordered, item.model)
 	}
 	return ordered
+}
+
+func preferConversationBaseURL(
+	channelScheduler *scheduler.ChannelScheduler,
+	envCfg *config.EnvConfig,
+	apiType string,
+	logCtx AttemptLogContext,
+	urlResults []urlhealth.URLLatencyResult,
+) []urlhealth.URLLatencyResult {
+	if channelScheduler == nil || logCtx.ConversationID == "" {
+		return urlResults
+	}
+	preferredBaseURL, ok := channelScheduler.GetPreferredBaseURL(logCtx.ConversationID)
+	if !ok {
+		return urlResults
+	}
+	if envCfg != nil && envCfg.ShouldLog("info") {
+		log.Printf("[%s-BaseURL-Affinity] conversation sticky prefer %s", apiType, preferredBaseURL)
+	}
+	return scheduler.PreferBaseURLInResults(urlResults, preferredBaseURL)
+}
+
+func (a UpstreamAttempt) buildPreparedAttemptRequest(
+	upstreamCopy *config.UpstreamConfig,
+	apiKey string,
+) (*http.Request, string, error) {
+	req, err := a.BuildRequest(a.Context, upstreamCopy, apiKey)
+	if err != nil {
+		return nil, "build_request", err
+	}
+	prepareStage, err := prepareRequestForUpstream(
+		a.Context,
+		a.EnvConfig,
+		a.ConfigManager,
+		a.ChannelScheduler,
+		a.Kind,
+		upstreamCopy,
+		a.LogContext.Model,
+		a.LogContext.ConversationID,
+		req,
+		a.APIType,
+	)
+	if err != nil {
+		return req, prepareStage, err
+	}
+	return req, "", nil
+}
+
+type compatibilityRetryResult struct {
+	Response        *http.Response
+	Body            []byte
+	Succeeded       bool
+	PreparationStage string
+	Err             error
+}
+
+type attemptObservation struct {
+	ResolvedModel    string
+	ProfileRequestID uint64
+	RequestID        uint64
+}
+
+// attemptLifecycle 绑定单次候选尝试的观测身份和终结责任。
+// 该对象只存在于当前请求的单次尝试范围内，不跨请求保存。
+type attemptLifecycle struct {
+	attempt     UpstreamAttempt
+	baseURL     string
+	apiKey      string
+	observation attemptObservation
+}
+
+type upstreamCapabilityState struct {
+	disablePromptCacheKey bool
+	requireReasoningContent bool
+}
+
+// upstreamFailoverState 保存一次故障转移请求跨 BaseURL 的结果状态。
+// Key 失败和同候选重试状态仍由 candidateRetryState 按 BaseURL 独立维护。
+type upstreamFailoverState struct {
+	lastError              error
+	lastFailoverError      *FailoverError
+	deprioritizeCandidates map[string]bool
+}
+
+func newUpstreamFailoverState() upstreamFailoverState {
+	return upstreamFailoverState{
+		deprioritizeCandidates: make(map[string]bool),
+	}
+}
+
+func newUpstreamCapabilityState(upstream *config.UpstreamConfig) upstreamCapabilityState {
+	if upstream == nil {
+		return upstreamCapabilityState{}
+	}
+	return upstreamCapabilityState{
+		disablePromptCacheKey: upstream.DisablePromptCacheKey,
+		requireReasoningContent: upstream.RequireReasoningContent,
+	}
+}
+
+func (a UpstreamAttempt) prepareCandidateUpstream(
+	baseURL string,
+	capabilities upstreamCapabilityState,
+) *config.UpstreamConfig {
+	upstreamCopy := a.Upstream.Clone()
+	upstreamCopy.BaseURL = baseURL
+	upstreamCopy.DisablePromptCacheKey = capabilities.disablePromptCacheKey
+	upstreamCopy.RequireReasoningContent = capabilities.requireReasoningContent
+	recordConversationAttempt(a.ChannelScheduler, a.Kind, a.Upstream, a.LogContext, a.IsStream)
+	return upstreamCopy
+}
+
+func (a UpstreamAttempt) startAttemptObservation(baseURL, apiKey string) attemptObservation {
+	a.ChannelScheduler.RecordRequestStart(baseURL, apiKey, a.LogContext.ChannelIndex, a.Kind)
+	resolvedModel := config.ResolveUpstreamModel(a.LogContext.Model, a.Upstream)
+	profileRequestID := nextProfileRequestID()
+	if pm := a.ChannelScheduler.GetProfileManager(); pm != nil {
+		pm.StartRequest(baseURL, a.Upstream.APIKeys, resolvedModel, a.LogContext.ChannelIndex, profileRequestID)
+	}
+	requestID := a.MetricsManager.RecordRequestConnected(baseURL, apiKey, a.LogContext.ChannelIndex, a.LogContext.Model)
+	return attemptObservation{
+		ResolvedModel:    resolvedModel,
+		ProfileRequestID: profileRequestID,
+		RequestID:        requestID,
+	}
+}
+
+func (a UpstreamAttempt) startAttemptLifecycle(baseURL, apiKey string) attemptLifecycle {
+	return attemptLifecycle{
+		attempt:     a,
+		baseURL:     baseURL,
+		apiKey:      apiKey,
+		observation: a.startAttemptObservation(baseURL, apiKey),
+	}
+}
+
+func (a UpstreamAttempt) retrySameCandidateRequest(
+	upstreamCopy *config.UpstreamConfig,
+	apiKey string,
+	proxyURL string,
+) compatibilityRetryResult {
+	req, preparationStage, err := a.buildPreparedAttemptRequest(upstreamCopy, apiKey)
+	if err != nil {
+		if preparationStage != "build_request" && req != nil && req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return compatibilityRetryResult{
+			PreparationStage: preparationStage,
+			Err:              err,
+		}
+	}
+
+	resp, err := SendRequest(req, upstreamCopy, a.EnvConfig, a.IsStream, a.APIType, proxyURL)
+	if err != nil {
+		return compatibilityRetryResult{PreparationStage: "send_request", Err: err}
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return compatibilityRetryResult{Response: resp, Succeeded: true}
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	body = utils.DecompressGzipIfNeeded(resp, body)
+	return compatibilityRetryResult{Response: resp, Body: body}
+}
+
+func (l attemptLifecycle) finalizeNeutral() {
+	l.attempt.MetricsManager.RecordRequestFinalizeNeutral(l.baseURL, l.apiKey, l.attempt.LogContext.ChannelIndex, l.observation.RequestID)
+	l.attempt.ChannelScheduler.RecordRequestEnd(l.baseURL, l.apiKey, l.attempt.LogContext.ChannelIndex, l.attempt.Kind)
+	if pm := l.attempt.ChannelScheduler.GetProfileManager(); pm != nil {
+		pm.EndRequestNeutral(l.baseURL, l.attempt.Upstream.APIKeys, l.observation.ResolvedModel, l.attempt.LogContext.ChannelIndex, l.observation.ProfileRequestID)
+	}
+}
+
+func (l attemptLifecycle) finalizeClientCancelled() {
+	l.attempt.MetricsManager.RecordRequestFinalizeClientCancel(l.baseURL, l.apiKey, l.attempt.LogContext.ChannelIndex, l.observation.RequestID)
+	l.attempt.ChannelScheduler.RecordRequestEnd(l.baseURL, l.apiKey, l.attempt.LogContext.ChannelIndex, l.attempt.Kind)
+	if pm := l.attempt.ChannelScheduler.GetProfileManager(); pm != nil {
+		pm.EndRequestNeutral(l.baseURL, l.attempt.Upstream.APIKeys, l.observation.ResolvedModel, l.attempt.LogContext.ChannelIndex, l.observation.ProfileRequestID)
+	}
+}
+
+func (l attemptLifecycle) finalizeFailed() {
+	l.attempt.MetricsManager.RecordRequestFinalizeFailure(l.baseURL, l.apiKey, l.attempt.LogContext.ChannelIndex, l.observation.RequestID)
+	l.attempt.ChannelScheduler.RecordRequestEnd(l.baseURL, l.apiKey, l.attempt.LogContext.ChannelIndex, l.attempt.Kind)
+	if pm := l.attempt.ChannelScheduler.GetProfileManager(); pm != nil {
+		pm.EndRequest(l.baseURL, l.attempt.Upstream.APIKeys, l.observation.ResolvedModel, l.attempt.LogContext.ChannelIndex, l.observation.ProfileRequestID, false, 0)
+	}
+}
+
+func (l attemptLifecycle) finalizeSuccessful(usage *types.Usage) {
+	l.attempt.MetricsManager.RecordRequestFinalizeSuccess(l.baseURL, l.apiKey, l.attempt.LogContext.ChannelIndex, l.observation.RequestID, usage)
+	l.attempt.ChannelScheduler.RecordRequestEnd(l.baseURL, l.apiKey, l.attempt.LogContext.ChannelIndex, l.attempt.Kind)
+	if pm := l.attempt.ChannelScheduler.GetProfileManager(); pm != nil {
+		var outputTokens int64
+		if usage != nil {
+			outputTokens = int64(usage.OutputTokens)
+		}
+		pm.EndRequest(l.baseURL, l.attempt.Upstream.APIKeys, l.observation.ResolvedModel, l.attempt.LogContext.ChannelIndex, l.observation.ProfileRequestID, true, outputTokens)
+	}
 }
 
 func prepareRequestForUpstream(
@@ -369,38 +775,83 @@ func TryUpstreamWithAllKeys(
 	handleSuccess HandleSuccessFunc,
 	logCtx AttemptLogContext,
 ) (handled bool, successKey string, successBaseURLIdx int, failoverErr *FailoverError, usage *types.Usage, lastError error) {
-	if upstream == nil || len(upstream.APIKeys) == 0 {
-		return false, "", 0, nil, nil, nil
+	return UpstreamAttempt{
+		Context:          c,
+		EnvConfig:        envCfg,
+		ConfigManager:    cfgManager,
+		ChannelScheduler: channelScheduler,
+		Kind:             kind,
+		APIType:          apiType,
+		MetricsManager:   metricsManager,
+		Upstream:         upstream,
+		URLResults:       urlResults,
+		RequestBody:      requestBody,
+		IsStream:         isStream,
+		NextAPIKey:       nextAPIKey,
+		BuildRequest:     buildRequest,
+		DeprioritizeKey:  deprioritizeKey,
+		MarkURLFailure:   markURLFailure,
+		MarkURLSuccess:   markURLSuccess,
+		HandleSuccess:    handleSuccess,
+		LogContext:       logCtx,
+	}.TryWithAllKeys().legacyValues()
+}
+
+type upstreamAttemptPreflight struct {
+	proxyURL string
+}
+
+func (a UpstreamAttempt) prepareAllKeys() (upstreamAttemptPreflight, bool, error) {
+	if a.Upstream == nil || len(a.Upstream.APIKeys) == 0 {
+		return upstreamAttemptPreflight{}, false, nil
 	}
-	if metricsManager == nil {
-		return false, "", 0, nil, nil, nil
+	if a.MetricsManager == nil {
+		return upstreamAttemptPreflight{}, false, nil
 	}
-	if nextAPIKey == nil || buildRequest == nil || handleSuccess == nil {
-		return false, "", 0, nil, nil, nil
+	if a.NextAPIKey == nil || a.BuildRequest == nil || a.HandleSuccess == nil {
+		return upstreamAttemptPreflight{}, false, nil
 	}
-	if len(urlResults) == 0 {
-		return false, "", 0, nil, nil, nil
+	if len(a.URLResults) == 0 {
+		return upstreamAttemptPreflight{}, false, nil
 	}
-	proxyURL, err := cfgManager.ResolveUpstreamProxyURL(upstream)
+
+	proxyURL, err := a.ConfigManager.ResolveUpstreamProxyURL(a.Upstream)
 	if err != nil {
-		return false, "", 0, nil, nil, err
+		return upstreamAttemptPreflight{}, false, err
 	}
+	return upstreamAttemptPreflight{proxyURL: proxyURL}, true, nil
+}
 
-	// 同会话优先最近成功的 BaseURL，尽量保持 prompt cache 亲和
-	if channelScheduler != nil && logCtx.ConversationID != "" {
-		if preferredBaseURL, ok := channelScheduler.GetPreferredBaseURL(logCtx.ConversationID); ok {
-			urlResults = scheduler.PreferBaseURLInResults(urlResults, preferredBaseURL)
-			if envCfg != nil && envCfg.ShouldLog("info") {
-				log.Printf("[%s-BaseURL-Affinity] conversation sticky prefer %s", apiType, preferredBaseURL)
-			}
-		}
+func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
+	c := a.Context
+	envCfg := a.EnvConfig
+	cfgManager := a.ConfigManager
+	channelScheduler := a.ChannelScheduler
+	kind := a.Kind
+	apiType := a.APIType
+	metricsManager := a.MetricsManager
+	upstream := a.Upstream
+	urlResults := a.URLResults
+	requestBody := a.RequestBody
+	isStream := a.IsStream
+	logCtx := a.LogContext
+
+	var usage *types.Usage
+
+	preflight, valid, err := a.prepareAllKeys()
+	if err != nil {
+		return newUpstreamAttemptResult(false, "", 0, nil, nil, err)
 	}
+	if !valid {
+		return newUpstreamAttemptResult(false, "", 0, nil, nil, nil)
+	}
+	proxyURL := preflight.proxyURL
 
-	var lastFailoverError *FailoverError
-	deprioritizeCandidates := make(map[string]bool)
+	urlResults = preferConversationBaseURL(channelScheduler, envCfg, apiType, logCtx, urlResults)
+
+	failoverState := newUpstreamFailoverState()
 	requestLogID := nextAttemptLogID("req")
-	promptCacheKeyUnsupported := upstream.DisablePromptCacheKey
-	requireReasoningContent := upstream.RequireReasoningContent
+	capabilities := newUpstreamCapabilityState(upstream)
 
 	// 强制探测模式：基于本次优先尝试的 BaseURL 判断（避免 BaseURL/BaseURLs 不一致导致误判）
 	forceProbeMode := AreAllKeysSuspended(metricsManager, urlResults[0].URL, upstream.APIKeys, logCtx.ChannelIndex)
@@ -411,53 +862,42 @@ func TryUpstreamWithAllKeys(
 	for urlIdx, urlResult := range urlResults {
 		currentBaseURL := urlResult.URL
 		originalIdx := urlResult.OriginalIdx // 原始索引用于指标记录
-		failedKeys := make(map[string]bool)  // 每个 BaseURL 重置失败 Key 列表
-		const maxSameCandidateRetries = 1
-		sameCandidateRetries := make(map[string]int)
-		maxRetries := len(upstream.APIKeys) * (maxSameCandidateRetries + 1)
+		retryState := newCandidateRetryState(len(upstream.APIKeys))
 
-		for attempt := 0; attempt < maxRetries; attempt++ {
+		for attempt := 0; attempt < retryState.maxRetries; attempt++ {
 			RestoreRequestBody(c, requestBody)
 			ResetRequestLogFirstToken(c)
 			attemptStart := time.Now()
 
-			apiKey, err := nextAPIKey(upstream, failedKeys)
+			apiKey, err := a.NextAPIKey(upstream, retryState.failedKeys)
 			if err != nil {
-				lastError = err
+				failoverState.lastError = err
 				break // 当前 BaseURL 没有可用 Key，尝试下一个 BaseURL
 			}
 
 			// 检查熔断状态
 			if !forceProbeMode && metricsManager.ShouldSuspendKey(currentBaseURL, apiKey, logCtx.ChannelIndex) {
-				failedKeys[apiKey] = true
+				retryState.markKeyFailed(apiKey)
 				log.Printf("[%s-Circuit] 跳过熔断中的 Key: %s", apiType, utils.MaskAPIKey(apiKey))
 				continue
 			}
 
 			if envCfg.ShouldLog("info") {
 				log.Printf("[%s-Key] 使用API密钥: %s (BaseURL %d/%d, 尝试 %d/%d)",
-					apiType, utils.MaskAPIKey(apiKey), urlIdx+1, len(urlResults), attempt+1, maxRetries)
+					apiType, utils.MaskAPIKey(apiKey), urlIdx+1, len(urlResults), attempt+1, retryState.maxRetries)
 			}
 
 			// 使用深拷贝避免并发修改问题
-			upstreamCopy := upstream.Clone()
-			upstreamCopy.BaseURL = currentBaseURL
-			upstreamCopy.DisablePromptCacheKey = promptCacheKeyUnsupported
-			upstreamCopy.RequireReasoningContent = requireReasoningContent
-			recordConversationAttempt(channelScheduler, kind, upstream, logCtx, isStream)
+			upstreamCopy := a.prepareCandidateUpstream(currentBaseURL, capabilities)
 
-			req, err := buildRequest(c, upstreamCopy, apiKey)
-			if err != nil {
-				lastError = err
-				failedKeys[apiKey] = true
+			req, prepareStage, err := a.buildPreparedAttemptRequest(upstreamCopy, apiKey)
+			if err != nil && prepareStage == "build_request" {
+				failoverState.lastError = err
+				retryState.markKeyFailed(apiKey)
 				channelScheduler.RecordFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "build_request", err.Error(), true, isStream, nil)
 				continue
 			}
-			prepareStage, err := prepareRequestForUpstream(
-				c, envCfg, cfgManager, channelScheduler, kind, upstreamCopy,
-				logCtx.Model, logCtx.ConversationID, req, apiType,
-			)
 			if err != nil {
 				_ = req.Body.Close()
 				if prepareStage == "content_safety" {
@@ -467,7 +907,7 @@ func TryUpstreamWithAllKeys(
 						attemptStatus = "blocked"
 					}
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, attemptStatus, status, false, attemptStart, prepareStage, err.Error(), false, isStream, nil)
-					return true, "", 0, nil, nil, err
+					return newUpstreamAttemptResult(true, "", 0, nil, nil, err)
 				}
 				status, code := visionlayer.ErrorResponse(err)
 				payload := gin.H{
@@ -477,30 +917,16 @@ func TryUpstreamWithAllKeys(
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", status, false, attemptStart, "vision_layer", err.Error(), true, isStream, nil)
 				if channelScheduler.GetActiveChannelCountForModel(kind, logCtx.Model) > 1 {
 					body, _ := json.Marshal(payload)
-					return false, "", 0, &FailoverError{Status: status, Body: body}, nil, err
+					return newUpstreamAttemptResult(false, "", 0, &FailoverError{Status: status, Body: body}, nil, err)
 				}
 				c.JSON(status, payload)
-				return true, "", 0, nil, nil, err
+				return newUpstreamAttemptResult(true, "", 0, nil, nil, err)
 			}
-			// 记录请求开始
-			channelScheduler.RecordRequestStart(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-
-			// 性能画像：开始追踪请求
-			profileReqID := nextProfileRequestID()
-			resolvedModel := config.ResolveUpstreamModel(logCtx.Model, upstream)
-			if pm := channelScheduler.GetProfileManager(); pm != nil {
-				pm.StartRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
-			}
-
-			// TCP 建连开始即计数：将活跃度统计提前到发起上游请求之前
-			requestID := metricsManager.RecordRequestConnected(currentBaseURL, apiKey, logCtx.ChannelIndex, logCtx.Model)
+			// 请求准备成功后再启动请求画像和活跃度观测。
+			lifecycle := a.startAttemptLifecycle(currentBaseURL, apiKey)
 			finishRetryContentSafety := func(preparationErr error) {
 				status := handleContentSafetyPreparationError(c, apiType, preparationErr)
-				metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-				if pm := channelScheduler.GetProfileManager(); pm != nil {
-					pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
-				}
+				lifecycle.finalizeNeutral()
 				attemptStatus := "failed"
 				if status == http.StatusForbidden {
 					attemptStatus = "blocked"
@@ -510,29 +936,21 @@ func TryUpstreamWithAllKeys(
 
 			resp, err := SendRequest(req, upstream, envCfg, isStream, apiType, proxyURL)
 			if err != nil {
-				lastError = err
+				failoverState.lastError = err
 				// 区分客户端取消和真实渠道故障（统一口径）
 				if isClientSideError(err) {
 					// 客户端取消：不计入失败，不触发 failover
-					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-					if pm := channelScheduler.GetProfileManager(); pm != nil {
-						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
-					}
+					lifecycle.finalizeClientCancelled()
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", 0, false, attemptStart, "client_cancelled", err.Error(), false, isStream, nil)
 					log.Printf("[%s-Cancel] 请求已取消（SendRequest 阶段）", apiType)
-					return true, "", 0, nil, nil, err
+					return newUpstreamAttemptResult(true, "", 0, nil, nil, err)
 				}
 				// 真实渠道故障：计入失败，继续 failover
-				failedKeys[apiKey] = true
+				retryState.markKeyFailed(apiKey)
 				cfgManager.MarkKeyAsFailed(apiKey, apiType)
-				metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-				channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-				if pm := channelScheduler.GetProfileManager(); pm != nil {
-					pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
-				}
-				if markURLFailure != nil {
-					markURLFailure(currentBaseURL)
+				lifecycle.finalizeFailed()
+				if a.MarkURLFailure != nil {
+					a.MarkURLFailure(currentBaseURL)
 				}
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", 0, false, attemptStart, "network", err.Error(), true, isStream, nil)
 				log.Printf("[%s-Key] 警告: API密钥失败: %v", apiType, err)
@@ -541,7 +959,7 @@ func TryUpstreamWithAllKeys(
 
 			// 收到响应头，性能画像记录首字节时间
 			if pm := channelScheduler.GetProfileManager(); pm != nil {
-				pm.RecordFirstByte(profileReqID)
+				pm.RecordFirstByte(lifecycle.observation.ProfileRequestID)
 			}
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -551,23 +969,19 @@ func TryUpstreamWithAllKeys(
 				retrySucceeded := false
 
 				if IsUpstreamModelCapacityError(respBodyBytes) {
-					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-					if pm := channelScheduler.GetProfileManager(); pm != nil {
-						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
-					}
+					lifecycle.finalizeNeutral()
 
-					lastError = fmt.Errorf("上游模型暂时满载")
-					lastFailoverError = &FailoverError{Status: resp.StatusCode, Body: respBodyBytes}
+					failoverState.lastError = fmt.Errorf("上游模型暂时满载")
+					failoverState.lastFailoverError = &FailoverError{Status: resp.StatusCode, Body: respBodyBytes}
 					candidate := currentBaseURL + "\x00" + apiKey
-					canRetry := sameCandidateRetries[candidate] < maxSameCandidateRetries && c.Request.Context().Err() == nil
+					canRetry := retryState.canRetryCandidate(candidate, c.Request.Context())
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "model_capacity", string(respBodyBytes), canRetry, isStream, nil)
 					if canRetry {
-						sameCandidateRetries[candidate]++
-						log.Printf("[%s-Capacity] 模型暂时满载，使用同一 BaseURL 和 Key 重试 (%d/%d)", apiType, sameCandidateRetries[candidate], maxSameCandidateRetries)
+						retryCount := retryState.recordCandidateRetry(candidate)
+						log.Printf("[%s-Capacity] 模型暂时满载，使用同一 BaseURL 和 Key 重试 (%d/%d)", apiType, retryCount, retryState.maxSameCandidateRetries)
 						continue
 					}
-					failedKeys[apiKey] = true
+					retryState.markKeyFailed(apiKey)
 					continue
 				}
 
@@ -575,40 +989,32 @@ func TryUpstreamWithAllKeys(
 				// 使用同一渠道、BaseURL 和 API key 移除该字段后重试一次，并记住能力。
 				if !upstreamCopy.DisablePromptCacheKey && IsPromptCacheKeyUnsupported(resp.StatusCode, respBodyBytes) {
 					log.Printf("[%s-ChannelCapability] 渠道 %s 不支持 prompt_cache_key，移除后使用同一 key 重试一次", apiType, upstream.Name)
-					promptCacheKeyUnsupported = true
+					capabilities.disablePromptCacheKey = true
 					upstreamCopy.DisablePromptCacheKey = true
 					if err := cfgManager.MarkPromptCacheKeyUnsupported(string(kind), upstream.ID); err != nil {
 						log.Printf("[%s-ChannelCapability] 持久化 prompt_cache_key 能力失败: %v", apiType, err)
 					}
 
 					RestoreRequestBody(c, requestBody)
-					retryReq, retryErr := buildRequest(c, upstreamCopy, apiKey)
-					if retryErr != nil {
-						log.Printf("[%s-ChannelCapability] 重建无 prompt_cache_key 请求失败: %v", apiType, retryErr)
-					} else if retryStage, prepareErr := prepareRequestForUpstream(
-						c, envCfg, cfgManager, channelScheduler, kind, upstreamCopy,
-						logCtx.Model, logCtx.ConversationID, retryReq, apiType,
-					); prepareErr != nil {
-						retryErr = prepareErr
-						_ = retryReq.Body.Close()
-						if retryStage == "content_safety" {
-							finishRetryContentSafety(retryErr)
-							return true, "", 0, nil, nil, retryErr
+					retryResult := a.retrySameCandidateRequest(upstreamCopy, apiKey, proxyURL)
+					if retryResult.Err != nil {
+						if retryResult.PreparationStage == "content_safety" {
+							finishRetryContentSafety(retryResult.Err)
+							return newUpstreamAttemptResult(true, "", 0, nil, nil, retryResult.Err)
 						}
-						log.Printf("[%s-ChannelCapability] 准备无 prompt_cache_key 请求失败: %v", apiType, retryErr)
-					} else {
-						retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
-						if retryErr != nil {
-							log.Printf("[%s-ChannelCapability] 无 prompt_cache_key 重试失败: %v", apiType, retryErr)
+						if retryResult.PreparationStage == "build_request" {
+							log.Printf("[%s-ChannelCapability] 重建无 prompt_cache_key 请求失败: %v", apiType, retryResult.Err)
+						} else if retryResult.PreparationStage == "send_request" {
+							log.Printf("[%s-ChannelCapability] 无 prompt_cache_key 重试失败: %v", apiType, retryResult.Err)
 						} else {
-							resp = retryResp
-							if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
-								retrySucceeded = true
-							} else {
-								respBodyBytes, _ = io.ReadAll(retryResp.Body)
-								retryResp.Body.Close()
-								respBodyBytes = utils.DecompressGzipIfNeeded(retryResp, respBodyBytes)
-							}
+							log.Printf("[%s-ChannelCapability] 准备无 prompt_cache_key 请求失败: %v", apiType, retryResult.Err)
+						}
+					} else {
+						resp = retryResult.Response
+						if retryResult.Succeeded {
+							retrySucceeded = true
+						} else {
+							respBodyBytes = retryResult.Body
 						}
 					}
 				}
@@ -620,40 +1026,32 @@ func TryUpstreamWithAllKeys(
 				if !retrySucceeded && kind == scheduler.ChannelKindMessages && upstreamCopy.ServiceType == "openai" && !upstreamCopy.RequireReasoningContent &&
 					IsReasoningContentRequired(resp.StatusCode, respBodyBytes) {
 					log.Printf("[%s-ChannelCapability] 渠道 %s 要求完整 reasoning_content，补齐后使用同一 key 重试一次", apiType, upstream.Name)
-					requireReasoningContent = true
+					capabilities.requireReasoningContent = true
 					upstreamCopy.RequireReasoningContent = true
 					if err := cfgManager.MarkReasoningContentRequired(string(kind), upstream.ID); err != nil {
 						log.Printf("[%s-ChannelCapability] 持久化 reasoning_content 能力失败: %v", apiType, err)
 					}
 
 					RestoreRequestBody(c, requestBody)
-					retryReq, retryErr := buildRequest(c, upstreamCopy, apiKey)
-					if retryErr != nil {
-						log.Printf("[%s-ChannelCapability] 重建 reasoning_content 兼容请求失败: %v", apiType, retryErr)
-					} else if retryStage, prepareErr := prepareRequestForUpstream(
-						c, envCfg, cfgManager, channelScheduler, kind, upstreamCopy,
-						logCtx.Model, logCtx.ConversationID, retryReq, apiType,
-					); prepareErr != nil {
-						retryErr = prepareErr
-						_ = retryReq.Body.Close()
-						if retryStage == "content_safety" {
-							finishRetryContentSafety(retryErr)
-							return true, "", 0, nil, nil, retryErr
+					retryResult := a.retrySameCandidateRequest(upstreamCopy, apiKey, proxyURL)
+					if retryResult.Err != nil {
+						if retryResult.PreparationStage == "content_safety" {
+							finishRetryContentSafety(retryResult.Err)
+							return newUpstreamAttemptResult(true, "", 0, nil, nil, retryResult.Err)
 						}
-						log.Printf("[%s-ChannelCapability] 准备 reasoning_content 兼容请求失败: %v", apiType, retryErr)
-					} else {
-						retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
-						if retryErr != nil {
-							log.Printf("[%s-ChannelCapability] reasoning_content 兼容重试失败: %v", apiType, retryErr)
+						if retryResult.PreparationStage == "build_request" {
+							log.Printf("[%s-ChannelCapability] 重建 reasoning_content 兼容请求失败: %v", apiType, retryResult.Err)
+						} else if retryResult.PreparationStage == "send_request" {
+							log.Printf("[%s-ChannelCapability] reasoning_content 兼容重试失败: %v", apiType, retryResult.Err)
 						} else {
-							resp = retryResp
-							if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
-								retrySucceeded = true
-							} else {
-								respBodyBytes, _ = io.ReadAll(retryResp.Body)
-								retryResp.Body.Close()
-								respBodyBytes = utils.DecompressGzipIfNeeded(retryResp, respBodyBytes)
-							}
+							log.Printf("[%s-ChannelCapability] 准备 reasoning_content 兼容请求失败: %v", apiType, retryResult.Err)
+						}
+					} else {
+						resp = retryResult.Response
+						if retryResult.Succeeded {
+							retrySucceeded = true
+						} else {
+							respBodyBytes = retryResult.Body
 						}
 					}
 				}
@@ -667,34 +1065,26 @@ func TryUpstreamWithAllKeys(
 					} else if changed {
 						log.Printf("[%s-ContentPolicy] 使用等价 JSON Unicode 转义在同一渠道重试一次", apiType)
 						RestoreRequestBody(c, escapedBody)
-						retryReq, retryErr := buildRequest(c, upstreamCopy, apiKey)
-						if retryErr != nil {
-							log.Printf("[%s-ContentPolicy] 重建转义请求失败: %v", apiType, retryErr)
-						} else if retryStage, prepareErr := prepareRequestForUpstream(
-							c, envCfg, cfgManager, channelScheduler, kind, upstreamCopy,
-							logCtx.Model, logCtx.ConversationID, retryReq, apiType,
-						); prepareErr != nil {
-							retryErr = prepareErr
-							_ = retryReq.Body.Close()
-							if retryStage == "content_safety" {
-								finishRetryContentSafety(retryErr)
-								return true, "", 0, nil, nil, retryErr
+						retryResult := a.retrySameCandidateRequest(upstreamCopy, apiKey, proxyURL)
+						if retryResult.Err != nil {
+							if retryResult.PreparationStage == "content_safety" {
+								finishRetryContentSafety(retryResult.Err)
+								return newUpstreamAttemptResult(true, "", 0, nil, nil, retryResult.Err)
 							}
-							log.Printf("[%s-ContentPolicy] 准备转义请求失败: %v", apiType, retryErr)
-						} else {
-							retryResp, retryErr := SendRequest(retryReq, upstreamCopy, envCfg, isStream, apiType, proxyURL)
-							if retryErr != nil {
-								log.Printf("[%s-ContentPolicy] 转义请求重试失败: %v", apiType, retryErr)
+							if retryResult.PreparationStage == "build_request" {
+								log.Printf("[%s-ContentPolicy] 重建转义请求失败: %v", apiType, retryResult.Err)
+							} else if retryResult.PreparationStage == "send_request" {
+								log.Printf("[%s-ContentPolicy] 转义请求重试失败: %v", apiType, retryResult.Err)
 							} else {
-								resp = retryResp
-								if retryResp.StatusCode >= 200 && retryResp.StatusCode < 300 {
-									retrySucceeded = true
-									log.Printf("[%s-ContentPolicy] 等价 JSON 转义重试成功", apiType)
-								} else {
-									respBodyBytes, _ = io.ReadAll(retryResp.Body)
-									retryResp.Body.Close()
-									respBodyBytes = utils.DecompressGzipIfNeeded(retryResp, respBodyBytes)
-								}
+								log.Printf("[%s-ContentPolicy] 准备转义请求失败: %v", apiType, retryResult.Err)
+							}
+						} else {
+							resp = retryResult.Response
+							if retryResult.Succeeded {
+								retrySucceeded = true
+								log.Printf("[%s-ContentPolicy] 等价 JSON 转义重试成功", apiType)
+							} else {
+								respBodyBytes = retryResult.Body
 							}
 						}
 						RestoreRequestBody(c, requestBody)
@@ -702,108 +1092,88 @@ func TryUpstreamWithAllKeys(
 				}
 
 				if !retrySucceeded {
-					// 内容审核与当前请求正文、上游策略相关。不要换 Key，也不要计入渠道故障；
-					// 多渠道可用时把原始错误交给外层继续选渠。
-					if logCtx.AllowContentPolicyChannelFailover && shouldFailoverToNextChannel(respBodyBytes, channelScheduler.GetActiveChannelCountForModel(kind, logCtx.Model)) {
-						metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-						channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-						if pm := channelScheduler.GetProfileManager(); pm != nil {
-							pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
-						}
+					decision := a.decideUpstreamFailure(resp.StatusCode, respBodyBytes)
+					switch decision.action {
+					case upstreamFailureTryNextChannel:
+						// 内容审核与当前请求正文、上游策略相关。不要换 Key，也不要计入渠道故障；
+						// 多渠道可用时把原始错误交给外层继续选渠。
+						lifecycle.finalizeNeutral()
 
-						lastError = fmt.Errorf("上游内容审核拒绝请求")
-						lastFailoverError = &FailoverError{Status: resp.StatusCode, Body: respBodyBytes}
-						recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "content_policy", string(respBodyBytes), true, isStream, nil)
+						failoverState.lastError = fmt.Errorf("上游内容审核拒绝请求")
+						failoverState.lastFailoverError = &FailoverError{Status: resp.StatusCode, Body: respBodyBytes}
+						recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, decision.errorType, string(respBodyBytes), true, isStream, nil)
 						log.Printf("[%s-ContentPolicy] 渠道 %s 拒绝请求，跳过当前渠道", apiType, upstream.Name)
-						return false, "", 0, lastFailoverError, nil, lastError
-					}
+						return newUpstreamAttemptResult(false, "", 0, failoverState.lastFailoverError, nil, failoverState.lastError)
 
-					shouldFailover, isQuotaRelated := ShouldRetryWithNextKey(resp.StatusCode, respBodyBytes, cfgManager.GetFuzzyModeEnabled(), apiType)
-					if shouldFailover {
-						lastError = fmt.Errorf("上游错误: %d", resp.StatusCode)
-						failedKeys[apiKey] = true
+					case upstreamFailureTryNextKey:
+						failoverState.lastError = fmt.Errorf("上游错误: %d", resp.StatusCode)
+						retryState.markKeyFailed(apiKey)
 						cfgManager.MarkKeyAsFailed(apiKey, apiType)
-						metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-						channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-						if pm := channelScheduler.GetProfileManager(); pm != nil {
-							pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
-						}
-						if markURLFailure != nil {
-							markURLFailure(currentBaseURL)
+						lifecycle.finalizeFailed()
+						if a.MarkURLFailure != nil {
+							a.MarkURLFailure(currentBaseURL)
 						}
 						log.Printf("[%s-Key] 警告: API密钥失败 (状态: %d)，尝试下一个密钥", apiType, resp.StatusCode)
 
-						lastFailoverError = &FailoverError{
+						failoverState.lastFailoverError = &FailoverError{
 							Status: resp.StatusCode,
 							Body:   respBodyBytes,
 						}
 
-						if isQuotaRelated {
-							deprioritizeCandidates[apiKey] = true
+						if decision.quotaRelated {
+							failoverState.deprioritizeCandidates[apiKey] = true
 						}
-						recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, isQuotaRelated), string(respBodyBytes), true, isStream, nil)
+						recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, decision.errorType, string(respBodyBytes), true, isStream, nil)
 						continue
-					}
 
-					// 非 failover 错误，记录失败指标后返回（请求已处理）
-					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-					if pm := channelScheduler.GetProfileManager(); pm != nil {
-						pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
+					case upstreamFailureRespond:
+						// 非 failover 错误，记录失败指标后返回（请求已处理）
+						lifecycle.finalizeFailed()
+						recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, decision.errorType, string(respBodyBytes), false, isStream, nil)
+						c.Data(resp.StatusCode, "application/json", respBodyBytes)
+						return newUpstreamAttemptResult(true, "", 0, nil, nil, nil)
 					}
-					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, classifyUpstreamError(resp.StatusCode, false), string(respBodyBytes), false, isStream, nil)
-					c.Data(resp.StatusCode, "application/json", respBodyBytes)
-					return true, "", 0, nil, nil, nil
 				}
 			}
 
 			// 成功响应：处理 quota key 降级
-			if deprioritizeKey != nil && len(deprioritizeCandidates) > 0 {
-				for key := range deprioritizeCandidates {
-					deprioritizeKey(key)
+			if a.DeprioritizeKey != nil && len(failoverState.deprioritizeCandidates) > 0 {
+				for key := range failoverState.deprioritizeCandidates {
+					a.DeprioritizeKey(key)
 				}
 			}
 
-			usage, err = handleSuccess(c, resp, upstreamCopy, apiKey)
+			usage, err = a.HandleSuccess(c, resp, upstreamCopy, apiKey)
 			if err != nil {
-				lastError = err
-				// 区分客户端错误和渠道故障
-				if isClientSideError(err) {
+				failoverState.lastError = err
+				decision := classifyResponseProcessingError(err, c.Writer.Written())
+				switch decision.action {
+				case responseProcessingClientCancelled:
 					// 客户端取消/断开：计入总请求数但不计入失败
-					metricsManager.RecordRequestFinalizeClientCancel(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-					if pm := channelScheduler.GetProfileManager(); pm != nil {
-						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
-					}
+					lifecycle.finalizeClientCancelled()
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", resp.StatusCode, false, attemptStart, "client_cancelled", err.Error(), false, isStream, usage)
 					log.Printf("[%s-Cancel] 请求已取消，停止渠道 failover", apiType)
-				} else if safetyErr := contentSafetyError(err); safetyErr != nil {
-					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-					if pm := channelScheduler.GetProfileManager(); pm != nil {
-						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
-					}
-					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "blocked", http.StatusForbidden, false, attemptStart, "content_safety", safetyErr.Error(), false, isStream, usage)
+
+				case responseProcessingContentSafety:
+					lifecycle.finalizeNeutral()
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "blocked", http.StatusForbidden, false, attemptStart, "content_safety", decision.safetyErr.Error(), false, isStream, usage)
 					if c.Writer.Written() {
-						if writeErr := WriteAttachedStreamError(c, safetyErr); writeErr != nil {
+						if writeErr := WriteAttachedStreamError(c, decision.safetyErr); writeErr != nil {
 							log.Printf("[%s-ContentSafety] 流错误写出失败: %v", apiType, writeErr)
 						}
 					} else {
-						if writeErr := WriteAttachedContentSafetyError(c, safetyErr); writeErr != nil {
+						if writeErr := WriteAttachedContentSafetyError(c, decision.safetyErr); writeErr != nil {
 							log.Printf("[%s-ContentSafety] 协议错误写出失败: %v", apiType, writeErr)
 							c.JSON(http.StatusInternalServerError, gin.H{"error": writeErr.Error(), "code": "CONTENT_SAFETY_RESPONSE_ERROR"})
 						}
 					}
-				} else if hookErr := contentSafetyHookError(err); hookErr != nil {
-					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-					if pm := channelScheduler.GetProfileManager(); pm != nil {
-						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
-					}
-					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", http.StatusInternalServerError, false, attemptStart, "content_safety_hook", hookErr.Error(), false, isStream, usage)
-					log.Printf("[%s-ContentSafety] 本地响应检查失败: %v", apiType, hookErr)
+
+				case responseProcessingContentSafetyHook:
+					lifecycle.finalizeNeutral()
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", http.StatusInternalServerError, false, attemptStart, "content_safety_hook", decision.hookErr.Error(), false, isStream, usage)
+					log.Printf("[%s-ContentSafety] 本地响应检查失败: %v", apiType, decision.hookErr)
 					if c.Writer.Written() {
-						if writeErr := WriteAttachedStreamHookError(c, hookErr); writeErr != nil {
+						if writeErr := WriteAttachedStreamHookError(c, decision.hookErr); writeErr != nil {
 							log.Printf("[%s-ContentSafety] 流内部错误写出失败: %v", apiType, writeErr)
 						}
 					} else {
@@ -812,71 +1182,57 @@ func TryUpstreamWithAllKeys(
 							"code":  "CONTENT_SAFETY_HOOK_ERROR",
 						})
 					}
-				} else if isRetrySameCandidateError(err) && !c.Writer.Written() {
-					metricsManager.RecordRequestFinalizeNeutral(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-					if pm := channelScheduler.GetProfileManager(); pm != nil {
-						pm.EndRequestNeutral(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID)
-					}
+
+				case responseProcessingRetryCandidate:
+					lifecycle.finalizeNeutral()
 
 					candidate := currentBaseURL + "\x00" + apiKey
-					canRetry := sameCandidateRetries[candidate] < maxSameCandidateRetries && c.Request.Context().Err() == nil
+					canRetry := retryState.canRetryCandidate(candidate, c.Request.Context())
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "model_capacity", err.Error(), canRetry, isStream, usage)
 					if canRetry {
-						sameCandidateRetries[candidate]++
-						log.Printf("[%s-Capacity] 上游未产出内容，使用同一 BaseURL 和 Key 重试 (%d/%d)", apiType, sameCandidateRetries[candidate], maxSameCandidateRetries)
+						retryCount := retryState.recordCandidateRetry(candidate)
+						log.Printf("[%s-Capacity] 上游未产出内容，使用同一 BaseURL 和 Key 重试 (%d/%d)", apiType, retryCount, retryState.maxSameCandidateRetries)
 						continue
 					}
 
 					// 仅在本次请求内排除该 Key，继续其他候选；不写入 Key 熔断和失败率。
-					failedKeys[apiKey] = true
-					lastFailoverError = &FailoverError{Status: http.StatusServiceUnavailable, Body: []byte(err.Error())}
+					retryState.markKeyFailed(apiKey)
+					failoverState.lastFailoverError = &FailoverError{Status: http.StatusServiceUnavailable, Body: []byte(err.Error())}
 					continue
-				} else {
+
+				case responseProcessingChannelFailure:
 					// 真实渠道故障：计入失败指标
 					cfgManager.MarkKeyAsFailed(apiKey, apiType)
-					metricsManager.RecordRequestFinalizeFailure(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID)
-					channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-					if pm := channelScheduler.GetProfileManager(); pm != nil {
-						pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, false, 0)
-					}
+					lifecycle.finalizeFailed()
 					shouldRetryResponseProcessing := !c.Writer.Written()
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "response_processing", err.Error(), shouldRetryResponseProcessing, isStream, usage)
 					log.Printf("[%s-Key] 警告: 响应处理失败: %v", apiType, err)
 					if shouldRetryResponseProcessing {
-						failedKeys[apiKey] = true
-						if markURLFailure != nil {
-							markURLFailure(currentBaseURL)
+						retryState.markKeyFailed(apiKey)
+						if a.MarkURLFailure != nil {
+							a.MarkURLFailure(currentBaseURL)
 						}
-						lastFailoverError = &FailoverError{
+						failoverState.lastFailoverError = &FailoverError{
 							Status: resp.StatusCode,
 							Body:   []byte(err.Error()),
 						}
 						continue
 					}
 				}
-				return true, "", 0, nil, usage, err
+				return newUpstreamAttemptResult(true, "", 0, nil, usage, err)
 			}
 
-			if markURLSuccess != nil {
-				markURLSuccess(currentBaseURL)
+			if a.MarkURLSuccess != nil {
+				a.MarkURLSuccess(currentBaseURL)
 			}
 
-			metricsManager.RecordRequestFinalizeSuccess(currentBaseURL, apiKey, logCtx.ChannelIndex, requestID, usage)
-			channelScheduler.RecordRequestEnd(currentBaseURL, apiKey, logCtx.ChannelIndex, kind)
-			if pm := channelScheduler.GetProfileManager(); pm != nil {
-				var outputTokens int64
-				if usage != nil {
-					outputTokens = int64(usage.OutputTokens)
-				}
-				pm.EndRequest(currentBaseURL, upstream.APIKeys, resolvedModel, logCtx.ChannelIndex, profileReqID, true, outputTokens)
-			}
+			lifecycle.finalizeSuccessful(usage)
 			recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "completed", resp.StatusCode, true, attemptStart, "", "", false, isStream, usage)
 			// 记录会话 BaseURL 粘滞，后续请求优先同 URL 以利 prompt cache
 			if channelScheduler != nil && logCtx.ConversationID != "" {
 				channelScheduler.SetPreferredBaseURL(logCtx.ConversationID, currentBaseURL)
 			}
-			return true, apiKey, originalIdx, nil, usage, nil
+			return newUpstreamAttemptResult(true, apiKey, originalIdx, nil, usage, nil)
 		}
 
 		// 当前 BaseURL 的所有 Key 都失败，记录并尝试下一个 BaseURL
@@ -885,7 +1241,7 @@ func TryUpstreamWithAllKeys(
 		}
 	}
 
-	return false, "", 0, lastFailoverError, nil, lastError
+	return newUpstreamAttemptResult(false, "", 0, failoverState.lastFailoverError, nil, failoverState.lastError)
 }
 
 func contentSafetyError(err error) *ContentSafetyError {

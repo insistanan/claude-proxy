@@ -151,42 +151,42 @@ func handleMultiChannel(
 			baseURLs := upstream.GetAllBaseURLs()
 			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindResponses, channelIndex, baseURLs)
 
-			handled, successKey, successBaseURLIdx, failoverErr, usage, lastErr := common.TryUpstreamWithModelMappingFailover(
-				c,
-				envCfg,
-				cfgManager,
-				channelScheduler,
-				scheduler.ChannelKindResponses,
-				"Responses",
-				metricsManager,
-				upstream,
-				responsesReq.Model,
-				cfgManager.GetFuzzyModeEnabled(),
-				sortedURLResults,
-				bodyBytes,
-				responsesReq.Stream,
-				func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			result := (common.UpstreamAttempt{
+				Context:            c,
+				EnvConfig:          envCfg,
+				ConfigManager:      cfgManager,
+				ChannelScheduler:   channelScheduler,
+				Kind:               scheduler.ChannelKindResponses,
+				APIType:            "Responses",
+				MetricsManager:     metricsManager,
+				Upstream:           upstream,
+				RequestedModel:     responsesReq.Model,
+				AllowModelFailover: cfgManager.GetFuzzyModeEnabled(),
+				URLResults:         sortedURLResults,
+				RequestBody:        bodyBytes,
+				IsStream:           responsesReq.Stream,
+				NextAPIKey: func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
 					return cfgManager.GetNextResponsesAPIKey(upstream, failedKeys)
 				},
-				func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+				BuildRequest: func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
 					req, _, err := provider.ConvertToProviderRequest(c, upstreamCopy, apiKey)
 					return req, err
 				},
-				func(apiKey string) {
+				DeprioritizeKey: func(apiKey string) {
 					if err := cfgManager.MoveResponsesAPIKeyToBottom(channelIndex, apiKey); err != nil {
 						log.Printf("[Responses-Key] 警告: 密钥降级失败: %v", err)
 					}
 				},
-				func(url string) {
+				MarkURLFailure: func(url string) {
 					channelScheduler.MarkURLFailure(scheduler.ChannelKindResponses, channelIndex, url)
 				},
-				func(url string) {
+				MarkURLSuccess: func(url string) {
 					channelScheduler.MarkURLSuccess(scheduler.ChannelKindResponses, channelIndex, url)
 				},
-				func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+				HandleSuccess: func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
 					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, channelScheduler, userID)
 				},
-				common.AttemptLogContext{
+				LogContext: common.AttemptLogContext{
 					ChannelIndex:                      channelIndex,
 					Model:                             responsesReq.Model,
 					ConversationID:                    userID,
@@ -194,16 +194,16 @@ func handleMultiChannel(
 					RequestLogStore:                   channelScheduler.GetRequestLogStore(),
 					AllowContentPolicyChannelFailover: cfgManager.GetFuzzyModeEnabled(),
 				},
-			)
+			}).TryWithModelMappingFailover()
 
 			return common.MultiChannelAttemptResult{
-				Handled:           handled,
+				Handled:           result.Handled,
 				Attempted:         true,
-				SuccessKey:        successKey,
-				SuccessBaseURLIdx: successBaseURLIdx,
-				FailoverError:     failoverErr,
-				Usage:             usage,
-				LastError:         lastErr,
+				SuccessKey:        result.SuccessKey,
+				SuccessBaseURLIdx: result.SuccessBaseURLIdx,
+				FailoverError:     result.FailoverError,
+				Usage:             result.Usage,
+				LastError:         result.LastError,
 			}
 		},
 		func(selection *scheduler.SelectionResult, result common.MultiChannelAttemptResult) {
@@ -283,58 +283,56 @@ func handleSingleChannelWithUpstream(
 
 	urlResults := common.BuildDefaultURLResults(baseURLs)
 
-	handled, successKey, _, lastFailoverError, _, lastError := common.TryUpstreamWithModelMappingFailover(
-		c,
-		envCfg,
-		cfgManager,
-		channelScheduler,
-		scheduler.ChannelKindResponses,
-		"Responses",
-		metricsManager,
-		upstream,
-		responsesReq.Model,
-		cfgManager.GetFuzzyModeEnabled(),
-		urlResults,
-		bodyBytes,
-		responsesReq.Stream,
-		func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+	result := (common.UpstreamAttempt{
+		Context:            c,
+		EnvConfig:          envCfg,
+		ConfigManager:      cfgManager,
+		ChannelScheduler:   channelScheduler,
+		Kind:               scheduler.ChannelKindResponses,
+		APIType:            "Responses",
+		MetricsManager:     metricsManager,
+		Upstream:           upstream,
+		RequestedModel:     responsesReq.Model,
+		AllowModelFailover: cfgManager.GetFuzzyModeEnabled(),
+		URLResults:         urlResults,
+		RequestBody:        bodyBytes,
+		IsStream:           responsesReq.Stream,
+		NextAPIKey: func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
 			return cfgManager.GetNextResponsesAPIKey(upstream, failedKeys)
 		},
-		func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+		BuildRequest: func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
 			req, _, err := provider.ConvertToProviderRequest(c, upstreamCopy, apiKey)
 			return req, err
 		},
-		func(apiKey string) {
+		DeprioritizeKey: func(apiKey string) {
 			if err := cfgManager.MoveResponsesAPIKeyToBottom(channelIndex, apiKey); err != nil {
 				log.Printf("[Responses-Key] 警告: 密钥降级失败: %v", err)
 			}
 		},
-		nil,
-		nil,
-		func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+		HandleSuccess: func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
 			return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, channelScheduler, userID)
 		},
-		common.AttemptLogContext{
+		LogContext: common.AttemptLogContext{
 			ChannelIndex:    channelIndex,
 			Model:           responsesReq.Model,
 			ConversationID:  userID,
 			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindResponses),
 			RequestLogStore: channelScheduler.GetRequestLogStore(),
 		},
-	)
-	if handled {
-		if successKey != "" {
+	}).TryWithModelMappingFailover()
+	if result.Handled {
+		if result.SuccessKey != "" {
 			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindResponses, channelIndex, upstream.Name)
 			channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindResponses)
-		} else if lastError != nil && !errors.Is(lastError, context.Canceled) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, lastError)
+		} else if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
+			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, result.LastError)
 		}
 		return
 	}
 
 	log.Printf("[Responses-Error] 所有 Responses API密钥都失败了")
-	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, lastError)
-	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), lastFailoverError, lastError, "Responses")
+	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, result.LastError)
+	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), result.FailoverError, result.LastError, "Responses")
 }
 
 // handleSuccess 处理成功的 Responses 响应
