@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -103,8 +102,8 @@ func (p *MessagesResponsesProvider) HandleStreamResponse(body io.ReadCloser) (<-
 }
 
 func (p *MessagesResponsesProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
-	eventChan := make(chan string, 100)
-	errChan := make(chan error, 1)
+	pump := newStreamPump(ctx)
+	eventChan, errChan := pump.eventChan, pump.errChan
 
 	conversationID := p.conversationID
 	claudeReq := p.claudeReq
@@ -114,29 +113,14 @@ func (p *MessagesResponsesProvider) HandleStreamResponseCtx(ctx context.Context,
 
 	go func() {
 		defer close(eventChan)
+		defer close(errChan)
 		defer body.Close()
 
-		// send 向 eventChan 发送一个事件；若客户端断连（ctx 取消）返回 false，调用方应立即退出。
-		send := func(event string) bool {
-			select {
-			case eventChan <- event:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
-		// fail 向 errChan 发送错误；客户端断连时不阻塞。
-		fail := func(err error) {
-			select {
-			case errChan <- err:
-			case <-ctx.Done():
-			}
-		}
+		send := pump.send
+		fail := pump.fail
 
 		state := newResponsesToClaudeStreamState()
-		scanner := bufio.NewScanner(body)
-		const maxScannerBufferSize = 1024 * 1024
-		scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBufferSize)
+		scanner := pump.newScanner(body)
 
 		for scanner.Scan() {
 			select {
@@ -159,8 +143,7 @@ func (p *MessagesResponsesProvider) HandleStreamResponseCtx(ctx context.Context,
 			rememberResponsesChain(conversationID, claudeReq, upstream, resolvedModel, state.upstreamResponseID)
 		}
 		if err := scanner.Err(); err != nil {
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "broken pipe") || strings.Contains(errMsg, "connection reset") || strings.Contains(errMsg, "EOF") {
+			if isDisconnectLikeError(err) {
 				return
 			}
 			fail(err)
