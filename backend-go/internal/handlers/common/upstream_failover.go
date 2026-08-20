@@ -125,26 +125,26 @@ func MarkRequestLogFirstToken(c *gin.Context) {
 // UpstreamAttempt 聚合一次上游故障转移所需的依赖、目标和协议回调。
 // Context、回调和观测字段属于单次请求生命周期，不应被长期保存。
 type UpstreamAttempt struct {
-	Context           *gin.Context
-	EnvConfig         *config.EnvConfig
-	ConfigManager     *config.ConfigManager
-	ChannelScheduler  *scheduler.ChannelScheduler
-	Kind              scheduler.ChannelKind
-	APIType           string
-	MetricsManager    *metrics.MetricsManager
-	Upstream          *config.UpstreamConfig
-	RequestedModel    string
+	Context            *gin.Context
+	EnvConfig          *config.EnvConfig
+	ConfigManager      *config.ConfigManager
+	ChannelScheduler   *scheduler.ChannelScheduler
+	Kind               scheduler.ChannelKind
+	APIType            string
+	MetricsManager     *metrics.MetricsManager
+	Upstream           *config.UpstreamConfig
+	RequestedModel     string
 	AllowModelFailover bool
-	URLResults        []urlhealth.URLLatencyResult
-	RequestBody       []byte
-	IsStream          bool
-	NextAPIKey        NextAPIKeyFunc
-	BuildRequest      BuildRequestFunc
-	DeprioritizeKey   DeprioritizeKeyFunc
-	MarkURLFailure    func(url string)
-	MarkURLSuccess    func(url string)
-	HandleSuccess     HandleSuccessFunc
-	LogContext        AttemptLogContext
+	URLResults         []urlhealth.URLLatencyResult
+	RequestBody        []byte
+	IsStream           bool
+	NextAPIKey         NextAPIKeyFunc
+	BuildRequest       BuildRequestFunc
+	DeprioritizeKey    DeprioritizeKeyFunc
+	MarkURLFailure     func(url string)
+	MarkURLSuccess     func(url string)
+	HandleSuccess      HandleSuccessFunc
+	LogContext         AttemptLogContext
 }
 
 // UpstreamAttemptResult 是一次上游尝试的命名结果，避免调用方依赖位置返回值。
@@ -545,11 +545,11 @@ func (a UpstreamAttempt) buildPreparedAttemptRequest(
 }
 
 type compatibilityRetryResult struct {
-	Response        *http.Response
-	Body            []byte
-	Succeeded       bool
+	Response         *http.Response
+	Body             []byte
+	Succeeded        bool
 	PreparationStage string
-	Err             error
+	Err              error
 }
 
 type attemptObservation struct {
@@ -568,7 +568,7 @@ type attemptLifecycle struct {
 }
 
 type upstreamCapabilityState struct {
-	disablePromptCacheKey bool
+	disablePromptCacheKey   bool
 	requireReasoningContent bool
 }
 
@@ -591,7 +591,7 @@ func newUpstreamCapabilityState(upstream *config.UpstreamConfig) upstreamCapabil
 		return upstreamCapabilityState{}
 	}
 	return upstreamCapabilityState{
-		disablePromptCacheKey: upstream.DisablePromptCacheKey,
+		disablePromptCacheKey:   upstream.DisablePromptCacheKey,
 		requireReasoningContent: upstream.RequireReasoningContent,
 	}
 }
@@ -656,8 +656,12 @@ func (a UpstreamAttempt) retrySameCandidateRequest(
 		return compatibilityRetryResult{Response: resp, Succeeded: true}
 	}
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if readErr != nil {
+		// 读取中断：响应不完整，按网络故障处理，不返回截断 body。
+		return compatibilityRetryResult{PreparationStage: "read_body", Err: fmt.Errorf("读取重试响应体失败: %w", readErr)}
+	}
 	body = utils.DecompressGzipIfNeeded(resp, body)
 	return compatibilityRetryResult{Response: resp, Body: body}
 }
@@ -963,8 +967,22 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 			}
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				respBodyBytes, _ := io.ReadAll(resp.Body)
+				respBodyBytes, readErr := io.ReadAll(resp.Body)
 				resp.Body.Close()
+				if readErr != nil {
+					// 响应体读取中断：连接已不可靠，按渠道网络故障处理，
+					// 不把截断 body 用于错误分类或回给客户端。
+					failoverState.lastError = fmt.Errorf("读取上游错误响应体失败: %w", readErr)
+					retryState.markKeyFailed(apiKey)
+					cfgManager.MarkKeyAsFailed(apiKey, apiType)
+					lifecycle.finalizeFailed()
+					if a.MarkURLFailure != nil {
+						a.MarkURLFailure(currentBaseURL)
+					}
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "read_body", readErr.Error(), true, isStream, nil)
+					log.Printf("[%s-Key] 警告: 读取上游错误响应体失败 (状态: %d)，尝试下一个密钥: %v", apiType, resp.StatusCode, readErr)
+					continue
+				}
 				respBodyBytes = utils.DecompressGzipIfNeeded(resp, respBodyBytes)
 				retrySucceeded := false
 

@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
+	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/gin-gonic/gin"
 )
@@ -132,4 +134,99 @@ func newAttemptTestContext(ctx context.Context) *gin.Context {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
 	return c
+}
+
+// truncatedBodyHandler 写出声明长度与实际不符的 400 响应：客户端
+// io.ReadAll 读取时必然得到 unexpected EOF，模拟上游连接半途断开。
+func truncatedBodyHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Length", "100")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(`{"error":"truncated`))
+	if hijacker, ok := w.(http.Hijacker); ok {
+		if conn, _, err := hijacker.Hijack(); err == nil {
+			_ = conn.Close() // 立即断开，制造 unexpected EOF
+		}
+	}
+}
+
+// TestUpstreamAttemptReadBodyErrorFailsOverToNextKey 锚点：错误响应体读取
+// 失败必须按网络故障换 Key，不得把截断 body 用于错误分类或回给客户端。
+func TestUpstreamAttemptReadBodyErrorFailsOverToNextKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("x-api-key")
+		if key == "key-a" {
+			truncatedBodyHandler(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	cfgManager, err := config.NewConfigManager(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("创建配置管理器失败: %v", err)
+	}
+	t.Cleanup(func() { _ = cfgManager.Close() })
+
+	metricsManager := metrics.NewMetricsManager()
+	t.Cleanup(metricsManager.Stop)
+
+	channelScheduler := scheduler.NewChannelScheduler(cfgManager, metricsManager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(channelScheduler.Stop)
+
+	upstream := &config.UpstreamConfig{
+		BaseURL: server.URL,
+		APIKeys: []string{"key-a", "key-b"},
+	}
+	var successKeys []string
+
+	result := (UpstreamAttempt{
+		Context:          newAttemptTestContext(context.Background()),
+		EnvConfig:        &config.EnvConfig{LogLevel: "error"},
+		ConfigManager:    cfgManager,
+		ChannelScheduler: channelScheduler,
+		Kind:             scheduler.ChannelKindMessages,
+		MetricsManager:   metricsManager,
+		Upstream:         upstream,
+		RequestedModel:   "requested-model",
+		URLResults:       BuildDefaultURLResults(upstream.GetAllBaseURLs()),
+		NextAPIKey: func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			for _, key := range up.APIKeys {
+				if !failedKeys[key] {
+					return key, nil
+				}
+			}
+			return "", errors.New("没有可用密钥")
+		},
+		BuildRequest: func(_ *gin.Context, up *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			req, err := http.NewRequest(http.MethodPost, server.URL, nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("x-api-key", apiKey)
+			return req, nil
+		},
+		HandleSuccess: func(_ *gin.Context, resp *http.Response, _ *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+			defer resp.Body.Close()
+			if _, err := io.ReadAll(resp.Body); err != nil {
+				return nil, err
+			}
+			successKeys = append(successKeys, apiKey)
+			return &types.Usage{}, nil
+		},
+	}).TryWithModelMappingFailover()
+
+	if !result.Handled {
+		t.Fatalf("Handled = false, want true（第二个 key 应成功）")
+	}
+	if result.SuccessKey != "key-b" {
+		t.Fatalf("SuccessKey = %q, want key-b（读取失败应换 key 而非用截断 body 分类）", result.SuccessKey)
+	}
+	if len(successKeys) != 1 || successKeys[0] != "key-b" {
+		t.Fatalf("实际成功 key = %v, want [key-b]", successKeys)
+	}
+	if result.LastError != nil {
+		t.Fatalf("LastError = %v, want nil", result.LastError)
+	}
 }

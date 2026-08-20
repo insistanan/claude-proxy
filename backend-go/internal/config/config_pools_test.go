@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -231,5 +232,47 @@ func TestRemoveFromSliceRejectsVisionDependency(t *testing.T) {
 
 	if _, _, err := removeFromSlice(upstreams, 1, "Messages"); err == nil {
 		t.Fatal("removeFromSlice() error = nil")
+	}
+}
+
+// TestMoveAPIKeyToBottomForKindWritesCorrectPool 特征测试：多渠道模式密钥降级
+// 必须按实际 kind 写池（回归锚点：历史 bug 曾用硬编码 "messages" 的
+// MoveAPIKeyToBottom，导致 chat/gemini/images 的降级写错渠道池）。
+func TestMoveAPIKeyToBottomForKindWritesCorrectPool(t *testing.T) {
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configFile, []byte(`{
+		"chatUpstream": [{
+			"name": "chat-ch",
+			"baseUrl": "https://chat.example.com",
+			"apiKeys": ["key-a", "key-b"],
+			"status": "active"
+		}],
+		"upstream": [{
+			"name": "msg-ch",
+			"baseUrl": "https://msg.example.com",
+			"apiKeys": ["msg-key"],
+			"status": "active"
+		}]
+	}`), 0644); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+
+	cm, err := NewConfigManager(configFile)
+	if err != nil {
+		t.Fatalf("NewConfigManager() error = %v", err)
+	}
+	defer cm.Close()
+
+	if err := cm.MoveAPIKeyToBottomForKind("chat", 0, "key-a"); err != nil {
+		t.Fatalf("MoveAPIKeyToBottomForKind() error = %v", err)
+	}
+
+	cfg := cm.GetConfig()
+	if got, want := cfg.ChatUpstream[0].APIKeys[0], "key-b"; got != want {
+		t.Fatalf("chat 池降级后首位应为 %q，得到 %q", want, got)
+	}
+	if got, want := len(cfg.Upstream[0].APIKeys), 1; got != want || cfg.Upstream[0].APIKeys[0] != "msg-key" {
+		t.Fatalf("messages 池不应被跨池污染: %v", cfg.Upstream[0].APIKeys)
 	}
 }

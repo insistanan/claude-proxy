@@ -334,7 +334,12 @@ func tryCompactWithKey(
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		// 读取中断：响应不完整，按上游网络故障转移处理，不回写截断 body。
+		log.Printf("[Compact-Key] 警告: 读取上游响应体失败 (状态: %d): %v", resp.StatusCode, readErr)
+		return false, &compactError{status: 502, body: []byte(`{"error":"读取上游响应失败"}`), shouldFailover: true}
+	}
 	respBody = utils.DecompressGzipIfNeeded(resp, respBody)
 
 	// 判断是否需要故障转移

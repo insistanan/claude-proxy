@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 )
@@ -209,7 +210,9 @@ func (cm *ConfigManager) CreateChannelPool(kind string, pool ChannelPool) (Chann
 		return ChannelPool{}, err
 	}
 	if err := cm.saveConfigLocked(cm.config); err != nil {
-		_ = cm.setChannelPoolsLocked(kind, previous)
+		if rollbackErr := cm.setChannelPoolsLocked(kind, previous); rollbackErr != nil {
+			log.Printf("[Config-Pool] 警告: 创建分组保存失败且回滚内存状态失败: 保存错误: %v, 回滚错误: %v", err, rollbackErr)
+		}
 		return ChannelPool{}, err
 	}
 	for _, item := range pools {
@@ -246,7 +249,9 @@ func (cm *ConfigManager) UpdateChannelPool(kind string, id string, update Channe
 			return err
 		}
 		if err := cm.saveConfigLocked(cm.config); err != nil {
-			_ = cm.setChannelPoolsLocked(kind, previous)
+			if rollbackErr := cm.setChannelPoolsLocked(kind, previous); rollbackErr != nil {
+				log.Printf("[Config-Pool] 警告: 更新分组保存失败且回滚内存状态失败: 保存错误: %v, 回滚错误: %v", err, rollbackErr)
+			}
 			return err
 		}
 		return nil
@@ -358,7 +363,9 @@ func (cm *ConfigManager) SaveChannelPoolLayout(kind string, layout []ChannelPool
 		return err
 	}
 	if err := cm.saveConfigLocked(cm.config); err != nil {
-		_ = cm.setChannelUpstreamsLocked(kind, previous)
+		if rollbackErr := cm.setChannelUpstreamsLocked(kind, previous); rollbackErr != nil {
+			log.Printf("[Config-Pool] 警告: 保存渠道归属保存失败且回滚内存状态失败: 保存错误: %v, 回滚错误: %v", err, rollbackErr)
+		}
 		return err
 	}
 	return nil
@@ -415,7 +422,9 @@ func (cm *ConfigManager) DeleteChannelPool(kind string, id string) error {
 		return err
 	}
 	if err := cm.saveConfigLocked(cm.config); err != nil {
-		_ = cm.setChannelPoolsLocked(kind, previous)
+		if rollbackErr := cm.setChannelPoolsLocked(kind, previous); rollbackErr != nil {
+			log.Printf("[Config-Pool] 警告: 删除分组保存失败且回滚内存状态失败: 保存错误: %v, 回滚错误: %v", err, rollbackErr)
+		}
 		return err
 	}
 	return nil
