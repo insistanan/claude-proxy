@@ -436,6 +436,11 @@ func main() {
 			log.Println("[Server-Shutdown] 服务器已安全关闭")
 		}
 
+		// 停止调度器聚合的后台组件（指标清理/亲和清理/性能画像更新循环）。
+		// 必须先于 metricsStore.Close：先停数据生产者，再关持久化存储，
+		// 避免关闭期间后台循环与存储 Close 产生写并发。
+		channelScheduler.Stop()
+
 		// 关闭指标持久化存储
 		if metricsStore != nil {
 			if err := metricsStore.Close(); err != nil {

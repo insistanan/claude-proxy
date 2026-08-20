@@ -726,9 +726,14 @@ func calculateTierFromScore(score float64) string {
 	}
 }
 
-// Stop 停止后台更新任务
+// Stop 停止后台更新任务（幂等，重复调用安全）
 func (pm *ProfileManager) Stop() {
-	close(pm.stopCh)
+	select {
+	case <-pm.stopCh:
+		// already closed
+	default:
+		close(pm.stopCh)
+	}
 }
 
 // ============== 统计辅助函数 ==============

@@ -60,3 +60,52 @@ func TestIdleTimeoutReader_Disabled(t *testing.T) {
 		t.Fatal("idleTimeout<=0 时应直接返回原 reader")
 	}
 }
+
+// lateWriteReader 模拟"Close 未能立即解阻塞"的病态底层：
+// Read 永久阻塞到放行后才写入。Close 对 Read 无解阻塞作用。
+type lateWriteReader struct {
+	release chan struct{}
+}
+
+func (l *lateWriteReader) Read(p []byte) (int, error) {
+	<-l.release
+	p[0] = 0x41
+	return 1, nil
+}
+func (l *lateWriteReader) Close() error { return nil }
+
+// TestIdleTimeoutReader_NoWriteToCallerBufferAfterTimeout 验证：空闲超时返回后，
+// 调用方复用自己的缓冲 p，迟到的底层写入不得落在 p 上（旧实现为数据竞争，
+// -race 下必报）；且超时为终态，后续 Read 直接返回同一错误，不再起读底层。
+func TestIdleTimeoutReader_NoWriteToCallerBufferAfterTimeout(t *testing.T) {
+	release := make(chan struct{})
+	r := NewIdleTimeoutReader(&lateWriteReader{release: release}, 50*time.Millisecond, "Test")
+	p := make([]byte, 16)
+	_, err := r.Read(p)
+	if !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Fatalf("期望 ErrStreamIdleTimeout，得到: %v", err)
+	}
+
+	// 模拟 io.Copy / bufio.Scanner 在 Read 返回后复用缓冲的常态行为。
+	p[0] = 0x00
+	p[1] = 0x01
+	close(release)
+	time.Sleep(100 * time.Millisecond) // 给迟到的底层读留出写入窗口
+
+	if _, err := r.Read(p); !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Fatalf("超时后后续 Read 应返回 ErrStreamIdleTimeout，得到: %v", err)
+	}
+}
+
+// TestIdleTimeoutReader_SequencePreserved 验证：多轮读取下数据完整、顺序不变
+// （私有缓冲 copy 路径不丢字节），EOF 语义与底层一致。
+func TestIdleTimeoutReader_SequencePreserved(t *testing.T) {
+	r := NewIdleTimeoutReader(io.NopCloser(strings.NewReader("hello world, 流式数据完整性")), 5*time.Second, "Test")
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("期望无错误，得到: %v", err)
+	}
+	if string(got) != "hello world, 流式数据完整性" {
+		t.Fatalf("数据不完整或顺序错乱: %q", string(got))
+	}
+}
