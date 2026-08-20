@@ -39,6 +39,8 @@ func extractSafetySegments(apiType string, root map[string]interface{}) ([]Safet
 		return extractResponsesSafetySegments(root), nil
 	case "gemini":
 		return extractGeminiSafetySegments(root), nil
+	case "images":
+		return extractImagesSafetySegments(root), nil
 	default:
 		return nil, fmt.Errorf("内容安全不支持协议 %q", apiType)
 	}
@@ -234,6 +236,19 @@ func extractGeminiSafetySegments(root map[string]interface{}) []SafetySegment {
 			}
 		}
 	}
+	return segments
+}
+
+// extractImagesSafetySegments 提取 Images API（/v1/images/generations|edits|variations）
+// 请求体里的用户文本。Images 载荷只有 prompt 一个自由文本字段：model / n / size /
+// quality / style / response_format 等都是枚举或数值，user 是终端用户标识而非正文，
+// 因此这里不做投机式的字段清单扫描，只覆盖 prompt（含被拆成字符串数组的写法）。
+//
+// 注意本函数只覆盖 JSON 载荷；multipart/form-data 形态（/v1/images/edits 与
+// variations 的常用写法）走请求前 Hook 的 multipart 分支，见 content_safety_multipart.go。
+func extractImagesSafetySegments(root map[string]interface{}) []SafetySegment {
+	segments := make([]SafetySegment, 0, 1)
+	appendRootTextSegments(&segments, "images", safetySourceUser, "prompt", root, "prompt")
 	return segments
 }
 

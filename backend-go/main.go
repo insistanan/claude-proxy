@@ -347,9 +347,9 @@ func main() {
 	// 代理端点 - Chat Completions API (OpenAI-compatible 原生协议)
 	r.POST("/v1/chat/completions", chat.Handler(envCfg, cfgManager, channelScheduler, contentSafetyPipeline))
 	// 代理端点 - Images API (OpenAI-compatible 独立协议)
-	r.POST("/v1/images/generations", images.Handler(envCfg, cfgManager, channelScheduler, "/images/generations"))
-	r.POST("/v1/images/edits", images.Handler(envCfg, cfgManager, channelScheduler, "/images/edits"))
-	r.POST("/v1/images/variations", images.Handler(envCfg, cfgManager, channelScheduler, "/images/variations"))
+	r.POST("/v1/images/generations", images.Handler(envCfg, cfgManager, channelScheduler, "/images/generations", contentSafetyPipeline))
+	r.POST("/v1/images/edits", images.Handler(envCfg, cfgManager, channelScheduler, "/images/edits", contentSafetyPipeline))
+	r.POST("/v1/images/variations", images.Handler(envCfg, cfgManager, channelScheduler, "/images/variations", contentSafetyPipeline))
 
 	// 代理端点 - Gemini API (原生协议)
 	// 使用通配符捕获 model:action 格式，如 gemini-pro:generateContent

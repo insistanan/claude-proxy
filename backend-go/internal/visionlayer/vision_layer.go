@@ -1041,7 +1041,7 @@ func toClaudeImageBlock(block map[string]interface{}) (map[string]interface{}, b
 		return nil, false
 	}
 	if mimeType == "" {
-		mimeType = "image/png"
+		mimeType = utils.DefaultImageMediaType
 	}
 	return map[string]interface{}{
 		"type": "image",

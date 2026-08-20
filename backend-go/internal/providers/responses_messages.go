@@ -685,11 +685,8 @@ func (s *responsesToClaudeStreamState) processLine(line string) []string {
 	if strings.HasPrefix(line, "event:") {
 		return nil
 	}
-	if !strings.HasPrefix(line, "data:") {
-		return nil
-	}
-	data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-	if data == "" || data == "[DONE]" {
+	data, isData := utils.SSEDataJSON(line)
+	if !isData {
 		return nil
 	}
 	root := gjson.Parse(data)

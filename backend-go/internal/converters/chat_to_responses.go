@@ -1,12 +1,12 @@
 package converters
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -46,8 +46,6 @@ type chatToResponsesState struct {
 	CustomTools map[string]customToolSpec
 }
 
-var chatDataTag = []byte("data:")
-
 func emitResponsesEvent(event string, payload string) string {
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", event, payload)
 }
@@ -70,14 +68,15 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 	}
 	st := (*param).(*chatToResponsesState)
 
-	// 期望 `data: {..}` 格式
-	if !bytes.HasPrefix(rawJSON, chatDataTag) {
+	// 期望 `data: {..}` 格式（冒号后空格可选，判定走 utils 单一出处）
+	payload, isData := utils.ParseSSEDataLineBytes(rawJSON)
+	if !isData {
 		return []string{}
 	}
-	rawJSON = bytes.TrimSpace(rawJSON[5:])
+	rawJSON = payload
 
 	// 检查 [DONE] 标记
-	if string(rawJSON) == "[DONE]" {
+	if string(rawJSON) == utils.SSEDoneMarker {
 		// 生成完成事件
 		return st.generateCompletedEvents(originalRequestRawJSON)
 	}

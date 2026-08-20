@@ -16,94 +16,141 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestTransformPromptPayloadMasksMessagesResponsesAndGemini(t *testing.T) {
-	settings := config.DefaultContentSafetyConfig()
-	settings.SensitiveWord.Enabled = false
-	settings.SensitiveInfo.Enabled = true
-	settings.SensitiveInfo.EnabledRules = []string{
-		config.SensitiveInfoRulePhone,
-		config.SensitiveInfoRuleEmail,
-	}
+// newContentSafetySnapshotForTest 按给定配置组装检测器快照。
+// applyContentSafetySegments 会无条件调用三个检测器（words / info / credential），
+// 缺一个就是 nil panic，所以这里统一建齐，避免各测试各漏一个。
+func newContentSafetySnapshotForTest(t *testing.T, settings config.ContentSafetyConfig) *contentSafetySnapshot {
+	t.Helper()
 	words, err := sensitive.NewWordFilter(settings.SensitiveWord)
 	if err != nil {
 		t.Fatalf("创建敏感词检测器失败: %v", err)
 	}
 	info, err := sensitive.NewInfoDetector(settings.SensitiveInfo)
 	if err != nil {
-		t.Fatalf("创建敏感信息检测器失败: %v", err)
+		t.Fatalf("创建个人信息检测器失败: %v", err)
 	}
-	snapshot := &contentSafetySnapshot{settings: settings, words: words, info: info}
-	payload := map[string]interface{}{
-		"messages": []interface{}{
-			map[string]interface{}{"role": "assistant", "content": "13900001234"},
-			map[string]interface{}{"role": "user", "content": []interface{}{
-				map[string]interface{}{"type": "text", "text": "电话 18012345523"},
-			}},
+	credential, err := sensitive.NewCredentialDetector(settings.Credential)
+	if err != nil {
+		t.Fatalf("创建凭据检测器失败: %v", err)
+	}
+	return &contentSafetySnapshot{settings: settings, words: words, info: info, credential: credential}
+}
+
+// TestSafetySegmentsMaskUserTextAcrossProtocols 锁定跨协议掩码契约：三种上游载荷形状
+// （Claude messages / Responses input / Gemini contents）里的用户正文都要被改写，
+// 助手历史原样保留，且改写后的文本进入观测 prompts。
+func TestSafetySegmentsMaskUserTextAcrossProtocols(t *testing.T) {
+	settings := config.DefaultContentSafetyConfig()
+	settings.SensitiveWord.Enabled = false
+	settings.SensitiveInfo.Enabled = true
+	settings.SensitiveInfo.Mode = config.ContentSafetyModeMask
+	settings.SensitiveInfo.EnabledRules = []string{
+		config.SensitiveInfoRulePhone,
+		config.SensitiveInfoRuleEmail,
+	}
+	snapshot := newContentSafetySnapshotForTest(t, settings)
+
+	tests := []struct {
+		protocol string
+		body     string
+		masked   string
+		original string
+	}{
+		{
+			protocol: "messages",
+			body:     `{"messages":[{"role":"assistant","content":"13900001234"},{"role":"user","content":[{"type":"text","text":"电话 18012345523"}]}]}`,
+			masked:   "[MASKED_PII:phone]",
+			original: "18012345523",
 		},
-		"input": []interface{}{
-			map[string]interface{}{"role": "user", "content": []interface{}{
-				map[string]interface{}{"type": "input_text", "text": "邮箱 user@example.com"},
-			}},
+		{
+			protocol: "responses",
+			body:     `{"input":[{"role":"assistant","content":"13900001234"},{"role":"user","content":[{"type":"input_text","text":"邮箱 user@example.com"}]}]}`,
+			masked:   "[MASKED_PII:email]",
+			original: "user@example.com",
 		},
-		"contents": []interface{}{
-			map[string]interface{}{"role": "user", "parts": []interface{}{
-				map[string]interface{}{"text": "备用号码 16688889999"},
-			}},
+		{
+			protocol: "gemini",
+			body:     `{"contents":[{"role":"model","parts":[{"text":"13900001234"}]},{"role":"user","parts":[{"text":"备用号码 16688889999"}]}]}`,
+			masked:   "[MASKED_PII:phone]",
+			original: "16688889999",
 		},
 	}
 
-	var prompts []string
-	changed, block := transformPromptPayload(payload, snapshot, &prompts)
-	if block != nil {
-		t.Fatalf("请求不应被拦截: %v", block)
-	}
-	if !changed {
-		t.Fatal("预期请求体发生掩码变更")
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("序列化测试请求失败: %v", err)
-	}
-	text := string(raw)
-	for _, expected := range []string{"[MASKED_PII:phone]", "[MASKED_PII:email]", "13900001234"} {
-		if !strings.Contains(text, expected) {
-			t.Errorf("掩码结果缺少 %q: %s", expected, text)
-		}
-	}
-	if len(prompts) != 3 {
-		t.Fatalf("提示词数量 = %d，期望 3", len(prompts))
+	for _, test := range tests {
+		t.Run(test.protocol, func(t *testing.T) {
+			var payload map[string]interface{}
+			if err := json.Unmarshal([]byte(test.body), &payload); err != nil {
+				t.Fatalf("解析测试请求失败: %v", err)
+			}
+			segments, err := extractSafetySegments(test.protocol, payload)
+			if err != nil {
+				t.Fatalf("提取片段失败: %v", err)
+			}
+			if len(segments) != 1 || segments[0].Source != safetySourceUser {
+				t.Fatalf("助手历史不应进入检查范围: %+v", segments)
+			}
+
+			prompts := make([]string, 0, 1)
+			changed, err := applyContentSafetySegments(context.Background(), HookContext{APIType: test.protocol}, segments, snapshot, nil, &prompts)
+			if err != nil {
+				t.Fatalf("应用内容安全策略失败: %v", err)
+			}
+			if !changed {
+				t.Fatal("预期用户正文被掩码改写")
+			}
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("序列化测试请求失败: %v", err)
+			}
+			text := string(raw)
+			if !strings.Contains(text, test.masked) || strings.Contains(text, test.original) {
+				t.Errorf("用户正文掩码结果不正确: %s", text)
+			}
+			// 助手历史里的号码必须原样保留：掩码它既无收益，又会破坏上游的上下文一致性。
+			if !strings.Contains(text, "13900001234") {
+				t.Errorf("助手历史被改写: %s", text)
+			}
+			if len(prompts) != 1 || !strings.Contains(prompts[0], test.masked) {
+				t.Errorf("观测 prompts 应为掩码后的用户正文: %#v", prompts)
+			}
+		})
 	}
 }
 
-func TestTransformPromptPayloadBlocksOnlyUserContent(t *testing.T) {
-	settings := config.SensitiveWordConfig{
-		Enabled:     true,
-		CustomWords: []string{"危险词"},
-	}
-	words, err := sensitive.NewWordFilter(settings)
-	if err != nil {
-		t.Fatalf("创建敏感词检测器失败: %v", err)
-	}
-	info, err := sensitive.NewInfoDetector(config.SensitiveInfoConfig{})
-	if err != nil {
-		t.Fatalf("创建敏感信息检测器失败: %v", err)
-	}
-	snapshot := &contentSafetySnapshot{words: words, info: info}
+// TestSafetySegmentsBlockOnlyUserSensitiveWord 锁定敏感词只对用户/系统输入生效：
+// 助手历史里出现敏感词是既有上下文，拦下来等于让整段会话无法继续。
+func TestSafetySegmentsBlockOnlyUserSensitiveWord(t *testing.T) {
+	settings := config.DefaultContentSafetyConfig()
+	settings.SensitiveWord.Enabled = true
+	settings.SensitiveWord.CustomWords = []string{"危险词"}
+	settings.SensitiveInfo.Enabled = false
+	settings.Credential.Enabled = false
+	snapshot := newContentSafetySnapshotForTest(t, settings)
+
 	payload := map[string]interface{}{
 		"messages": []interface{}{
 			map[string]interface{}{"role": "assistant", "content": "危险词"},
 			map[string]interface{}{"role": "user", "content": "普通内容"},
 		},
 	}
-	if changed, block := transformPromptPayload(payload, snapshot, new([]string)); block != nil || changed {
-		t.Fatalf("assistant 历史命中不应拦截或修改: changed=%v block=%v", changed, block)
+	segments, err := extractSafetySegments("messages", payload)
+	if err != nil {
+		t.Fatalf("提取片段失败: %v", err)
+	}
+	changed, err := applyContentSafetySegments(context.Background(), HookContext{APIType: "messages"}, segments, snapshot, nil, new([]string))
+	if err != nil || changed {
+		t.Fatalf("assistant 历史命中不应拦截或修改: changed=%v err=%v", changed, err)
 	}
 
 	payload["messages"].([]interface{})[1].(map[string]interface{})["content"] = "用户包含危险词"
-	_, block := transformPromptPayload(payload, snapshot, new([]string))
+	segments, err = extractSafetySegments("messages", payload)
+	if err != nil {
+		t.Fatalf("提取片段失败: %v", err)
+	}
+	_, err = applyContentSafetySegments(context.Background(), HookContext{APIType: "messages"}, segments, snapshot, nil, new([]string))
 	var safetyErr *ContentSafetyError
-	if !errors.As(block, &safetyErr) || safetyErr.Code() != "SENSITIVE_WORD_BLOCKED" {
-		t.Fatalf("用户命中错误 = %#v", block)
+	if !errors.As(err, &safetyErr) || safetyErr.Code() != "SENSITIVE_WORD_BLOCKED" {
+		t.Fatalf("用户命中错误 = %#v", err)
 	}
 }
 
@@ -211,6 +258,10 @@ func TestPayloadProtocolUsesConvertedUpstreamShape(t *testing.T) {
 		{entry: "responses", serviceType: "claude", want: "messages"},
 		{entry: "gemini", serviceType: "openai", want: "chat"},
 		{entry: "chat", serviceType: "claude", want: "chat"},
+		// Images 入口不做协议转换：渠道常配 ServiceType=openai，若被映射成 chat，
+		// images 载荷会被当 Chat Completions 解析而检查全部落空。
+		{entry: "images", serviceType: "openai", want: "images"},
+		{entry: "images", serviceType: "claude", want: "images"},
 	}
 	for _, test := range tests {
 		if got := payloadProtocolForServiceType(test.serviceType, test.entry); got != test.want {
@@ -559,6 +610,58 @@ func assertBlockedLogMetadata(t *testing.T, entry sensitive.BlockedLog, apiType,
 	if entry.RequestID == "" || entry.APIType != apiType || entry.BlockType != blockType ||
 		entry.ChannelName != channel || entry.Model != model || entry.RuleName == "" || entry.PromptSnippet == "" {
 		t.Fatalf("拦截记录元数据不完整: %+v", entry)
+	}
+}
+
+func TestExtractSafetySegmentsCoversImagesJSONPrompt(t *testing.T) {
+	settings := config.DefaultContentSafetyConfig()
+	settings.SensitiveWord.Enabled = false
+	settings.SensitiveInfo.Enabled = true
+	settings.SensitiveInfo.Mode = config.ContentSafetyModeMask
+	settings.SensitiveInfo.EnabledRules = []string{config.SensitiveInfoRulePhone}
+	words, err := sensitive.NewWordFilter(settings.SensitiveWord)
+	if err != nil {
+		t.Fatalf("创建敏感词检测器失败: %v", err)
+	}
+	info, err := sensitive.NewInfoDetector(settings.SensitiveInfo)
+	if err != nil {
+		t.Fatalf("创建敏感信息检测器失败: %v", err)
+	}
+	credential, err := sensitive.NewCredentialDetector(settings.Credential)
+	if err != nil {
+		t.Fatalf("创建凭据检测器失败: %v", err)
+	}
+	snapshot := &contentSafetySnapshot{settings: settings, words: words, info: info, credential: credential}
+
+	payload := map[string]interface{}{
+		"model":  "gpt-image-1",
+		"prompt": "把电话 18012345523 写在海报上",
+		"size":   "1024x1024",
+		"user":   "tenant-42",
+	}
+	segments, err := extractSafetySegments("images", payload)
+	if err != nil {
+		t.Fatalf("提取 images 片段失败: %v", err)
+	}
+	// size / model / n 是枚举或数值，user 是终端用户标识而非正文，都不该进检查范围。
+	if len(segments) != 1 || segments[0].Path != "prompt" || segments[0].Source != safetySourceUser {
+		t.Fatalf("images 片段提取范围错误: %+v", segments)
+	}
+
+	prompts := make([]string, 0, 1)
+	changed, err := applyContentSafetySegments(context.Background(), HookContext{APIType: "images"}, segments, snapshot, nil, &prompts)
+	if err != nil {
+		t.Fatalf("应用内容安全策略失败: %v", err)
+	}
+	if !changed {
+		t.Fatal("预期 prompt 被掩码改写")
+	}
+	prompt, _ := payload["prompt"].(string)
+	if !strings.Contains(prompt, "[MASKED_PII:phone]") {
+		t.Fatalf("images prompt 未掩码: %q", prompt)
+	}
+	if payload["user"] != "tenant-42" || payload["size"] != "1024x1024" {
+		t.Fatalf("非正文字段不应被改写: %+v", payload)
 	}
 }
 

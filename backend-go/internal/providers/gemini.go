@@ -845,7 +845,7 @@ func claudeBlockToGeminiInlineData(block map[string]interface{}) (map[string]int
 				return nil, false
 			}
 			if mimeType == "" {
-				mimeType = "image/png"
+				mimeType = utils.DefaultImageMediaType
 			}
 			return map[string]interface{}{
 				"inlineData": map[string]interface{}{
@@ -873,17 +873,17 @@ func extractGeminiInlineBase64(block map[string]interface{}) (string, string, bo
 	if data == "" {
 		if nested, ok := block["image_url"].(map[string]interface{}); ok {
 			url, _ := nested["url"].(string)
-			if mt, payload, ok := parseGeminiDataURL(url); ok {
+			if mt, payload, ok := utils.ParseImageDataURL(url); ok {
 				return mt, payload, true
 			}
 		}
 		if url, _ := block["image_url"].(string); url != "" {
-			if mt, payload, ok := parseGeminiDataURL(url); ok {
+			if mt, payload, ok := utils.ParseImageDataURL(url); ok {
 				return mt, payload, true
 			}
 		}
 		if url, _ := block["url"].(string); url != "" {
-			if mt, payload, ok := parseGeminiDataURL(url); ok {
+			if mt, payload, ok := utils.ParseImageDataURL(url); ok {
 				return mt, payload, true
 			}
 		}
@@ -892,26 +892,7 @@ func extractGeminiInlineBase64(block map[string]interface{}) (string, string, bo
 		return "", "", false
 	}
 	if mediaType == "" {
-		mediaType = "image/png"
-	}
-	return mediaType, data, true
-}
-
-func parseGeminiDataURL(url string) (string, string, bool) {
-	if !strings.HasPrefix(url, "data:") {
-		return "", "", false
-	}
-	payload := strings.TrimPrefix(url, "data:")
-	header, data, ok := strings.Cut(payload, ",")
-	if !ok || data == "" {
-		return "", "", false
-	}
-	mediaType := header
-	if before, _, found := strings.Cut(header, ";base64"); found {
-		mediaType = before
-	}
-	if mediaType == "" {
-		mediaType = "image/png"
+		mediaType = utils.DefaultImageMediaType
 	}
 	return mediaType, data, true
 }
@@ -1417,15 +1398,14 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			line := scanner.Text()
 			line = strings.TrimSpace(line)
 
-			if line == "" || line == "data: [DONE]" {
+			if line == "" {
 				continue
 			}
 
-			if !strings.HasPrefix(line, "data: ") {
+			jsonStr, isData := utils.SSEDataJSON(line)
+			if !isData {
 				continue
 			}
-
-			jsonStr := strings.TrimPrefix(line, "data: ")
 
 			var chunk map[string]interface{}
 			if err := json.Unmarshal([]byte(jsonStr), &chunk); err != nil {

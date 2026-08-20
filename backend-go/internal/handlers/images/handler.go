@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"mime"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"strings"
 	"time"
 
@@ -23,15 +20,25 @@ import (
 
 // Handler Images API 代理处理器
 // 使用通用 RunProxyRequest 骨架，通过 ProtocolSpec 注入协议特有逻辑。
-func Handler(envCfg *config.EnvConfig, cfgManager *config.ConfigManager, channelScheduler *scheduler.ChannelScheduler, endpoint string) gin.HandlerFunc {
+// contentSafetyPipelines 为可选注入点：主进程必须传入带 BlockedLogRecorder 的共享管道，
+// 不传时按 ResolveContentSafetyPipeline 的约定自建一份（仅供测试与独立调用）。
+func Handler(
+	envCfg *config.EnvConfig,
+	cfgManager *config.ConfigManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	endpoint string,
+	contentSafetyPipelines ...*common.HookPipeline,
+) gin.HandlerFunc {
+	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	spec := common.ProtocolSpec{
-		Kind:     scheduler.ChannelKindImages,
-		LogName:  "Images",
-		PreRoute: nil,
+		Kind:         scheduler.ChannelKindImages,
+		LogName:      "Images",
+		HookPipeline: contentSafetyPipeline,
+		PreRoute:     nil,
 		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
-			requestMeta := extractImagesRequestMetadata(c.GetHeader("Content-Type"), body)
-			prompts := common.ExtractPromptJSONFieldPrompts(body, "prompt")
-			return requestMeta.Model, requestMeta.Stream, prompts, true
+			contentType := c.GetHeader("Content-Type")
+			requestMeta := extractImagesRequestMetadata(contentType, body)
+			return requestMeta.Model, requestMeta.Stream, extractImagesPrompts(contentType, body), true
 		},
 		BuildUpstreamRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string, body []byte) (*http.Request, error) {
 			return buildImagesUpstreamRequest(c, up, apiKey, endpoint, body)
@@ -66,23 +73,18 @@ func buildImagesUpstreamRequest(c *gin.Context, upstream *config.UpstreamConfig,
 }
 
 func applyImagesModelMapping(contentType string, bodyBytes []byte, upstream *config.UpstreamConfig) ([]byte, string, error) {
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return bodyBytes, contentType, nil
-	}
-
-	if strings.HasPrefix(mediaType, "multipart/") {
+	if boundary, ok := utils.MultipartBoundary(contentType); ok {
 		metadata := extractImagesRequestMetadata(contentType, bodyBytes)
 		if strings.TrimSpace(metadata.Model) == "" || config.ResolveUpstreamModel(metadata.Model, upstream) == metadata.Model {
 			return bodyBytes, contentType, nil
 		}
-		mappedBody, mappedContentType, err := applyImagesMultipartModelMapping(params["boundary"], bodyBytes, upstream)
-		if err != nil {
-			return nil, "", err
-		}
-		return mappedBody, mappedContentType, nil
+		return applyImagesMultipartModelMapping(boundary, bodyBytes, upstream)
 	}
 
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return bodyBytes, contentType, nil
+	}
 	if !strings.Contains(mediaType, "json") {
 		return bodyBytes, contentType, nil
 	}
@@ -111,65 +113,31 @@ func applyImagesModelMapping(contentType string, bodyBytes []byte, upstream *con
 	return mappedBody, contentType, nil
 }
 
+// applyImagesMultipartModelMapping 把 multipart 表单里的 model 字段改写为上游模型名，
+// 并整表重新编码。返回的 Content-Type 带**新的** boundary，调用方必须同步到请求头。
 func applyImagesMultipartModelMapping(boundary string, bodyBytes []byte, upstream *config.UpstreamConfig) ([]byte, string, error) {
-	if boundary == "" {
-		return bodyBytes, "", nil
+	parts, err := utils.ParseMultipartParts(bodyBytes, boundary)
+	if err != nil {
+		return nil, "", fmt.Errorf("解析 Images multipart 请求体失败: %w", err)
 	}
 
-	reader := multipart.NewReader(bytes.NewReader(bodyBytes), boundary)
-	var out bytes.Buffer
-	writer := multipart.NewWriter(&out)
-
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break
+	for index := range parts {
+		// 带 filename 的部件是上传的图片/蒙版，即使表单字段名恰好叫 model 也不是模型名。
+		if parts[index].FormName != "model" || parts[index].FileName != "" {
+			continue
 		}
-		if err != nil {
-			return nil, "", fmt.Errorf("解析 Images multipart 请求体失败: %w", err)
+		model := strings.TrimSpace(string(parts[index].Content))
+		if model == "" {
+			continue
 		}
-
-		partBody, err := io.ReadAll(part)
-		if closeErr := part.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-		if err != nil {
-			writer.Close()
-			return nil, "", fmt.Errorf("读取 Images multipart 字段失败: %w", err)
-		}
-
-		header := cloneMIMEHeader(part.Header)
-		if part.FormName() == "model" {
-			model := strings.TrimSpace(string(partBody))
-			if model != "" {
-				partBody = []byte(config.ResolveUpstreamModel(model, upstream))
-			}
-		}
-
-		outPart, err := writer.CreatePart(header)
-		if err != nil {
-			writer.Close()
-			return nil, "", fmt.Errorf("重建 Images multipart 字段失败: %w", err)
-		}
-		if _, err := outPart.Write(partBody); err != nil {
-			writer.Close()
-			return nil, "", fmt.Errorf("写入 Images multipart 字段失败: %w", err)
-		}
+		parts[index].Content = []byte(config.ResolveUpstreamModel(model, upstream))
 	}
 
-	if err := writer.Close(); err != nil {
-		return nil, "", fmt.Errorf("完成 Images multipart 请求体失败: %w", err)
+	mappedBody, mappedContentType, err := utils.EncodeMultipartParts(parts)
+	if err != nil {
+		return nil, "", fmt.Errorf("重建 Images multipart 请求体失败: %w", err)
 	}
-
-	return out.Bytes(), writer.FormDataContentType(), nil
-}
-
-func cloneMIMEHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
-	dst := make(textproto.MIMEHeader, len(src))
-	for key, values := range src {
-		dst[key] = append([]string(nil), values...)
-	}
-	return dst
+	return mappedBody, mappedContentType, nil
 }
 
 func buildOpenAIEndpointURL(baseURL string, endpoint string) string {
@@ -208,54 +176,51 @@ type imagesRequestMetadata struct {
 
 func extractImagesRequestMetadata(contentType string, bodyBytes []byte) imagesRequestMetadata {
 	var metadata imagesRequestMetadata
-	mediaType, params, err := mime.ParseMediaType(contentType)
+
+	if boundary, ok := utils.MultipartBoundary(contentType); ok {
+		values, err := utils.ReadMultipartTextFields(bodyBytes, boundary, []string{"model", "stream"})
+		if err != nil {
+			// 表单畸形时不静默当成"无 model"：记录后交由上游按原样报错，避免把请求
+			// 悄悄当作未指定模型转发出去。
+			log.Printf("[Images-Request] 警告: 解析 multipart 请求元数据失败: %v", err)
+			return metadata
+		}
+		metadata.Model = strings.TrimSpace(values["model"])
+		metadata.Stream = parseImagesStreamValue(strings.TrimSpace(values["stream"]))
+		return metadata
+	}
+
+	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return metadata
 	}
-
-	if strings.Contains(mediaType, "json") {
-		var payload map[string]interface{}
-		decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
-		decoder.UseNumber()
-		if err := decoder.Decode(&payload); err == nil {
-			metadata.Model, _ = payload["model"].(string)
-			metadata.Stream = parseImagesStreamValue(payload["stream"])
-		}
+	if !strings.Contains(mediaType, "json") {
 		return metadata
 	}
 
-	if strings.HasPrefix(mediaType, "multipart/") {
-		boundary := params["boundary"]
-		if boundary == "" {
-			return metadata
-		}
-		reader := multipart.NewReader(bytes.NewReader(bodyBytes), boundary)
-		for {
-			part, err := reader.NextPart()
-			if err != nil {
-				return metadata
-			}
-			fieldName := part.FormName()
-			if fieldName != "model" && fieldName != "stream" {
-				part.Close()
-				continue
-			}
-			valueBytes, err := io.ReadAll(io.LimitReader(part, 4096))
-			part.Close()
-			if err != nil {
-				return metadata
-			}
-			value := strings.TrimSpace(string(valueBytes))
-			switch fieldName {
-			case "model":
-				metadata.Model = value
-			case "stream":
-				metadata.Stream = parseImagesStreamValue(value)
-			}
-		}
+	var payload map[string]interface{}
+	decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err == nil {
+		metadata.Model, _ = payload["model"].(string)
+		metadata.Stream = parseImagesStreamValue(payload["stream"])
 	}
-
 	return metadata
+}
+
+// extractImagesPrompts 取出用于会话观测的用户 prompt 文本。
+// JSON 与 multipart 两种形态都覆盖：Images 的 edits/variations 常用 multipart 表单，
+// 只解析 JSON 会让这两个端点的观测 prompt 永远为空。
+func extractImagesPrompts(contentType string, bodyBytes []byte) []string {
+	if boundary, ok := utils.MultipartBoundary(contentType); ok {
+		values, err := utils.ReadMultipartTextFields(bodyBytes, boundary, []string{"prompt"})
+		if err != nil {
+			log.Printf("[Images-Request] 警告: 解析 multipart prompt 失败: %v", err)
+			return nil
+		}
+		return common.NormalizePromptTexts(values["prompt"])
+	}
+	return common.ExtractPromptJSONFieldPrompts(bodyBytes, "prompt")
 }
 
 func parseImagesStreamValue(value interface{}) bool {

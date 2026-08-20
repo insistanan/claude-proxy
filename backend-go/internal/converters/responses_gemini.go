@@ -404,15 +404,13 @@ func geminiInlineDataFromBlock(block map[string]interface{}) (*types.GeminiInlin
 		if data, ok := source["data"].(string); ok && data != "" {
 			mime, _ := source["media_type"].(string)
 			if mime == "" {
-				mime = "image/png"
+				mime = utils.DefaultImageMediaType
 			}
 			return &types.GeminiInlineData{MimeType: mime, Data: data}, true
 		}
 	}
-	if uri := imageURIFromBlock(block); strings.HasPrefix(uri, "data:") {
-		if mime, data, ok := parseGeminiDataURI(uri); ok {
-			return &types.GeminiInlineData{MimeType: mime, Data: data}, true
-		}
+	if mime, data, ok := utils.ParseImageDataURL(imageURIFromBlock(block)); ok {
+		return &types.GeminiInlineData{MimeType: mime, Data: data}, true
 	}
 	return nil, false
 }
@@ -424,7 +422,7 @@ func geminiFileDataFromBlock(block map[string]interface{}) (*types.GeminiFileDat
 	}
 
 	uri := imageURIFromBlock(block)
-	mime := "image/png"
+	mime := utils.DefaultImageMediaType
 	if source, ok := block["source"].(map[string]interface{}); ok {
 		if mediaType, _ := source["media_type"].(string); mediaType != "" {
 			mime = mediaType
@@ -457,22 +455,6 @@ func imageURIFromBlock(block map[string]interface{}) string {
 		return uri
 	}
 	return ""
-}
-
-func parseGeminiDataURI(uri string) (string, string, bool) {
-	payload := strings.TrimPrefix(uri, "data:")
-	header, data, ok := strings.Cut(payload, ",")
-	if !ok || data == "" {
-		return "", "", false
-	}
-	mime := header
-	if before, _, found := strings.Cut(header, ";base64"); found {
-		mime = before
-	}
-	if mime == "" {
-		mime = "image/png"
-	}
-	return mime, data, true
 }
 
 func buildFunctionCallNameMap(items []types.ResponsesItem) map[string]string {

@@ -415,6 +415,18 @@ func ExtractPromptJSONField(bodyBytes []byte, field string) string {
 	return firstPrompt(ExtractPromptJSONFieldPrompts(bodyBytes, field))
 }
 
+// NormalizePromptTexts 把已经从**非 JSON** 载荷（例如 multipart/form-data 表单字段）
+// 里取出的原始文本，按会话观测的统一口径归一化：清洗噪声 → 去重 → 至多 3 条。
+// 目的是让这类入口的观测 prompt 与 ExtractPrompts* 系列输出同口径，
+// 而不是各自 TrimSpace 出一份"看起来差不多"的结果。
+func NormalizePromptTexts(texts ...string) []string {
+	prompts := make([]string, 0, len(texts))
+	for _, text := range texts {
+		appendPrompt(&prompts, text, 3)
+	}
+	return prompts
+}
+
 func ExtractPromptJSONFieldPrompts(bodyBytes []byte, field string) []string {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
@@ -514,12 +526,6 @@ func appendPrompt(prompts *[]string, prompt string, limit int) {
 		}
 	}
 	*prompts = append(*prompts, prompt)
-}
-
-func firstTextFromContent(content interface{}) string {
-	prompts := make([]string, 0, 1)
-	appendPromptsFromContent(&prompts, content, 1)
-	return firstPrompt(prompts)
 }
 
 func normalizePrompt(prompt string) string {

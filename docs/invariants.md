@@ -14,7 +14,8 @@
 - 认证：代理端点总是 经 `ProxyAuthMiddleware` 校验（在 `RunProxyRequest` 第一步）；除 `/health` 外绝不 存在匿名业务端点。生产环境必须设强 `PROXY_ACCESS_KEY`。
 - 渠道与管理：五协议的渠道/key CRUD + Ping 总是 复用 `core/channelcrud`；绝不 在协议 handler 里再写一套渠道增删改。
 - 调度：渠道选择总是 走 `ChannelScheduler`（顺序：对话路由覆盖 → 促销 → Trace 亲和 → 自适应 → 按优先级降级，过滤熔断/挂起渠道）；handler 绝不 自行挑选渠道。
-- 内容安全：钩子管线总是 注入 messages/responses/chat/gemini 四协议；images 未接入是已知缺口——接入前，新增图片端点绝不 绕过管线直通。
+- 内容安全：钩子管线总是 注入 messages/responses/chat/gemini/images 五协议；新增协议入口必须在 `ProtocolSpec.HookPipeline` 接线并在 `extractSafetySegments` 登记提取器（未登记会显式报错，绝不静默放行），绝不 绕过管线直通。
+- multipart 请求体：读写一律走 `utils` 的 `MultipartBoundary` / `ParseMultipartParts` / `EncodeMultipartParts` / `ReadMultipartTextFields`；重新编码后**必须**把 `EncodeMultipartParts` 返回的 Content-Type 同步到请求头——沿用旧 boundary 的上游会读到空表单。
 - 指标：请求成败/用量总是 经 scheduler 的 `Record*` 入口记录；绝不 在 handler 里新开 `MetricsManager` 手算指标。
 - 流式：上游流总是 经 `HandleStreamResponseCtx`（断连中止）+ `IdleTimeoutReader`（空闲超时）转发；绝不 裸 `io.Copy`。
 - 视觉：图片请求总是 经 `visionlayer.PrepareRequest` 就地处理；绝不 绕过 `prepareRequestForUpstream` 把原始 base64 直接透传上游。

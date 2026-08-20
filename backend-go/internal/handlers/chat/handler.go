@@ -430,12 +430,8 @@ type chatStreamToolArgumentFragment struct {
 }
 
 func extractChatStreamSafetyFragments(line string) (string, []chatStreamToolArgumentFragment) {
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "data:") {
-		return "", nil
-	}
-	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-	if payload == "" || payload == "[DONE]" {
+	payload, ok := utils.SSEDataJSON(strings.TrimSpace(line))
+	if !ok {
 		return "", nil
 	}
 	var event map[string]interface{}
@@ -878,11 +874,8 @@ func extractChatUsage(bodyBytes []byte) *types.Usage {
 }
 
 func extractChatUsageFromSSELine(line string) *types.Usage {
-	if !strings.HasPrefix(line, "data: ") {
-		return nil
-	}
-	data := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
-	if data == "" || data == "[DONE]" {
+	data, ok := utils.SSEDataJSON(line)
+	if !ok {
 		return nil
 	}
 	return extractChatUsage([]byte(data))

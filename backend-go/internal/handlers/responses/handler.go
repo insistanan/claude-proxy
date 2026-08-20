@@ -628,11 +628,8 @@ func estimateResponsesOutputFromItems(output []types.ResponsesItem) int {
 // response.completed 中返回完整 output、没有逐段 delta 的上游。
 func hasResponsesContent(event string) bool {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if jsonStr == "" || jsonStr == "[DONE]" {
+		jsonStr, isData := utils.SSEDataJSON(line)
+		if !isData {
 			continue
 		}
 		var data map[string]interface{}
@@ -668,11 +665,8 @@ func hasResponsesContent(event string) bool {
 
 func responsesStreamEventError(event string) error {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" || payload == "[DONE]" {
+		payload, isData := utils.SSEDataJSON(line)
+		if !isData {
 			continue
 		}
 		var data map[string]interface{}
@@ -696,11 +690,8 @@ func responsesStreamEventError(event string) error {
 // 这种终止代表本轮代理目标已经完成，不应记为普通客户端取消。
 func hasDeliveredResponsesToolCall(event string) bool {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" || payload == "[DONE]" {
+		payload, isData := utils.SSEDataJSON(line)
+		if !isData {
 			continue
 		}
 		var data map[string]interface{}
@@ -1052,11 +1043,10 @@ type responsesStreamUsage struct {
 // extractResponsesTextFromEvent 从 Responses SSE 事件中提取文本内容
 func extractResponsesTextFromEvent(event string, buf *bytes.Buffer) {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
+		jsonStr, isData := utils.SSEDataJSON(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimPrefix(line, "data: ")
-
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 			continue
@@ -1110,10 +1100,10 @@ func extractResponsesStreamSafetyFragments(event string) (string, []responsesStr
 	var text strings.Builder
 	toolArguments := make([]responsesStreamToolArgumentFragment, 0)
 	for lineIndex, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data:") {
+		jsonStr, isData := utils.SSEDataJSON(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 			continue
@@ -1154,12 +1144,8 @@ func responsesStreamToolArgumentKey(data map[string]interface{}, fallback int) s
 func checkResponsesEventUsage(event string, enableLog bool) (bool, bool, responsesStreamUsage) {
 	lines := strings.Split(event, "\n")
 	for _, line := range lines {
-		// 支持 "data:" 和 "data: " 两种格式（有些上游不带空格）
-		var jsonStr string
-		if strings.HasPrefix(line, "data:") {
-			jsonStr = strings.TrimPrefix(line, "data:")
-			jsonStr = strings.TrimPrefix(jsonStr, " ") // 移除可能的前导空格
-		} else {
+		jsonStr, isData := utils.SSEDataJSON(line)
+		if !isData {
 			continue
 		}
 
@@ -1327,12 +1313,8 @@ func isResponsesCompletedEvent(event string) bool {
 
 func extractResponsesCompletedID(event string) string {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-
-		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if jsonStr == "" {
+		jsonStr, isData := utils.SSEDataJSON(line)
+		if !isData {
 			continue
 		}
 
@@ -1373,259 +1355,211 @@ func injectResponsesUsageToCompletedEvent(event string, requestBody []byte, outp
 	outputTokens := utils.EstimateTokens(outputText)
 	totalTokens := inputTokens + outputTokens
 
+	debugLog := envCfg.EnableResponseLogs && envCfg.ShouldLog("debug")
+
 	// 调试日志：记录估算开始
-	if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
+	if debugLog {
 		log.Printf("[Responses-Stream-Token] injectUsage 开始: inputTokens=%d, outputTokens=%d, event长度=%d",
 			inputTokens, outputTokens, len(event))
 	}
 
-	var result strings.Builder
-	lines := strings.Split(event, "\n")
-	injected := false
-
-	for _, line := range lines {
-		// 跳过 event: 行，但保留它
-		if strings.HasPrefix(line, "event:") {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
-
-		// 支持 "data:" 和 "data: " 两种格式（有些上游不带空格）
-		var jsonStr string
-		if strings.HasPrefix(line, "data:") {
-			jsonStr = strings.TrimPrefix(line, "data:")
-			jsonStr = strings.TrimPrefix(jsonStr, " ") // 移除可能的前导空格
-		} else {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
+	rewritten, injected := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
 		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+		if err := json.Unmarshal([]byte(payload), &data); err != nil {
 			// 调试日志：JSON 解析失败
-			if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
-				log.Printf("[Responses-Stream-Token] JSON解析失败: %v, 内容前200字符: %.200s", err, jsonStr)
+			if debugLog {
+				log.Printf("[Responses-Stream-Token] JSON解析失败: %v, 内容前200字符: %.200s", err, payload)
 			}
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
+			return "", false
 		}
 
-		eventType, _ := data["type"].(string)
-
-		if eventType == "response.completed" {
-			response, ok := data["response"].(map[string]interface{})
-			if !ok {
-				// response 字段缺失或类型错误，创建一个新的
-				if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
-					log.Printf("[Responses-Stream-Token] response字段缺失, 创建新的response对象")
-				}
-				response = make(map[string]interface{})
-				data["response"] = response
-			}
-
-			response["usage"] = map[string]interface{}{
-				"input_tokens":  inputTokens,
-				"output_tokens": outputTokens,
-				"total_tokens":  totalTokens,
-			}
-			injected = true
-
-			patchedJSON, err := json.Marshal(data)
-			if err != nil {
-				if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
-					log.Printf("[Responses-Stream-Token] JSON序列化失败: %v", err)
-				}
-				result.WriteString(line)
-				result.WriteString("\n")
-				continue
-			}
-
-			if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
-				log.Printf("[Responses-Stream-Token] 注入本地估算成功: InputTokens=%d, OutputTokens=%d, TotalTokens=%d",
-					inputTokens, outputTokens, totalTokens)
-			}
-
-			result.WriteString("data: ")
-			result.Write(patchedJSON)
-			result.WriteString("\n")
-		} else {
-			result.WriteString(line)
-			result.WriteString("\n")
+		if eventType, _ := data["type"].(string); eventType != "response.completed" {
+			return "", false
 		}
+
+		response, ok := data["response"].(map[string]interface{})
+		if !ok {
+			// response 字段缺失或类型错误，创建一个新的
+			if debugLog {
+				log.Printf("[Responses-Stream-Token] response字段缺失, 创建新的response对象")
+			}
+			response = make(map[string]interface{})
+			data["response"] = response
+		}
+
+		response["usage"] = map[string]interface{}{
+			"input_tokens":  inputTokens,
+			"output_tokens": outputTokens,
+			"total_tokens":  totalTokens,
+		}
+
+		patchedJSON, err := json.Marshal(data)
+		if err != nil {
+			if debugLog {
+				log.Printf("[Responses-Stream-Token] JSON序列化失败: %v", err)
+			}
+			return "", false
+		}
+
+		if debugLog {
+			log.Printf("[Responses-Stream-Token] 注入本地估算成功: InputTokens=%d, OutputTokens=%d, TotalTokens=%d",
+				inputTokens, outputTokens, totalTokens)
+		}
+		return string(patchedJSON), true
+	})
+
+	if injected {
+		return rewritten, inputTokens, outputTokens
 	}
 
-	// 如果没有成功注入，可能是 SSE 格式不同，尝试直接在整个 event 中查找并替换
-	if !injected {
-		if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
-			log.Printf("[Responses-Stream-Token] 逐行解析未找到, 尝试整体解析 event")
-		}
-
-		// 尝试从 event 中提取 JSON 部分（可能是多行格式）
-		var jsonStart, jsonEnd int
-		for i, line := range lines {
-			if strings.HasPrefix(line, "data:") {
-				jsonStart = i
-				break
-			}
-		}
-
-		// 合并所有 data: 行（支持 "data:" 和 "data: " 两种格式）
-		var jsonBuilder strings.Builder
-		for i := jsonStart; i < len(lines); i++ {
-			line := lines[i]
-			if strings.HasPrefix(line, "data:") {
-				jsonData := strings.TrimPrefix(line, "data:")
-				jsonData = strings.TrimPrefix(jsonData, " ") // 移除可能的前导空格
-				jsonBuilder.WriteString(jsonData)
-			} else if line == "" {
-				jsonEnd = i
-				break
-			}
-		}
-
-		fullJSON := jsonBuilder.String()
-		if fullJSON != "" {
-			var data map[string]interface{}
-			if err := json.Unmarshal([]byte(fullJSON), &data); err == nil {
-				eventType, _ := data["type"].(string)
-				if eventType == "response.completed" {
-					response, ok := data["response"].(map[string]interface{})
-					if !ok {
-						response = make(map[string]interface{})
-						data["response"] = response
-					}
-
-					response["usage"] = map[string]interface{}{
-						"input_tokens":  inputTokens,
-						"output_tokens": outputTokens,
-						"total_tokens":  totalTokens,
-					}
-
-					patchedJSON, err := json.Marshal(data)
-					if err == nil {
-						injected = true
-						// 重建 event
-						result.Reset()
-						for i := 0; i < jsonStart; i++ {
-							result.WriteString(lines[i])
-							result.WriteString("\n")
-						}
-						result.WriteString("data: ")
-						result.Write(patchedJSON)
-						result.WriteString("\n")
-						for i := jsonEnd; i < len(lines); i++ {
-							result.WriteString(lines[i])
-							result.WriteString("\n")
-						}
-
-						if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
-							log.Printf("[Responses-Stream-Token] 整体解析注入成功: InputTokens=%d, OutputTokens=%d",
-								inputTokens, outputTokens)
-						}
-					}
-				}
-			}
-		}
+	// 逐行未命中：可能是 JSON 被拆到多个连续 data 行，合并后再试
+	if debugLog {
+		log.Printf("[Responses-Stream-Token] 逐行解析未找到, 尝试整体解析 event")
 	}
 
-	// 如果仍然没有成功注入，记录警告并打印 event 内容
-	if !injected {
-		if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") {
-			// 打印 event 的前500个字符帮助调试
-			eventPreview := event
-			if len(eventPreview) > 500 {
-				eventPreview = eventPreview[:500] + "..."
-			}
-			log.Printf("[Responses-Stream-Token] 警告: 未找到 response.completed 事件进行注入, event内容: %s", eventPreview)
+	if merged, ok := injectUsageIntoMultiLineDataEvent(event, inputTokens, outputTokens, totalTokens); ok {
+		if debugLog {
+			log.Printf("[Responses-Stream-Token] 整体解析注入成功: InputTokens=%d, OutputTokens=%d",
+				inputTokens, outputTokens)
 		}
-		return event, inputTokens, outputTokens
+		return merged, inputTokens, outputTokens
 	}
 
-	return result.String(), inputTokens, outputTokens
+	// 仍然没有成功注入，记录警告并打印 event 内容
+	if debugLog {
+		// 打印 event 的前500个字符帮助调试
+		eventPreview := event
+		if len(eventPreview) > 500 {
+			eventPreview = eventPreview[:500] + "..."
+		}
+		log.Printf("[Responses-Stream-Token] 警告: 未找到 response.completed 事件进行注入, event内容: %s", eventPreview)
+	}
+	return event, inputTokens, outputTokens
+}
+
+// injectUsageIntoMultiLineDataEvent 处理 JSON 被拆到多个连续 data 行的 response.completed 事件：
+// 把这段连续 data 行的载荷拼成完整 JSON，注入 usage 后用一行 data 替换整段，其余行原样保留。
+// 返回 ok=false 表示事件不是这种形态（无 data 行 / 拼不出合法 JSON / 不是 response.completed），调用方应保留原事件。
+func injectUsageIntoMultiLineDataEvent(event string, inputTokens, outputTokens, totalTokens int) (string, bool) {
+	lines := strings.Split(event, "\n")
+
+	// 定位连续 data 行区间 [dataStart, dataEnd)
+	dataStart := -1
+	for i, line := range lines {
+		if _, isData := utils.ParseSSEDataLine(line); isData {
+			dataStart = i
+			break
+		}
+	}
+	if dataStart < 0 {
+		return "", false
+	}
+
+	dataEnd := len(lines)
+	var jsonBuilder strings.Builder
+	for i := dataStart; i < len(lines); i++ {
+		payload, isData := utils.ParseSSEDataLine(lines[i])
+		if !isData {
+			// 区间到首个非 data 行为止；dataEnd 保持 len(lines) 会把尾部行吞掉，必须显式记录
+			dataEnd = i
+			break
+		}
+		jsonBuilder.WriteString(payload)
+	}
+
+	fullJSON := jsonBuilder.String()
+	if fullJSON == "" {
+		return "", false
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(fullJSON), &data); err != nil {
+		return "", false
+	}
+	if eventType, _ := data["type"].(string); eventType != "response.completed" {
+		return "", false
+	}
+
+	response, ok := data["response"].(map[string]interface{})
+	if !ok {
+		response = make(map[string]interface{})
+		data["response"] = response
+	}
+	response["usage"] = map[string]interface{}{
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+		"total_tokens":  totalTokens,
+	}
+
+	patchedJSON, err := json.Marshal(data)
+	if err != nil {
+		return "", false
+	}
+
+	rebuilt := make([]string, 0, len(lines))
+	rebuilt = append(rebuilt, lines[:dataStart]...)
+	rebuilt = append(rebuilt, utils.SSEDataLinePrefix+string(patchedJSON))
+	rebuilt = append(rebuilt, lines[dataEnd:]...)
+	return strings.Join(rebuilt, "\n"), true
 }
 
 // patchResponsesCompletedEventUsage 修补 response.completed 事件中的 usage
 func patchResponsesCompletedEventUsage(event string, requestBody []byte, outputText string, collected *responsesStreamUsage, envCfg *config.EnvConfig) string {
-	var result strings.Builder
-	lines := strings.Split(event, "\n")
-
-	for _, line := range lines {
-		// 支持 "data:" 和 "data: " 两种格式（有些上游不带空格）
-		var jsonStr string
-		if strings.HasPrefix(line, "data:") {
-			jsonStr = strings.TrimPrefix(line, "data:")
-			jsonStr = strings.TrimPrefix(jsonStr, " ") // 移除可能的前导空格
-		} else {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
+	rewritten, _ := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
 		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
+		if err := json.Unmarshal([]byte(payload), &data); err != nil {
+			return "", false
+		}
+		if data["type"] != "response.completed" {
+			return "", false
 		}
 
-		if data["type"] == "response.completed" {
-			if response, ok := data["response"].(map[string]interface{}); ok {
-				if usage, ok := response["usage"].(map[string]interface{}); ok {
-					originalInput := collected.InputTokens
-					originalOutput := collected.OutputTokens
-					patched := false
+		if response, ok := data["response"].(map[string]interface{}); ok {
+			if usage, ok := response["usage"].(map[string]interface{}); ok {
+				originalInput := collected.InputTokens
+				originalOutput := collected.OutputTokens
+				patched := false
 
-					// 修补 input_tokens（仅当没有 Claude 原生缓存时）
-					// OpenAI 的 cached_tokens 不应阻止 input_tokens 补全
-					if collected.InputTokens <= 1 && !collected.HasClaudeCache {
-						estimatedInput := utils.EstimateResponsesRequestTokens(requestBody)
-						usage["input_tokens"] = estimatedInput
-						collected.InputTokens = estimatedInput
-						patched = true
-					}
+				// 修补 input_tokens（仅当没有 Claude 原生缓存时）
+				// OpenAI 的 cached_tokens 不应阻止 input_tokens 补全
+				if collected.InputTokens <= 1 && !collected.HasClaudeCache {
+					estimatedInput := utils.EstimateResponsesRequestTokens(requestBody)
+					usage["input_tokens"] = estimatedInput
+					collected.InputTokens = estimatedInput
+					patched = true
+				}
 
-					// 修补 output_tokens
-					if collected.OutputTokens <= 1 {
-						estimatedOutput := utils.EstimateTokens(outputText)
-						usage["output_tokens"] = estimatedOutput
-						collected.OutputTokens = estimatedOutput
-						patched = true
-					}
+				// 修补 output_tokens
+				if collected.OutputTokens <= 1 {
+					estimatedOutput := utils.EstimateTokens(outputText)
+					usage["output_tokens"] = estimatedOutput
+					collected.OutputTokens = estimatedOutput
+					patched = true
+				}
 
-					// 重新计算 total_tokens（修补时或 total_tokens 为 0 但 input/output 有效时）
-					currentTotal := 0
-					if t, ok := usage["total_tokens"].(float64); ok {
-						currentTotal = int(t)
-					}
-					if patched || (currentTotal == 0 && (collected.InputTokens > 0 || collected.OutputTokens > 0)) {
-						usage["total_tokens"] = collected.InputTokens + collected.OutputTokens
-					}
+				// 重新计算 total_tokens（修补时或 total_tokens 为 0 但 input/output 有效时）
+				currentTotal := 0
+				if t, ok := usage["total_tokens"].(float64); ok {
+					currentTotal = int(t)
+				}
+				if patched || (currentTotal == 0 && (collected.InputTokens > 0 || collected.OutputTokens > 0)) {
+					usage["total_tokens"] = collected.InputTokens + collected.OutputTokens
+				}
 
-					if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") && patched {
-						log.Printf("[Responses-Stream-Token] 虚假值修补: InputTokens=%d->%d, OutputTokens=%d->%d",
-							originalInput, collected.InputTokens, originalOutput, collected.OutputTokens)
-					}
+				if envCfg.EnableResponseLogs && envCfg.ShouldLog("debug") && patched {
+					log.Printf("[Responses-Stream-Token] 虚假值修补: InputTokens=%d->%d, OutputTokens=%d->%d",
+						originalInput, collected.InputTokens, originalOutput, collected.OutputTokens)
 				}
 			}
-
-			patchedJSON, err := json.Marshal(data)
-			if err != nil {
-				result.WriteString(line)
-				result.WriteString("\n")
-				continue
-			}
-
-			result.WriteString("data: ")
-			result.Write(patchedJSON)
-			result.WriteString("\n")
-		} else {
-			result.WriteString(line)
-			result.WriteString("\n")
 		}
-	}
 
-	return result.String()
+		patchedJSON, err := json.Marshal(data)
+		if err != nil {
+			return "", false
+		}
+		return string(patchedJSON), true
+	})
+	return rewritten
 }
 
 // parseInputToItems 解析 input 为 ResponsesItem 数组

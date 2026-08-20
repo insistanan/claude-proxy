@@ -737,11 +737,11 @@ func (ctx *StreamContext) cacheClaudeReasoning() {
 // ParseSSEEventData 解析单个 SSE 事件的第一段 JSON data。
 func ParseSSEEventData(event string) (map[string]interface{}, bool) {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
+		jsonStr, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimPrefix(line, "data: ")
-		if jsonStr == "" || jsonStr == "[DONE]" {
+		if jsonStr == "" || jsonStr == utils.SSEDoneMarker {
 			return nil, false
 		}
 
@@ -757,10 +757,10 @@ func ParseSSEEventData(event string) (map[string]interface{}, bool) {
 // CheckEventUsageStatus 检测事件是否包含 usage 字段
 func CheckEventUsageStatus(event string, enableLog bool) (bool, bool, bool, CollectedUsageData) {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
+		jsonStr, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimPrefix(line, "data: ")
 
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
@@ -916,10 +916,10 @@ func logUsageDetection(location string, usage map[string]interface{}, needPatch 
 // HasEventWithUsage 检查事件是否包含 usage 字段
 func HasEventWithUsage(event string) bool {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
+		jsonStr, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimPrefix(line, "data: ")
 
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
@@ -939,72 +939,14 @@ func HasEventWithUsage(event string) bool {
 	return false
 }
 
-// PatchTokensInEvent 修补事件中的 token 字段
-func PatchTokensInEvent(event string, estimatedInputTokens, estimatedOutputTokens int, hasCacheTokens bool, enableLog bool, lowQuality bool) string {
-	var result strings.Builder
-	lines := strings.Split(event, "\n")
-
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "data: ") {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
-
-		jsonStr := strings.TrimPrefix(line, "data: ")
-		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
-
-		// 修补顶层 usage
-		if usage, ok := data["usage"].(map[string]interface{}); ok {
-			patchUsageFieldsWithLog(usage, estimatedInputTokens, estimatedOutputTokens, hasCacheTokens, enableLog, "顶层usage", lowQuality)
-		}
-
-		// 修补 message.usage
-		if msg, ok := data["message"].(map[string]interface{}); ok {
-			if usage, ok := msg["usage"].(map[string]interface{}); ok {
-				patchUsageFieldsWithLog(usage, estimatedInputTokens, estimatedOutputTokens, hasCacheTokens, enableLog, "message.usage", lowQuality)
-			}
-		}
-
-		patchedJSON, err := json.Marshal(data)
-		if err != nil {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
-
-		result.WriteString("data: ")
-		result.Write(patchedJSON)
-		result.WriteString("\n")
-	}
-
-	return result.String()
-}
-
-// PatchTokensInEventWithCache 修补事件中的 token 字段，并写入推断的 cache_read_input_tokens
-// 当 inferredCacheRead > 0 且事件中没有 cache_read_input_tokens 时，将推断值写入
+// PatchTokensInEventWithCache 修补事件中的 token 字段。
+// inferredCacheRead 当前只参与日志：cache_read_input_tokens 有意不写进下发客户端的 SSE
+// （见函数内 "never write cache_read into client SSE"），所以传 0 与传正数对输出等价。
 func PatchTokensInEventWithCache(event string, estimatedInputTokens, estimatedOutputTokens, inferredCacheRead int, hasCacheTokens bool, enableLog bool, lowQuality bool) string {
-	var result strings.Builder
-	lines := strings.Split(event, "\n")
-
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "data: ") {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
-
-		jsonStr := strings.TrimPrefix(line, "data: ")
+	patched, _ := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
 		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
+		if err := json.Unmarshal([]byte(payload), &data); err != nil {
+			return "", false
 		}
 
 		// 修补顶层 usage
@@ -1039,17 +981,11 @@ func PatchTokensInEventWithCache(event string, estimatedInputTokens, estimatedOu
 
 		patchedJSON, err := json.Marshal(data)
 		if err != nil {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
+			return "", false
 		}
-
-		result.WriteString("data: ")
-		result.Write(patchedJSON)
-		result.WriteString("\n")
-	}
-
-	return result.String()
+		return string(patchedJSON), true
+	})
+	return patched
 }
 
 func PatchTokensInEventDataWithCache(data map[string]interface{}, estimatedInputTokens, estimatedOutputTokens, inferredCacheRead int, hasCacheTokens bool, enableLog bool, lowQuality bool) {
@@ -1094,24 +1030,19 @@ func ReplaceSSEData(event string, data map[string]interface{}) string {
 		return event
 	}
 
-	var result strings.Builder
-	result.Grow(len(event) + len(patchedJSON))
+	// 只替换第一条 data 行；其余行（含后续 data 行）原样保留
 	replaced := false
-	for _, line := range strings.Split(event, "\n") {
-		if !replaced && strings.HasPrefix(line, "data: ") {
-			result.WriteString("data: ")
-			result.Write(patchedJSON)
-			result.WriteString("\n")
-			replaced = true
-			continue
+	result, _ := utils.RewriteSSEDataLines(event, func(string) (string, bool) {
+		if replaced {
+			return "", false
 		}
-		result.WriteString(line)
-		result.WriteString("\n")
-	}
+		replaced = true
+		return string(patchedJSON), true
+	})
 	if !replaced {
 		return event
 	}
-	return result.String()
+	return result
 }
 
 // PatchMessageStartInputTokensIfNeeded 在首个 message_start 事件中尽早补全 input_tokens。
@@ -1193,13 +1124,6 @@ func patchUsageFieldsWithLog(usage map[string]interface{}, estimatedInput, estim
 	}
 }
 
-func abs(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
 // BuildStreamErrorEvent 构建流错误 SSE 事件
 func BuildStreamErrorEvent(err error) string {
 	errorEvent := map[string]interface{}{
@@ -1269,30 +1193,17 @@ func PatchMessageStartEvent(event string, requestModel string, rewriteModel bool
 		return event
 	}
 
-	var result strings.Builder
-	lines := strings.Split(event, "\n")
+	// patched 跨行保持（与收敛前一致）：一旦某行触发过修补，后续 data 行也走重写分支
 	patched := false
-
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "data: ") {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
-
-		jsonStr := strings.TrimPrefix(line, "data: ")
+	result, _ := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
 		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
+		if err := json.Unmarshal([]byte(payload), &data); err != nil {
+			return "", false
 		}
 
 		msg, ok := data["message"].(map[string]interface{})
 		if !ok {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
+			return "", false
 		}
 
 		// 补全空 id
@@ -1315,23 +1226,18 @@ func PatchMessageStartEvent(event string, requestModel string, rewriteModel bool
 			}
 		}
 
-		if patched {
-			patchedJSON, err := json.Marshal(data)
-			if err != nil {
-				result.WriteString(line)
-				result.WriteString("\n")
-				continue
-			}
-			result.WriteString("data: ")
-			result.Write(patchedJSON)
-			result.WriteString("\n")
-		} else {
-			result.WriteString(line)
-			result.WriteString("\n")
+		if !patched {
+			return "", false
 		}
-	}
 
-	return result.String()
+		patchedJSON, err := json.Marshal(data)
+		if err != nil {
+			return "", false
+		}
+		return string(patchedJSON), true
+	})
+
+	return result
 }
 
 // IsMessageStopEvent 检测是否为 message_stop 事件
@@ -1341,10 +1247,10 @@ func IsMessageStopEvent(event string) bool {
 	}
 
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
+		jsonStr, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimPrefix(line, "data: ")
 
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
@@ -1364,10 +1270,10 @@ func IsMessageDeltaEvent(event string) bool {
 		return true
 	}
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
+		jsonStr, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimPrefix(line, "data: ")
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 			continue
@@ -1383,10 +1289,10 @@ func IsMessageDeltaEvent(event string) bool {
 // 支持 message_start 事件的 message.usage.input_tokens 和顶层 usage.input_tokens
 func ExtractInputTokensFromEvent(event string) int {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
+		jsonStr, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimPrefix(line, "data: ")
 
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
@@ -1415,10 +1321,10 @@ func ExtractInputTokensFromEvent(event string) int {
 // ExtractTextFromEvent 从 SSE 事件中提取文本内容
 func ExtractTextFromEvent(event string, buf *bytes.Buffer) {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
+		jsonStr, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimPrefix(line, "data: ")
 
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
@@ -1470,10 +1376,10 @@ func ExtractTextFromEventData(data map[string]interface{}, buf *bytes.Buffer) {
 // extractSSEEventInfo 从 SSE 事件中提取事件类型、block 索引和 block 类型
 func extractSSEEventInfo(event string) (eventType string, blockIndex int, blockType string) {
 	for _, line := range strings.Split(event, "\n") {
-		if !strings.HasPrefix(line, "data: ") {
+		jsonStr, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-		jsonStr := strings.TrimPrefix(line, "data: ")
 
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
@@ -1522,11 +1428,8 @@ func StripCacheFieldsFromClaudeSSE(event string) string {
 	lines := strings.Split(event, "\n")
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-		if payload == "" || payload == "[DONE]" {
+		payload, isData := utils.SSEDataJSON(trimmed)
+		if !isData {
 			continue
 		}
 		var root map[string]interface{}

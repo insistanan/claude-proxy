@@ -188,7 +188,7 @@ func imageReferenceFingerprint(reference string) string {
 	if reference == "" {
 		return ""
 	}
-	if _, data, ok := parseDataURL(reference); ok {
+	if _, data, ok := ParseImageDataURL(reference); ok {
 		return base64Fingerprint(data)
 	}
 	sum := sha256.Sum256([]byte(reference))
@@ -371,7 +371,7 @@ func ToClaudeImageContentBlock(block map[string]interface{}) (map[string]interfa
 				mediaType, _ := source["media_type"].(string)
 				if dataOK && data != "" {
 					if mediaType == "" {
-						mediaType = "image/png"
+						mediaType = DefaultImageMediaType
 					}
 					return map[string]interface{}{
 						"type": "image",
@@ -399,7 +399,7 @@ func ToClaudeImageContentBlock(block map[string]interface{}) (map[string]interfa
 
 	url, ok := extractImageURL(block, typeVal)
 	if ok && url != "" {
-		if mediaType, data, parsed := parseDataURL(url); parsed {
+		if mediaType, data, parsed := ParseImageDataURL(url); parsed {
 			return map[string]interface{}{
 				"type": "image",
 				"source": map[string]interface{}{
@@ -441,7 +441,7 @@ func extractImageURL(block map[string]interface{}, typeVal string) (string, bool
 					return "", false
 				}
 				if mediaType == "" {
-					mediaType = "image/png"
+					mediaType = DefaultImageMediaType
 				}
 				return fmt.Sprintf("data:%s;base64,%s", mediaType, data), true
 			case "url":
@@ -494,12 +494,27 @@ func extractBase64Payload(block map[string]interface{}) (string, string, bool) {
 		return "", "", false
 	}
 	if mediaType == "" {
-		mediaType = "image/png"
+		mediaType = DefaultImageMediaType
 	}
 	return mediaType, data, true
 }
 
-func parseDataURL(url string) (string, string, bool) {
+// DefaultImageMediaType 是图片 mediaType 缺省值。
+// 上游（Claude source.media_type / Gemini inlineData.mimeType）要求该字段必填，
+// data URL 头部为空时按既有契约填此默认值，而非报错。
+const DefaultImageMediaType = "image/png"
+
+// ParseImageDataURL 解析 data URL 形式的图片引用，返回 (mediaType, base64 载荷, 是否解析成功)。
+// 五协议图片链路（utils/vision、providers/gemini、converters/responses_gemini）的唯一出处。
+//
+// 规则：
+//   - 非 "data:" 前缀直接返回 false（调用方无需自行前置判断）；
+//   - 以首个逗号切分头部与载荷，载荷为空视为解析失败；
+//   - 头部剥离 ";base64" 及其后的参数，剩余部分为 mediaType；
+//   - mediaType 为空时填 DefaultImageMediaType。
+//
+// 注意：载荷不做 base64 校验与空白清理，需要指纹时走 base64Fingerprint。
+func ParseImageDataURL(url string) (string, string, bool) {
 	if !strings.HasPrefix(url, "data:") {
 		return "", "", false
 	}
@@ -515,7 +530,7 @@ func parseDataURL(url string) (string, string, bool) {
 		mediaType = before
 	}
 	if mediaType == "" {
-		mediaType = "image/png"
+		mediaType = DefaultImageMediaType
 	}
 
 	return mediaType, data, true

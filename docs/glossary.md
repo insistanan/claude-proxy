@@ -19,7 +19,7 @@
 | **渠道池（Channel Pool）** | 渠道的逻辑分组，支持按池调度与拖拽排序布局。 | `internal/config`、`main.go` |
 | **性能画像 / 自适应调度** | 按 baseURL+模型统计性能表现，负载均衡时取向性能最优渠道。画像为进程内存，重启丢失。 | `internal/metrics/performance_profile.go`、`internal/scheduler/adaptive_scheduler.go` |
 | **对话路由覆盖（Route Override）** | 对指定对话强制绑定渠道的覆盖规则，调度时优先级最高，冲突时返回 409 拒绝。 | `internal/conversation`、`scheduler.ValidateFixedChannel` |
-| **内容安全管道** | pre-request / post-response / stream 钩子管线，内置敏感词、凭据、危险命令检测，拦截写 blocked_store。注入 messages / responses / chat / gemini 四协议 handler；**images 尚未接入（已知缺口，见 capabilities 待治理）**。pre-request 在 vision 前后各跑一次。 | `internal/handlers/common/hook_pipeline.go`、`internal/sensitive` |
+| **内容安全管道** | pre-request / post-response / stream 钩子管线，内置敏感词、凭据、危险命令检测，拦截写 blocked_store。注入 messages / responses / chat / gemini / images 五协议 handler；images 只接 pre-request（含 multipart 表单分支），响应侧是图片不扫描。pre-request 在 vision 前后各跑一次。 | `internal/handlers/common/hook_pipeline.go`、`internal/sensitive` |
 | **视觉分流（Vision Layer）** | 图片请求发送上游前转为分析描述文本：检测 → 描述生成 → 两级缓存（内存+持久）→ 并发去重 → 就地改写请求。视觉渠道选择走独立 `SelectVisionChannel`。 | `internal/visionlayer` |
 | **URL 健康排序** | 多 BaseURL 渠道按延迟与失败冷却动态排序选路。默认：失败冷却 30s、连续 3 次失败移末尾（main.go 注入）。 | `internal/urlhealth` |
 | **Pi Agent 配置管理** | 管理 Pi Coding Agent 的 providers / credentials / model-settings / backups：原子写（临时文件+rename）、写前备份、跨进程锁、revision 冲突检测。凭据文件 0600。配置目录 `~/.pi/agent`（可 `PI_AGENT_CONFIG_DIR` 覆盖）。路由在 main.go 直接注册 `/api/settings/pi-agent/*`。 | `internal/piagent`、`internal/handlers/pi_agent.go` |

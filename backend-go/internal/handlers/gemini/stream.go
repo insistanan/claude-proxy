@@ -12,6 +12,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
 	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
 
@@ -76,8 +77,7 @@ func streamGeminiToGemini(
 		line := scanner.Text()
 
 		// 直接转发 SSE 数据
-		if strings.HasPrefix(line, "data: ") {
-			jsonData := strings.TrimPrefix(line, "data: ")
+		if jsonData, isData := utils.ParseSSEDataLine(line); isData {
 
 			// 尝试解析 usage
 			var chunk types.GeminiStreamChunk
@@ -131,12 +131,11 @@ func streamClaudeToGemini(
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		if !strings.HasPrefix(line, "data: ") {
+		jsonData, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-
-		jsonData := strings.TrimPrefix(line, "data: ")
-		if jsonData == "[DONE]" {
+		if jsonData == utils.SSEDoneMarker {
 			break
 		}
 
@@ -265,12 +264,11 @@ func streamOpenAIToGemini(
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		if !strings.HasPrefix(line, "data: ") {
+		jsonData, isData := utils.ParseSSEDataLine(line)
+		if !isData {
 			continue
 		}
-
-		jsonData := strings.TrimPrefix(line, "data: ")
-		if jsonData == "[DONE]" {
+		if jsonData == utils.SSEDoneMarker {
 			break
 		}
 

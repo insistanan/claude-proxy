@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
 type UsageInfo struct {
@@ -143,12 +145,8 @@ func verifyStream(name, baseURL, apiKey, model, prompt string, verbose bool) *Ve
 			firstByte = true
 		}
 
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		jsonStr := strings.TrimPrefix(line, "data: ")
-		if jsonStr == "" || jsonStr == "[DONE]" {
+		jsonStr, isData := utils.SSEDataJSON(line)
+		if !isData {
 			continue
 		}
 

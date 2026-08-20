@@ -359,7 +359,14 @@ func (h *contentSafetyPreRequestHook) Run(ctx context.Context, metadata HookCont
 	if len(result.RequestBody) == 0 || result.UpstreamRequest == nil {
 		return result, nil
 	}
+	protocol := metadata.PayloadProtocol
+	if protocol == "" {
+		protocol = metadata.APIType
+	}
 	contentType := result.UpstreamRequest.Header.Get("Content-Type")
+	if boundary, ok := utils.MultipartBoundary(contentType); ok {
+		return h.runMultipartFormSafety(ctx, metadata, result, snapshot, protocol, boundary)
+	}
 	if !isJSONContentType(contentType, result.RequestBody) {
 		return result, nil
 	}
@@ -382,10 +389,6 @@ func (h *contentSafetyPreRequestHook) Run(ctx context.Context, metadata HookCont
 		return result, nil
 	}
 	prompts := make([]string, 0, 4)
-	protocol := metadata.PayloadProtocol
-	if protocol == "" {
-		protocol = metadata.APIType
-	}
 	segments, err := extractSafetySegments(protocol, root)
 	if err != nil {
 		return result, err
@@ -447,230 +450,4 @@ func isJSONContentType(contentType string, body []byte) bool {
 	}
 	trimmed := bytes.TrimSpace(body)
 	return len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
-}
-
-func transformPromptPayload(payload interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
-	root, ok := payload.(map[string]interface{})
-	if !ok {
-		return false, nil
-	}
-	changed := false
-	if value, exists := root["instructions"]; exists {
-		updated := value
-		mutated, block := transformPromptValue(&updated, snapshot, prompts)
-		if block != nil {
-			return changed, block
-		}
-		root["instructions"] = updated
-		changed = mutated || changed
-	}
-	if system, exists := root["system"]; exists {
-		updated := system
-		mutated, block := transformPromptValue(&updated, snapshot, prompts)
-		if block != nil {
-			return changed, block
-		}
-		root["system"] = updated
-		changed = mutated || changed
-	}
-	if prompt, exists := root["prompt"]; exists {
-		updated := prompt
-		mutated, block := transformPromptValue(&updated, snapshot, prompts)
-		if block != nil {
-			return changed, block
-		}
-		root["prompt"] = updated
-		changed = mutated || changed
-	}
-	if messages, exists := root["messages"]; exists {
-		mutated, block := transformMessageList(messages, snapshot, prompts)
-		if block != nil {
-			return changed, block
-		}
-		changed = mutated || changed
-	}
-	if contents, exists := root["contents"]; exists {
-		mutated, block := transformGeminiContents(contents, snapshot, prompts)
-		if block != nil {
-			return changed, block
-		}
-		changed = mutated || changed
-	}
-	if input, exists := root["input"]; exists {
-		updated := input
-		mutated, block := transformResponsesInput(&updated, snapshot, prompts)
-		if block != nil {
-			return changed, block
-		}
-		root["input"] = updated
-		changed = mutated || changed
-	}
-	return changed, nil
-}
-
-func transformMessageList(value interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
-	items, ok := value.([]interface{})
-	if !ok {
-		return false, nil
-	}
-	changed := false
-	for _, item := range items {
-		message, ok := item.(map[string]interface{})
-		if !ok || !isUserRole(message["role"]) {
-			continue
-		}
-		if content, exists := message["content"]; exists {
-			updated := content
-			mutated, block := transformPromptValue(&updated, snapshot, prompts)
-			if block != nil {
-				return changed, block
-			}
-			message["content"] = updated
-			changed = mutated || changed
-		}
-	}
-	return changed, nil
-}
-
-func transformGeminiContents(value interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
-	items, ok := value.([]interface{})
-	if !ok {
-		return false, nil
-	}
-	changed := false
-	for _, item := range items {
-		content, ok := item.(map[string]interface{})
-		if !ok || (content["role"] != nil && !isUserRole(content["role"])) {
-			continue
-		}
-		parts, ok := content["parts"].([]interface{})
-		if !ok {
-			continue
-		}
-		for _, part := range parts {
-			partMap, ok := part.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if text, ok := partMap["text"].(string); ok {
-				masked, mutated, block := transformPromptText(text, snapshot, prompts)
-				if block != nil {
-					return changed, block
-				}
-				if mutated {
-					partMap["text"] = masked
-					changed = true
-				}
-			}
-		}
-	}
-	return changed, nil
-}
-
-func transformResponsesInput(value *interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
-	switch input := (*value).(type) {
-	case string:
-		masked, changed, block := transformPromptText(input, snapshot, prompts)
-		if block != nil {
-			return false, block
-		}
-		if changed {
-			*value = masked
-		}
-		return changed, nil
-	case []interface{}:
-		changed := false
-		for _, item := range input {
-			itemMap, ok := item.(map[string]interface{})
-			if !ok || (itemMap["role"] != nil && !isUserRole(itemMap["role"])) {
-				continue
-			}
-			for _, key := range []string{"content", "text", "input_text"} {
-				if raw, exists := itemMap[key]; exists {
-					updated := raw
-					mutated, block := transformPromptValue(&updated, snapshot, prompts)
-					if block != nil {
-						return changed, block
-					}
-					itemMap[key] = updated
-					changed = mutated || changed
-				}
-			}
-		}
-		return changed, nil
-	default:
-		return false, nil
-	}
-}
-
-func transformPromptValue(value *interface{}, snapshot *contentSafetySnapshot, prompts *[]string) (bool, *ContentSafetyError) {
-	switch current := (*value).(type) {
-	case string:
-		masked, changed, block := transformPromptText(current, snapshot, prompts)
-		if block != nil {
-			return false, block
-		}
-		if changed {
-			*value = masked
-		}
-		return changed, nil
-	case []interface{}:
-		changed := false
-		for _, item := range current {
-			block, ok := item.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			for _, key := range []string{"text", "input_text", "content"} {
-				if raw, exists := block[key]; exists {
-					updated := raw
-					mutated, err := transformPromptValue(&updated, snapshot, prompts)
-					if err != nil {
-						return changed, err
-					}
-					block[key] = updated
-					changed = mutated || changed
-				}
-			}
-		}
-		return changed, nil
-	default:
-		return false, nil
-	}
-}
-
-func transformPromptText(text string, snapshot *contentSafetySnapshot, prompts *[]string) (string, bool, *ContentSafetyError) {
-	if snapshot.words != nil {
-		if match, ok := snapshot.words.FindFirst(text); ok {
-			return text, false, &ContentSafetyError{
-				BlockType: sensitive.BlockTypeSensitiveWord,
-				RuleName:  string(match.Category),
-				Snippet:   truncateSafetySnippet(text),
-			}
-		}
-	}
-	masked := text
-	changed := false
-	if snapshot.info != nil {
-		var matches []sensitive.InfoMatch
-		masked, matches = snapshot.info.Mask(text)
-		changed = len(matches) > 0
-	}
-	if strings.TrimSpace(masked) != "" {
-		*prompts = append(*prompts, masked)
-	}
-	return masked, changed, nil
-}
-
-func isUserRole(value interface{}) bool {
-	role, ok := value.(string)
-	return !ok || strings.EqualFold(role, "user")
-}
-
-func truncateSafetySnippet(text string) string {
-	text = strings.TrimSpace(text)
-	if len(text) <= 256 {
-		return text
-	}
-	return text[:256] + "..."
 }

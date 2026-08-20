@@ -704,16 +704,15 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			if line == "" {
 				continue
 			}
-			if line == "data: [DONE]" {
+
+			jsonStr, isData := utils.ParseSSEDataLine(line)
+			if !isData {
+				continue
+			}
+			if jsonStr == utils.SSEDoneMarker {
 				finishStream()
 				return
 			}
-
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-
-			jsonStr := strings.TrimPrefix(line, "data: ")
 
 			var chunk map[string]interface{}
 			if err := json.Unmarshal([]byte(jsonStr), &chunk); err != nil {

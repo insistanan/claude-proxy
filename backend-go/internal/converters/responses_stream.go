@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/tidwall/gjson"
 )
 
@@ -36,12 +37,8 @@ type responsesStreamBlock struct {
 
 func ConvertClaudeStreamToResponses(_ context.Context, model string, originalRequestJSON []byte, line []byte, state *any) ([]string, error) {
 	st := ensureResponsesStreamState(state, model)
-	text := strings.TrimSpace(string(line))
-	if !strings.HasPrefix(text, "data:") {
-		return nil, nil
-	}
-	data := strings.TrimSpace(strings.TrimPrefix(text, "data:"))
-	if data == "" || data == "[DONE]" {
+	data, isData := utils.SSEDataJSON(strings.TrimSpace(string(line)))
+	if !isData {
 		return nil, nil
 	}
 
@@ -85,12 +82,8 @@ func ConvertClaudeStreamToResponses(_ context.Context, model string, originalReq
 
 func ConvertGeminiStreamToResponses(_ context.Context, model string, originalRequestJSON []byte, line []byte, state *any) ([]string, error) {
 	st := ensureResponsesStreamState(state, model)
-	text := strings.TrimSpace(string(line))
-	if !strings.HasPrefix(text, "data:") {
-		return nil, nil
-	}
-	data := strings.TrimSpace(strings.TrimPrefix(text, "data:"))
-	if data == "" || data == "[DONE]" {
+	data, isData := utils.SSEDataJSON(strings.TrimSpace(string(line)))
+	if !isData {
 		return nil, nil
 	}
 	out := st.ensureStarted(originalRequestJSON)

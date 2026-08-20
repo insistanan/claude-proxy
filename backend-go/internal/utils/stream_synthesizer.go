@@ -2,7 +2,6 @@ package utils
 
 import (
 	"encoding/json"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,20 +36,9 @@ func NewStreamSynthesizer(serviceType string) *StreamSynthesizer {
 
 // ProcessLine 处理SSE流的一行
 func (s *StreamSynthesizer) ProcessLine(line string) {
-	trimmedLine := strings.TrimSpace(line)
-	if trimmedLine == "" {
-		return
-	}
-
-	// 使用正则匹配SSE data字段
-	dataRegex := regexp.MustCompile(`^data:\s*(.*)$`)
-	matches := dataRegex.FindStringSubmatch(trimmedLine)
-	if len(matches) < 2 {
-		return
-	}
-
-	jsonStr := strings.TrimSpace(matches[1])
-	if jsonStr == "[DONE]" || jsonStr == "" {
+	// 上游行可能带缩进或回车，先归一再判 data 前缀；判定与载荷清理走 ParseSSEDataLine 单一出处
+	jsonStr, ok := SSEDataJSON(strings.TrimSpace(line))
+	if !ok {
 		return
 	}
 
