@@ -135,6 +135,70 @@ func TestExtractUsageMetrics_ClaudeCacheReadDoesNotDoubleSubtract(t *testing.T) 
 	}
 }
 
+// Gemini 的 candidatesTokenCount 不含 thoughtsTokenCount（官方等式：
+// totalTokenCount = promptTokenCount + candidatesTokenCount + thoughtsTokenCount），
+// 而 Responses/Anthropic 两家的 output_tokens 都**含**推理 token。所以出口必须相加，
+// 否则 thinking 模型的输出被系统性低报。证据与三家语义对照见
+// types.ClaudeOutputTokensDetails。
+func TestExtractUsageMetrics_GeminiThoughtsCountedIntoOutput(t *testing.T) {
+	usage := ExtractUsageMetrics(map[string]interface{}{
+		"promptTokenCount":     27,
+		"candidatesTokenCount": 45,
+		"thoughtsTokenCount":   31,
+		"totalTokenCount":      103,
+	})
+
+	if usage.OutputTokens != 76 {
+		t.Fatalf("output_tokens 应为 45+31=76，实际 %d", usage.OutputTokens)
+	}
+	if usage.OutputTokensDetails == nil || usage.OutputTokensDetails.ReasoningTokens != 31 {
+		t.Fatalf("reasoning_tokens 应单列为 31，实际 %+v", usage.OutputTokensDetails)
+	}
+	if usage.InputTokens != 27 {
+		t.Fatalf("input_tokens 应为 27，实际 %d", usage.InputTokens)
+	}
+	if usage.TotalTokens != 103 {
+		t.Fatalf("total_tokens 应为 27+76=103，实际 %d", usage.TotalTokens)
+	}
+}
+
+// 缓存与推理同时出现：input 侧减缓存、output 侧加推理，两个方向互不干扰。
+func TestExtractUsageMetrics_GeminiCachedAndThoughtsTogether(t *testing.T) {
+	usage := ExtractUsageMetrics(map[string]interface{}{
+		"promptTokenCount":        1000,
+		"cachedContentTokenCount": 900,
+		"candidatesTokenCount":    20,
+		"thoughtsTokenCount":      7,
+	})
+
+	if usage.InputTokens != 100 {
+		t.Fatalf("input_tokens 应为 1000-900=100，实际 %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 27 {
+		t.Fatalf("output_tokens 应为 20+7=27，实际 %d", usage.OutputTokens)
+	}
+	if usage.CacheReadInputTokens != 900 {
+		t.Fatalf("cache_read_input_tokens 应为 900，实际 %d", usage.CacheReadInputTokens)
+	}
+}
+
+// 上游没报 thoughts（非 thinking 模型）时不得凭空生成明细字段，
+// output_tokens 就是 candidatesTokenCount。
+func TestExtractUsageMetrics_GeminiWithoutThoughtsKeepsOutputAndOmitsDetails(t *testing.T) {
+	usage := ExtractUsageMetrics(map[string]interface{}{
+		"promptTokenCount":     11,
+		"candidatesTokenCount": 124,
+		"totalTokenCount":      135,
+	})
+
+	if usage.OutputTokens != 124 {
+		t.Fatalf("output_tokens 应为 124，实际 %d", usage.OutputTokens)
+	}
+	if usage.OutputTokensDetails != nil {
+		t.Fatalf("未报 thoughts 时不应生成 output_tokens_details，实际 %+v", usage.OutputTokensDetails)
+	}
+}
+
 // ============== OpenAI 转换器测试 ==============
 
 func TestOpenAIChatConverter_WithInstructions(t *testing.T) {

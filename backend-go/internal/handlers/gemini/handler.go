@@ -402,17 +402,28 @@ func handleSuccess(
 	// 提取 usage 统计
 	var usage *types.Usage
 	if geminiResp.UsageMetadata != nil {
-		// 区分原生 Gemini 和协议转换场景
-		// 原生 Gemini：promptTokenCount 包含缓存，需要扣除
-		// 协议转换：转换器已经正确处理，直接使用
+		// promptTokenCount 含 cachedContentTokenCount，无条件扣除。
+		// 两种来源都成立，不需要分支：
+		//   原生 Gemini 上游：promptTokenCount 本就含缓存，扣掉即得新增输入；
+		//   协议转换（如 claude 上游经 ClaudeResponseToGemini）：转换器先把 cacheRead
+		//   加回 PromptTokenCount 并填 CachedContentTokenCount，这里再减回来，净结果一致。
 		actualInputTokens := geminiResp.UsageMetadata.PromptTokenCount - geminiResp.UsageMetadata.CachedContentTokenCount
 		if actualInputTokens < 0 {
 			actualInputTokens = 0
 		}
+		// candidatesTokenCount 不含 thoughtsTokenCount，两者相加才是完整输出。指标必须按
+		// 完整输出记，否则 Gemini 渠道的用量统计比其它渠道系统性偏低、跨渠道不可比
+		// （三家 output 侧语义与官方证据见 types.ClaudeOutputTokensDetails）。
+		// 注意这里只改指标口径：透传给客户端的 Gemini 原生响应体保持原生语义不动，
+		// 原生客户端按 candidatesTokenCount + thoughtsTokenCount 自行求和。
+		thoughtsTokens := geminiResp.UsageMetadata.ThoughtsTokenCount
 		usage = &types.Usage{
 			InputTokens:          actualInputTokens,
-			OutputTokens:         geminiResp.UsageMetadata.CandidatesTokenCount,
+			OutputTokens:         geminiResp.UsageMetadata.CandidatesTokenCount + thoughtsTokens,
 			CacheReadInputTokens: geminiResp.UsageMetadata.CachedContentTokenCount,
+		}
+		if thoughtsTokens > 0 {
+			usage.OutputTokensDetails = &types.ClaudeOutputTokensDetails{ThinkingTokens: thoughtsTokens}
 		}
 	}
 

@@ -191,15 +191,19 @@ func handleNormalResponse(
 		}
 	}()
 
-	// 缓存字段会被 Cursor 计入 Conversation 上下文。流式出口已经剥离它们，
-	// 非流式响应也必须保持同一契约；内部 usage 仍用于后续指标记录。
+	// 与流式出口 common.StripCacheFieldsFromClaudeSSE 保持同一契约：只剥离 cache_creation_*
+	// 与 cache_ttl，保留 cache_read_input_tokens。
+	// cache_read 必须保留：Anthropic 契约由客户端自行求和
+	// total_input = input_tokens + cache_read + cache_creation，清零它会让客户端把已缓存的
+	// 前缀算作不占上下文，从而低估满度、迟迟不触发压缩。
+	// 历史：d60b03a 让流式改为保留 cache_read 时只改了 stream.go，漏了这里，两侧口径分叉。
+	// 内部 usage（claudeResp.Usage）保持完整，后续指标与请求日志仍记录全部缓存字段。
 	clientResp := *claudeResp
 	if claudeResp.Usage != nil {
 		clientUsage := *claudeResp.Usage
 		clientUsage.CacheCreationInputTokens = 0
 		clientUsage.CacheCreation5mInputTokens = 0
 		clientUsage.CacheCreation1hInputTokens = 0
-		clientUsage.CacheReadInputTokens = 0
 		clientUsage.CacheTTL = ""
 		clientResp.Usage = &clientUsage
 	}

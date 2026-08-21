@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -92,6 +93,41 @@ func ConvertGeminiStreamToResponses(_ context.Context, model string, originalReq
 	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 		return nil, fmt.Errorf("解析 Gemini 流式响应失败: %w", err)
 	}
+	// usage 必须在 candidates 循环之前无条件吸收，并且不能拿"有没有 usage"当定稿信号。
+	// Gemini 流的每个 chunk 都可能带 usageMetadata（累积值），所以"见到 usage 就定稿"
+	// 会在第一个 chunk 就发出 response.completed，把后续全部内容甩到定稿之后。
+	// 这条流唯一可靠的定稿信号是 candidate.finishReason（Gemini SSE 没有 message_stop
+	// 之类的显式终止事件，对比 ConvertClaudeStreamToResponses 用 message_stop 定稿）。
+	// last-wins 覆盖，不能改成"首个非空生效"：thinking 模型的早期 chunk 会给出只含
+	// promptTokenCount/thoughtsTokenCount 的 usageMetadata（没有 candidatesTokenCount），
+	// first-wins 会把 output_tokens 永久锁在 0。
+	if chunk.UsageMetadata != nil {
+		if st.Completed {
+			// 上游把终值单独放在 finishReason 之后的尾 chunk（部分第三方兼容网关如此）。
+			// completed() 是幂等的，此刻已经带着零 usage 发出去了，这里的值补不进去。
+			// 逐行转换没有"流结束"回调可用，所以只能留痕，不静默当成 0 token。
+			log.Printf("[Responses-Stream-Token] 警告: Gemini usageMetadata 在 response.completed 之后才到达, 该响应的 usage 已按 0 发出; 实际 prompt=%d candidates=%d thoughts=%d cached=%d",
+				chunk.UsageMetadata.PromptTokenCount, chunk.UsageMetadata.CandidatesTokenCount, chunk.UsageMetadata.ThoughtsTokenCount, chunk.UsageMetadata.CachedContentTokenCount)
+		}
+		st.Usage.InputTokens = chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount
+		if st.Usage.InputTokens < 0 {
+			st.Usage.InputTokens = 0
+		}
+		// candidatesTokenCount 不含 thoughtsTokenCount，而 Responses 语义下 output_tokens
+		// 含 reasoning，所以必须相加（三家语义对照见 types.ClaudeOutputTokensDetails）。
+		// 与非流式 parseGeminiUsage 同口径，两条路径不允许分叉。
+		st.Usage.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount + chunk.UsageMetadata.ThoughtsTokenCount
+		st.Usage.TotalTokens = st.Usage.InputTokens + st.Usage.OutputTokens
+		if chunk.UsageMetadata.CachedContentTokenCount > 0 {
+			st.Usage.CacheReadInputTokens = chunk.UsageMetadata.CachedContentTokenCount
+			st.Usage.InputTokensDetails = &types.InputTokensDetails{CachedTokens: chunk.UsageMetadata.CachedContentTokenCount}
+		}
+		// 已计入 output_tokens，这里只作拆分展示。
+		if chunk.UsageMetadata.ThoughtsTokenCount > 0 {
+			st.Usage.OutputTokensDetails = &types.OutputTokensDetails{ReasoningTokens: chunk.UsageMetadata.ThoughtsTokenCount}
+		}
+	}
+
 	for _, candidate := range chunk.Candidates {
 		if candidate.Content != nil {
 			for _, part := range candidate.Content.Parts {
@@ -110,27 +146,8 @@ func ConvertGeminiStreamToResponses(_ context.Context, model string, originalReq
 		}
 		if candidate.FinishReason != "" {
 			out = append(out, st.closeAllBlocks()...)
-			if chunk.UsageMetadata == nil {
-				out = append(out, st.completed(originalRequestJSON)...)
-			}
+			out = append(out, st.completed(originalRequestJSON)...)
 		}
-	}
-	if chunk.UsageMetadata != nil {
-		st.Usage.InputTokens = chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount
-		if st.Usage.InputTokens < 0 {
-			st.Usage.InputTokens = 0
-		}
-		st.Usage.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
-		st.Usage.TotalTokens = st.Usage.InputTokens + st.Usage.OutputTokens
-		if chunk.UsageMetadata.CachedContentTokenCount > 0 {
-			st.Usage.CacheReadInputTokens = chunk.UsageMetadata.CachedContentTokenCount
-			st.Usage.InputTokensDetails = &types.InputTokensDetails{CachedTokens: chunk.UsageMetadata.CachedContentTokenCount}
-		}
-		if chunk.UsageMetadata.ThoughtsTokenCount > 0 {
-			st.Usage.OutputTokensDetails = &types.OutputTokensDetails{ReasoningTokens: chunk.UsageMetadata.ThoughtsTokenCount}
-		}
-		out = append(out, st.closeAllBlocks()...)
-		out = append(out, st.completed(originalRequestJSON)...)
 	}
 	return out, nil
 }

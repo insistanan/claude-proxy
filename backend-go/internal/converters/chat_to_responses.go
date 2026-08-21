@@ -968,17 +968,24 @@ func ConvertOpenAIChatToResponsesNonStream(_ context.Context, _ string, original
 			openaiCachedTokens = v.Int()
 		}
 		// OpenAI 的 prompt_tokens 包含缓存，需要扣除计算实际计费 input
+		subsetSubtracted := false
 		if openaiPromptTokens > 0 {
 			inputTokens = openaiPromptTokens - openaiCachedTokens
 			if inputTokens < 0 {
 				inputTokens = 0
 			}
 			cachedTokens = openaiCachedTokens
+			subsetSubtracted = openaiCachedTokens > 0
 		}
 		reasoningTokensFromUsage := usage.Get("completion_tokens_details.reasoning_tokens").Int()
 
-		// Claude 格式（优先级高于 OpenAI）
-		if v := usage.Get("input_tokens"); v.Exists() {
+		// Claude 格式（优先级高于 OpenAI），但 input_tokens 不能无条件覆盖上面减好的值：
+		// 少数兼容网关两套字段一起发（prompt_tokens 与 cached_tokens 之外还有 input_tokens），
+		// 此时 input_tokens 与 prompt_tokens 是同一个含缓存总量，覆盖回去等于作废减法，
+		// 客户端再按契约求和 input_tokens + cache_read 就又双计了。
+		// 只有 subset 式减法没生效时（上游是纯 Anthropic 语义，input_tokens 本就是 uncached）
+		// 才采用 input_tokens。
+		if v := usage.Get("input_tokens"); v.Exists() && !subsetSubtracted {
 			inputTokens = v.Int()
 		}
 		if v := usage.Get("output_tokens"); v.Exists() {

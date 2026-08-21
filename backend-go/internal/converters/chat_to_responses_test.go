@@ -689,3 +689,48 @@ func TestConvertResponsesToOpenAIChatRequest_StringifiesToolOutputContent(t *tes
 		t.Fatalf("tool message content 不匹配，实际为 %s", root.Get("messages.0.content").String())
 	}
 }
+
+// chatUsageToResponsesInput 跑一遍非流式转换，返回 usage.input_tokens 与 cached_tokens。
+func chatUsageToResponsesInput(t *testing.T, usageJSON string) (int64, int64) {
+	t.Helper()
+	chatResponse := `{"id":"chatcmpl-usage","object":"chat.completion","created":1,"model":"gpt-4o",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],` +
+		`"usage":` + usageJSON + `}`
+	result := ConvertOpenAIChatToResponsesNonStream(
+		context.Background(), "gpt-4o",
+		[]byte(`{"model":"gpt-4o","input":"Hi"}`), nil, []byte(chatResponse), nil,
+	)
+	root := gjson.Parse(result)
+	return root.Get("usage.input_tokens").Int(), root.Get("usage.input_tokens_details.cached_tokens").Int()
+}
+
+// OpenAI 语义 cached_tokens ⊆ prompt_tokens：Responses 出口的 input_tokens 必须是扣除后余量。
+func TestConvertOpenAIChatToResponsesNonStream_SubsetCachedSubtracted(t *testing.T) {
+	input, cached := chatUsageToResponsesInput(t,
+		`{"prompt_tokens":1000,"completion_tokens":20,"total_tokens":1020,"prompt_tokens_details":{"cached_tokens":900}}`)
+	if input != 100 {
+		t.Errorf("input_tokens 应为 1000-900=100，实际 %d", input)
+	}
+	if cached != 900 {
+		t.Errorf("cached_tokens 应为 900，实际 %d", cached)
+	}
+}
+
+// 少数兼容网关两套字段一起发：prompt_tokens/cached_tokens 之外还给一个同为总量的
+// input_tokens。此时不能让 Claude 分支把已减好的值覆盖回总量，否则客户端求和又双计。
+func TestConvertOpenAIChatToResponsesNonStream_MixedStyleKeepsSubtractedInput(t *testing.T) {
+	input, _ := chatUsageToResponsesInput(t,
+		`{"prompt_tokens":1000,"completion_tokens":20,"input_tokens":1000,"prompt_tokens_details":{"cached_tokens":900}}`)
+	if input != 100 {
+		t.Errorf("混合形态下 input_tokens 应保持已减值 100，实际 %d（被总量覆盖回去了）", input)
+	}
+}
+
+// 纯 Anthropic 形态：input_tokens 本就是 uncached 余量，必须原样采用，不得再减。
+func TestConvertOpenAIChatToResponsesNonStream_AnthropicStyleNotSubtracted(t *testing.T) {
+	input, _ := chatUsageToResponsesInput(t,
+		`{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":900}`)
+	if input != 100 {
+		t.Errorf("input_tokens 应保持 100（不得双减），实际 %d", input)
+	}
+}

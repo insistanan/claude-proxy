@@ -141,10 +141,12 @@ func TestOpenAIProviderHandleStreamResponse_MapsCachedUsage(t *testing.T) {
 	}
 
 	got := events.String()
-	// prompt_tokens=120 with cached_tokens=80: Claude client must see total occupancy 120,
-	// not uncached-only 40 (Cursor auto-compact depends on total-style input_tokens).
-	if !strings.Contains(got, `"input_tokens":120`) {
-		t.Fatalf("missing total input_tokens (prompt includes cache); events:\n%s", got)
+	// prompt_tokens=120 且 prompt_tokens_details.cached_tokens=80（OpenAI 语义：cached ⊆ prompt）。
+	// Anthropic 格式出口必须把 input_tokens 报成 uncached 余量 40，缓存量另由
+	// cache_read_input_tokens 单列 —— 客户端按契约求和 40+80 才回到真实占用 120。
+	// 若这里改回 120，规范客户端会算成 200，上下文满度虚高 67%。
+	if !strings.Contains(got, `"input_tokens":40`) {
+		t.Fatalf("input_tokens 应为 uncached 余量 40（120-80）; events:\n%s", got)
 	}
 	if !strings.Contains(got, `"cache_read_input_tokens":80`) {
 		t.Fatalf("missing cache_read_input_tokens; events:\n%s", got)

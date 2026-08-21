@@ -86,10 +86,24 @@ func streamGeminiToGemini(
 					return nil, err
 				}
 				if chunk.UsageMetadata != nil {
+					// promptTokenCount 含 cachedContentTokenCount，扣除后才是新增输入。
+					// 与非流式路径（handler.go 的同名扣减）保持同一口径，含 <0 钳制：
+					// 上游异常回包（cached > prompt）不能让负数流进指标与 sqlite 日志。
+					actualInputTokens := chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount
+					if actualInputTokens < 0 {
+						actualInputTokens = 0
+					}
+					// candidatesTokenCount 不含 thoughtsTokenCount，指标按两者之和记，
+					// 与非流式 handler.go 同口径（理由与官方证据见
+					// types.ClaudeOutputTokensDetails）。透传给客户端的原生 SSE 不改。
+					thoughtsTokens := chunk.UsageMetadata.ThoughtsTokenCount
 					totalUsage = &types.Usage{
-						InputTokens:          chunk.UsageMetadata.PromptTokenCount - chunk.UsageMetadata.CachedContentTokenCount,
-						OutputTokens:         chunk.UsageMetadata.CandidatesTokenCount,
+						InputTokens:          actualInputTokens,
+						OutputTokens:         chunk.UsageMetadata.CandidatesTokenCount + thoughtsTokens,
 						CacheReadInputTokens: chunk.UsageMetadata.CachedContentTokenCount,
+					}
+					if thoughtsTokens > 0 {
+						totalUsage.OutputTokensDetails = &types.ClaudeOutputTokensDetails{ThinkingTokens: thoughtsTokens}
 					}
 				}
 			}
@@ -220,6 +234,10 @@ func streamClaudeToGemini(
 				}
 
 				// 发送带 finishReason 和 usage 的最终块
+				// Gemini 契约要求 promptTokenCount 含缓存内容，缓存量另由
+				// cachedContentTokenCount 单列（客户端不再求和）。Claude 上游给的
+				// input_tokens 已是 uncached，所以这里必须把 cacheRead 加回去，
+				// 与非流式路径 converters.ClaudeResponseToGemini 保持同一口径。
 				geminiChunk := types.GeminiStreamChunk{
 					Candidates: []types.GeminiCandidate{
 						{
@@ -227,9 +245,10 @@ func streamClaudeToGemini(
 						},
 					},
 					UsageMetadata: &types.GeminiUsageMetadata{
-						PromptTokenCount:     inputTokens,
-						CandidatesTokenCount: outputTokens,
-						TotalTokenCount:      inputTokens + outputTokens,
+						PromptTokenCount:        inputTokens + cacheReadTokens,
+						CandidatesTokenCount:    outputTokens,
+						CachedContentTokenCount: cacheReadTokens,
+						TotalTokenCount:         inputTokens + cacheReadTokens + outputTokens,
 					},
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)

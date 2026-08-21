@@ -1170,7 +1170,7 @@ func parseGeminiUsage(usageRaw interface{}) types.ResponsesUsage {
 		return usage
 	}
 
-	var promptTokens, cachedTokens, outputTokens int
+	var promptTokens, cachedTokens, outputTokens, thoughtsTokens int
 
 	// Gemini 字段名
 	if v, ok := getIntFromMap(usageMap, "promptTokenCount"); ok {
@@ -1182,6 +1182,9 @@ func parseGeminiUsage(usageRaw interface{}) types.ResponsesUsage {
 	if v, ok := getIntFromMap(usageMap, "candidatesTokenCount"); ok {
 		outputTokens = v
 	}
+	if v, ok := getIntFromMap(usageMap, "thoughtsTokenCount"); ok {
+		thoughtsTokens = v
+	}
 
 	// 关键处理：Gemini 的 promptTokenCount 已包含 cachedContentTokenCount
 	// 为避免重复计费，实际输入 token = promptTokenCount - cachedContentTokenCount
@@ -1191,14 +1194,24 @@ func parseGeminiUsage(usageRaw interface{}) types.ResponsesUsage {
 	}
 
 	usage.InputTokens = actualInputTokens
-	usage.OutputTokens = outputTokens
-	usage.TotalTokens = actualInputTokens + outputTokens
+	// candidatesTokenCount 不含 thoughtsTokenCount，两者相加才是完整输出；而 Responses
+	// 语义下 output_tokens 含 reasoning（官方三家语义对照见 types.ClaudeOutputTokensDetails）。
+	// 不加就把 thinking 模型的输出系统性低报，reasoning 重的场景缺口可达 86%。
+	usage.OutputTokens = outputTokens + thoughtsTokens
+	usage.TotalTokens = actualInputTokens + usage.OutputTokens
 
 	// 缓存读取统计
 	if cachedTokens > 0 {
 		usage.CacheReadInputTokens = cachedTokens
 		usage.InputTokensDetails = &types.InputTokensDetails{
 			CachedTokens: cachedTokens,
+		}
+	}
+
+	// 推理明细。已计入 output_tokens，这里只作拆分展示。
+	if thoughtsTokens > 0 {
+		usage.OutputTokensDetails = &types.OutputTokensDetails{
+			ReasoningTokens: thoughtsTokens,
 		}
 	}
 

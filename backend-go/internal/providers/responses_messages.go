@@ -623,7 +623,7 @@ func responsesResponseToClaude(resp *types.ResponsesResponse) *types.ClaudeRespo
 		cacheReadTokens = resp.Usage.InputTokensDetails.CachedTokens
 	}
 	claudeResp.Usage = &types.Usage{
-		InputTokens:                normalizeClaudeClientInputTokens(resp.Usage.InputTokens, cacheReadTokens),
+		InputTokens:                resp.Usage.InputTokens,
 		OutputTokens:               resp.Usage.OutputTokens,
 		CacheCreationInputTokens:   resp.Usage.CacheCreationInputTokens,
 		CacheCreation5mInputTokens: resp.Usage.CacheCreation5mInputTokens,
@@ -779,9 +779,10 @@ func (s *responsesToClaudeStreamState) ensureMessageStart(root gjson.Result) []s
 	}
 	s.messageStarted = true
 	// Prefer any early usage if present; otherwise leave zeros (stream handler may estimate).
-	// Normalize like message_delta so Cursor does not see cache-inflated input early.
-	startInputTokens := normalizeClaudeClientInputTokens(s.inputTokens, s.cacheReadInputTokens)
-	// cache_* included for admin collector; stream.go strips before client write.
+	// captureResponsesUsage 已把 s.inputTokens 收敛成 uncached 余量，这里直接用。
+	startInputTokens := s.inputTokens
+	// cache_* emitted for the admin collector; only cache_creation_*/cache_ttl are stripped
+	// before the client write (StripCacheFieldsFromClaudeSSE keeps cache_read).
 	startUsage := map[string]interface{}{
 		"input_tokens":  startInputTokens,
 		"output_tokens": 0,
@@ -1000,10 +1001,12 @@ func (s *responsesToClaudeStreamState) emitMessageDelta() []string {
 	if s.stopReason == "" {
 		s.stopReason = "end_turn"
 	}
-	// input_tokens = uncached/new only. cache_read is included for admin stream collector
-	// but handlers/common/stream.go strips cache_* before writing to the Claude client
-	// (Cursor Conversation meter jumps if it sees cr~200k+ after compact).
-	clientInputTokens := normalizeClaudeClientInputTokens(s.inputTokens, s.cacheReadInputTokens)
+	// s.inputTokens 已由 captureResponsesUsage 收敛成 uncached 余量。
+	// cache_read_input_tokens 既给管理端采集，也会到达 Claude 客户端：
+	// handlers/common/StripCacheFieldsFromClaudeSSE 只剥离 cache_creation_*/cache_ttl，
+	// 有意保留 cache_read，让客户端按 Anthropic 契约求和 input_tokens + cache_read
+	// 得到真实上下文占用。两者必须同步：把 input_tokens 改回总量就会重新双计。
+	clientInputTokens := s.inputTokens
 	usageMap := map[string]interface{}{
 		"output_tokens": s.outputTokens,
 	}
@@ -1044,11 +1047,16 @@ func (s *responsesToClaudeStreamState) captureResponsesUsage(root gjson.Result) 
 		return
 	}
 
+	// reportedInput 保留"本次上游报出的原始 input"，减法绑定它而不是 s.inputTokens：
+	// 一条流里 captureResponsesUsage 会被多次调用，绑定累积字段会重复相减。
+	reportedInput := 0
 	if v := usageNode.Get("input_tokens"); v.Exists() && v.Int() > 0 {
-		s.inputTokens = int(v.Int())
-		s.hasUsage = true
+		reportedInput = int(v.Int())
 	} else if v := usageNode.Get("prompt_tokens"); v.Exists() && v.Int() > 0 {
-		s.inputTokens = int(v.Int())
+		reportedInput = int(v.Int())
+	}
+	if reportedInput > 0 {
+		s.inputTokens = reportedInput
 		s.hasUsage = true
 	}
 	if v := usageNode.Get("output_tokens"); v.Exists() && v.Int() > 0 {
@@ -1059,19 +1067,22 @@ func (s *responsesToClaudeStreamState) captureResponsesUsage(root gjson.Result) 
 		s.hasUsage = true
 	}
 
-	cacheRead := int64(0)
+	// 缓存量按字段名分开保存 provenance：折叠成一个值就判不出 input_tokens 是否已含缓存。
+	//   cacheReadAnthropic —— cache_read_input_tokens，上游本就按 uncached 报 input。
+	//   cacheReadSubset    —— *_tokens_details.cached_tokens，OpenAI 语义 cached ⊆ input。
+	cacheReadAnthropic := int64(0)
+	cacheReadSubset := int64(0)
 	if v := usageNode.Get("cache_read_input_tokens"); v.Exists() && v.Int() > 0 {
-		cacheRead = v.Int()
+		cacheReadAnthropic = v.Int()
 	}
-	if cacheRead == 0 {
-		if v := usageNode.Get("input_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
-			cacheRead = v.Int()
-		}
+	if v := usageNode.Get("input_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
+		cacheReadSubset = v.Int()
+	} else if v := usageNode.Get("prompt_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
+		cacheReadSubset = v.Int()
 	}
+	cacheRead := cacheReadAnthropic
 	if cacheRead == 0 {
-		if v := usageNode.Get("prompt_tokens_details.cached_tokens"); v.Exists() && v.Int() > 0 {
-			cacheRead = v.Int()
-		}
+		cacheRead = cacheReadSubset
 	}
 	if cacheRead > 0 {
 		s.cacheReadInputTokens = int(cacheRead)
@@ -1083,10 +1094,17 @@ func (s *responsesToClaudeStreamState) captureResponsesUsage(root gjson.Result) 
 		s.hasUsage = true
 	}
 
-	// Some Responses providers report input_tokens as total prompt size (including cache).
-	// Claude-style accounting prefers billed/new input separate from cache_read.
-	// Do NOT subtract here: stream.go and request logs expect raw fields; subtraction
-	// already happens in Chat path normalizeOpenAIUsage and would double-distort metrics.
+	// input_tokens 收敛到 Anthropic uncached 口径，判据与 normalizeOpenAIUsage 完全一致：
+	// 只有当缓存量来自 subset 式字段名、且上游没给 Anthropic 式 cache_read_input_tokens 时，
+	// input_tokens 才是含缓存的总量，必须减；上游给了 Anthropic 名就说明它已经拆好了，
+	// 再减一次是双减。客户端按契约求和 input_tokens + cache_read 才回到真实占用。
+	if reportedInput > 0 && cacheReadSubset > 0 && cacheReadAnthropic == 0 {
+		s.inputTokens = reportedInput - int(cacheReadSubset)
+		if s.inputTokens < 0 {
+			// 上游异常回包（cached > input）。钳制到 0，不让负数流进客户端与指标。
+			s.inputTokens = 0
+		}
+	}
 }
 
 func buildClaudeSSE(event string, data map[string]interface{}) string {

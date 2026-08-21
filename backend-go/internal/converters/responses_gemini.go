@@ -158,15 +158,15 @@ func ConvertGeminiResponseToResponses(originalRequestJSON []byte, upstreamRespon
 	}
 
 	if geminiResp.UsageMetadata != nil {
+		// thoughtsTokenCount 必须一起传进去：parseGeminiUsage 负责把它计入 output_tokens
+		// 并单列 output_tokens_details.reasoning_tokens，此处不再重复赋值，避免两处口径分叉。
 		resp.Usage = parseGeminiUsage(map[string]interface{}{
 			"promptTokenCount":        geminiResp.UsageMetadata.PromptTokenCount,
 			"candidatesTokenCount":    geminiResp.UsageMetadata.CandidatesTokenCount,
+			"thoughtsTokenCount":      geminiResp.UsageMetadata.ThoughtsTokenCount,
 			"totalTokenCount":         geminiResp.UsageMetadata.TotalTokenCount,
 			"cachedContentTokenCount": geminiResp.UsageMetadata.CachedContentTokenCount,
 		})
-		if geminiResp.UsageMetadata.ThoughtsTokenCount > 0 {
-			resp.Usage.OutputTokensDetails = &types.OutputTokensDetails{ReasoningTokens: geminiResp.UsageMetadata.ThoughtsTokenCount}
-		}
 	}
 
 	return resp, nil

@@ -231,6 +231,9 @@ type Usage struct {
 	OutputTokens             int `json:"output_tokens,omitempty"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	// 输出明细。与 input 侧的求和契约相反：output_tokens 已含 thinking_tokens，
+	// 这里只是拆分展示，客户端绝不能再加一次。
+	OutputTokensDetails *ClaudeOutputTokensDetails `json:"output_tokens_details,omitempty"`
 	// 缓存 TTL 细分（参考 claude-code-hub）
 	CacheCreation5mInputTokens int    `json:"cache_creation_5m_input_tokens,omitempty"` // 5分钟 TTL
 	CacheCreation1hInputTokens int    `json:"cache_creation_1h_input_tokens,omitempty"` // 1小时 TTL
@@ -238,6 +241,27 @@ type Usage struct {
 	// OpenAI 兼容字段
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
+}
+
+// ClaudeOutputTokensDetails 是 Anthropic 格式 usage 的输出明细。
+// 与 Responses 格式的 OutputTokensDetails（字段名 reasoning_tokens）语义相同、
+// 线上字段名不同，所以不能合并成一个类型。
+//
+// 三家 output 侧语义（2026-08 官方文档确证，勿凭直觉改）：
+//   - Anthropic：output_tokens **含** thinking，output_tokens_details.thinking_tokens 是明细
+//     （platform.claude.com/docs/en/build-with-claude/adaptive-thinking：
+//     output_tokens=348 / thinking_tokens=312）。
+//   - OpenAI Responses：output_tokens **含** reasoning，且文档明说 reasoning 按 output 计费
+//     （developers.openai.com/api/docs/guides/reasoning：
+//     input 75 + output 1186 = total 1261，reasoning 1024 不参与加总）。
+//   - Gemini usageMetadata：candidatesTokenCount **不含** thoughtsTokenCount，两者相加才是
+//     完整输出（url-context 页：input 27 + output 45 + thoughts 31 + tool_use 10309
+//     = total 10412）。
+//
+// 所以 Gemini → Anthropic/Responses 的转换必须把 thoughts 加进 output_tokens，
+// 否则 thinking 模型的输出被系统性低报（reasoning 重的场景可达 86%）。
+type ClaudeOutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens,omitempty"`
 }
 
 // ProviderRequest 提供商请求（通用）

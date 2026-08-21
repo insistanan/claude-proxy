@@ -949,37 +949,34 @@ func normalizeOpenAIUsage(base *types.Usage, details *openAIUsageDetails) types.
 		if details.CacheTTL != "" {
 			usage.CacheTTL = details.CacheTTL
 		}
-		// Keep Anthropic-compatible split for Claude clients (Cursor):
-		//   input_tokens  = uncached / "new" input (what Cursor uses to feel "how full")
-		//   cache_read_*  = cache hit detail (admin metrics)
-		// Do NOT add cache_read into input_tokens: after Cursor compact, the next turn
-		// often still reports a large cache_read for stable system/tools prefixes; summing
-		// would make Cursor think context is still ~200K and re-compact immediately
-		// (user regression: used to drop 200K -> ~30K after summarize).
-		// Do NOT subtract cache from input either (would under-report when input is total-style).
-		usage.InputTokens = normalizeClaudeClientInputTokens(usage.InputTokens, usage.CacheReadInputTokens)
+		// input_tokens 收敛到 Anthropic uncached 口径。
+		// Anthropic 契约由客户端自行求和：
+		//   total_input = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+		// 所以在下发 cache_read 的同时把总量塞进 input_tokens，规范客户端会把缓存前缀算两遍，
+		// 上下文满度虚高，表现为 compact 之后立刻又触发 compact。
+		//
+		// 减不减由 cache 量的**字段名来源**决定，不看数值：
+		//   - cached_tokens / prompt_tokens_details.cached_tokens / cachedContentTokenCount
+		//     是 subset 式命名（OpenAI、Gemini 语义下 cached ⊆ prompt/input），此时上游报的
+		//     input 是总量，必须减。
+		//   - cache_read_input_tokens 是 Anthropic 式命名，上游本就按 uncached 报 input，
+		//     再减一次就是双减（对照 converters.TestExtractUsageMetrics_ClaudeCacheReadDoesNotDoubleSubtract）。
+		// 与 converters.ExtractUsageMetrics 同一判据，两条路径不允许分叉。
+		//
+		// 减法绑定在"本次 details 报出的 input 量"而非最终 usage.InputTokens，因此对流式
+		// mergeOpenAIUsageFromChunk 的反复调用幂等：本 chunk 报了 input 就重算一次完整减法，
+		// 没报就保留上一轮已减的值，不会二次相减。
+		reportedInput := firstPositiveInt(details.InputTokens, details.PromptTokens)
+		if reportedInput > 0 && cacheReadFromDetails > 0 && details.CacheReadInputTokens == 0 {
+			usage.InputTokens = reportedInput - cacheReadFromDetails
+			if usage.InputTokens < 0 {
+				// 上游异常回包（cached > prompt）。钳制到 0 而不是放行负数：
+				// 负数会流进客户端的上下文估算与 sqlite 指标日志。
+				usage.InputTokens = 0
+			}
+		}
 	}
 	return usage
-}
-
-// normalizeClaudeClientInputTokens keeps input_tokens as the figure Cursor should use
-// for post-compact context meter (~true prompt size without double-counting cache).
-//
-// Gateways may report either:
-//
-//	A) total-style: input already includes cache (input >= cache_read) -> use input as-is
-//	B) split-style: input is uncached-only (input < cache_read) -> keep uncached input only
-//	   (cache_read stays in cache_read_input_tokens for admin; do not sum into input)
-func normalizeClaudeClientInputTokens(inputTokens int, cacheReadTokens int) int {
-	if inputTokens <= 0 {
-		return inputTokens
-	}
-	// Total-style already correct for client meter.
-	if cacheReadTokens > 0 && inputTokens >= cacheReadTokens {
-		return inputTokens
-	}
-	// Split-style: return uncached portion only.
-	return inputTokens
 }
 
 func mergeOpenAIUsageFromChunk(chunk map[string]interface{}, dst *types.Usage) bool {
@@ -1005,7 +1002,14 @@ func mergeOpenAIUsageFromChunk(chunk map[string]interface{}, dst *types.Usage) b
 }
 
 func buildOpenAIMessageDeltaEvent(stopReason string, usage types.Usage, hasUsage bool) string {
-	// Include cache for admin stream collector; stream.go strips cache_* before client write.
+	// Cache fields are emitted for the admin stream collector. On the way to the client,
+	// handlers/common/StripCacheFieldsFromClaudeSSE drops only cache_creation_*/cache_ttl and
+	// keeps cache_read_input_tokens, because an Anthropic-format client is expected to add it
+	// back when sizing the context window. That addition is only correct because
+	// normalizeOpenAIUsage has already reduced input_tokens to the uncached remainder --
+	// the two must stay in lockstep: re-introducing total-style input_tokens here would
+	// restore the double-count. Which client is on the other end is not knowable here, so do
+	// not re-introduce a vendor name in this comment.
 	usageMap := map[string]interface{}{
 		"output_tokens": usage.OutputTokens,
 	}

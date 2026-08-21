@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -1294,8 +1295,20 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 				usage.InputTokens = 0
 			}
 		}
+		thoughtsTokens := 0
+		if v, ok := usageMetadata["thoughtsTokenCount"].(float64); ok {
+			thoughtsTokens = int(v)
+		}
+		// candidatesTokenCount 不含 thoughtsTokenCount，而 Anthropic 的 output_tokens
+		// 含 thinking，必须相加（三家语义对照与官方证据见 types.ClaudeOutputTokensDetails）。
 		if candidatesTokens, ok := usageMetadata["candidatesTokenCount"].(float64); ok {
-			usage.OutputTokens = int(candidatesTokens)
+			usage.OutputTokens = int(candidatesTokens) + thoughtsTokens
+		} else if thoughtsTokens > 0 {
+			// 上游只报了 thoughts、没报 candidates。输出确实已经产生，不能记 0。
+			usage.OutputTokens = thoughtsTokens
+		}
+		if thoughtsTokens > 0 {
+			usage.OutputTokensDetails = &types.ClaudeOutputTokensDetails{ThinkingTokens: thoughtsTokens}
 		}
 		claudeResp.Usage = usage
 	}
@@ -1394,6 +1407,85 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			textBlockIndex = -1
 		}
 
+		// 上游真实 usage。抓取点必须在 candidates 守卫之前：Gemini 原生每个 chunk 都带
+		// 累积 usageMetadata、终值与 finishReason 落在同一个 chunk，但没有 candidates 的
+		// chunk 会被守卫 continue 掉，抓取点放在守卫之后就读不到那一类（第三方兼容网关
+		// 会把终值单独放在一个只有 usageMetadata 的尾 chunk）。
+		var (
+			usageInput       int
+			usageOutput      int
+			usageThoughts    int
+			usageCacheRead   int
+			usageSeen        bool
+			messageDeltaSent bool
+			usageArrivedLate bool
+		)
+
+		// captureUsage 用 last-wins 覆盖，不能改成"首个非空生效"：thinking 模型的早期
+		// chunk 会给出只含 promptTokenCount/thoughtsTokenCount 的 usageMetadata（没有
+		// candidatesTokenCount），first-wins 会把 output_tokens 永久锁在 0。
+		captureUsage := func(chunk map[string]interface{}) {
+			meta, ok := chunk["usageMetadata"].(map[string]interface{})
+			if !ok {
+				return
+			}
+			usageSeen = true
+			if v, ok := meta["cachedContentTokenCount"].(float64); ok {
+				usageCacheRead = int(v)
+			}
+			if v, ok := meta["promptTokenCount"].(float64); ok {
+				// promptTokenCount 含 cachedContentTokenCount，扣除后才是新增输入。
+				// 与非流式 ConvertResponse、handlers/gemini 两条路径、converters
+				// responses_stream 同一口径，含 <0 钳制防上游异常回包污染指标。
+				usageInput = int(v) - usageCacheRead
+				if usageInput < 0 {
+					usageInput = 0
+				}
+			}
+			if v, ok := meta["thoughtsTokenCount"].(float64); ok {
+				usageThoughts = int(v)
+			}
+			// candidatesTokenCount 不含 thoughtsTokenCount，而 Anthropic 的 output_tokens
+			// 含 thinking，必须相加；不加就把 thinking 模型的输出系统性低报（reasoning 重的
+			// 场景缺口可达 86%）。三家 output 侧语义与官方证据见 types.ClaudeOutputTokensDetails，
+			// 与非流式 ConvertResponse、converters 两条 Responses 路径同口径。
+			//
+			// thoughts 必须先于 candidates 赋值：同一个 meta 内相加要用本轮的 thoughts。
+			// 只报 thoughts 不报 candidates 的早期 chunk，output 就等于 thoughts。
+			if v, ok := meta["candidatesTokenCount"].(float64); ok {
+				usageOutput = int(v) + usageThoughts
+			} else if usageThoughts > 0 {
+				usageOutput = usageThoughts
+			}
+			if messageDeltaSent {
+				usageArrivedLate = true
+			}
+		}
+
+		// buildMessageDeltaUsage 构造 message_delta 的 usage 负载。
+		// 上游没给 usageMetadata 时保持 0：不猜测、不用请求体估算（客户端每轮全量重发，
+		// 估算值会离真实输入差一个数量级），由流结束后的日志留痕。
+		buildMessageDeltaUsage := func() map[string]interface{} {
+			messageDeltaSent = true
+			if !usageSeen {
+				return map[string]interface{}{"output_tokens": 0}
+			}
+			usage := map[string]interface{}{
+				"input_tokens":  usageInput,
+				"output_tokens": usageOutput,
+			}
+			if usageCacheRead > 0 {
+				usage["cache_read_input_tokens"] = usageCacheRead
+			}
+			// 已计入 output_tokens，这里只作拆分展示，客户端不得再求和。
+			if usageThoughts > 0 {
+				usage["output_tokens_details"] = map[string]interface{}{
+					"thinking_tokens": usageThoughts,
+				}
+			}
+			return usage
+		}
+
 		for scanner.Scan() {
 			line := scanner.Text()
 			line = strings.TrimSpace(line)
@@ -1435,6 +1527,8 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				messageStartEmitted = true
 			}
 
+			captureUsage(chunk)
+
 			candidates, ok := chunk["candidates"].([]interface{})
 			if !ok || len(candidates) == 0 {
 				continue
@@ -1465,9 +1559,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 							"stop_reason":   stopReason,
 							"stop_sequence": nil,
 						},
-						"usage": map[string]interface{}{
-							"output_tokens": 0,
-						},
+						"usage": buildMessageDeltaUsage(),
 					}
 					deltaJSON, _ := json.Marshal(deltaEvent)
 					send(fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON))
@@ -1617,9 +1709,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 						"stop_reason":   stopReason,
 						"stop_sequence": nil,
 					},
-					"usage": map[string]interface{}{
-						"output_tokens": 0,
-					},
+					"usage": buildMessageDeltaUsage(),
 				}
 				deltaJSON, _ := json.Marshal(deltaEvent)
 				send(fmt.Sprintf("event: message_delta\ndata: %s\n\n", deltaJSON))
@@ -1629,6 +1719,17 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		// 确保流结束时关闭任何未关闭的块
 		closeThinkingBlock()
 		closeTextBlock()
+
+		// usage 失配留痕：两种情况都会让客户端与指标看到 0，必须能从日志查出来，
+		// 不允许静默当成"这一轮真的是 0 token"。
+		switch {
+		case !usageSeen:
+			log.Printf("[Gemini-Stream-Token] 警告: 上游整条流未提供 usageMetadata, usage 记为 0")
+		case usageArrivedLate:
+			log.Printf("[Gemini-Stream-Token] 警告: usageMetadata 在 message_delta 之后才到达(上游把终值单独放在尾 chunk), 客户端侧 usage 记为 0; 实际 input=%d output=%d(含 thinking %d) cache_read=%d",
+				usageInput, usageOutput, usageThoughts, usageCacheRead)
+		}
+
 		if len(shadowParts) > 0 {
 			defaultGeminiShadowStore.Record(shadowProviderID, shadowSessionID, GeminiShadowTurn{
 				AssistantContent: map[string]interface{}{"parts": cloneInterface(shadowParts)},
