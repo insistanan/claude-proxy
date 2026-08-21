@@ -17,22 +17,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var (
-	piAgentMu        sync.Mutex
-	piAgentStoreOnce sync.Once
-	piAgentStore     *piagent.Store
-)
+// PiAgentAPI 聚合 pi-agent 配置管理的互斥锁与配置存储，
+// 由 main.go 构造并注入路由，替代包级全局状态。
+type PiAgentAPI struct {
+	mu        sync.Mutex
+	storeOnce sync.Once
+	store     *piagent.Store
+}
 
-// piAgentStoreInstance 惰性创建 pi-agent 配置存储。
-func piAgentStoreInstance() *piagent.Store {
-	piAgentStoreOnce.Do(func() {
+// NewPiAgentAPI 创建 pi-agent 配置管理 API。
+func NewPiAgentAPI() *PiAgentAPI {
+	return &PiAgentAPI{}
+}
+
+// storeInstance 惰性创建 pi-agent 配置存储。
+func (p *PiAgentAPI) storeInstance() *piagent.Store {
+	p.storeOnce.Do(func() {
 		backupDir, err := piagent.DefaultBackupDir()
 		if err != nil {
 			backupDir = ".config/backups/pi-agent"
 		}
-		piAgentStore = piagent.NewStore(backupDir)
+		p.store = piagent.NewStore(backupDir)
 	})
-	return piAgentStore
+	return p.store
 }
 
 // piAgentError 将底层错误映射为 HTTP 状态码。
@@ -52,10 +59,10 @@ func piAgentError(c *gin.Context, err error) {
 // ============== 状态 ==============
 
 // GetPiAgentStatus 返回 pi-agent 配置目录及三个文件的存在、读写状态。
-func GetPiAgentStatus() gin.HandlerFunc {
+func (p *PiAgentAPI) Status() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
+		p.mu.Lock()
+		defer p.mu.Unlock()
 		status, err := piagent.InspectStatus()
 		if err != nil {
 			piAgentError(c, err)
@@ -98,17 +105,17 @@ type piAgentProviderResponse struct {
 }
 
 // ListPiAgentProviders 返回 provider 列表（含脱敏的凭据状态）。
-func ListPiAgentProviders() gin.HandlerFunc {
+func (p *PiAgentAPI) ListProviders() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		providers, root, raw, _, err := store.ReadProviders()
 		if err != nil {
 			piAgentError(c, err)
 			return
 		}
-		credentialInfo, err := piAgentCredentialInfo()
+		credentialInfo, err := p.credentialInfo()
 		if err != nil {
 			piAgentError(c, err)
 			return
@@ -131,12 +138,12 @@ func ListPiAgentProviders() gin.HandlerFunc {
 }
 
 // GetPiAgentProvider 返回单个 provider 详情。
-func GetPiAgentProvider() gin.HandlerFunc {
+func (p *PiAgentAPI) GetProvider() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		providers, _, raw, _, err := store.ReadProviders()
 		if err != nil {
 			piAgentError(c, err)
@@ -147,7 +154,7 @@ func GetPiAgentProvider() gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, gin.H{"error": "provider 不存在"})
 			return
 		}
-		credentialInfo, err := piAgentCredentialInfo()
+		credentialInfo, err := p.credentialInfo()
 		if err != nil {
 			piAgentError(c, err)
 			return
@@ -175,7 +182,7 @@ type deletePiAgentProviderRequest struct {
 }
 
 // CreatePiAgentProvider 新增 provider。provider 对象中的 apiKey 和 apiKey 字段都会写入 models.json。
-func CreatePiAgentProvider() gin.HandlerFunc {
+func (p *PiAgentAPI) CreateProvider() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createPiAgentProviderRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -187,9 +194,9 @@ func CreatePiAgentProvider() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -221,7 +228,7 @@ func CreatePiAgentProvider() gin.HandlerFunc {
 }
 
 // UpdatePiAgentProvider 更新单个 provider。provider.APIKey 写入 models.json。
-func UpdatePiAgentProvider() gin.HandlerFunc {
+func (p *PiAgentAPI) UpdateProvider() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		var req updatePiAgentProviderRequest
@@ -233,9 +240,9 @@ func UpdatePiAgentProvider() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -263,7 +270,7 @@ func UpdatePiAgentProvider() gin.HandlerFunc {
 }
 
 // DeletePiAgentProvider 删除 provider。被 settings.json 默认模型引用的 provider 返回明确冲突。
-func DeletePiAgentProvider() gin.HandlerFunc {
+func (p *PiAgentAPI) DeleteProvider() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		var req deletePiAgentProviderRequest
@@ -271,9 +278,9 @@ func DeletePiAgentProvider() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 			return
 		}
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -291,7 +298,7 @@ func DeletePiAgentProvider() gin.HandlerFunc {
 			return
 		}
 		// 删除被默认模型引用的 provider 时返回明确冲突
-		reason, conflictErr := piAgentDefaultProviderConflict(id)
+		reason, conflictErr := p.defaultProviderConflict(id)
 		if conflictErr != nil {
 			piAgentError(c, conflictErr)
 			return
@@ -310,8 +317,8 @@ func DeletePiAgentProvider() gin.HandlerFunc {
 }
 
 // piAgentDefaultProviderConflict 检查 provider 是否被 settings.json 默认模型引用。
-func piAgentDefaultProviderConflict(providerID string) (string, error) {
-	store := piAgentStoreInstance()
+func (p *PiAgentAPI) defaultProviderConflict(providerID string) (string, error) {
+	store := p.storeInstance()
 	settings, _, _, _, err := store.ReadModelSettings()
 	if err != nil {
 		return "", err
@@ -323,8 +330,8 @@ func piAgentDefaultProviderConflict(providerID string) (string, error) {
 	return "", nil
 }
 
-// ValidatePiAgentProvider 只校验 provider 配置，不落盘。
-func ValidatePiAgentProvider() gin.HandlerFunc {
+// ValidateProvider 只校验 provider 配置，不落盘。
+func (p *PiAgentAPI) ValidateProvider() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req struct {
 			ID       string                 `json:"id"`
@@ -352,7 +359,7 @@ type piAgentProbeRequest struct {
 }
 
 // DiscoverPiAgentModels 从 provider 的 baseUrl 探测可用模型候选，不自动保存。
-func DiscoverPiAgentModels() gin.HandlerFunc {
+func (p *PiAgentAPI) DiscoverModels() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		var req piAgentProbeRequest
@@ -360,7 +367,7 @@ func DiscoverPiAgentModels() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 			return
 		}
-		store := piAgentStoreInstance()
+		store := p.storeInstance()
 		providers, _, _, _, err := store.ReadProviders()
 		if err != nil {
 			piAgentError(c, err)
@@ -389,7 +396,7 @@ func DiscoverPiAgentModels() gin.HandlerFunc {
 		}
 		apiKey := req.APIKey
 		if apiKey == "" {
-			apiKey = piAgentAPIKeyFor(id)
+			apiKey = p.apiKeyFor(id)
 		}
 		models, method, err := probeOpenAIModels(baseURL, apiKey)
 		if err != nil {
@@ -401,7 +408,7 @@ func DiscoverPiAgentModels() gin.HandlerFunc {
 }
 
 // TestPiAgentProvider 对 provider 执行连通性测试（HTTP(S)，限制超时/重定向/响应大小）。
-func TestPiAgentProvider() gin.HandlerFunc {
+func (p *PiAgentAPI) TestProvider() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		var req piAgentProbeRequest
@@ -409,7 +416,7 @@ func TestPiAgentProvider() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 			return
 		}
-		store := piAgentStoreInstance()
+		store := p.storeInstance()
 		providers, _, _, _, err := store.ReadProviders()
 		if err != nil {
 			piAgentError(c, err)
@@ -430,7 +437,7 @@ func TestPiAgentProvider() gin.HandlerFunc {
 		}
 		apiKey := req.APIKey
 		if apiKey == "" {
-			apiKey = piAgentAPIKeyFor(id)
+			apiKey = p.apiKeyFor(id)
 		}
 
 		start := time.Now()
@@ -618,8 +625,8 @@ func piAgentHTTPClient() *http.Client {
 
 // piAgentAPIKeyFor 获取 provider 的 API key（仅用于探测请求，不落盘）。
 // 优先 auth.json 的 credential，其次 models.json 的 provider.apiKey。
-func piAgentAPIKeyFor(providerID string) string {
-	store := piAgentStoreInstance()
+func (p *PiAgentAPI) apiKeyFor(providerID string) string {
+	store := p.storeInstance()
 	root, _, _, err := store.ReadRawAuth()
 	if err == nil {
 		if raw, exists := root[providerID]; exists {
@@ -640,8 +647,8 @@ func piAgentAPIKeyFor(providerID string) string {
 }
 
 // piAgentCredentialInfo 读取 auth.json 的脱敏凭据状态，key 为 provider ID。
-func piAgentCredentialInfo() (map[string]piagent.CredentialView, error) {
-	store := piAgentStoreInstance()
+func (p *PiAgentAPI) credentialInfo() (map[string]piagent.CredentialView, error) {
+	store := p.storeInstance()
 	views, _, _, _, err := store.ReadCredentials()
 	if err != nil {
 		return nil, err
@@ -704,11 +711,11 @@ func piAgentProviderResponseView(id string, provider piagent.ProviderConfig, cre
 // ============== 凭据 ==============
 
 // ListPiAgentCredentials 返回凭据类型与脱敏状态，绝不返回真实密钥。
-func ListPiAgentCredentials() gin.HandlerFunc {
+func (p *PiAgentAPI) ListCredentials() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		views, _, raw, _, err := store.ReadCredentials()
 		if err != nil {
 			piAgentError(c, err)
@@ -728,7 +735,7 @@ type updatePiAgentCredentialRequest struct {
 }
 
 // UpdatePiAgentCredential 以 keep/replace/remove 三态更新 API key。
-func UpdatePiAgentCredential() gin.HandlerFunc {
+func (p *PiAgentAPI) UpdateCredential() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		var req updatePiAgentCredentialRequest
@@ -744,9 +751,9 @@ func UpdatePiAgentCredential() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "replace 操作需要提供新的 API Key"})
 			return
 		}
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -767,7 +774,7 @@ func UpdatePiAgentCredential() gin.HandlerFunc {
 }
 
 // DeletePiAgentCredential 移除 provider 的凭据（等效 remove 操作）。
-func DeletePiAgentCredential() gin.HandlerFunc {
+func (p *PiAgentAPI) DeleteCredential() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		var req struct {
@@ -777,9 +784,9 @@ func DeletePiAgentCredential() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 			return
 		}
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -802,11 +809,11 @@ func DeletePiAgentCredential() gin.HandlerFunc {
 // ============== 默认模型设置 ==============
 
 // GetPiAgentModelSettings 返回 settings.json 中的默认模型字段。
-func GetPiAgentModelSettings() gin.HandlerFunc {
+func (p *PiAgentAPI) GetModelSettings() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		settings, _, raw, _, err := store.ReadModelSettings()
 		if err != nil {
 			piAgentError(c, err)
@@ -822,16 +829,16 @@ type updatePiAgentModelSettingsRequest struct {
 }
 
 // UpdatePiAgentModelSettings 字段级更新默认模型设置。
-func UpdatePiAgentModelSettings() gin.HandlerFunc {
+func (p *PiAgentAPI) UpdateModelSettings() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req updatePiAgentModelSettingsRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 			return
 		}
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -854,11 +861,11 @@ func UpdatePiAgentModelSettings() gin.HandlerFunc {
 // ============== 备份 ==============
 
 // ListPiAgentBackups 列出备份文件。
-func ListPiAgentBackups() gin.HandlerFunc {
+func (p *PiAgentAPI) ListBackups() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		backups, err := store.ListBackups()
 		if err != nil {
 			piAgentError(c, err)
@@ -873,7 +880,7 @@ type createPiAgentBackupRequest struct {
 }
 
 // CreatePiAgentBackup 为指定文件创建手动快照。
-func CreatePiAgentBackup() gin.HandlerFunc {
+func (p *PiAgentAPI) CreateBackup() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createPiAgentBackupRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -892,9 +899,9 @@ func CreatePiAgentBackup() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的配置文件类型"})
 			return
 		}
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -911,12 +918,12 @@ func CreatePiAgentBackup() gin.HandlerFunc {
 }
 
 // RestorePiAgentBackup 校验备份内容后恢复。
-func RestorePiAgentBackup() gin.HandlerFunc {
+func (p *PiAgentAPI) RestoreBackup() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
-		piAgentMu.Lock()
-		defer piAgentMu.Unlock()
-		store := piAgentStoreInstance()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		store := p.storeInstance()
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)

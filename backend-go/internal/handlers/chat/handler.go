@@ -16,7 +16,8 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/converters"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
 	"github.com/BenedictKing/claude-proxy/internal/modelcatalog"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
@@ -36,10 +37,10 @@ func Handler(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
 	channelScheduler *scheduler.ChannelScheduler,
-	contentSafetyPipelines ...*common.HookPipeline,
+	contentSafetyPipelines ...*hooks.HookPipeline,
 ) gin.HandlerFunc {
-	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
-	spec := common.ProtocolSpec{
+	contentSafetyPipeline := hooks.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
+	spec := proxycore.ProtocolSpec{
 		Kind:         scheduler.ChannelKindChat,
 		LogName:      "Chat",
 		HookPipeline: contentSafetyPipeline,
@@ -57,7 +58,7 @@ func Handler(
 				c.JSON(http.StatusBadRequest, gin.H{"error": "model is required"})
 				return "", false, nil, false
 			}
-			prompts := common.ExtractPromptsFromOpenAI(chatReq.Messages)
+			prompts := proxycore.ExtractPromptsFromOpenAI(chatReq.Messages)
 			return chatReq.Model, chatReq.Stream, prompts, true
 		},
 		PreRoute: func(c *gin.Context, body []byte, model string, userID string, startTime time.Time) bool {
@@ -80,7 +81,7 @@ func Handler(
 		},
 	}
 	return func(c *gin.Context) {
-		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
+		proxycore.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
 	}
 }
 
@@ -98,7 +99,7 @@ func handleRoutedChat(
 ) {
 	upstream, err := chatRouteUpstream(cfgManager, route)
 	if err != nil {
-		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
 		c.JSON(http.StatusNotFound, gin.H{
 			"error": gin.H{
 				"message": err.Error(),
@@ -109,73 +110,56 @@ func handleRoutedChat(
 	}
 
 	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindChat, route.ChannelIndex); err != nil {
-		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
 		return
 	}
 
 	routedBody, err := replaceChatModel(bodyBytes, route.UpstreamModel)
 	if err != nil {
-		common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	metricsManager := channelScheduler.MetricsManager(scheduler.ChannelKindChat)
-	urlResults := common.BuildDefaultURLResults([]string{route.BaseURL})
-	result := (common.UpstreamAttempt{
-		Context:            c,
-		EnvConfig:          envCfg,
-		ConfigManager:      cfgManager,
-		ChannelScheduler:   channelScheduler,
-		Kind:               scheduler.ChannelKindChat,
-		APIType:            "Chat",
-		MetricsManager:     metricsManager,
-		Upstream:           upstream,
-		RequestedModel:     model,
-		AllowModelFailover: cfgManager.GetFuzzyModeEnabled(),
-		URLResults:         urlResults,
-		RequestBody:        routedBody,
-		IsStream:           stream,
-		NextAPIKey: func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+	urlResults := proxycore.BuildDefaultURLResults([]string{route.BaseURL})
+	result := proxycore.NewAttemptBuilder(
+		c, envCfg, cfgManager, channelScheduler,
+		scheduler.ChannelKindChat, "Chat", upstream, model, routedBody, stream,
+		route.ChannelIndex, userID,
+	).
+		WithURLResults(urlResults).
+		WithNextAPIKey(func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
 			if failedKeys[route.APIKey] {
 				return "", fmt.Errorf("路由模型 %s 指定的 API Key 已失败", route.Alias)
 			}
 			return route.APIKey, nil
-		},
-		BuildRequest: func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+		}).
+		WithBuildRequest(func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
 			return buildChatDirectRequest(c, upstreamCopy, apiKey, routedBody)
-		},
-		MarkURLFailure: func(url string) {
+		}).
+		WithMarkURL(func(url string) {
 			channelScheduler.MarkURLFailure(scheduler.ChannelKindChat, route.ChannelIndex, url)
-		},
-		MarkURLSuccess: func(url string) {
+		}, func(url string) {
 			channelScheduler.MarkURLSuccess(scheduler.ChannelKindChat, route.ChannelIndex, url)
-		},
-		HandleSuccess: func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+		}).
+		WithHandleSuccess(func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
 			return handleSuccess(c, resp, envCfg, startTime, stream, routedBody)
-		},
-		LogContext: common.AttemptLogContext{
-			ChannelIndex:    route.ChannelIndex,
-			Model:           model,
-			ConversationID:  userID,
-			LogStore:        channelScheduler.GetChannelLogStore(scheduler.ChannelKindChat),
-			RequestLogStore: channelScheduler.GetRequestLogStore(),
-		},
-	}).TryWithModelMappingFailover()
+		}).
+		Build().TryWithModelMappingFailover()
 	if result.Handled {
 		if result.SuccessKey != "" {
-			common.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, route.ChannelIndex, route.ChannelName)
+			proxycore.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, route.ChannelIndex, route.ChannelName)
 			channelScheduler.ConsumePromotionCount(route.ChannelIndex, scheduler.ChannelKindChat)
 		} else if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-			common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
+			proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
 		}
 		return
 	}
 
 	log.Printf("[Chat-Route] 路由模型失败: alias=%s channel=%d key=%s", route.Alias, route.ChannelIndex, route.KeyID)
-	common.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
-	common.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), result.FailoverError, result.LastError, "Chat")
+	proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
+	proxycore.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), result.FailoverError, result.LastError, "Chat")
 }
 
 func chatRouteUpstream(cfgManager *config.ConfigManager, route modelcatalog.ChatRoute) (*config.UpstreamConfig, error) {
@@ -353,13 +337,13 @@ func handleSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig
 	if usage == nil {
 		usage = &types.Usage{InputTokens: utils.EstimateTokens(string(originalBody))}
 	}
-	bodyBytes, err = common.RunAttachedPostResponseHooks(c.Request.Context(), c, bodyBytes, resp)
+	bodyBytes, err = hooks.RunAttachedPostResponseHooks(c.Request.Context(), c, bodyBytes, resp)
 	if err != nil {
 		return nil, err
 	}
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
-	common.MarkRequestLogFirstToken(c)
+	proxycore.MarkRequestLogFirstToken(c)
 	c.Data(resp.StatusCode, "application/json", bodyBytes)
 	return usage, nil
 }
@@ -395,15 +379,15 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 			streamUsage = mergeChatUsage(streamUsage, usage)
 		}
 		text, toolArguments := extractChatStreamSafetyFragments(line)
-		if err := common.FeedAttachedStreamText(c, text); err != nil {
+		if err := hooks.FeedAttachedStreamText(c, text); err != nil {
 			return nil, err
 		}
 		for _, toolArgument := range toolArguments {
-			if err := common.FeedAttachedStreamToolArgumentsForKey(c, toolArgument.key, toolArgument.fragment); err != nil {
+			if err := hooks.FeedAttachedStreamToolArgumentsForKey(c, toolArgument.key, toolArgument.fragment); err != nil {
 				return nil, err
 			}
 		}
-		common.MarkRequestLogFirstToken(c)
+		proxycore.MarkRequestLogFirstToken(c)
 		if _, err := c.Writer.Write(rawLine); err != nil {
 			return nil, err
 		}
@@ -418,7 +402,7 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 			return nil, readErr
 		}
 	}
-	if err := common.FlushAttachedStreamHooks(c); err != nil {
+	if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 		return nil, err
 	}
 	return streamUsage, nil

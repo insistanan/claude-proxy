@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/streams"
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
 	"github.com/BenedictKing/claude-proxy/internal/providers"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
@@ -27,21 +29,21 @@ func Handler(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
 	channelScheduler *scheduler.ChannelScheduler,
-	contentSafetyPipelines ...*common.HookPipeline,
+	contentSafetyPipelines ...*hooks.HookPipeline,
 ) gin.HandlerFunc {
-	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
-	spec := common.ProtocolSpec{
+	contentSafetyPipeline := hooks.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
+	spec := proxycore.ProtocolSpec{
 		Kind:         scheduler.ChannelKindMessages,
 		LogName:      "Messages",
 		HookPipeline: contentSafetyPipeline,
 		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
-			body, _ = common.RemoveEmptySignatures(body, envCfg.EnableRequestLogs, "Messages")
+			body, _ = proxycore.RemoveEmptySignatures(body, envCfg.EnableRequestLogs, "Messages")
 			c.Set(utils.ContextKeyClaudeCodeDisguise, cfgManager.GetClaudeCodeDisguiseEnabled())
 			var claudeReq types.ClaudeRequest
 			if len(body) > 0 {
 				_ = json.Unmarshal(body, &claudeReq)
 			}
-			prompts := common.ExtractPromptsFromClaude(claudeReq.Messages)
+			prompts := proxycore.ExtractPromptsFromClaude(claudeReq.Messages)
 			return claudeReq.Model, claudeReq.Stream, prompts, true
 		},
 		PreRoute: nil,
@@ -61,13 +63,13 @@ func Handler(
 			var claudeReq types.ClaudeRequest
 			_ = json.Unmarshal(body, &claudeReq)
 			if claudeReq.Stream {
-				return common.HandleStreamResponse(c, resp, provider, envCfg, startTime, up, body, claudeReq.Model)
+				return streams.HandleStreamResponse(c, resp, provider, envCfg, startTime, up, body, claudeReq.Model)
 			}
 			return handleNormalResponse(c, resp, provider, envCfg, startTime, body, up, apiKey)
 		},
 	}
 	return func(c *gin.Context) {
-		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
+		proxycore.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
 	}
 }
 
@@ -191,7 +193,7 @@ func handleNormalResponse(
 		}
 	}()
 
-	// 与流式出口 common.StripCacheFieldsFromClaudeSSE 保持同一契约：只剥离 cache_creation_*
+	// 与流式出口 streams.StripCacheFieldsFromClaudeSSE 保持同一契约：只剥离 cache_creation_*
 	// 与 cache_ttl，保留 cache_read_input_tokens。
 	// cache_read 必须保留：Anthropic 契约由客户端自行求和
 	// total_input = input_tokens + cache_read + cache_creation，清零它会让客户端把已缓存的
@@ -211,13 +213,13 @@ func handleNormalResponse(
 	if err != nil {
 		return nil, fmt.Errorf("序列化 Messages 响应失败: %w", err)
 	}
-	clientBody, err = common.RunAttachedPostResponseHooks(c.Request.Context(), c, clientBody, resp)
+	clientBody, err = hooks.RunAttachedPostResponseHooks(c.Request.Context(), c, clientBody, resp)
 	if err != nil {
 		return nil, err
 	}
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
-	common.MarkRequestLogFirstToken(c)
+	proxycore.MarkRequestLogFirstToken(c)
 	c.Data(http.StatusOK, "application/json", clientBody)
 	close(responded) // 响应已写出，解除断连监听 goroutine 的等待条件
 
@@ -238,7 +240,7 @@ func CountTokensHandler(envCfg *config.EnvConfig, cfgManager *config.ConfigManag
 		}
 
 		// 使用统一的请求体读取函数，应用大小限制
-		bodyBytes, err := common.ReadRequestBody(c, envCfg.MaxRequestBodySize)
+		bodyBytes, err := proxycore.ReadRequestBody(c, envCfg.MaxRequestBodySize)
 		if err != nil {
 			// ReadRequestBody 已经返回了错误响应
 			return

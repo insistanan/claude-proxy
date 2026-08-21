@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/streams"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -27,10 +29,10 @@ func Handler(
 	cfgManager *config.ConfigManager,
 	channelScheduler *scheduler.ChannelScheduler,
 	endpoint string,
-	contentSafetyPipelines ...*common.HookPipeline,
+	contentSafetyPipelines ...*hooks.HookPipeline,
 ) gin.HandlerFunc {
-	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
-	spec := common.ProtocolSpec{
+	contentSafetyPipeline := hooks.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
+	spec := proxycore.ProtocolSpec{
 		Kind:         scheduler.ChannelKindImages,
 		LogName:      "Images",
 		HookPipeline: contentSafetyPipeline,
@@ -48,7 +50,7 @@ func Handler(
 		},
 	}
 	return func(c *gin.Context) {
-		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
+		proxycore.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
 	}
 }
 
@@ -147,7 +149,7 @@ func buildOpenAIEndpointURL(baseURL string, endpoint string) string {
 func handleImagesSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig, startTime time.Time, requestedStream bool) (*types.Usage, error) {
 	defer resp.Body.Close()
 
-	isStream := requestedStream || common.IsEventStreamResponse(resp)
+	isStream := requestedStream || streams.IsEventStreamResponse(resp)
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
 		if isStream {
@@ -157,7 +159,7 @@ func handleImagesSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 		}
 	}
 
-	err := common.ForwardUpstreamResponseBody(c, resp, "application/json", isStream)
+	err := streams.ForwardUpstreamResponseBody(c, resp, "application/json", isStream)
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
 		if isStream {
@@ -218,9 +220,9 @@ func extractImagesPrompts(contentType string, bodyBytes []byte) []string {
 			log.Printf("[Images-Request] 警告: 解析 multipart prompt 失败: %v", err)
 			return nil
 		}
-		return common.NormalizePromptTexts(values["prompt"])
+		return proxycore.NormalizePromptTexts(values["prompt"])
 	}
-	return common.ExtractPromptJSONFieldPrompts(bodyBytes, "prompt")
+	return proxycore.ExtractPromptJSONFieldPrompts(bodyBytes, "prompt")
 }
 
 func parseImagesStreamValue(value interface{}) bool {

@@ -106,7 +106,7 @@ type githubTreeEntry struct {
 }
 
 // SearchSkills 对接 skills.sh 的公开搜索接口。搜索由后端发起，避免浏览器端的 CORS 和网络错误分散处理。
-func SearchSkills() gin.HandlerFunc {
+func (s *SkillsAPI) Search() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		query := strings.TrimSpace(c.Query("q"))
 		if query == "" {
@@ -136,7 +136,7 @@ func SearchSkills() gin.HandlerFunc {
 }
 
 // InspectRemoteSkill 只下载并校验远程 Skill 的元数据和文件清单，不写入本机目录。
-func InspectRemoteSkill() gin.HandlerFunc {
+func (s *SkillsAPI) InspectRemote() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req remoteSkillRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -163,7 +163,7 @@ func InspectRemoteSkill() gin.HandlerFunc {
 }
 
 // InstallRemoteSkill 从 GitHub 暂存并校验远程 Skill，然后安装到用户可写的目标目录。
-func InstallRemoteSkill() gin.HandlerFunc {
+func (s *SkillsAPI) InstallRemote() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req remoteSkillInstallRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -180,8 +180,8 @@ func InstallRemoteSkill() gin.HandlerFunc {
 			return
 		}
 
-		skillsMu.Lock()
-		defer skillsMu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		locations, err := managedSkillLocations()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

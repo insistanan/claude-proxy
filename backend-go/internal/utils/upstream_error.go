@@ -6,8 +6,8 @@ import (
 )
 
 // 本文件是"上游失败是否值得重试"的唯一出处。
-// 收敛前状态码表只存在于 handlers/common/failover.go，而 visionlayer 因为
-// 依赖方向（handlers/common -> visionlayer）无法复用它，于是自己维护了一份
+// 收敛前状态码表只存在于 handlers/proxycore/failover_classify.go，而 visionlayer 因为
+// 依赖方向（handlers/proxycore -> visionlayer）无法复用它，于是自己维护了一份
 // 只看状态码的判断，把内容审核类 403 也当成可重试，重试同时还会把好 key
 // 标记为失败。谓词下沉到 utils 后两条链路共用同一份判定。
 

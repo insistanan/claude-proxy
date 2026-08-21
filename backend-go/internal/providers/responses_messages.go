@@ -1003,7 +1003,7 @@ func (s *responsesToClaudeStreamState) emitMessageDelta() []string {
 	}
 	// s.inputTokens 已由 captureResponsesUsage 收敛成 uncached 余量。
 	// cache_read_input_tokens 既给管理端采集，也会到达 Claude 客户端：
-	// handlers/common/StripCacheFieldsFromClaudeSSE 只剥离 cache_creation_*/cache_ttl，
+	// handlers/streams.StripCacheFieldsFromClaudeSSE 只剥离 cache_creation_*/cache_ttl，
 	// 有意保留 cache_read，让客户端按 Anthropic 契约求和 input_tokens + cache_read
 	// 得到真实上下文占用。两者必须同步：把 input_tokens 改回总量就会重新双计。
 	clientInputTokens := s.inputTokens

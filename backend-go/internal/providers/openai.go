@@ -1003,7 +1003,7 @@ func mergeOpenAIUsageFromChunk(chunk map[string]interface{}, dst *types.Usage) b
 
 func buildOpenAIMessageDeltaEvent(stopReason string, usage types.Usage, hasUsage bool) string {
 	// Cache fields are emitted for the admin stream collector. On the way to the client,
-	// handlers/common/StripCacheFieldsFromClaudeSSE drops only cache_creation_*/cache_ttl and
+	// handlers/streams.StripCacheFieldsFromClaudeSSE drops only cache_creation_*/cache_ttl and
 	// keeps cache_read_input_tokens, because an Anthropic-format client is expected to add it
 	// back when sizing the context window. That addition is only correct because
 	// normalizeOpenAIUsage has already reduced input_tokens to the uncached remainder --

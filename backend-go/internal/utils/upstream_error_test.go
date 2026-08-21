@@ -3,7 +3,7 @@ package utils
 import "testing"
 
 // TestClassifyUpstreamStatus 锁定"仅按状态码"的重试/配额分类表。
-// 该表原先私有在 handlers/common，visionlayer 因依赖方向无法复用而自行维护了
+// 该表原先私有在 handlers/proxycore，visionlayer 因依赖方向无法复用而自行维护了
 // 一份只看状态码的判断；下沉到 utils 后此表是唯一出处，两条链路共用。
 func TestClassifyUpstreamStatus(t *testing.T) {
 	tests := []struct {

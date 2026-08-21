@@ -15,7 +15,7 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	rootHandlers "github.com/BenedictKing/claude-proxy/internal/handlers"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/sensitive"
@@ -249,7 +249,7 @@ func newContentSafetyTestRouter(t *testing.T) (*gin.Engine, *config.ConfigManage
 			t.Errorf("关闭拦截记录存储失败: %v", err)
 		}
 	})
-	pipeline := common.NewContentSafetyPipelineWithRecorder(cfgManager, store)
+	pipeline := hooks.NewContentSafetyPipelineWithRecorder(cfgManager, store)
 
 	envCfg := config.NewEnvConfig()
 	envCfg.ProxyAccessKey = contentSafetyTestAccessKey

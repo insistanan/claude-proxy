@@ -13,7 +13,8 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/converters"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -28,10 +29,10 @@ func Handler(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
 	channelScheduler *scheduler.ChannelScheduler,
-	contentSafetyPipelines ...*common.HookPipeline,
+	contentSafetyPipelines ...*hooks.HookPipeline,
 ) gin.HandlerFunc {
-	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
-	spec := common.ProtocolSpec{
+	contentSafetyPipeline := hooks.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
+	spec := proxycore.ProtocolSpec{
 		Kind:         scheduler.ChannelKindGemini,
 		LogName:      "Gemini",
 		HookPipeline: contentSafetyPipeline,
@@ -64,7 +65,7 @@ func Handler(
 				return "", false, nil, false
 			}
 			isStream := strings.Contains(c.Request.URL.Path, "streamGenerateContent")
-			prompts := common.ExtractPromptsFromGemini(geminiReq.Contents)
+			prompts := proxycore.ExtractPromptsFromGemini(geminiReq.Contents)
 			return model, isStream, prompts, true
 		},
 		PreRoute: nil,
@@ -82,7 +83,7 @@ func Handler(
 			isStream := strings.Contains(c.Request.URL.Path, "streamGenerateContent")
 			return handleSuccess(c, resp, up.ServiceType, envCfg, startTime, geminiReq, model, isStream)
 		},
-		HandleAllFailed: func(c *gin.Context, failoverErr *common.FailoverError, lastError error) {
+		HandleAllFailed: func(c *gin.Context, failoverErr *proxycore.FailoverError, lastError error) {
 			if failoverErr != nil {
 				c.JSON(failoverErr.Status, types.GeminiError{
 					Error: types.GeminiErrorDetail{
@@ -101,7 +102,7 @@ func Handler(
 				},
 			})
 		},
-		HandleAllKeysFailed: func(c *gin.Context, fuzzyMode bool, failoverErr *common.FailoverError, lastError error) {
+		HandleAllKeysFailed: func(c *gin.Context, fuzzyMode bool, failoverErr *proxycore.FailoverError, lastError error) {
 			if failoverErr != nil {
 				c.JSON(failoverErr.Status, types.GeminiError{
 					Error: types.GeminiErrorDetail{
@@ -122,7 +123,7 @@ func Handler(
 		},
 	}
 	return func(c *gin.Context) {
-		common.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
+		proxycore.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
 	}
 }
 
@@ -343,11 +344,11 @@ func handleSuccess(
 		log.Printf("[Gemini-Timing] 响应完成: %dms, 状态: %d", responseTime, resp.StatusCode)
 	}
 	writeResponse := func(body []byte) error {
-		checkedBody, err := common.RunAttachedPostResponseHooks(c.Request.Context(), c, body, resp)
+		checkedBody, err := hooks.RunAttachedPostResponseHooks(c.Request.Context(), c, body, resp)
 		if err != nil {
 			return err
 		}
-		common.MarkRequestLogFirstToken(c)
+		proxycore.MarkRequestLogFirstToken(c)
 		c.Data(resp.StatusCode, "application/json", checkedBody)
 		return nil
 	}
@@ -431,7 +432,7 @@ func handleSuccess(
 }
 
 // handleAllChannelsFailed 处理所有渠道失败的情况
-func handleAllChannelsFailed(c *gin.Context, failoverErr *common.FailoverError, lastError error) {
+func handleAllChannelsFailed(c *gin.Context, failoverErr *proxycore.FailoverError, lastError error) {
 	if failoverErr != nil {
 		c.Data(failoverErr.Status, "application/json", failoverErr.Body)
 		return
@@ -452,7 +453,7 @@ func handleAllChannelsFailed(c *gin.Context, failoverErr *common.FailoverError, 
 }
 
 // handleAllKeysFailed 处理所有 Key 失败的情况
-func handleAllKeysFailed(c *gin.Context, failoverErr *common.FailoverError, lastError error) {
+func handleAllKeysFailed(c *gin.Context, failoverErr *proxycore.FailoverError, lastError error) {
 	if failoverErr != nil {
 		c.Data(failoverErr.Status, "application/json", failoverErr.Body)
 		return

@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
@@ -108,13 +109,13 @@ func streamGeminiToGemini(
 				}
 			}
 
-			common.MarkRequestLogFirstToken(c)
+			proxycore.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "%s\n", line)
 		} else if line != "" {
-			common.MarkRequestLogFirstToken(c)
+			proxycore.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "%s\n", line)
 		} else {
-			common.MarkRequestLogFirstToken(c)
+			proxycore.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "\n")
 		}
 
@@ -122,7 +123,7 @@ func streamGeminiToGemini(
 			flusher.Flush()
 		}
 	}
-	if err := common.FlushAttachedStreamHooks(c); err != nil {
+	if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 		return nil, err
 	}
 	return totalUsage, nil
@@ -170,7 +171,7 @@ func streamClaudeToGemini(
 			deltaType, _ := delta["type"].(string)
 			if deltaType == "text_delta" {
 				text, _ := delta["text"].(string)
-				if err := common.FeedAttachedStreamText(c, text); err != nil {
+				if err := hooks.FeedAttachedStreamText(c, text); err != nil {
 					return nil, err
 				}
 				currentText.WriteString(text)
@@ -190,7 +191,7 @@ func streamClaudeToGemini(
 				}
 
 				chunkBytes, _ := json.Marshal(geminiChunk)
-				common.MarkRequestLogFirstToken(c)
+				proxycore.MarkRequestLogFirstToken(c)
 				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 				if flusher != nil {
 					flusher.Flush()
@@ -252,7 +253,7 @@ func streamClaudeToGemini(
 					},
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
-				common.MarkRequestLogFirstToken(c)
+				proxycore.MarkRequestLogFirstToken(c)
 				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 				if flusher != nil {
 					flusher.Flush()
@@ -260,7 +261,7 @@ func streamClaudeToGemini(
 			}
 		}
 	}
-	if err := common.FlushAttachedStreamHooks(c); err != nil {
+	if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 		return nil, err
 	}
 	return totalUsage, nil
@@ -322,7 +323,7 @@ func streamOpenAIToGemini(
 					},
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
-				common.MarkRequestLogFirstToken(c)
+				proxycore.MarkRequestLogFirstToken(c)
 				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 				if flusher != nil {
 					flusher.Flush()
@@ -353,7 +354,7 @@ func streamOpenAIToGemini(
 					},
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
-				common.MarkRequestLogFirstToken(c)
+				proxycore.MarkRequestLogFirstToken(c)
 				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 				if flusher != nil {
 					flusher.Flush()
@@ -365,7 +366,7 @@ func streamOpenAIToGemini(
 		// 提取文本内容
 		content, _ := delta["content"].(string)
 		if content != "" {
-			if err := common.FeedAttachedStreamText(c, content); err != nil {
+			if err := hooks.FeedAttachedStreamText(c, content); err != nil {
 				return nil, err
 			}
 			currentText.WriteString(content)
@@ -384,7 +385,7 @@ func streamOpenAIToGemini(
 			}
 
 			chunkBytes, _ := json.Marshal(geminiChunk)
-			common.MarkRequestLogFirstToken(c)
+			proxycore.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 			if flusher != nil {
 				flusher.Flush()
@@ -402,14 +403,14 @@ func streamOpenAIToGemini(
 				},
 			}
 			chunkBytes, _ := json.Marshal(geminiChunk)
-			common.MarkRequestLogFirstToken(c)
+			proxycore.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
 	}
-	if err := common.FlushAttachedStreamHooks(c); err != nil {
+	if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 		return nil, err
 	}
 	return totalUsage, nil
@@ -424,7 +425,7 @@ func feedGeminiStreamChunk(c *gin.Context, chunk *types.GeminiStreamChunk) error
 			continue
 		}
 		for partIndex, part := range candidate.Content.Parts {
-			if err := common.FeedAttachedStreamText(c, part.Text); err != nil {
+			if err := hooks.FeedAttachedStreamText(c, part.Text); err != nil {
 				return err
 			}
 			if part.FunctionCall != nil && len(part.FunctionCall.Args) > 0 {
@@ -433,7 +434,7 @@ func feedGeminiStreamChunk(c *gin.Context, chunk *types.GeminiStreamChunk) error
 					return fmt.Errorf("序列化 Gemini 工具参数失败: %w", err)
 				}
 				key := fmt.Sprintf("gemini.candidate.%d.part.%d.%s", candidateIndex, partIndex, part.FunctionCall.Name)
-				if err := common.FeedAttachedStreamToolArgumentsForKey(c, key, string(arguments)); err != nil {
+				if err := hooks.FeedAttachedStreamToolArgumentsForKey(c, key, string(arguments)); err != nil {
 					return err
 				}
 			}

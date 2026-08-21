@@ -13,7 +13,7 @@ import (
 // 留在各自的循环体内。
 //
 // 约定：pump goroutine 必须 defer close 双通道。消费方
-// （handlers/common.ProcessStreamEvents）对 errChan 关闭有专门分支；
+// （handlers/streams.ProcessStreamEvents）对 errChan 关闭有专门分支；
 // close 不清除已缓冲的错误，fail 先入队的错误仍会被消费。
 type streamPump struct {
 	ctx       context.Context

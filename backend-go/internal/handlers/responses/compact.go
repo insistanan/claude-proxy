@@ -11,7 +11,8 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/common"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/session"
@@ -34,9 +35,9 @@ func CompactHandler(
 	cfgManager *config.ConfigManager,
 	_ *session.SessionManager,
 	channelScheduler *scheduler.ChannelScheduler,
-	contentSafetyPipelines ...*common.HookPipeline,
+	contentSafetyPipelines ...*hooks.HookPipeline,
 ) gin.HandlerFunc {
-	contentSafetyPipeline := common.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
+	contentSafetyPipeline := hooks.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	return gin.HandlerFunc(func(c *gin.Context) {
 		// 认证
 		middleware.ProxyAuthMiddleware(envCfg)(c)
@@ -47,15 +48,15 @@ func CompactHandler(
 
 		// 读取请求体
 		maxBodySize := envCfg.MaxRequestBodySize
-		bodyBytes, err := common.ReadRequestBody(c, maxBodySize)
+		bodyBytes, err := proxycore.ReadRequestBody(c, maxBodySize)
 		if err != nil {
 			return
 		}
 
 		// 提取对话标识用于 Trace 亲和性
-		userID := common.ExtractConversationID(c, bodyBytes)
+		userID := proxycore.ExtractConversationID(c, bodyBytes)
 		model := compactRequestModel(bodyBytes)
-		common.AttachHookPipeline(c, contentSafetyPipeline, common.HookContext{
+		hooks.AttachHookPipeline(c, contentSafetyPipeline, hooks.HookContext{
 			APIType: string(scheduler.ChannelKindResponses),
 			Model:   model,
 			Stream:  false,
@@ -244,7 +245,7 @@ func tryCompactChannelWithAllKeys(
 	var lastErr *compactError
 
 	// 强制探测模式
-	forceProbeMode := common.AreAllKeysSuspended(metricsManager, upstream.BaseURL, upstream.APIKeys, channelIndex)
+	forceProbeMode := proxycore.AreAllKeysSuspended(metricsManager, upstream.BaseURL, upstream.APIKeys, channelIndex)
 	if forceProbeMode {
 		log.Printf("[Compact-Probe] 渠道 %s 所有 Key 都被熔断，启用强制探测模式", upstream.Name)
 	}
@@ -317,7 +318,7 @@ func tryCompactWithKey(
 	req.Header.Del("x-api-key")
 	utils.SetAuthenticationHeader(req.Header, apiKey)
 	req.Header.Set("Content-Type", "application/json")
-	if err := common.RunAttachedPreRequestHooks(c.Request.Context(), c, req, upstream.Name, "responses"); err != nil {
+	if err := hooks.RunAttachedPreRequestHooks(c.Request.Context(), c, req, upstream.Name, "responses"); err != nil {
 		_ = req.Body.Close()
 		writeCompactContentSafetyError(c, err)
 		return false, &compactError{responseWritten: true}
@@ -328,7 +329,7 @@ func tryCompactWithKey(
 		_ = req.Body.Close()
 		return false, &compactError{status: 500, body: []byte(`{"error":"上游代理配置无效"}`), shouldFailover: false}
 	}
-	resp, err := common.SendRequest(req, upstream, envCfg, false, "Responses", proxyURL)
+	resp, err := proxycore.SendRequest(req, upstream, envCfg, false, "Responses", proxyURL)
 	if err != nil {
 		return false, &compactError{status: 502, body: []byte(`{"error":"上游请求失败"}`), shouldFailover: true}
 	}
@@ -344,12 +345,12 @@ func tryCompactWithKey(
 
 	// 判断是否需要故障转移
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		shouldFailover, _ := common.ShouldRetryWithNextKey(resp.StatusCode, respBody, cfgManager.GetFuzzyModeEnabled(), "Responses")
+		shouldFailover, _ := proxycore.ShouldRetryWithNextKey(resp.StatusCode, respBody, cfgManager.GetFuzzyModeEnabled(), "Responses")
 		return false, &compactError{status: resp.StatusCode, body: respBody, shouldFailover: shouldFailover}
 	}
 
 	// 成功
-	respBody, err = common.RunAttachedPostResponseHooks(c.Request.Context(), c, respBody, resp)
+	respBody, err = hooks.RunAttachedPostResponseHooks(c.Request.Context(), c, respBody, resp)
 	if err != nil {
 		writeCompactContentSafetyError(c, err)
 		return false, &compactError{responseWritten: true}
@@ -360,7 +361,7 @@ func tryCompactWithKey(
 }
 
 func writeCompactContentSafetyError(c *gin.Context, err error) {
-	if writeErr := common.WriteAttachedContentSafetyError(c, err); writeErr == nil {
+	if writeErr := hooks.WriteAttachedContentSafetyError(c, err); writeErr == nil {
 		return
 	}
 	c.JSON(http.StatusInternalServerError, gin.H{

@@ -24,8 +24,18 @@ import (
 
 const maxSkillImportBytes = 20 << 20
 
+// SkillsAPI 聚合 skills 管理的互斥锁，由 main.go 构造并注入路由，
+// 替代包级全局状态；互斥锁串行化对多个 agent 技能目录的读写操作。
+type SkillsAPI struct {
+	mu sync.Mutex
+}
+
+// NewSkillsAPI 创建 skills 管理 API。
+func NewSkillsAPI() *SkillsAPI {
+	return &SkillsAPI{}
+}
+
 var (
-	skillsMu                    sync.Mutex
 	skillNamePattern            = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 	skillBackupDirectoryPattern = regexp.MustCompile(`^\d{8}-\d{6}\.\d+$`)
 )
@@ -102,10 +112,10 @@ type skillCopyRequest struct {
 }
 
 // ListSkills 仅枚举当前运行用户的已知 Agent Skill 目录，避免把任意路径暴露为文件浏览器。
-func ListSkills() gin.HandlerFunc {
+func (s *SkillsAPI) List() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		skillsMu.Lock()
-		defer skillsMu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 
 		locations, err := managedSkillLocations()
 		if err != nil {
@@ -138,7 +148,7 @@ func ListSkills() gin.HandlerFunc {
 	}
 }
 
-func GetSkillContent() gin.HandlerFunc {
+func (s *SkillsAPI) GetContent() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ref, ok := bindSkillReference(c)
 		if !ok {
@@ -155,7 +165,7 @@ func GetSkillContent() gin.HandlerFunc {
 
 // GetLatestSkillBackup 返回与当前内容匹配的最近一份译文。
 // 相同原文的不同 Agent 副本共享译文；原文内容变化时不恢复旧译文。
-func GetLatestSkillBackup() gin.HandlerFunc {
+func (s *SkillsAPI) GetLatestBackup() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ref, ok := bindSkillReference(c)
 		if !ok {
@@ -183,7 +193,7 @@ func GetLatestSkillBackup() gin.HandlerFunc {
 }
 
 // UpdateSkillNote 保存项目级备注。同名 Skill 无论位于哪个 Agent 目录都会读取这份备注。
-func UpdateSkillNote() gin.HandlerFunc {
+func (s *SkillsAPI) UpdateNote() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req skillNoteRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -199,8 +209,8 @@ func UpdateSkillNote() gin.HandlerFunc {
 			c.JSON(400, gin.H{"error": "备注不能超过 500 个字符"})
 			return
 		}
-		skillsMu.Lock()
-		defer skillsMu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		if err := writeSkillGlobalMetadata(req.Name, skillGlobalMetadata{Note: note, UpdatedAt: time.Now().Format(time.RFC3339)}); err != nil {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("保存 Skill 备注失败: %v", err)})
 			return
@@ -211,10 +221,10 @@ func UpdateSkillNote() gin.HandlerFunc {
 
 // ConsolidateSkills 将已安装在各 Agent 目录中的有效 Skill 去重后归档到项目目录。
 // 已存在的项目副本优先保留，避免其他来源的同名版本覆盖项目中的统一版本。
-func ConsolidateSkills() gin.HandlerFunc {
+func (s *SkillsAPI) Consolidate() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		skillsMu.Lock()
-		defer skillsMu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 
 		locations, err := managedSkillLocations()
 		if err != nil {
@@ -285,7 +295,7 @@ func ConsolidateSkills() gin.HandlerFunc {
 	}
 }
 
-func ImportSkill() gin.HandlerFunc {
+func (s *SkillsAPI) Import() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req skillImportRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -306,8 +316,8 @@ func ImportSkill() gin.HandlerFunc {
 			return
 		}
 
-		skillsMu.Lock()
-		defer skillsMu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		locations, err := managedSkillLocations()
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
@@ -343,14 +353,14 @@ func ImportSkill() gin.HandlerFunc {
 	}
 }
 
-func DeleteSkill() gin.HandlerFunc {
+func (s *SkillsAPI) Delete() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ref, ok := bindSkillReference(c)
 		if !ok {
 			return
 		}
-		skillsMu.Lock()
-		defer skillsMu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		if ref.ReadOnly {
 			c.JSON(400, gin.H{"error": "该 Skill 来自插件缓存或内置目录，不能直接删除；请通过原 Agent 的插件管理功能移除"})
 			return
@@ -365,7 +375,7 @@ func DeleteSkill() gin.HandlerFunc {
 
 // CopySkill 将用户目录中的 Skill（包含 SKILL.md 及其 references/scripts 等资源）复制到其他可写 Agent 目录。
 // 插件缓存和内置 Skill 是外部管理的只读来源，不允许作为复制源或复制目标。
-func CopySkill() gin.HandlerFunc {
+func (s *SkillsAPI) Copy() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req skillCopyRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -377,8 +387,8 @@ func CopySkill() gin.HandlerFunc {
 			return
 		}
 
-		skillsMu.Lock()
-		defer skillsMu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		locations, err := managedSkillLocations()
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
@@ -438,7 +448,7 @@ func CopySkill() gin.HandlerFunc {
 }
 
 // BackupSkill 将原文和翻译文本并列保存，并同步项目目录副本，不回写来源 Agent 的 SKILL.md。
-func BackupSkill() gin.HandlerFunc {
+func (s *SkillsAPI) Backup() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req skillBackupRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -449,8 +459,8 @@ func BackupSkill() gin.HandlerFunc {
 			c.JSON(400, gin.H{"error": "翻译文本不能为空"})
 			return
 		}
-		skillsMu.Lock()
-		defer skillsMu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		ref, err := resolveSkillReference(req.LocationKey, req.Name)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
