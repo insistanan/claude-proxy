@@ -33,11 +33,6 @@ func FeedAttachedStreamText(c requestContextGetter, text string) error {
 	return nil
 }
 
-// FeedAttachedStreamToolArguments 检测跨事件拼接的工具参数。
-func FeedAttachedStreamToolArguments(c requestContextGetter, fragment string) error {
-	return FeedAttachedStreamToolArgumentsForKey(c, defaultStreamToolArgumentKey, fragment)
-}
-
 // FeedAttachedStreamToolArgumentsForKey 按工具调用分别拼接参数，避免并行工具调用
 // 的 JSON 片段互相串接后产生误报。
 func FeedAttachedStreamToolArgumentsForKey(c requestContextGetter, key, fragment string) error {

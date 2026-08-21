@@ -7,38 +7,6 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 )
 
-func ObserveConversation(
-	channelScheduler *scheduler.ChannelScheduler,
-	kind scheduler.ChannelKind,
-	conversationID string,
-	model string,
-	firstPrompt string,
-	stream bool,
-) string {
-	return ObserveConversationPrompts(channelScheduler, kind, conversationID, model, []string{firstPrompt}, nil, stream)
-}
-
-func ObserveConversationPrompts(
-	channelScheduler *scheduler.ChannelScheduler,
-	kind scheduler.ChannelKind,
-	conversationID string,
-	model string,
-	prompts []string,
-	imageFingerprints []string,
-	stream bool,
-) string {
-	return ObserveConversationRequest(
-		channelScheduler,
-		kind,
-		conversation.Identity{ExplicitID: conversationID, Source: "legacy_explicit"},
-		conversation.Transcript{},
-		model,
-		prompts,
-		imageFingerprints,
-		stream,
-	)
-}
-
 func ObserveConversationRequest(
 	channelScheduler *scheduler.ChannelScheduler,
 	kind scheduler.ChannelKind,

@@ -31,7 +31,7 @@ type OnMultiChannelHandledFunc func(selection *scheduler.SelectionResult, result
 type HandleAllFailedFunc func(c *gin.Context, failoverErr *FailoverError, lastError error)
 
 // HandleMultiChannelFailover 处理多渠道 failover 外壳逻辑（选渠道 + 聚合错误 + Trace 亲和）。
-// 具体“渠道内 Key/BaseURL 轮转”由 trySelectedChannel 实现（通常调用 TryUpstreamWithAllKeys）。
+// 具体“渠道内 Key/BaseURL 轮转”由 trySelectedChannel 实现（通常调用 UpstreamAttempt.TryWithModelMappingFailover）。
 //
 // 选渠成功后会占用 in-flight 预留：
 // - 若该渠道最终 Handled（成功/客户端取消等已写回响应），请求结束后释放预留

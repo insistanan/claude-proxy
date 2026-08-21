@@ -479,7 +479,7 @@ func describeImagesOnChannel(
 				channelScheduler.MarkURLFailure(kind, selection.ChannelIndex, baseURL)
 				lastErr = fmt.Errorf("图片理解渠道 %q 返回 HTTP %d（协议=%s，模型=%s，URL=%s）: %s",
 					upstream.Name, response.StatusCode, upstream.ServiceType, visionModel, baseURL, truncateErrorBody(body))
-				retry := shouldRetryVisionAttempt(response.StatusCode)
+				retry := shouldRetryVisionAttempt(response.StatusCode, body)
 				if retry {
 					cfgManager.MarkKeyAsFailed(apiKey, "VisionLayer")
 					failedKeys[apiKey] = true
@@ -590,12 +590,17 @@ func validateConvertedVisionRequest(request *http.Request, images []visionImage)
 	return nil
 }
 
-func shouldRetryVisionAttempt(statusCode int) bool {
-	return statusCode == http.StatusUnauthorized ||
-		statusCode == http.StatusForbidden ||
-		statusCode == http.StatusRequestTimeout ||
-		statusCode == http.StatusTooManyRequests ||
-		statusCode >= http.StatusInternalServerError
+// shouldRetryVisionAttempt 判断图片理解渠道的失败响应是否值得换 Key/URL 重试。
+// 状态码分类与主链路 failover 共用 utils.ClassifyUpstreamStatus（唯一出处）；
+// 在此之上必须再过响应体谓词：内容审核拦截、请求内容非法这类错误换 Key 不会
+// 改变结果，重试只是空转，还会把无辜的 Key 标记为失败（调用方在 retry==true
+// 时会 MarkKeyAsFailed）。收敛前这里只看状态码，审核类 403 会被误判为可重试。
+func shouldRetryVisionAttempt(statusCode int, bodyBytes []byte) bool {
+	if utils.IsNonRetryableUpstreamErrorBody(bodyBytes) {
+		return false
+	}
+	retryable, _ := utils.ClassifyUpstreamStatus(statusCode)
+	return retryable
 }
 
 func recordVisionAttempt(

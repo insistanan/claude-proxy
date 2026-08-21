@@ -356,10 +356,6 @@ func ResolveRequestedUpstream(
 	return upstream, channelIndex, nil
 }
 
-func ExtractFirstPromptFromClaude(messages []types.ClaudeMessage) string {
-	return firstPrompt(ExtractPromptsFromClaude(messages))
-}
-
 func ExtractPromptsFromClaude(messages []types.ClaudeMessage) []string {
 	prompts := make([]string, 0, 3)
 	for _, msg := range messages {
@@ -368,10 +364,6 @@ func ExtractPromptsFromClaude(messages []types.ClaudeMessage) []string {
 		}
 	}
 	return prompts
-}
-
-func ExtractFirstPromptFromOpenAI(messages []types.OpenAIMessage) string {
-	return firstPrompt(ExtractPromptsFromOpenAI(messages))
 }
 
 func ExtractPromptsFromOpenAI(messages []types.OpenAIMessage) []string {
@@ -384,18 +376,10 @@ func ExtractPromptsFromOpenAI(messages []types.OpenAIMessage) []string {
 	return prompts
 }
 
-func ExtractFirstPromptFromResponsesInput(input interface{}) string {
-	return firstPrompt(ExtractPromptsFromResponsesInput(input))
-}
-
 func ExtractPromptsFromResponsesInput(input interface{}) []string {
 	prompts := make([]string, 0, 3)
 	appendResponsesInputPrompts(&prompts, input, 3)
 	return prompts
-}
-
-func ExtractFirstPromptFromGemini(contents []types.GeminiContent) string {
-	return firstPrompt(ExtractPromptsFromGemini(contents))
 }
 
 func ExtractPromptsFromGemini(contents []types.GeminiContent) []string {
@@ -409,10 +393,6 @@ func ExtractPromptsFromGemini(contents []types.GeminiContent) []string {
 		}
 	}
 	return prompts
-}
-
-func ExtractPromptJSONField(bodyBytes []byte, field string) string {
-	return firstPrompt(ExtractPromptJSONFieldPrompts(bodyBytes, field))
 }
 
 // NormalizePromptTexts 把已经从**非 JSON** 载荷（例如 multipart/form-data 表单字段）
@@ -435,13 +415,6 @@ func ExtractPromptJSONFieldPrompts(bodyBytes []byte, field string) []string {
 	prompts := make([]string, 0, 3)
 	appendPromptsFromContent(&prompts, payload[field], 3)
 	return prompts
-}
-
-func firstPrompt(prompts []string) string {
-	if len(prompts) == 0 {
-		return ""
-	}
-	return prompts[0]
 }
 
 func appendResponsesInputPrompts(prompts *[]string, input interface{}, limit int) {

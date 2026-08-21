@@ -10,6 +10,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
 
@@ -113,7 +114,7 @@ func shouldRetryWithNextKeyFuzzy(statusCode int, bodyBytes []byte, apiType strin
 
 	// 1. 检查是否为不可重试错误（内容审核等），无论是 500 还是其他状态码，这类错误都不应重试
 	if len(bodyBytes) > 0 {
-		if isNonRetryableError(bodyBytes) {
+		if utils.IsNonRetryableUpstreamErrorBody(bodyBytes) {
 			log.Printf("[%s-Failover-Fuzzy] 检测到不可重试错误，不进行 failover", apiType)
 			return false, false
 		}
@@ -147,12 +148,12 @@ func shouldRetryWithNextKeyFuzzy(statusCode int, bodyBytes []byte, apiType strin
 // shouldRetryWithNextKeyNormal 原有的精确错误分类逻辑
 func shouldRetryWithNextKeyNormal(statusCode int, bodyBytes []byte, apiType string) (bool, bool) {
 	// 先检查是否为不可重试错误（内容审核等），这类错误无论状态码如何都不应重试
-	if len(bodyBytes) > 0 && isNonRetryableError(bodyBytes) {
+	if len(bodyBytes) > 0 && utils.IsNonRetryableUpstreamErrorBody(bodyBytes) {
 		log.Printf("[%s-Failover-Debug] 检测到不可重试错误，不进行 failover", apiType)
 		return false, false
 	}
 
-	shouldFailover, isQuotaRelated := classifyByStatusCode(statusCode)
+	shouldFailover, isQuotaRelated := utils.ClassifyUpstreamStatus(statusCode)
 
 	log.Printf("[%s-Failover-Debug] shouldRetryWithNextKeyNormal: statusCode=%d, bodyLen=%d, shouldFailover=%v, isQuotaRelated=%v",
 		apiType, statusCode, len(bodyBytes), shouldFailover, isQuotaRelated)
@@ -177,53 +178,6 @@ func shouldRetryWithNextKeyNormal(statusCode int, bodyBytes []byte, apiType stri
 	return classifyByErrorMessage(bodyBytes, apiType)
 }
 
-// classifyByStatusCode 基于 HTTP 状态码分类
-func classifyByStatusCode(statusCode int) (bool, bool) {
-	switch {
-	// 认证/授权错误 (应 failover，非配额相关)
-	case statusCode == 401:
-		return true, false
-	case statusCode == 403:
-		return true, false
-
-	// 配额/计费错误 (应 failover，配额相关)
-	case statusCode == 402:
-		return true, true
-	case statusCode == 429:
-		return true, true
-
-	// 超时错误 (应 failover，非配额相关)
-	case statusCode == 408:
-		return true, false
-
-	// 需要检查消息体的状态码 (交给第二层判断)
-	case statusCode == 400:
-		return false, false
-
-	// 请求错误 (不应 failover，客户端问题)
-	case statusCode == 404, statusCode == 405, statusCode == 406,
-		statusCode == 409, statusCode == 410, statusCode == 411,
-		statusCode == 412, statusCode == 413, statusCode == 414,
-		statusCode == 415, statusCode == 416, statusCode == 417,
-		statusCode == 422, statusCode == 423, statusCode == 424,
-		statusCode == 426, statusCode == 428, statusCode == 431,
-		statusCode == 451:
-		return false, false
-
-	// 服务端错误 (应 failover，非配额相关)
-	case statusCode >= 500:
-		return true, false
-
-	// 其他 4xx (保守处理，不 failover)
-	case statusCode >= 400 && statusCode < 500:
-		return false, false
-
-	// 成功/重定向 (不应 failover)
-	default:
-		return false, false
-	}
-}
-
 // classifyByErrorMessage 基于错误消息内容分类
 func classifyByErrorMessage(bodyBytes []byte, apiType string) (bool, bool) {
 	var errResp map[string]interface{}
@@ -240,7 +194,7 @@ func classifyByErrorMessage(bodyBytes []byte, apiType string) (bool, bool) {
 
 	// 检查 error.code 字段，某些错误码不应重试（内容审核、无效请求等）
 	if errCode, ok := errObj["code"].(string); ok {
-		if isNonRetryableErrorCode(errCode) {
+		if utils.IsNonRetryableUpstreamErrorCode(errCode) {
 			log.Printf("[%s-Failover-Debug] 检测到不可重试错误码: %s", apiType, errCode)
 			return false, false
 		}
@@ -456,50 +410,8 @@ func getMapKeys(m map[string]interface{}) []string {
 	return keys
 }
 
-// isNonRetryableErrorCode 判断错误码是否不应重试
-// 这些错误与请求内容相关，换 Key 重试不会改变结果
-func isNonRetryableErrorCode(code string) bool {
-	if isContentPolicyErrorCode(code) {
-		return true
-	}
-	nonRetryableCodes := []string{
-		// 请求内容无效
-		"invalid_request",
-		"invalid_request_error",
-		"bad_request",
-	}
-	codeLower := strings.ToLower(code)
-	for _, c := range nonRetryableCodes {
-		if codeLower == c {
-			return true
-		}
-	}
-	return false
-}
-
-func isContentPolicyErrorCode(code string) bool {
-	switch strings.ToLower(strings.TrimSpace(code)) {
-	case "sensitive_words_detected", "content_policy_violation", "content_filter", "content_blocked", "moderation_blocked":
-		return true
-	default:
-		return false
-	}
-}
-
-func isContentPolicyError(bodyBytes []byte) bool {
-	var errResp struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(bodyBytes, &errResp); err != nil {
-		return false
-	}
-	return isContentPolicyErrorCode(errResp.Error.Code)
-}
-
 func shouldFailoverToNextChannel(bodyBytes []byte, activeChannelCount int) bool {
-	return activeChannelCount > 1 && isContentPolicyError(bodyBytes)
+	return activeChannelCount > 1 && utils.IsContentPolicyErrorBody(bodyBytes)
 }
 
 // buildContentPolicyCompatibilityBody 保持 JSON 解码结果不变，将容易被原始字节扫描
@@ -604,20 +516,4 @@ func appendJSONUnicodeEscape(dst []byte, value uint16) []byte {
 		hex[(value>>4)&0xf],
 		hex[value&0xf],
 	)
-}
-
-// isNonRetryableError 检查响应体是否包含不可重试的错误码
-func isNonRetryableError(bodyBytes []byte) bool {
-	var errResp map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &errResp); err != nil {
-		return false
-	}
-	errObj, ok := errResp["error"].(map[string]interface{})
-	if !ok {
-		return false
-	}
-	if errCode, ok := errObj["code"].(string); ok {
-		return isNonRetryableErrorCode(errCode)
-	}
-	return false
 }

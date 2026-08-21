@@ -296,3 +296,37 @@ func TestToClaudeImageBlockSupportsGeminiFileData(t *testing.T) {
 		t.Fatalf("source = %#v", source)
 	}
 }
+
+// TestShouldRetryVisionAttemptSkipsNonRetryableBody 锁定图片理解层的重试判定
+// 与主链路 failover 一致：状态码可重试不代表值得重试，响应体里的内容审核 /
+// 请求内容非法错误码必须一票否决。收敛前这里只看状态码，审核类 403 会被判为
+// 可重试，于是轮询所有 Key 空转，并把每个无辜 Key 标记为失败。
+func TestShouldRetryVisionAttemptSkipsNonRetryableBody(t *testing.T) {
+	const contentPolicyBody = `{"error":{"message":"sensitive words detected","code":"sensitive_words_detected"}}`
+	const invalidRequestBody = `{"error":{"code":"invalid_request"}}`
+	const quotaBody = `{"error":{"message":"insufficient quota","code":"insufficient_quota"}}`
+
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       bool
+	}{
+		{"审核拦截的 403 不重试", 403, contentPolicyBody, false},
+		{"审核拦截的 500 不重试", 500, contentPolicyBody, false},
+		{"请求内容非法不重试", 400, invalidRequestBody, false},
+		{"额度不足的 429 仍重试", 429, quotaBody, true},
+		{"鉴权失败的 401 仍重试", 401, `{"error":{"code":"authentication_error"}}`, true},
+		{"上游 502 仍重试", 502, `upstream exploded`, true},
+		{"响应体为空时退回状态码判断", 403, "", true},
+		{"404 不重试", 404, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRetryVisionAttempt(tt.statusCode, []byte(tt.body)); got != tt.want {
+				t.Errorf("shouldRetryVisionAttempt(%d, %q) = %v, want %v", tt.statusCode, tt.body, got, tt.want)
+			}
+		})
+	}
+}

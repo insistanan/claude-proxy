@@ -16,21 +16,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestUpstreamAttemptLegacyAdapterPreservesEmptyResult(t *testing.T) {
-	result := (UpstreamAttempt{RequestedModel: "model"}).TryWithModelMappingFailover()
-	handled, successKey, successBaseURLIdx, failoverErr, usage, lastError := TryUpstreamWithModelMappingFailover(
-		nil, nil, nil, nil, "", "", nil, nil, "model", false, nil, nil, false,
-		nil, nil, nil, nil, nil, nil, AttemptLogContext{},
-	)
-
-	if result.Handled != handled || result.SuccessKey != successKey || result.SuccessBaseURLIdx != successBaseURLIdx {
-		t.Fatalf("兼容入口基础结果不一致: object=%+v legacy=(%v, %q, %d)", result, handled, successKey, successBaseURLIdx)
-	}
-	if result.FailoverError != failoverErr || result.Usage != usage || result.LastError != lastError {
-		t.Fatalf("兼容入口错误或用量结果不一致: object=%+v", result)
-	}
-}
-
 func TestUpstreamAttemptDisablesModelFailoverAfterFirstMapping(t *testing.T) {
 	cfgManager, err := config.NewConfigManager(filepath.Join(t.TempDir(), "config.json"))
 	if err != nil {

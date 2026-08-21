@@ -472,10 +472,10 @@ func TestContentSafetyStreamToolArgumentsAndProtocolError(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	AttachHookPipeline(c, pipeline, HookContext{APIType: "chat", Stream: true})
-	if err := FeedAttachedStreamToolArguments(c, `{"command":"rm -rf `); err != nil {
+	if err := FeedAttachedStreamToolArgumentsForKey(c, defaultStreamToolArgumentKey, `{"command":"rm -rf `); err != nil {
 		t.Fatalf("不完整工具参数不应拦截: %v", err)
 	}
-	err = FeedAttachedStreamToolArguments(c, `/"}`)
+	err = FeedAttachedStreamToolArgumentsForKey(c, defaultStreamToolArgumentKey, `/"}`)
 	var safetyErr *ContentSafetyError
 	if !errors.As(err, &safetyErr) {
 		t.Fatalf("完整工具参数未拦截: %v", err)
