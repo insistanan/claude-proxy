@@ -18,7 +18,7 @@
 9. 分派         IsMultiChannelModeForModel → 单渠道 或 多渠道 HandleMultiChannelFailover
 ```
 
-单渠道尝试（`TryUpstreamWithModelMappingFailover`，多渠道模式下每个候选渠道内重复此循环）：
+单渠道尝试（`UpstreamAttempt.TryWithModelMappingFailover`，多渠道模式下每个候选渠道内重复此循环）：
 
 ```
 选 key（GetNextAPIKey）
@@ -43,7 +43,7 @@
 
 ## F2 视觉旁路（最不透明的链路段）
 
-位置：**单渠道尝试循环内部**、上游请求构建之后（`prepareRequestForUpstream`，见 `handlers/common/upstream_failover.go`）。
+位置：**单渠道尝试循环内部**、上游请求构建之后（`prepareRequestForUpstream`，见 `handlers/common/upstream_attempt_keys.go`）。
 
 - `visionlayer.PrepareRequest` 就地改写上游请求：图片 → 分析描述文本（按目标协议替换为文本块）。
 - 缓存两级：进程内存 + 持久（经 scheduler 按会话/kind/模型落存储）；同图并发去重（claim 机制）。
@@ -52,7 +52,9 @@
 
 ## F3 /v1/models 聚合
 
-静态模型别名（opus/sonnet/haiku/gpt/codex/gemini 等）+ 渠道上游 `/models` 发现（modelcatalog 的 parse*）+ 池匹配（family/后缀）→ 合并去重返回。`[1m]` 上下文后缀在 `config.ResolveUpstreamModel` 统一剥离，发上游永远不带后缀。入口在 messages 包 handler（modelcatalog 无独立路由）。
+静态模型别名（opus/sonnet/haiku/gpt/codex/gemini 等）+ 渠道上游 `/models` 发现（modelcatalog 的 parse*）+ 池匹配（family/后缀）→ 合并去重返回。入口在 messages 包 handler（modelcatalog 无独立路由）。
+
+模型名按客户端发来的**原样**参与上游映射匹配，代理不对后缀（历史上的 `[1m]`）做任何剥离或改写：`config.redirectModelList` 依次尝试 `*` 通配 → 精确匹配 → 双向 `Contains` 模糊匹配，全不命中则原样发往上游。需要区分同一别名的不同变体时，把完整名字配成 `ModelMapping` 的键。
 
 ## F4 内容安全（HookPipeline）
 

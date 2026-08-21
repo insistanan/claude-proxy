@@ -12,7 +12,7 @@
 | **渠道 CRUD 收敛** | 五协议的渠道增删改查 / key 管理 / Ping 由单份实现提供，经 `RegisterChannelRoutes` 声明式注册（替代历史五组重复实现）。 | `internal/core/channelcrud`、`internal/handlers/channel_routes.go` |
 | **API Key** | 上游认证密钥。渠道可挂多个 key，按优先级轮询，失败降级（`MoveAPIKeyToBottomForKind`）。 | `internal/config` |
 | **熔断（Circuit Breaker）** | 滑动窗口失败率超阈值后挂起渠道/key，暂停参与调度，可自动恢复也可手动重置。默认：窗口 10 次、阈值 50%、恢复 15 分钟、最小请求数保护 `max(3, windowSize/2)`。 | `internal/metrics/channel_metrics.go` |
-| **故障转移（Failover）** | key / URL / 渠道失败后按策略切换到下一候选。分两级：单渠道内重试、跨渠道转移。 | `internal/handlers/common/upstream_failover.go`、`multi_channel_failover.go` |
+| **故障转移（Failover）** | key / URL / 渠道失败后按策略切换到下一候选。分两级：单渠道内重试、跨渠道转移。 | `internal/handlers/common/upstream_failover.go`（模型映射层）、`upstream_attempt_keys.go`（Key/BaseURL 层）、`multi_channel_failover.go`（跨渠道） |
 | **Fuzzy 模式** | 对所有非 2xx 错误都触发 failover 的宽松错误处理模式。 | `config.GetFuzzyModeEnabled` |
 | **Trace 亲和性** | 同一用户/会话绑定同一渠道，保证多轮对话上下文连贯。实现按 `userID + kind` 绑定 `channelIndex`。 | `internal/session/trace_affinity.go` |
 | **促销渠道（Promotion）** | 促销期内优先调度的渠道，带调用次数配额，用完自动失效。判定顺序先于 Trace 亲和（完整调度顺序见 `docs/flows.md` F1）。 | `internal/scheduler` |
@@ -32,7 +32,7 @@
 | **ProtocolSpec** | 描述协议差异的插槽结构（ParseRequest / BuildUpstreamRequest / HandleSuccess / PreRoute / HookPipeline）。messages / chat / images / gemini 经 `RunProxyRequest` 通用骨架执行；responses 为独立链路。 | `internal/handlers/common/protocol.go` |
 | **上游适配器（Provider）** | 按 ServiceType 实现的上游接入点：构建上游请求、解析响应、流式处理。`GetProvider(serviceType)` 全集 = `{openai, gemini, claude, responses}`（无 codex）。visionlayer 的视觉描述走独立 `imageAdapterForService`，不共用 Provider 注册表。 | `internal/providers/provider.go` |
 | **转换器（Converter）** | 协议格式双向转换，分散在 converters 包多个文件，**非单一工厂**：`factory.go` 仅 Claude 上游走工厂（Resp/Gemini 直接分发）；Responses 主链路在 `responses_protocol.go`；Gemini↔Claude/OpenAI 在 `gemini_converter.go`；Chat↔Responses 在 `chat_to_responses.go` / `responses_to_chat.go`。 | `internal/converters` |
-| **SSE（Server-Sent Events）** | 流式响应的 `data:` 行传输格式，转发时按协议解析/重建。 | `internal/handlers/common/stream.go` |
+| **SSE（Server-Sent Events）** | 流式响应的 `data:` 行传输格式，转发时按协议解析/重建。 | `internal/utils/sse.go`（data 行解析/重建）、`internal/handlers/common/stream_events.go`（Claude 事件判定与构造） |
 | **首字节超时** | `RESPONSE_HEADER_TIMEOUT`（默认 120s）：从发请求到收到响应头的最大等待。 | `internal/httpclient` |
 | **空闲超时（Idle Timeout）** | `STREAM_IDLE_TIMEOUT`（默认 300s）：流中两次数据事件间最大间隔，挡"流中挂起"。 | `internal/httpclient/idle_timeout_reader.go` |
 | **断连中止** | 流式转发 goroutine `select ctx.Done()`，客户端断连立即中止上游请求，防泄漏。`HandleStreamResponseCtx` 是 Provider 接口方法，五个 provider 均实现。 | `internal/providers`、`internal/handlers/common/stream.go` |

@@ -73,7 +73,7 @@ claude-proxy/
 3. **空闲超时**：`STREAM_IDLE_TIMEOUT`（默认 300s），`IdleTimeoutReader` 检测流中挂起
 
 ### 4. Failover 模式
-`handlers/common/upstream_failover.go` 把 key 轮换、URL failover、性能画像、日志收敛成一个通用函数，是 handlers 层最接近可复用的部分。
+`handlers/common` 的 `upstream_*.go` 一族把 key 轮换、URL failover、性能画像、日志收敛成一条通用链路，是 handlers 层最接近可复用的部分：入口与模型映射层在 `upstream_failover.go`，Key/BaseURL 主循环在 `upstream_attempt_keys.go`，输入契约与结果在 `upstream_attempt.go`，错误分类在 `upstream_attempt_error.go`，重试状态在 `upstream_attempt_state.go`，观测日志在 `upstream_attempt_log.go`。
 `ShouldRetryWithNextKey` 按 HTTP 状态码 + 错误消息关键词分类，支持 Fuzzy 模式。
 
 ### 5. Session / Conversation
@@ -113,6 +113,6 @@ converters/ 实现 Responses API 与各上游协议之间的双向转换：
 
 Responses API 通过 previous_response_id 实现多轮对话，由 SessionManager 维护会话历史（默认 24h 过期、最多 100 条消息、100k tokens）。ConversationRegistry 基于 conversation_id / fallback_key 建立对话路由，支持对话级别路由覆盖。
 
-## 模型后缀
+## 模型名
 
-代理支持 [1m] 后缀（如 opus[1m]），自动剥离后发送到上游。详见 config.ResolveUpstreamModel。
+模型名按客户端发来的原样参与上游映射匹配（`config.ResolveUpstreamModel` → `redirectModelList`：`*` 通配 → 精确匹配 → 双向 Contains 模糊匹配），**不对任何后缀做剥离**。需要区分同一别名的不同变体时，把完整名字直接配成 `ModelMapping` 的键。
