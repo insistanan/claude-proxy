@@ -72,3 +72,15 @@ bun run test                 # vitest 单测（现有 quickInputParser 等）
 - Go：`go fmt ./...`，遵循官方规范；提交前 `make check` 通过
 - 前端：遵循 Prettier + ESLint 风格；`bun run type-check` 常跑；新图标先注册 iconMap（`bun run check:icons` 把关）
 - 后端测试：新增/修改逻辑补 `_test.go`，优先表驱动 + `httptest`；前端复杂逻辑用 vitest 补单测
+- 提交信息遵循 Conventional Commits：`feat:` / `fix:` / `refactor:` / `chore:` / `docs:`
+
+## 版本发布
+
+**版本单一事实源 = 根目录 `VERSION` 文件**；`CHANGELOG.md` 记录历史；`frontend/package.json` 的 version 仅作对齐（不应独立递增）。版本号遵循语义化版本 2.0.0。
+
+1. 确认 `main` 分支最新且稳定，`make check` 全绿。
+2. 更新根目录 `VERSION`（如 `v3.0.0`），同步对齐 `frontend/package.json` 的 `version`（不加 `v` 前缀）。
+3. 更新 `CHANGELOG.md`：顶部新增 `## [vX.Y.Z] - YYYY-MM-DD`，按 `### 新功能 / 修复 / 重构 / 文档 / 其他` 分类，用 `git log <上一tag>...HEAD --oneline` 整理。
+4. 提交并推送：`git add VERSION CHANGELOG.md frontend/package.json && git commit -m "chore(release): prepare for vX.Y.Z" && git push origin main`。
+5. 打标签并推送：`git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`。推送 tag 后 GitHub Actions 自动触发三平台构建（Linux/macOS/Windows，各 amd64/arm64）与 Docker 镜像。
+6. （推荐）在 GitHub Releases 页面基于该 tag 起草 Release，发布说明复制 `CHANGELOG.md` 对应版本内容。

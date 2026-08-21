@@ -52,13 +52,19 @@ make run
 
 ## 📚 文档
 
-- 架构总览：`docs/ARCHITECTURE.md`
 - 关键数据流（主链路 / 视觉旁路 / 内容安全）：`docs/flows.md`
 - 术语表：`docs/glossary.md`（概念定义，禁止发明平行概念）
 - 能力注册表：`docs/capabilities.md`（写通用能力前先查，有现成实现一律复用）
 - 硬性规则：`docs/invariants.md`
 - 环境变量：`docs/ENVIRONMENT.md`
-- 开发 / 打包：`docs/DEVELOPMENT.md`、`docs/RELEASE.md`
+- 开发 / 打包 / 发布：`docs/DEVELOPMENT.md`
+
+## 🤝 贡献
+
+1. Fork 本项目，创建特性分支开发
+2. 提交信息遵循 Conventional Commits：`feat:` / `fix:` / `refactor:` / `chore:` / `docs:`
+3. 提交前跑全量门禁 `make check`（后端 gofmt + vet + test；前端 type-check + 图标扫描）
+4. 推送并开启 Pull Request
 
 ## 🔗 友情链接
 

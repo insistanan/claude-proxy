@@ -4,7 +4,7 @@
 
 ## F1 统一代理主链路（messages / chat / images / gemini 四协议）
 
-四个协议收敛到同一个骨架 `common.RunProxyRequest`（协议差异由 `ProtocolSpec` 描述：ParseRequest / BuildUpstreamRequest / HandleSuccess / PreRoute / HookPipeline）。**responses 例外**，走独立链路（见 F5）。
+四个协议收敛到同一个骨架 `proxycore.RunProxyRequest`（协议差异由 `ProtocolSpec` 描述：ParseRequest / BuildUpstreamRequest / HandleSuccess / PreRoute / HookPipeline）。**responses 例外**，走独立链路（见 F5）。
 
 ```
 1. 认证        ProxyAuthMiddleware（RunProxyRequest 函数内第一步；Web UI 路由另有 WebAuthMiddleware）
@@ -43,7 +43,7 @@
 
 ## F2 视觉旁路（最不透明的链路段）
 
-位置：**单渠道尝试循环内部**、上游请求构建之后（`prepareRequestForUpstream`，见 `handlers/common/upstream_attempt_keys.go`）。
+位置：**单渠道尝试循环内部**、上游请求构建之后（`prepareRequestForUpstream`，见 `handlers/proxycore/upstream_attempt_keys.go`）。
 
 - `visionlayer.PrepareRequest` 就地改写上游请求：图片 → 分析描述文本（按目标协议替换为文本块）。
 - 缓存两级：进程内存 + 持久（经 scheduler 按会话/kind/模型落存储）；同图并发去重（claim 机制）。
