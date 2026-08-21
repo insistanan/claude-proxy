@@ -82,23 +82,11 @@ func IsConfigError(err error) bool {
 
 // ============== 模型重定向 ==============
 
-// StripContextSuffix 剥离 Claude Code 的上下文窗口后缀（如 [1m]）
-// 返回：(原始模型名, 是否有后缀)
-// 示例：
-//
-//	"opus[1m]" -> ("opus", true)
-//	"claude-opus-4-8[1m]" -> ("claude-opus-4-8", true)
-//	"opus" -> ("opus", false)
-func StripContextSuffix(model string) (string, bool) {
-	model = strings.TrimSpace(model)
-	if strings.HasSuffix(model, "[1m]") {
-		return strings.TrimSuffix(model, "[1m]"), true
-	}
-	return model, false
-}
-
 // redirectModelList 模型重定向（返回模型列表，支持多个备选）
 // 返回：[]string 重定向后的模型列表（如果没有映射则返回包含原模型的列表）
+//
+// 模型名按客户端发来的原样参与匹配，不对任何形式的后缀做特殊处理：
+// 需要区分同一别名的不同变体时，把完整名字（含变体标记）直接配成 ModelMapping 的键。
 func redirectModelList(model string, upstream *UpstreamConfig) []string {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -112,20 +100,12 @@ func redirectModelList(model string, upstream *UpstreamConfig) []string {
 		return mapped
 	}
 
-	// 1. 先尝试精确匹配原始模型名（包括后缀）
+	// 1. 精确匹配模型名
 	if mapped, ok := upstream.ModelMapping[model]; ok && len(mapped) > 0 {
 		return mapped
 	}
 
-	// 2. 如果有后缀，尝试剥离后缀后再匹配
-	strippedModel, hasSuffix := StripContextSuffix(model)
-	if hasSuffix {
-		if mapped, ok := upstream.ModelMapping[strippedModel]; ok && len(mapped) > 0 {
-			return mapped
-		}
-	}
-
-	// 3. 模糊匹配：按源模型长度从长到短排序，确保最长匹配优先
+	// 2. 模糊匹配：按源模型长度从长到短排序，确保最长匹配优先
 	// 例如：同时配置 "codex" 和 "gpt-5.1-codex" 时，"gpt-5.1-codex" 应该先匹配
 	type mapping struct {
 		source string
@@ -143,14 +123,8 @@ func redirectModelList(model string, upstream *UpstreamConfig) []string {
 		return mappings[i].source < mappings[j].source
 	})
 
-	// 按排序后的顺序进行模糊匹配（先匹配原始模型，再匹配剥离后的）
-	modelToMatch := model
-	if hasSuffix {
-		modelToMatch = strippedModel
-	}
-
 	for _, m := range mappings {
-		if strings.Contains(modelToMatch, m.source) || strings.Contains(m.source, modelToMatch) {
+		if strings.Contains(model, m.source) || strings.Contains(m.source, model) {
 			if len(m.target) > 0 {
 				return m.target
 			}
@@ -179,7 +153,6 @@ func ResolveUpstreamModel(model string, upstream *UpstreamConfig) string {
 		return strings.TrimSpace(upstream.DefaultModel)
 	}
 
-	// redirectModel 内部会处理后缀匹配逻辑
 	return redirectModel(model, upstream)
 }
 
@@ -194,7 +167,6 @@ func ResolveUpstreamModelList(model string, upstream *UpstreamConfig) []string {
 		return []string{strings.TrimSpace(upstream.DefaultModel)}
 	}
 
-	// redirectModelList 内部会处理后缀匹配逻辑
 	return redirectModelList(model, upstream)
 }
 

@@ -130,14 +130,10 @@ func NewProfileManager() *ProfileManager {
 	return pm
 }
 
-// normalizeModel 规范化模型名（去除 [1m] 等后缀）
+// normalizeModel 规范化模型名，是性能画像 key 的唯一归一化入口。
+// 目前只去首尾空白：模型名按客户端发来的原样参与画像归并，不做后缀截断。
 func normalizeModel(model string) string {
-	model = strings.TrimSpace(model)
-	// 去除 [1m], [200k] 等上下文窗口后缀
-	if idx := strings.Index(model, "["); idx > 0 {
-		model = strings.TrimSpace(model[:idx])
-	}
-	return model
+	return strings.TrimSpace(model)
 }
 
 // generateProfileKey 生成画像键（包含模型与渠道维度）

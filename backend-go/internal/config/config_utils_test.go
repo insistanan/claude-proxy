@@ -86,77 +86,9 @@ func TestValidateContentSafetyRejectsEnabledGroupWithoutRules(t *testing.T) {
 	}
 }
 
-func TestStripContextSuffix(t *testing.T) {
-	tests := []struct {
-		name          string
-		input         string
-		wantModel     string
-		wantHasSuffix bool
-	}{
-		{
-			name:          "opus with [1m] suffix",
-			input:         "opus[1m]",
-			wantModel:     "opus",
-			wantHasSuffix: true,
-		},
-		{
-			name:          "sonnet with [1m] suffix",
-			input:         "sonnet[1m]",
-			wantModel:     "sonnet",
-			wantHasSuffix: true,
-		},
-		{
-			name:          "full model name with [1m] suffix",
-			input:         "claude-opus-4-8[1m]",
-			wantModel:     "claude-opus-4-8",
-			wantHasSuffix: true,
-		},
-		{
-			name:          "model without suffix",
-			input:         "opus",
-			wantModel:     "opus",
-			wantHasSuffix: false,
-		},
-		{
-			name:          "model with whitespace and suffix",
-			input:         "  opus[1m]  ",
-			wantModel:     "opus",
-			wantHasSuffix: true,
-		},
-		{
-			name:          "fable model",
-			input:         "fable",
-			wantModel:     "fable",
-			wantHasSuffix: false,
-		},
-		{
-			name:          "deepseek model",
-			input:         "deepseek-v4-pro",
-			wantModel:     "deepseek-v4-pro",
-			wantHasSuffix: false,
-		},
-		{
-			name:          "empty string",
-			input:         "",
-			wantModel:     "",
-			wantHasSuffix: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotModel, gotHasSuffix := StripContextSuffix(tt.input)
-			if gotModel != tt.wantModel {
-				t.Errorf("StripContextSuffix() gotModel = %v, want %v", gotModel, tt.wantModel)
-			}
-			if gotHasSuffix != tt.wantHasSuffix {
-				t.Errorf("StripContextSuffix() gotHasSuffix = %v, want %v", gotHasSuffix, tt.wantHasSuffix)
-			}
-		})
-	}
-}
-
-func TestResolveUpstreamModelWithSuffix(t *testing.T) {
+// TestResolveUpstreamModelWithBracketedName 固定的契约是：带方括号标记的模型名
+// （历史上 Claude Code 的 "[1m]"）不再被特殊处理，只按原样走通用的精确/模糊匹配。
+func TestResolveUpstreamModelWithBracketedName(t *testing.T) {
 	tests := []struct {
 		name     string
 		model    string
@@ -164,7 +96,7 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 		want     string
 	}{
 		{
-			name:  "opus[1m] with exact mapping preserves suffix",
+			name:  "bracketed name hits exact mapping key",
 			model: "opus[1m]",
 			upstream: &UpstreamConfig{
 				ModelMapping: map[string][]string{
@@ -174,7 +106,7 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 			want: "deepseek-v4-pro",
 		},
 		{
-			name:  "opus[1m] fallback to opus mapping",
+			name:  "bracketed name fuzzy-matches shorter source",
 			model: "opus[1m]",
 			upstream: &UpstreamConfig{
 				ModelMapping: map[string][]string{
@@ -184,7 +116,7 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 			want: "deepseek-v4-pro",
 		},
 		{
-			name:  "claude-opus-4-8[1m] without mapping strips suffix",
+			name:  "bracketed name without mapping passes through unchanged",
 			model: "claude-opus-4-8[1m]",
 			upstream: &UpstreamConfig{
 				ModelMapping: map[string][]string{},
@@ -192,7 +124,7 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 			want: "claude-opus-4-8[1m]", // 保留原样，没有映射就不处理
 		},
 		{
-			name:  "sonnet[1m] with default model",
+			name:  "default model wins over name matching",
 			model: "sonnet[1m]",
 			upstream: &UpstreamConfig{
 				DefaultModel: "gpt-5.4",
@@ -200,20 +132,22 @@ func TestResolveUpstreamModelWithSuffix(t *testing.T) {
 			want: "gpt-5.4",
 		},
 		{
-			name:     "fable without suffix",
+			name:     "plain name with nil upstream passes through",
 			model:    "fable",
 			upstream: nil,
 			want:     "fable",
 		},
 		{
-			name:  "opus[1m] fuzzy match after strip",
+			// 不再剥后缀：源模型比请求名更长时，双向 Contains 都不成立
+			// （"opus[1m]" 不含 "claude-opus"，"claude-opus" 也不含 "opus[1m]"）
+			name:  "bracketed name no longer strips to reach a longer source",
 			model: "opus[1m]",
 			upstream: &UpstreamConfig{
 				ModelMapping: map[string][]string{
 					"claude-opus": {"deepseek-v4-pro"},
 				},
 			},
-			want: "deepseek-v4-pro",
+			want: "opus[1m]",
 		},
 		{
 			name:  "wildcard mapping handles every model",
