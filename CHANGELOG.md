@@ -4,6 +4,33 @@
 
 ---
 
+## [v3.0.4] - 2026-08-21
+
+### 修复
+
+- **优雅关闭顺序与 Manager Stop 幂等性** — 修正服务关闭时各管理器的停止顺序，并保证重复调用 `Stop` 安全无副作用
+- **跨池故障转移降级 bug** — 修复上游故障转移跨密钥池降级时的错误判定，兼容性重试结果处理收敛为单一实现
+- **客户端断连检测 nil panic** — 修复 `IsClientDisconnectError` 在入参为 nil 时的空指针崩溃
+- **上游响应体读取与配置回滚错误显式化** — 上游响应体读取失败、配置回滚失败不再被静默吞掉
+- **token 用量口径收敛** — 统一 input/output 两侧 token 统计口径
+
+### 重构
+
+- **五协议统一入口骨架迁移** — `RunProxyRequest` 主骨架迁入 responses 链路，五协议入口进一步统一
+- **流式脚手架收敛** — 提取 `streamPump` 收敛四协议流式处理脚手架；SSE/multipart 通用能力下沉共享
+- **上游故障转移结构化** — 故障转移骨架收敛为 `UpstreamAttempt` 结构体，`SelectChannel` 拆分为职责单一的选路方法
+- **handlers 包拆分** — 原 common 千行文件拆分为 proxycore / hooks / streams，装配与全局状态收敛
+- **上游 URL 拼接收敛** — 统一为 `BuildUpstreamURL` 并下沉至 Session
+- **移除模型名后缀剥离机制** — 配置层不再隐式剥离模型名后缀
+- **images 接入内容安全、清理调度器与跨层死代码、消除导出类型命名 stutter**
+
+### 构建与文档
+
+- **全量门禁 npm 化** — 根目录 `npm run check` 一键跑完后端 gofmt/vet/test 与前端 type-check/图标扫描，摆脱 make/bun 依赖
+- 精简文档体系，规范 AGENTS/CLAUDE 结构
+
+---
+
 ## [v3.0.3] - 2026-08-19
 
 ### 修复
