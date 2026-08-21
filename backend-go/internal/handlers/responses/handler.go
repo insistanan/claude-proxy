@@ -38,7 +38,7 @@ func Handler(
 	cfgManager *config.ConfigManager,
 	sessionManager *session.SessionManager,
 	channelScheduler *scheduler.ChannelScheduler,
-	contentSafetyPipelines ...*hooks.HookPipeline,
+	contentSafetyPipelines ...*hooks.Pipeline,
 ) gin.HandlerFunc {
 	contentSafetyPipeline := hooks.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	return gin.HandlerFunc(func(c *gin.Context) {

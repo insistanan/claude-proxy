@@ -1,6 +1,6 @@
 // Package hooks 提供请求前/流式中/响应后三阶段的内容安全钩子管线。
 //
-//   - 管线骨架：hook_pipeline.go（HookPipeline / HookStage / HookResult）
+//   - 管线骨架：hook_pipeline.go（Pipeline / HookStage / HookResult）
 //   - 请求前 Hook 与内容安全错误类型：hooks_pre_request.go
 //   - 流式期间的延迟匹配与协议化错误写出：hooks_stream.go
 //   - 响应后 Hook：hooks_post_response.go

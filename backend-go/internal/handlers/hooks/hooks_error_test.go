@@ -24,7 +24,7 @@ func TestWriteAttachedContentSafetyErrorUsesProtocolJSONShape(t *testing.T) {
 		t.Run(tt.apiType, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
-			AttachHookPipeline(c, NewHookPipeline(), HookContext{APIType: tt.apiType, RequestID: "req-test"})
+			AttachHookPipeline(c, NewPipeline(), HookContext{APIType: tt.apiType, RequestID: "req-test"})
 			if err := WriteAttachedContentSafetyError(c, testSafetyError()); err != nil {
 				t.Fatalf("写出非流式错误失败: %v", err)
 			}
@@ -55,7 +55,7 @@ func TestWriteAttachedStreamErrorUsesProtocolSSEShape(t *testing.T) {
 		t.Run(tt.apiType, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
-			AttachHookPipeline(c, NewHookPipeline(), HookContext{APIType: tt.apiType, RequestID: "req-test", Stream: true})
+			AttachHookPipeline(c, NewPipeline(), HookContext{APIType: tt.apiType, RequestID: "req-test", Stream: true})
 			if err := WriteAttachedStreamError(c, testSafetyError()); err != nil {
 				t.Fatalf("写出流式错误失败: %v", err)
 			}
@@ -85,7 +85,7 @@ func TestWriteAttachedStreamErrorUsesProtocolSSEShape(t *testing.T) {
 func TestContentSafetyErrorWriterRejectsUnknownProtocol(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	AttachHookPipeline(c, NewHookPipeline(), HookContext{APIType: "unknown"})
+	AttachHookPipeline(c, NewPipeline(), HookContext{APIType: "unknown"})
 	if err := WriteAttachedContentSafetyError(c, testSafetyError()); err == nil {
 		t.Fatal("未知协议应显式返回错误")
 	}

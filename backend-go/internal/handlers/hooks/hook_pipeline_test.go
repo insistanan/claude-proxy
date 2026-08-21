@@ -23,7 +23,7 @@ func (h pipelineTestHook) Run(ctx context.Context, metadata HookContext, result 
 }
 
 func TestHookPipelineStableOrderAndResultPropagation(t *testing.T) {
-	pipeline := NewHookPipeline()
+	pipeline := NewPipeline()
 	var order []string
 
 	register := func(name string, priority int) {
@@ -62,7 +62,7 @@ func TestHookPipelineStableOrderAndResultPropagation(t *testing.T) {
 }
 
 func TestHookPipelineStopsOnError(t *testing.T) {
-	pipeline := NewHookPipeline()
+	pipeline := NewPipeline()
 	sentinel := errors.New("blocked")
 	var ranAfterFailure bool
 
@@ -111,7 +111,7 @@ func TestHookPipelineStopsOnError(t *testing.T) {
 }
 
 func TestHookPipelineRegistrationValidation(t *testing.T) {
-	pipeline := NewHookPipeline()
+	pipeline := NewPipeline()
 	valid := pipelineTestHook{name: "valid", stage: HookStagePostResponse, run: passthroughPipelineHook}
 	if err := pipeline.Register(valid); err != nil {
 		t.Fatalf("注册有效 Hook 失败: %v", err)
@@ -143,7 +143,7 @@ func TestHookPipelineRegistrationValidation(t *testing.T) {
 }
 
 func TestHookPipelineExecutionUsesImmutableSnapshot(t *testing.T) {
-	pipeline := NewHookPipeline()
+	pipeline := NewPipeline()
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var blockFirstRun sync.Once

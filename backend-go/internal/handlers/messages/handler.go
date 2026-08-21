@@ -29,7 +29,7 @@ func Handler(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
 	channelScheduler *scheduler.ChannelScheduler,
-	contentSafetyPipelines ...*hooks.HookPipeline,
+	contentSafetyPipelines ...*hooks.Pipeline,
 ) gin.HandlerFunc {
 	contentSafetyPipeline := hooks.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	spec := proxycore.ProtocolSpec{

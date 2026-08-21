@@ -106,20 +106,20 @@ type registeredHook struct {
 	hook Hook
 }
 
-// HookPipeline 管理三阶段 Hook。注册使用写时复制，使已开始执行的请求
+// Pipeline 管理三阶段 Hook。注册使用写时复制，使已开始执行的请求
 // 始终使用稳定快照，且不阻塞 Hook 的实际执行。
-type HookPipeline struct {
+type Pipeline struct {
 	mu                 sync.RWMutex
 	hooks              map[HookStage][]registeredHook
 	blockedLogRecorder BlockedLogRecorder
 }
 
-func NewHookPipeline() *HookPipeline {
-	return &HookPipeline{hooks: make(map[HookStage][]registeredHook, 3)}
+func NewPipeline() *Pipeline {
+	return &Pipeline{hooks: make(map[HookStage][]registeredHook, 3)}
 }
 
 // Register 注册一个 Hook。相同阶段内的 Hook 名必须唯一。
-func (p *HookPipeline) Register(hook Hook) error {
+func (p *Pipeline) Register(hook Hook) error {
 	if p == nil {
 		return fmt.Errorf("Hook 管道不能为空")
 	}
@@ -157,7 +157,7 @@ func (p *HookPipeline) Register(hook Hook) error {
 }
 
 // Run 执行指定阶段的 Hook。发生错误时立即停止，并返回错误前已经产生的变更。
-func (p *HookPipeline) Run(ctx context.Context, stage HookStage, metadata HookContext, initial HookResult) (HookResult, error) {
+func (p *Pipeline) Run(ctx context.Context, stage HookStage, metadata HookContext, initial HookResult) (HookResult, error) {
 	if p == nil {
 		return initial, fmt.Errorf("Hook 管道不能为空")
 	}
@@ -183,19 +183,19 @@ func (p *HookPipeline) Run(ctx context.Context, stage HookStage, metadata HookCo
 	return result, nil
 }
 
-func (p *HookPipeline) RunPreRequest(ctx context.Context, metadata HookContext, initial HookResult) (HookResult, error) {
+func (p *Pipeline) RunPreRequest(ctx context.Context, metadata HookContext, initial HookResult) (HookResult, error) {
 	return p.Run(ctx, HookStagePreRequest, metadata, initial)
 }
 
-func (p *HookPipeline) RunRequestTime(ctx context.Context, metadata HookContext, initial HookResult) (HookResult, error) {
+func (p *Pipeline) RunRequestTime(ctx context.Context, metadata HookContext, initial HookResult) (HookResult, error) {
 	return p.Run(ctx, HookStageRequestTime, metadata, initial)
 }
 
-func (p *HookPipeline) RunPostResponse(ctx context.Context, metadata HookContext, initial HookResult) (HookResult, error) {
+func (p *Pipeline) RunPostResponse(ctx context.Context, metadata HookContext, initial HookResult) (HookResult, error) {
 	return p.Run(ctx, HookStagePostResponse, metadata, initial)
 }
 
-func (p *HookPipeline) snapshot(stage HookStage) []registeredHook {
+func (p *Pipeline) snapshot(stage HookStage) []registeredHook {
 	if p == nil {
 		return nil
 	}

@@ -42,7 +42,7 @@ type app struct {
 	cfgManager            *config.ConfigManager
 	requestLogStore       *metrics.RequestLogStore
 	blockedStore          *sensitive.BlockedStore
-	contentSafetyPipeline *hooks.HookPipeline
+	contentSafetyPipeline *hooks.Pipeline
 	sessionManager        *session.SessionManager
 	conversationRegistry  *conversation.Registry
 	metricsStore          *metrics.SQLiteStore

@@ -1,4 +1,4 @@
-// 本文件是 Claude 协议流式响应的主链路：StreamContext 等上下文类型的定义、
+// 本文件是 Claude 协议流式响应的主链路：Context 等上下文类型的定义、
 // HandleStreamResponse / ProcessStreamEvents 事件循环（读上游 -> 观测/修补 -> 写客户端）
 // 与单事件处理 ProcessStreamEvent。
 // 同包其余职责：事件判定与构造 stream_events.go，usage 检测/修补
@@ -25,8 +25,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// StreamContext 流处理上下文
-type StreamContext struct {
+// Context 流处理上下文
+type Context struct {
 	LogBuffer        bytes.Buffer
 	OutputTextBuffer bytes.Buffer
 	ResponseText     bytes.Buffer
@@ -75,8 +75,8 @@ type CollectedUsageData struct {
 }
 
 // NewStreamContext 创建流处理上下文
-func NewStreamContext(envCfg *config.EnvConfig) *StreamContext {
-	ctx := &StreamContext{
+func NewStreamContext(envCfg *config.EnvConfig) *Context {
+	ctx := &Context{
 		LoggingEnabled:    envCfg.IsDevelopment() && envCfg.EnableResponseLogs,
 		ContentBlockTypes: make(map[int]string),
 		ToolCalls:         make(map[int]*StreamToolCall),
@@ -91,7 +91,7 @@ func NewStreamContext(envCfg *config.EnvConfig) *StreamContext {
 //
 // Claude Code 的部分内部调用会在 messages 里预置一条 assistant 内容（例如 "{"），让模型只输出“续写”部分。
 // 这会导致我们仅基于 SSE delta 合成的日志缺失开头。这里用请求体做一次轻量补齐。
-func seedSynthesizerFromRequest(ctx *StreamContext, requestBody []byte) {
+func seedSynthesizerFromRequest(ctx *Context, requestBody []byte) {
 	if ctx == nil || ctx.Synthesizer == nil || len(requestBody) == 0 {
 		return
 	}
@@ -202,7 +202,7 @@ func ProcessStreamEvents(
 	flusher http.Flusher,
 	eventChan <-chan string,
 	errChan <-chan error,
-	ctx *StreamContext,
+	ctx *Context,
 	envCfg *config.EnvConfig,
 	startTime time.Time,
 	requestBody []byte,
@@ -260,7 +260,7 @@ func ProcessStreamEvent(
 	w gin.ResponseWriter,
 	flusher http.Flusher,
 	event string,
-	ctx *StreamContext,
+	ctx *Context,
 	envCfg *config.EnvConfig,
 	requestBody []byte,
 ) error {

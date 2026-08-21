@@ -1,5 +1,5 @@
 // 本文件负责流式响应结束时的收尾：logStreamCompletion 输出完成/事件统计日志、
-// 触发隐式缓存推断，并把 StreamContext 累积的 usage 组装成 *types.Usage 返回；
+// 触发隐式缓存推断，并把 Context 累积的 usage 组装成 *types.Usage 返回；
 // logPartialResponse 处理上游中断时的部分内容日志；logSynthesizedContent 打印
 // StreamSynthesizer 的合成文本（合成不可用时回退打印原始 LogBuffer）。
 package streams
@@ -14,7 +14,7 @@ import (
 )
 
 // logStreamCompletion 记录流完成日志
-func logStreamCompletion(ctx *StreamContext, envCfg *config.EnvConfig, startTime time.Time) *types.Usage {
+func logStreamCompletion(ctx *Context, envCfg *config.EnvConfig, startTime time.Time) *types.Usage {
 	if envCfg.EnableResponseLogs {
 		log.Printf("[Messages-Stream] 流式响应完成: %dms", time.Since(startTime).Milliseconds())
 	}
@@ -59,14 +59,14 @@ func logStreamCompletion(ctx *StreamContext, envCfg *config.EnvConfig, startTime
 }
 
 // logPartialResponse 记录部分响应日志
-func logPartialResponse(ctx *StreamContext, envCfg *config.EnvConfig) {
+func logPartialResponse(ctx *Context, envCfg *config.EnvConfig) {
 	if envCfg.EnableResponseLogs && envCfg.IsDevelopment() {
 		logSynthesizedContent(ctx)
 	}
 }
 
 // logSynthesizedContent 记录合成内容
-func logSynthesizedContent(ctx *StreamContext) {
+func logSynthesizedContent(ctx *Context) {
 	if ctx.Synthesizer != nil {
 		content := ctx.Synthesizer.GetSynthesizedContent()
 		if content != "" && !ctx.Synthesizer.IsParseFailed() {

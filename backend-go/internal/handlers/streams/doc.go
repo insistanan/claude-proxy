@@ -1,6 +1,6 @@
 // Package streams 提供 Claude 协议流式响应处理链路。
 //
-//   - 主循环：stream.go（StreamContext、HandleStreamResponse /
+//   - 主循环：stream.go（Context、HandleStreamResponse /
 //     ProcessStreamEvents / ProcessStreamEvent）
 //   - 事件判定与构造：stream_events.go
 //   - usage 检测/修补：stream_usage_detect.go / stream_usage_patch.go

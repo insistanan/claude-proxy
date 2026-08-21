@@ -35,7 +35,7 @@ func CompactHandler(
 	cfgManager *config.ConfigManager,
 	_ *session.SessionManager,
 	channelScheduler *scheduler.ChannelScheduler,
-	contentSafetyPipelines ...*hooks.HookPipeline,
+	contentSafetyPipelines ...*hooks.Pipeline,
 ) gin.HandlerFunc {
 	contentSafetyPipeline := hooks.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
 	return gin.HandlerFunc(func(c *gin.Context) {

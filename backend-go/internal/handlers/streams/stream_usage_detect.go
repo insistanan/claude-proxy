@@ -41,7 +41,7 @@ func updateCollectedUsage(collected *CollectedUsageData, usageData CollectedUsag
 // 当 message_start 中的 input_tokens 与 message_delta 中的最终 input_tokens 存在显著差异时，
 // 差额可能是上游 prompt caching 命中但未明确返回 cache_read_input_tokens 的情况。
 // 触发条件：差额 > 10% 或差额 > 10000 tokens，且上游未返回 cache_read_input_tokens。
-func inferImplicitCacheRead(ctx *StreamContext, enableLog bool) {
+func inferImplicitCacheRead(ctx *Context, enableLog bool) {
 	// 前置条件检查
 	if ctx.MessageStartInputTokens == 0 || ctx.CollectedUsage.InputTokens == 0 {
 		return

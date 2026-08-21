@@ -254,7 +254,7 @@ func TestInferImplicitCacheRead(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := &StreamContext{
+			ctx := &Context{
 				MessageStartInputTokens: tt.messageStartInputTokens,
 				CollectedUsage: CollectedUsageData{
 					InputTokens:          tt.collectedInputTokens,

@@ -100,7 +100,7 @@ func (e *ContentSafetyError) Code() string {
 const contentSafetyPipelineKey = "__content_safety_hook_pipeline"
 
 type attachedHookPipeline struct {
-	pipeline       *HookPipeline
+	pipeline       *Pipeline
 	metadataMu     sync.RWMutex
 	metadata       HookContext
 	streamMu       sync.Mutex
@@ -111,7 +111,7 @@ type attachedHookPipeline struct {
 
 // AttachHookPipeline 将内容安全 Hook 管道绑定到当前请求。入口解析请求后调用，
 // 请求前检查会在最终上游载荷生成后、Vision 处理前后各执行一次。
-func AttachHookPipeline(c requestContextSetter, pipeline *HookPipeline, metadata HookContext) {
+func AttachHookPipeline(c requestContextSetter, pipeline *Pipeline, metadata HookContext) {
 	if c == nil || pipeline == nil {
 		return
 	}
@@ -225,14 +225,14 @@ func RunAttachedPreRequestHooks(ctx context.Context, c requestContextGetter, req
 
 // NewContentSafetyPipeline 创建带敏感词和敏感信息请求前 Hook 的管道。
 // 设置在每次请求时从 ConfigManager 读取，文件热重载无需重建路由。
-func NewContentSafetyPipeline(cfgManager *config.ConfigManager) *HookPipeline {
+func NewContentSafetyPipeline(cfgManager *config.ConfigManager) *Pipeline {
 	return NewContentSafetyPipelineWithRecorder(cfgManager, nil)
 }
 
 // ResolveContentSafetyPipeline 解析入口注入的共享管道。
 // 不传参数时保留旧 Handler 调用合同，仍创建完整的检测管道；主进程必须传入
 // 带 BlockedLogRecorder 的共享实例，确保拦截事件可以持久化。
-func ResolveContentSafetyPipeline(cfgManager *config.ConfigManager, pipelines ...*HookPipeline) *HookPipeline {
+func ResolveContentSafetyPipeline(cfgManager *config.ConfigManager, pipelines ...*Pipeline) *Pipeline {
 	if len(pipelines) > 1 {
 		panic("每个协议入口只能注入一个内容安全管道")
 	}
@@ -246,8 +246,8 @@ func ResolveContentSafetyPipeline(cfgManager *config.ConfigManager, pipelines ..
 }
 
 // NewContentSafetyPipelineWithRecorder 创建内容安全管道并注入统一拦截记录器。
-func NewContentSafetyPipelineWithRecorder(cfgManager *config.ConfigManager, recorder BlockedLogRecorder) *HookPipeline {
-	pipeline := NewHookPipeline()
+func NewContentSafetyPipelineWithRecorder(cfgManager *config.ConfigManager, recorder BlockedLogRecorder) *Pipeline {
+	pipeline := NewPipeline()
 	pipeline.blockedLogRecorder = recorder
 	if err := pipeline.Register(&contentSafetyPreRequestHook{cfgManager: cfgManager, recorder: recorder}); err != nil {
 		panic(fmt.Sprintf("注册内置内容安全 Hook 失败: %v", err))
