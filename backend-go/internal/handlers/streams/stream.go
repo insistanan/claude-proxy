@@ -503,6 +503,9 @@ func streamSafetyFragments(data map[string]interface{}) (string, []streamToolArg
 
 // IsClientDisconnectError 判断是否为客户端断开连接错误
 func IsClientDisconnectError(err error) bool {
+	if err == nil {
+		return false
+	}
 	msg := err.Error()
 	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset")
 }
