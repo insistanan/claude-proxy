@@ -236,25 +236,15 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 
 					RestoreRequestBody(c, requestBody)
 					retryResult := a.retrySameCandidateRequest(upstreamCopy, apiKey, proxyURL)
-					if retryResult.Err != nil {
-						if retryResult.PreparationStage == "content_safety" {
-							finishRetryContentSafety(retryResult.Err)
-							return newUpstreamAttemptResult(true, "", 0, nil, nil, retryResult.Err)
-						}
-						if retryResult.PreparationStage == "build_request" {
-							log.Printf("[%s-ChannelCapability] 重建无 prompt_cache_key 请求失败: %v", apiType, retryResult.Err)
-						} else if retryResult.PreparationStage == "send_request" {
-							log.Printf("[%s-ChannelCapability] 无 prompt_cache_key 重试失败: %v", apiType, retryResult.Err)
-						} else {
-							log.Printf("[%s-ChannelCapability] 准备无 prompt_cache_key 请求失败: %v", apiType, retryResult.Err)
-						}
-					} else {
-						resp = retryResult.Response
-						if retryResult.Succeeded {
-							retrySucceeded = true
-						} else {
-							respBodyBytes = retryResult.Body
-						}
+					var aborted *UpstreamAttemptResult
+					resp, respBodyBytes, retrySucceeded, aborted = applyCompatibilityRetryResult(retryResult, resp, respBodyBytes, retrySucceeded, apiType, compatRetryLogs{
+						component:     "ChannelCapability",
+						buildAction:   "重建无 prompt_cache_key 请求失败",
+						sendAction:    "无 prompt_cache_key 重试失败",
+						prepareAction: "准备无 prompt_cache_key 请求失败",
+					}, finishRetryContentSafety)
+					if aborted != nil {
+						return *aborted
 					}
 				}
 
@@ -273,25 +263,15 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 
 					RestoreRequestBody(c, requestBody)
 					retryResult := a.retrySameCandidateRequest(upstreamCopy, apiKey, proxyURL)
-					if retryResult.Err != nil {
-						if retryResult.PreparationStage == "content_safety" {
-							finishRetryContentSafety(retryResult.Err)
-							return newUpstreamAttemptResult(true, "", 0, nil, nil, retryResult.Err)
-						}
-						if retryResult.PreparationStage == "build_request" {
-							log.Printf("[%s-ChannelCapability] 重建 reasoning_content 兼容请求失败: %v", apiType, retryResult.Err)
-						} else if retryResult.PreparationStage == "send_request" {
-							log.Printf("[%s-ChannelCapability] reasoning_content 兼容重试失败: %v", apiType, retryResult.Err)
-						} else {
-							log.Printf("[%s-ChannelCapability] 准备 reasoning_content 兼容请求失败: %v", apiType, retryResult.Err)
-						}
-					} else {
-						resp = retryResult.Response
-						if retryResult.Succeeded {
-							retrySucceeded = true
-						} else {
-							respBodyBytes = retryResult.Body
-						}
+					var aborted *UpstreamAttemptResult
+					resp, respBodyBytes, retrySucceeded, aborted = applyCompatibilityRetryResult(retryResult, resp, respBodyBytes, retrySucceeded, apiType, compatRetryLogs{
+						component:     "ChannelCapability",
+						buildAction:   "重建 reasoning_content 兼容请求失败",
+						sendAction:    "reasoning_content 兼容重试失败",
+						prepareAction: "准备 reasoning_content 兼容请求失败",
+					}, finishRetryContentSafety)
+					if aborted != nil {
+						return *aborted
 					}
 				}
 
@@ -305,26 +285,16 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 						log.Printf("[%s-ContentPolicy] 使用等价 JSON Unicode 转义在同一渠道重试一次", apiType)
 						RestoreRequestBody(c, escapedBody)
 						retryResult := a.retrySameCandidateRequest(upstreamCopy, apiKey, proxyURL)
-						if retryResult.Err != nil {
-							if retryResult.PreparationStage == "content_safety" {
-								finishRetryContentSafety(retryResult.Err)
-								return newUpstreamAttemptResult(true, "", 0, nil, nil, retryResult.Err)
-							}
-							if retryResult.PreparationStage == "build_request" {
-								log.Printf("[%s-ContentPolicy] 重建转义请求失败: %v", apiType, retryResult.Err)
-							} else if retryResult.PreparationStage == "send_request" {
-								log.Printf("[%s-ContentPolicy] 转义请求重试失败: %v", apiType, retryResult.Err)
-							} else {
-								log.Printf("[%s-ContentPolicy] 准备转义请求失败: %v", apiType, retryResult.Err)
-							}
-						} else {
-							resp = retryResult.Response
-							if retryResult.Succeeded {
-								retrySucceeded = true
-								log.Printf("[%s-ContentPolicy] 等价 JSON 转义重试成功", apiType)
-							} else {
-								respBodyBytes = retryResult.Body
-							}
+						var aborted *UpstreamAttemptResult
+						resp, respBodyBytes, retrySucceeded, aborted = applyCompatibilityRetryResult(retryResult, resp, respBodyBytes, retrySucceeded, apiType, compatRetryLogs{
+							component:     "ContentPolicy",
+							buildAction:   "重建转义请求失败",
+							sendAction:    "转义请求重试失败",
+							prepareAction: "准备转义请求失败",
+							successAction: "等价 JSON 转义重试成功",
+						}, finishRetryContentSafety)
+						if aborted != nil {
+							return *aborted
 						}
 						RestoreRequestBody(c, requestBody)
 					}
@@ -553,6 +523,61 @@ func (a UpstreamAttempt) retrySameCandidateRequest(
 	}
 	body = utils.DecompressGzipIfNeeded(resp, body)
 	return compatibilityRetryResult{Response: resp, Body: body}
+}
+
+// compatRetryLogs 描述同候选兼容性重试各失败阶段的日志文案，
+// 保证收敛后日志逐字与原实现一致。
+type compatRetryLogs struct {
+	component     string // 日志组件名，如 "ChannelCapability"
+	buildAction   string // build_request 阶段失败文案
+	sendAction    string // send_request 阶段失败文案
+	prepareAction string // 其余准备阶段失败文案
+	successAction string // 重试成功文案；为空则不打成功日志
+}
+
+// applyCompatibilityRetryResult 归一化三种同候选兼容性重试
+// （prompt_cache_key / reasoning_content / 内容审核转义）的结果处理：
+//   - content_safety 阶段失败：写协议错误响应并要求主循环终止本次尝试；
+//   - 其余阶段失败：仅记日志，沿用原响应继续走失败分类；
+//   - 重试成功：回传新响应并标记 retrySucceeded。
+//
+// abort 非 nil 时主循环必须立即返回该结果。
+func applyCompatibilityRetryResult(
+	retryResult compatibilityRetryResult,
+	resp *http.Response,
+	respBodyBytes []byte,
+	retrySucceeded bool,
+	apiType string,
+	logs compatRetryLogs,
+	finishRetryContentSafety func(error),
+) (*http.Response, []byte, bool, *UpstreamAttemptResult) {
+	if retryResult.Err != nil {
+		if retryResult.PreparationStage == "content_safety" {
+			finishRetryContentSafety(retryResult.Err)
+			abort := newUpstreamAttemptResult(true, "", 0, nil, nil, retryResult.Err)
+			return resp, respBodyBytes, retrySucceeded, &abort
+		}
+		switch retryResult.PreparationStage {
+		case "build_request":
+			log.Printf("[%s-%s] %s: %v", apiType, logs.component, logs.buildAction, retryResult.Err)
+		case "send_request":
+			log.Printf("[%s-%s] %s: %v", apiType, logs.component, logs.sendAction, retryResult.Err)
+		default:
+			log.Printf("[%s-%s] %s: %v", apiType, logs.component, logs.prepareAction, retryResult.Err)
+		}
+		return resp, respBodyBytes, retrySucceeded, nil
+	}
+
+	resp = retryResult.Response
+	if retryResult.Succeeded {
+		retrySucceeded = true
+		if logs.successAction != "" {
+			log.Printf("[%s-%s] %s", apiType, logs.component, logs.successAction)
+		}
+	} else {
+		respBodyBytes = retryResult.Body
+	}
+	return resp, respBodyBytes, retrySucceeded, nil
 }
 
 func prepareRequestForUpstream(
