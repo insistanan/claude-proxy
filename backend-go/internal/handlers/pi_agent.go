@@ -20,26 +20,18 @@ import (
 // PiAgentAPI 聚合 pi-agent 配置管理的互斥锁与配置存储，
 // 由 main.go 构造并注入路由，替代包级全局状态。
 type PiAgentAPI struct {
-	mu        sync.Mutex
-	storeOnce sync.Once
-	store     *piagent.Store
+	mu    sync.Mutex
+	store *piagent.Store
 }
 
 // NewPiAgentAPI 创建 pi-agent 配置管理 API。
-func NewPiAgentAPI() *PiAgentAPI {
-	return &PiAgentAPI{}
-}
-
-// storeInstance 惰性创建 pi-agent 配置存储。
-func (p *PiAgentAPI) storeInstance() *piagent.Store {
-	p.storeOnce.Do(func() {
-		backupDir, err := piagent.DefaultBackupDir()
-		if err != nil {
-			backupDir = ".config/backups/pi-agent"
-		}
-		p.store = piagent.NewStore(backupDir)
-	})
-	return p.store
+// 备份目录在构造时显式解析，失败直接报错，不做静默兜底。
+func NewPiAgentAPI() (*PiAgentAPI, error) {
+	backupDir, err := piagent.DefaultBackupDir()
+	if err != nil {
+		return nil, fmt.Errorf("解析 pi-agent 备份目录失败: %w", err)
+	}
+	return &PiAgentAPI{store: piagent.NewStore(backupDir)}, nil
 }
 
 // piAgentError 将底层错误映射为 HTTP 状态码。
@@ -109,7 +101,7 @@ func (p *PiAgentAPI) ListProviders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		providers, root, raw, _, err := store.ReadProviders()
 		if err != nil {
 			piAgentError(c, err)
@@ -143,7 +135,7 @@ func (p *PiAgentAPI) GetProvider() gin.HandlerFunc {
 		id := c.Param("id")
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		providers, _, raw, _, err := store.ReadProviders()
 		if err != nil {
 			piAgentError(c, err)
@@ -196,7 +188,7 @@ func (p *PiAgentAPI) CreateProvider() gin.HandlerFunc {
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -242,7 +234,7 @@ func (p *PiAgentAPI) UpdateProvider() gin.HandlerFunc {
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -280,7 +272,7 @@ func (p *PiAgentAPI) DeleteProvider() gin.HandlerFunc {
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -318,7 +310,7 @@ func (p *PiAgentAPI) DeleteProvider() gin.HandlerFunc {
 
 // piAgentDefaultProviderConflict 检查 provider 是否被 settings.json 默认模型引用。
 func (p *PiAgentAPI) defaultProviderConflict(providerID string) (string, error) {
-	store := p.storeInstance()
+	store := p.store
 	settings, _, _, _, err := store.ReadModelSettings()
 	if err != nil {
 		return "", err
@@ -367,7 +359,7 @@ func (p *PiAgentAPI) DiscoverModels() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 			return
 		}
-		store := p.storeInstance()
+		store := p.store
 		providers, _, _, _, err := store.ReadProviders()
 		if err != nil {
 			piAgentError(c, err)
@@ -416,7 +408,7 @@ func (p *PiAgentAPI) TestProvider() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 			return
 		}
-		store := p.storeInstance()
+		store := p.store
 		providers, _, _, _, err := store.ReadProviders()
 		if err != nil {
 			piAgentError(c, err)
@@ -626,7 +618,7 @@ func piAgentHTTPClient() *http.Client {
 // piAgentAPIKeyFor 获取 provider 的 API key（仅用于探测请求，不落盘）。
 // 优先 auth.json 的 credential，其次 models.json 的 provider.apiKey。
 func (p *PiAgentAPI) apiKeyFor(providerID string) string {
-	store := p.storeInstance()
+	store := p.store
 	root, _, _, err := store.ReadRawAuth()
 	if err == nil {
 		if raw, exists := root[providerID]; exists {
@@ -648,7 +640,7 @@ func (p *PiAgentAPI) apiKeyFor(providerID string) string {
 
 // piAgentCredentialInfo 读取 auth.json 的脱敏凭据状态，key 为 provider ID。
 func (p *PiAgentAPI) credentialInfo() (map[string]piagent.CredentialView, error) {
-	store := p.storeInstance()
+	store := p.store
 	views, _, _, _, err := store.ReadCredentials()
 	if err != nil {
 		return nil, err
@@ -715,7 +707,7 @@ func (p *PiAgentAPI) ListCredentials() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		views, _, raw, _, err := store.ReadCredentials()
 		if err != nil {
 			piAgentError(c, err)
@@ -753,7 +745,7 @@ func (p *PiAgentAPI) UpdateCredential() gin.HandlerFunc {
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -786,7 +778,7 @@ func (p *PiAgentAPI) DeleteCredential() gin.HandlerFunc {
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -813,7 +805,7 @@ func (p *PiAgentAPI) GetModelSettings() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		settings, _, raw, _, err := store.ReadModelSettings()
 		if err != nil {
 			piAgentError(c, err)
@@ -838,7 +830,7 @@ func (p *PiAgentAPI) UpdateModelSettings() gin.HandlerFunc {
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -865,7 +857,7 @@ func (p *PiAgentAPI) ListBackups() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		backups, err := store.ListBackups()
 		if err != nil {
 			piAgentError(c, err)
@@ -901,7 +893,7 @@ func (p *PiAgentAPI) CreateBackup() gin.HandlerFunc {
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)
@@ -923,7 +915,7 @@ func (p *PiAgentAPI) RestoreBackup() gin.HandlerFunc {
 		id := c.Param("id")
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		store := p.storeInstance()
+		store := p.store
 		release, err := store.LockAndCheck()
 		if err != nil {
 			piAgentError(c, err)

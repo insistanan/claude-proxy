@@ -169,8 +169,11 @@ func newApp() (*app, error) {
 	a.channelScheduler.SetAdaptiveScheduler(a.adaptiveScheduler)
 	log.Println("[Main] 自适应负载均衡已启用")
 
-	// pi-agent 与 skills 管理 API（实例持有各自的互斥锁与惰性存储）
-	a.piAgentAPI = handlers.NewPiAgentAPI()
+	// pi-agent 与 skills 管理 API（实例持有各自的互斥锁与存储）
+	a.piAgentAPI, err = handlers.NewPiAgentAPI()
+	if err != nil {
+		return nil, fmt.Errorf("初始化 pi-agent 管理 API 失败: %w", err)
+	}
 	a.skillsAPI = handlers.NewSkillsAPI()
 
 	// 从现有指标同步数据到性能画像
