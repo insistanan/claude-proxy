@@ -218,17 +218,7 @@ func GetSchedulerStats(sch *scheduler.ChannelScheduler) gin.HandlerFunc {
 			kind = scheduler.ChannelKindImages
 		}
 
-		metricsManager := sch.GetMessagesMetricsManager()
-		switch kind {
-		case scheduler.ChannelKindResponses:
-			metricsManager = sch.GetResponsesMetricsManager()
-		case scheduler.ChannelKindGemini:
-			metricsManager = sch.GetGeminiMetricsManager()
-		case scheduler.ChannelKindChat:
-			metricsManager = sch.GetChatMetricsManager()
-		case scheduler.ChannelKindImages:
-			metricsManager = sch.GetImagesMetricsManager()
-		}
+		metricsManager := sch.MetricsManager(kind)
 
 		stats := gin.H{
 			"multiChannelMode":    sch.IsMultiChannelMode(kind),

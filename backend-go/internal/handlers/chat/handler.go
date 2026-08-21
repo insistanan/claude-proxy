@@ -121,7 +121,7 @@ func handleRoutedChat(
 		return
 	}
 
-	metricsManager := channelScheduler.GetChatMetricsManager()
+	metricsManager := channelScheduler.MetricsManager(scheduler.ChannelKindChat)
 	urlResults := common.BuildDefaultURLResults([]string{route.BaseURL})
 	result := (common.UpstreamAttempt{
 		Context:            c,

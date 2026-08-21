@@ -1258,33 +1258,8 @@ func (s *ChannelScheduler) MarkConversationComplete(userID string, kind ChannelK
 	registry.MarkComplete(userID, string(kind))
 }
 
-// GetMessagesMetricsManager 获取 Messages 渠道指标管理器
-func (s *ChannelScheduler) GetMessagesMetricsManager() *metrics.MetricsManager {
-	return s.getMetricsManager(ChannelKindMessages)
-}
-
-// GetResponsesMetricsManager 获取 Responses 渠道指标管理器
-func (s *ChannelScheduler) GetResponsesMetricsManager() *metrics.MetricsManager {
-	return s.getMetricsManager(ChannelKindResponses)
-}
-
-// GetGeminiMetricsManager 获取 Gemini 渠道指标管理器
-func (s *ChannelScheduler) GetGeminiMetricsManager() *metrics.MetricsManager {
-	return s.getMetricsManager(ChannelKindGemini)
-}
-
-// GetChatMetricsManager 获取 Chat 渠道指标管理器
-func (s *ChannelScheduler) GetChatMetricsManager() *metrics.MetricsManager {
-	return s.getMetricsManager(ChannelKindChat)
-}
-
-// GetImagesMetricsManager 获取 Images 渠道指标管理器
-func (s *ChannelScheduler) GetImagesMetricsManager() *metrics.MetricsManager {
-	return s.getMetricsManager(ChannelKindImages)
-}
-
-// MetricsManager 按渠道类型返回对应的指标管理器。
-// 调用方不应再用 GetXxxMetricsManager + switch kind 的写法。
+// MetricsManager 按渠道类型返回对应的指标管理器，是外部取用指标管理器的唯一入口。
+// 五协议各有一份 MetricsManager 实例，调用方一律传 kind，不要在调用侧按 kind 分支。
 func (s *ChannelScheduler) MetricsManager(kind ChannelKind) *metrics.MetricsManager {
 	return s.getMetricsManager(kind)
 }

@@ -238,7 +238,7 @@ func tryCompactChannelWithAllKeys(
 		return false, "", nil
 	}
 
-	metricsManager := channelScheduler.GetResponsesMetricsManager()
+	metricsManager := channelScheduler.MetricsManager(scheduler.ChannelKindResponses)
 
 	failedKeys := make(map[string]bool)
 	var lastErr *compactError

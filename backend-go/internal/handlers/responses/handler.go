@@ -129,7 +129,7 @@ func handleMultiChannel(
 	startTime time.Time,
 ) {
 	provider := &providers.ResponsesProvider{SessionManager: sessionManager}
-	metricsManager := channelScheduler.GetResponsesMetricsManager()
+	metricsManager := channelScheduler.MetricsManager(scheduler.ChannelKindResponses)
 
 	common.HandleMultiChannelFailover(
 		c,
@@ -278,7 +278,7 @@ func handleSingleChannelWithUpstream(
 
 	provider := &providers.ResponsesProvider{SessionManager: sessionManager}
 
-	metricsManager := channelScheduler.GetResponsesMetricsManager()
+	metricsManager := channelScheduler.MetricsManager(scheduler.ChannelKindResponses)
 	baseURLs := upstream.GetAllBaseURLs()
 
 	urlResults := common.BuildDefaultURLResults(baseURLs)
@@ -712,7 +712,7 @@ func hasDeliveredResponsesToolCall(event string) bool {
 
 // handleStreamSuccess 处理流式响应。
 // 返回 error 仅在"空响应未写入客户端"场景下非 nil（ErrEmptyStreamResponse），
-// 使上层 TryUpstreamWithAllKeys 可以安全 failover。
+// 使上层 UpstreamAttempt 的 Key/BaseURL 轮转可以安全 failover。
 // 在缓冲阶段（尚未收到内容 delta 前），所有 SSE 事件只缓冲不 flush；
 // 若最终 response.completed 时 output 为空，则返回 ErrEmptyStreamResponse。
 func handleStreamSuccess(

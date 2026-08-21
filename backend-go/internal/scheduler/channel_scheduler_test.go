@@ -107,7 +107,7 @@ func TestPromotedChannelBypassesHealthCheck(t *testing.T) {
 	defer cleanup()
 
 	// 模拟促销渠道之前有高失败率（使其不健康）
-	metricsManager := scheduler.GetMessagesMetricsManager()
+	metricsManager := scheduler.MetricsManager(ChannelKindMessages)
 	for i := 0; i < 10; i++ {
 		metricsManager.RecordFailure("https://promoted.example.com", "sk-promoted-key", 1)
 	}
@@ -425,7 +425,7 @@ func TestUnhealthyChannelSkipped(t *testing.T) {
 	defer cleanup()
 
 	// 模拟第一个渠道不健康
-	metricsManager := scheduler.GetMessagesMetricsManager()
+	metricsManager := scheduler.MetricsManager(ChannelKindMessages)
 	for i := 0; i < 10; i++ {
 		metricsManager.RecordFailure("https://unhealthy.example.com", "sk-unhealthy-key", 0)
 	}
@@ -474,7 +474,7 @@ func TestExpiredPromotionNotBypassHealthCheck(t *testing.T) {
 	defer cleanup()
 
 	// 模拟过期促销渠道不健康
-	metricsManager := scheduler.GetMessagesMetricsManager()
+	metricsManager := scheduler.MetricsManager(ChannelKindMessages)
 	for i := 0; i < 10; i++ {
 		metricsManager.RecordFailure("https://expired.example.com", "sk-expired-key", 1)
 	}
