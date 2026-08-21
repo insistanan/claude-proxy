@@ -12,6 +12,9 @@ import (
 const (
 	ContextKeyClaudeCodeDisguise = "client-disguise-claude-code"
 	ContextKeyCodexDisguise      = "client-disguise-codex"
+	// ContextKeyConversationUserID 由 RunProxyRequest 在会话观测后写入，
+	// 供协议回调（如 HandleSuccess）取用注册表生成的会话记录 ID。
+	ContextKeyConversationUserID = "conversation-user-id"
 	claudeCodeDisguiseVersion    = "2.1.161"
 	codexDisguiseVersion         = "0.144.0"
 )

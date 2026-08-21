@@ -4,7 +4,7 @@
 
 ## F1 统一代理主链路（messages / chat / images / gemini 四协议）
 
-四个协议收敛到同一个骨架 `proxycore.RunProxyRequest`（协议差异由 `ProtocolSpec` 描述：ParseRequest / BuildUpstreamRequest / HandleSuccess / PreRoute / HookPipeline）。**responses 例外**，走独立链路（见 F5）。
+五个协议收敛到同一个骨架 `proxycore.RunProxyRequest`（协议差异由 `ProtocolSpec` 描述：ParseRequest / BuildUpstreamRequest / HandleSuccess / PreRoute / HookPipeline / AllowContentPolicyChannelFailover）。
 
 ```
 1. 认证        ProxyAuthMiddleware（RunProxyRequest 函数内第一步；Web UI 路由另有 WebAuthMiddleware）
@@ -62,9 +62,9 @@
 
 images 的两点差异：① 请求体有 JSON 与 multipart/form-data 两种形态，后者走 `contentSafetyPreRequestHook.runMultipartFormSafety`（检查全部非文件文本部件；掩码改写后重编码表单，**新 boundary 同步回 Content-Type**），文件部件不扫描——图片内容由 vision 层负责；② 不接 post-response / stream 钩子：响应是 base64 图片或 URL，扫描多 MB base64 无检出收益。
 
-## F5 responses 链路（独立于主骨架）
+## F5 responses 链路
 
-`/v1/responses` 有自己的 handler 链路：入站后经 `converters` 转换（主分发在 `responses_protocol.go`，仅 Claude 上游走 factory.go 工厂）、内嵌 `session.SessionManager` 会话管理（previous_response_id 链）、流式事件经 `converters.ConvertUpstreamStreamLineToResponses` 转换。它与 F1 共享的是渠道/调度/failover 基础设施，但**不经过 RunProxyRequest**——改 F1 骨架时不会自动波及 responses，反过来也一样。
+`/v1/responses` 已并入 `RunProxyRequest` 主骨架（F1），协议差异全部经 `ProtocolSpec` 闭包表达：BuildUpstreamRequest 内走 `converters` 转换（主分发在 `responses_protocol.go`，仅 Claude 上游走 factory.go 工厂）、`session.SessionManager` 会话管理（previous_response_id 链）与流式事件转换（`converters.ConvertUpstreamStreamLineToResponses`）都在 HandleSuccess/Provider 回调内完成。会话记录 ID 经 `utils.ContextKeyConversationUserID` 从骨架传入回调。多渠道模式下内容审核错误跨渠道转移（`AllowContentPolicyChannelFailover`），单渠道不生效。`/v1/responses/compact` 是唯一独立于主骨架的端点。
 
 ## 模块间通信约定
 

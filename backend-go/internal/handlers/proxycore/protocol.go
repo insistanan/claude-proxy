@@ -29,6 +29,10 @@ type ProtocolSpec struct {
 	// 也会检查图片理解层新生成的文本。
 	HookPipeline *hooks.Pipeline
 
+	// AllowContentPolicyChannelFailover 仅多渠道分派生效：内容审核错误时
+	// 跨渠道转移（不计入渠道故障）。单渠道保持按 Key 分类的既有语义。
+	AllowContentPolicyChannelFailover bool
+
 	// PreRoute 可选：协议特有的前置路由（如 chat 的 modelcatalog 路由）。
 	// 返回 true 表示请求已被处理，主流程应直接返回。
 	PreRoute func(c *gin.Context, body []byte, model string, userID string, startTime time.Time) bool
@@ -111,6 +115,8 @@ func RunProxyRequest(
 		stream,
 	)
 	defer MarkConversationComplete(channelScheduler, userID, spec.Kind)
+	// 会话记录 ID 写入请求上下文，供协议回调（如 HandleSuccess）取用。
+	c.Set(utils.ContextKeyConversationUserID, userID)
 
 	// 5. 记录原始请求
 	LogOriginalRequest(c, bodyBytes, envCfg, spec.LogName)
@@ -160,6 +166,8 @@ func RunProxyRequest(
 //     （历史 bug：曾硬编码 "messages"，跨池降级写错渠道池）
 //   - markURL：多渠道需回写 URL 健康状态（MarkURLFailure/Success），
 //     单渠道不参与 URL 健康统计，传 nil 即省略
+//   - allowContentPolicyChannelFailover：内容审核错误跨渠道转移开关；
+//     仅多渠道分派传入 spec.AllowContentPolicyChannelFailover，单渠道恒为 false
 func buildProtocolAttempt(
 	c *gin.Context,
 	envCfg *config.EnvConfig,
@@ -177,6 +185,7 @@ func buildProtocolAttempt(
 	deprioritizeKind scheduler.ChannelKind,
 	markURLFailure func(url string),
 	markURLSuccess func(url string),
+	allowContentPolicyChannelFailover bool,
 ) UpstreamAttempt {
 	return NewAttemptBuilder(
 		c, envCfg, cfgManager, channelScheduler,
@@ -196,6 +205,7 @@ func buildProtocolAttempt(
 			}
 		}).
 		WithMarkURL(markURLFailure, markURLSuccess).
+		WithAllowContentPolicyChannelFailover(allowContentPolicyChannelFailover).
 		WithHandleSuccess(func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
 			return spec.HandleSuccess(c, resp, upstreamCopy, apiKey, bodyBytes, startTime)
 		}).
@@ -251,8 +261,8 @@ func handleSingleChannelProxy(
 	urlResults := BuildDefaultURLResults(baseURLs)
 
 	// 单渠道：URL 用配置序，不参与 URL 健康统计（markURL 传 nil），
-	// 密钥降级按本协议渠道池写。
-	result := buildProtocolAttempt(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, upstream, channelIndex, startTime, urlResults, spec.Kind, nil, nil).TryWithModelMappingFailover()
+	// 密钥降级按本协议渠道池写；内容审核跨渠道转移不生效（保持按 Key 分类语义）。
+	result := buildProtocolAttempt(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, upstream, channelIndex, startTime, urlResults, spec.Kind, nil, nil, false).TryWithModelMappingFailover()
 	if result.Handled {
 		if result.SuccessKey != "" {
 			MarkConversationSuccess(channelScheduler, userID, spec.Kind, channelIndex, upstream.Name)
@@ -307,9 +317,11 @@ func handleMultiChannelProxy(
 
 			// 多渠道：URL 用延迟排序序，回写 URL 健康状态；密钥降级按实际
 			// kind 写池（修复历史 bug：曾硬编码 messages 池，跨池降级写错渠道）。
+			// 内容审核跨渠道转移按 spec 开关生效。
 			result := buildProtocolAttempt(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, upstream, channelIndex, startTime, sortedURLResults, spec.Kind,
 				func(url string) { channelScheduler.MarkURLFailure(spec.Kind, channelIndex, url) },
 				func(url string) { channelScheduler.MarkURLSuccess(spec.Kind, channelIndex, url) },
+				spec.AllowContentPolicyChannelFailover,
 			).TryWithModelMappingFailover()
 
 			return MultiChannelAttemptResult{

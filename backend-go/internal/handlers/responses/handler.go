@@ -19,7 +19,6 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/streams"
-	"github.com/BenedictKing/claude-proxy/internal/middleware"
 	"github.com/BenedictKing/claude-proxy/internal/providers"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/session"
@@ -32,7 +31,9 @@ import (
 var ErrEmptyStreamResponse = errors.New("upstream returned empty stream response (model at capacity)")
 
 // Handler Responses API 代理处理器
-// 支持多渠道调度：当配置多个渠道时自动启用
+// 支持多渠道调度：当配置多个渠道时自动启用。
+// 请求骨架（认证/读体/会话观测/渠道分派/failover）复用 proxycore.RunProxyRequest，
+// 协议差异经 ProtocolSpec 表达。
 func Handler(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
@@ -41,266 +42,41 @@ func Handler(
 	contentSafetyPipelines ...*hooks.Pipeline,
 ) gin.HandlerFunc {
 	contentSafetyPipeline := hooks.ResolveContentSafetyPipeline(cfgManager, contentSafetyPipelines...)
-	return gin.HandlerFunc(func(c *gin.Context) {
-		// 先进行认证
-		middleware.ProxyAuthMiddleware(envCfg)(c)
-		if c.IsAborted() {
-			return
-		}
-		c.Set(utils.ContextKeyCodexDisguise, cfgManager.GetCodexDisguiseEnabled())
-
-		startTime := time.Now()
-
-		// 读取原始请求体
-		maxBodySize := envCfg.MaxRequestBodySize
-		bodyBytes, err := proxycore.ReadRequestBody(c, maxBodySize)
-		if err != nil {
-			return
-		}
-
-		// 解析 Responses 请求
-		var responsesReq types.ResponsesRequest
-		if len(bodyBytes) > 0 {
-			_ = json.Unmarshal(bodyBytes, &responsesReq)
-		}
-		hooks.AttachHookPipeline(c, contentSafetyPipeline, hooks.HookContext{
-			APIType: string(scheduler.ChannelKindResponses),
-			Model:   responsesReq.Model,
-			Stream:  responsesReq.Stream,
-		})
-
-		// 提取对话标识
-		prompts := proxycore.ExtractPromptsFromResponsesInput(responsesReq.Input)
-		userID := proxycore.ObserveConversationRequest(
-			channelScheduler,
-			scheduler.ChannelKindResponses,
-			proxycore.ResolveConversationIdentity(c, bodyBytes),
-			proxycore.BuildConversationTranscript(string(scheduler.ChannelKindResponses), bodyBytes),
-			responsesReq.Model,
-			prompts,
-			utils.ExtractImageFingerprints(bodyBytes),
-			responsesReq.Stream,
-		)
-		defer proxycore.MarkConversationComplete(channelScheduler, userID, scheduler.ChannelKindResponses)
-
-		// 记录原始请求信息（仅在入口处记录一次）
-		proxycore.LogOriginalRequest(c, bodyBytes, envCfg, "Responses")
-
-		requestedChannelIndex, hasRequestedChannel, err := proxycore.ExtractRequestedChannelIndex(bodyBytes)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": err.Error(),
-				"code":  "INVALID_CHANNEL_INDEX",
-			})
-			return
-		}
-		if hasRequestedChannel {
-			upstream, channelIndex, err := proxycore.ResolveRequestedUpstream(cfgManager, scheduler.ChannelKindResponses, requestedChannelIndex)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": err.Error(),
-					"code":  "INVALID_CHANNEL_INDEX",
-				})
-				return
-			}
-			handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, upstream, channelIndex, startTime)
-			return
-		}
-
-		// 检查是否为多渠道模式
-		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindResponses, responsesReq.Model)
-
-		if isMultiChannel {
-			handleMultiChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, startTime)
-		} else {
-			handleSingleChannel(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, startTime)
-		}
-	})
-}
-
-// handleMultiChannel 处理多渠道 Responses 请求
-func handleMultiChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	sessionManager *session.SessionManager,
-	bodyBytes []byte,
-	responsesReq types.ResponsesRequest,
-	userID string,
-	startTime time.Time,
-) {
 	provider := &providers.ResponsesProvider{SessionManager: sessionManager}
 
-	proxycore.HandleMultiChannelFailover(
-		c,
-		envCfg,
-		channelScheduler,
-		scheduler.ChannelKindResponses,
-		"Responses",
-		userID,
-		responsesReq.Model,
-		cfgManager.GetFuzzyModeEnabled(),
-		func(selection *scheduler.SelectionResult) proxycore.MultiChannelAttemptResult {
-			upstream := selection.Upstream
-			channelIndex := selection.ChannelIndex
+	spec := proxycore.ProtocolSpec{
+		Kind:         scheduler.ChannelKindResponses,
+		LogName:      "Responses",
+		HookPipeline: contentSafetyPipeline,
+		// 多渠道模式下内容审核错误跨渠道转移（与历史行为一致；单渠道不生效）。
+		AllowContentPolicyChannelFailover: cfgManager.GetFuzzyModeEnabled(),
+		ParseRequest: func(c *gin.Context, body []byte) (string, bool, []string, bool) {
+			// Codex 客户端伪装标记：ConvertToProviderRequest 构建上游请求时读取。
+			c.Set(utils.ContextKeyCodexDisguise, cfgManager.GetCodexDisguiseEnabled())
 
-			if upstream == nil {
-				return proxycore.MultiChannelAttemptResult{}
+			var responsesReq types.ResponsesRequest
+			if len(body) > 0 {
+				_ = json.Unmarshal(body, &responsesReq)
 			}
-
-			baseURLs := upstream.GetAllBaseURLs()
-			sortedURLResults := channelScheduler.GetSortedURLsForChannel(scheduler.ChannelKindResponses, channelIndex, baseURLs)
-
-			result := proxycore.NewAttemptBuilder(
-				c, envCfg, cfgManager, channelScheduler,
-				scheduler.ChannelKindResponses, "Responses", upstream, responsesReq.Model, bodyBytes, responsesReq.Stream,
-				channelIndex, userID,
-			).
-				WithURLResults(sortedURLResults).
-				WithNextAPIKey(func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-					return cfgManager.GetNextResponsesAPIKey(upstream, failedKeys)
-				}).
-				WithBuildRequest(func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-					req, _, err := provider.ConvertToProviderRequest(c, upstreamCopy, apiKey)
-					return req, err
-				}).
-				WithDeprioritizeKey(func(apiKey string) {
-					if err := cfgManager.MoveResponsesAPIKeyToBottom(channelIndex, apiKey); err != nil {
-						log.Printf("[Responses-Key] 警告: 密钥降级失败: %v", err)
-					}
-				}).
-				WithMarkURL(func(url string) {
-					channelScheduler.MarkURLFailure(scheduler.ChannelKindResponses, channelIndex, url)
-				}, func(url string) {
-					channelScheduler.MarkURLSuccess(scheduler.ChannelKindResponses, channelIndex, url)
-				}).
-				WithHandleSuccess(func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-					return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, channelScheduler, userID)
-				}).
-				WithAllowContentPolicyChannelFailover(cfgManager.GetFuzzyModeEnabled()).
-				Build().TryWithModelMappingFailover()
-
-			return proxycore.MultiChannelAttemptResult{
-				Handled:           result.Handled,
-				Attempted:         true,
-				SuccessKey:        result.SuccessKey,
-				SuccessBaseURLIdx: result.SuccessBaseURLIdx,
-				FailoverError:     result.FailoverError,
-				Usage:             result.Usage,
-				LastError:         result.LastError,
-			}
+			return responsesReq.Model, responsesReq.Stream, proxycore.ExtractPromptsFromResponsesInput(responsesReq.Input), true
 		},
-		func(selection *scheduler.SelectionResult, result proxycore.MultiChannelAttemptResult) {
-			if selection == nil || selection.Upstream == nil {
-				return
-			}
-			if result.SuccessKey != "" {
-				proxycore.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindResponses, selection.ChannelIndex, selection.Upstream.Name)
-				return
-			}
-			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-				proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, result.LastError)
-			}
-		},
-		func(ctx *gin.Context, failoverErr *proxycore.FailoverError, lastError error) {
-			proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, lastError)
-			proxycore.HandleAllChannelsFailed(ctx, cfgManager.GetFuzzyModeEnabled(), failoverErr, lastError, "Responses")
-		},
-	)
-}
-
-// handleSingleChannel 处理单渠道 Responses 请求
-func handleSingleChannel(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	sessionManager *session.SessionManager,
-	bodyBytes []byte,
-	responsesReq types.ResponsesRequest,
-	userID string,
-	startTime time.Time,
-) {
-	upstream, channelIndex, err := cfgManager.GetCurrentResponsesUpstreamWithIndexForModel(responsesReq.Model)
-	if err != nil {
-		c.JSON(503, gin.H{
-			"error": err.Error(),
-			"code":  "NO_RESPONSES_UPSTREAM",
-		})
-		return
-	}
-
-	handleSingleChannelWithUpstream(c, envCfg, cfgManager, channelScheduler, sessionManager, bodyBytes, responsesReq, userID, upstream, channelIndex, startTime)
-}
-
-func handleSingleChannelWithUpstream(
-	c *gin.Context,
-	envCfg *config.EnvConfig,
-	cfgManager *config.ConfigManager,
-	channelScheduler *scheduler.ChannelScheduler,
-	sessionManager *session.SessionManager,
-	bodyBytes []byte,
-	responsesReq types.ResponsesRequest,
-	userID string,
-	upstream *config.UpstreamConfig,
-	channelIndex int,
-	startTime time.Time,
-) {
-
-	if len(upstream.APIKeys) == 0 {
-		c.JSON(503, gin.H{
-			"error": fmt.Sprintf("当前 Responses 渠道 \"%s\" 未配置API密钥", upstream.Name),
-			"code":  "NO_API_KEYS",
-		})
-		return
-	}
-	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindResponses, channelIndex); err != nil {
-		proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, err)
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
-		return
-	}
-
-	provider := &providers.ResponsesProvider{SessionManager: sessionManager}
-
-	baseURLs := upstream.GetAllBaseURLs()
-	urlResults := proxycore.BuildDefaultURLResults(baseURLs)
-
-	result := proxycore.NewAttemptBuilder(
-		c, envCfg, cfgManager, channelScheduler,
-		scheduler.ChannelKindResponses, "Responses", upstream, responsesReq.Model, bodyBytes, responsesReq.Stream,
-		channelIndex, userID,
-	).
-		WithURLResults(urlResults).
-		WithNextAPIKey(func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
-			return cfgManager.GetNextResponsesAPIKey(upstream, failedKeys)
-		}).
-		WithBuildRequest(func(c *gin.Context, upstreamCopy *config.UpstreamConfig, apiKey string) (*http.Request, error) {
-			req, _, err := provider.ConvertToProviderRequest(c, upstreamCopy, apiKey)
+		BuildUpstreamRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string, body []byte) (*http.Request, error) {
+			req, _, err := provider.ConvertToProviderRequest(c, up, apiKey)
 			return req, err
-		}).
-		WithDeprioritizeKey(func(apiKey string) {
-			if err := cfgManager.MoveResponsesAPIKeyToBottom(channelIndex, apiKey); err != nil {
-				log.Printf("[Responses-Key] 警告: 密钥降级失败: %v", err)
+		},
+		HandleSuccess: func(c *gin.Context, resp *http.Response, up *config.UpstreamConfig, apiKey string, body []byte, startTime time.Time) (*types.Usage, error) {
+			var responsesReq types.ResponsesRequest
+			if len(body) > 0 {
+				_ = json.Unmarshal(body, &responsesReq)
 			}
-		}).
-		WithHandleSuccess(func(c *gin.Context, resp *http.Response, upstreamCopy *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
-			return handleSuccess(c, resp, provider, upstreamCopy.ServiceType, envCfg, sessionManager, startTime, &responsesReq, bodyBytes, channelScheduler, userID)
-		}).
-		Build().TryWithModelMappingFailover()
-	if result.Handled {
-		if result.SuccessKey != "" {
-			proxycore.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindResponses, channelIndex, upstream.Name)
-			channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindResponses)
-		} else if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-			proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, result.LastError)
-		}
-		return
+			userID, _ := c.Get(utils.ContextKeyConversationUserID)
+			conversationID, _ := userID.(string)
+			return handleSuccess(c, resp, provider, up.ServiceType, envCfg, sessionManager, startTime, &responsesReq, body, channelScheduler, conversationID)
+		},
 	}
-
-	log.Printf("[Responses-Error] 所有 Responses API密钥都失败了")
-	proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindResponses, result.LastError)
-	proxycore.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), result.FailoverError, result.LastError, "Responses")
+	return gin.HandlerFunc(func(c *gin.Context) {
+		proxycore.RunProxyRequest(c, envCfg, cfgManager, channelScheduler, spec)
+	})
 }
 
 // handleSuccess 处理成功的 Responses 响应

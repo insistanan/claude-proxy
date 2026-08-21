@@ -10,7 +10,7 @@ Claude / Codex / Gemini 多上游协议转换代理。Go 1.22（Gin）后端 + V
 
 | 场景 | 先读 |
 |---|---|
-| 改渠道 / 调度 / 协议 / 流式链路 | `docs/flows.md`（主链路 + vision 旁路 + responses 例外） |
+| 改渠道 / 调度 / 协议 / 流式链路 | `docs/flows.md`（主链路 + vision 旁路 + responses 链路） |
 | 写任何"通用能力" | `docs/capabilities.md`——有现成实现一律复用，新建必须登记 |
 | 概念 / 术语 | `docs/glossary.md`——用既有术语，禁止发明平行概念 |
 | 硬性规则（违反即返工） | `docs/invariants.md` |
