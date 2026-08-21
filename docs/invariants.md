@@ -25,7 +25,7 @@
 
 ## 前端（frontend）
 
-- 图标：新 mdi 图标总是 先在 `src/plugins/vuetify.ts` 的 `iconMap` 注册再使用；绝不 直接写未注册名（`bun run check:icons` 机器拦截）。
+- 图标：新 mdi 图标总是 先在 `src/plugins/vuetify.ts` 的 `iconMap` 注册再使用；绝不 直接写未注册名（`npm run check:icons` 机器拦截）。
 - 渠道 API：总是 走 `services/api.ts` 的 `channelApiByType` 工厂；绝不 在组件里拼接裸 fetch 调后端。
 
 ## 完成定义（每个任务，全部满足才算完）

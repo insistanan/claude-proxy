@@ -24,7 +24,7 @@ help:
 
 dev:
 	@echo "$(GREEN)🚀 启动前后端开发模式...$(NC)"
-	@cd frontend && bun run dev &
+	@cd frontend && npm run dev &
 	@cd backend-go && $(MAKE) dev
 
 run: embed-frontend
@@ -35,7 +35,7 @@ build: embed-frontend
 
 embed-frontend:
 	@echo "$(GREEN)📦 构建前端...$(NC)"
-	@cd frontend && bun run build
+	@cd frontend && npm run build
 	@echo "$(GREEN)📋 嵌入前端到 Go 后端...$(NC)"
 	@rm -rf backend-go/frontend/dist
 	@mkdir -p backend-go/frontend/dist
@@ -46,12 +46,12 @@ clean:
 	@rm -rf frontend/dist
 
 frontend-dev:
-	@cd frontend && bun run dev
+	@cd frontend && npm run dev
 
 frontend-build:
-	@cd frontend && bun run build
+	@cd frontend && npm run build
 
 # 全量门禁: 前端 type-check + 图标扫描; 后端 gofmt + vet + test
 check:
-	@cd frontend && bun run check
+	@cd frontend && npm run check
 	@cd backend-go && $(MAKE) check

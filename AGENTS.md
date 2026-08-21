@@ -16,20 +16,20 @@ Claude / Codex / Gemini 多上游协议转换代理：五协议统一入口（Me
 ## 常用命令
 
 ```bash
-make dev / make run / make build / make check       # 根目录（check = 全量门禁）
+npm run check                                       # 根目录全量门禁（无需 make）
 cd backend-go && make dev / test / check / lint     # 后端
-cd frontend && bun run dev / build / check / test   # 前端
+cd frontend && npm run dev / build / check / test   # 前端
 ```
 
 ## 代码风格
 
 - Go：gofmt 格式化，遵循官方规范；日志一律 `[Component-Action]` 标签、禁 emoji；错误显式抛出，不做静默兜底
-- 前端：遵循 Prettier + ESLint 风格；新 mdi 图标先在 `iconMap` 注册（`bun run check:icons` 机器校验）
+- 前端：遵循 Prettier + ESLint 风格；新 mdi 图标先在 `iconMap` 注册（`npm run check:icons` 机器校验）
 - 遵循 SOLID / KISS / DRY / YAGNI；优先修复根因，避免无关重构
 
 ## 测试与验证
 
-- 提交前必跑根目录 `make check`（后端 gofmt + vet + test；前端 type-check + 图标扫描）
+- 提交前必跑根目录 `npm run check`（后端 gofmt + vet + test；前端 type-check + 图标扫描）
 - 后端测试优先表驱动 + `httptest`；前端复杂逻辑用 vitest 补单测
 
 ## 协作规则

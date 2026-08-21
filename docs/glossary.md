@@ -46,4 +46,4 @@
 | **ApiTab** | 前端渠道页签枚举（messages / responses / gemini / chat / images），与后端 ChannelKind 对应。 | `stores/channel.ts` |
 | **渠道 API 工厂** | `channelApiByType`：五协议共享同一 API 调用封装。 | `services/api.ts` |
 | **Composable** | Vue 3 组合式函数，抽取跨组件复用逻辑（自动刷新、主题、计数组件）。 | `composables/` |
-| **图标注册表（iconMap）** | mdi 图标需先在 `iconMap` 注册才能使用；`bun run check:icons` 机器校验。 | `plugins/vuetify.ts` |
+| **图标注册表（iconMap）** | mdi 图标需先在 `iconMap` 注册才能使用；`npm run check:icons` 机器校验。 | `plugins/vuetify.ts` |

@@ -25,6 +25,6 @@ Claude / Codex / Gemini 多上游协议转换代理。Go 1.22（Gin）后端 + V
 
 ## 完成定义（全部满足才算完）
 
-1. `make check` 全绿（后端 gofmt+vet+test；前端 type-check + 图标注册扫描）。
+1. `npm run check` 全绿（后端 gofmt+vet+test；前端 type-check + 图标注册扫描）。
 2. 本次变更影响的 docs（上表所指文件）已同步更新。
 3. 未新增重复代码；新能力已在 `docs/capabilities.md` 登记。

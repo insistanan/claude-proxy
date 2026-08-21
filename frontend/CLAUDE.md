@@ -9,9 +9,9 @@ Vue 3 + Vuetify 3 Web 管理界面：渠道配置、实时监控、拖拽排序�
 ## 启动命令
 
 ```bash
-bun run dev       # 开发服务器
-bun run build     # 生产构建
-bun run preview   # 预览构建
+npm run dev       # 开发服务器
+npm run build     # 生产构建
+npm run preview   # 预览构建
 ```
 
 ## 核心视图与组件
@@ -53,7 +53,7 @@ const iconMap = {
 
 **图标查找**: https://pictogrammers.com/library/mdi/
 
-**机器校验**: `bun run check:icons`（或 `bun run check`）会扫描全部 `mdi-*` 用法并对照 `iconMap`，未注册即报错。
+**机器校验**: `npm run check:icons`（或 `npm run check`）会扫描全部 `mdi-*` 用法并对照 `iconMap`，未注册即报错。
 
 ## 构建产物
 

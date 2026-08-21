@@ -1,0 +1,7 @@
+{
+  "name": "claude-proxy",
+  "private": true,
+  "scripts": {
+    "check": "node scripts/check.mjs"
+  }
+}

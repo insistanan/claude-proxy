@@ -4,6 +4,7 @@
 
 | 方式 | 命令 | 适用场景 |
 |-----|------|---------|
+| 根目录 npm | `npm run check` | 全量门禁（无需 make） |
 | 根目录 Make | `make dev` | 日常开发 |
 | backend-go Make | `cd backend-go && make dev` | Go 后端专项 |
 | Docker | `docker-compose up -d` | 生产环境测试 |
@@ -11,11 +12,11 @@
 ## 根目录开发
 
 ```bash
+npm run check         # 全量门禁（后端 fmt+vet+test + 前端 type-check+图标扫描；无需 make）
 make dev              # Go 后端热重载
 make run              # 构建前端 + 运行后端
 make frontend-dev     # 前端开发服务器（端口 5173）
 make build            # 完整构建
-make check            # 全量门禁（后端 fmt+vet+test + 前端 type-check+图标扫描）
 make clean            # 清理
 ```
 
@@ -34,17 +35,17 @@ make build            # 构建当前平台
 
 ```bash
 cd frontend
-bun install && bun run dev   # 开发服务器
-bun run build                # 生产构建
-bun run check                # type-check + 图标注册扫描
-bun run test                 # vitest 单测（现有 quickInputParser 等）
+npm install && npm run dev   # 开发服务器
+npm run build                # 生产构建
+npm run check                # type-check + 图标注册扫描
+npm run test                 # vitest 单测（现有 quickInputParser 等）
 ```
 
 ## Windows exe 打包流程
 
 目标产物：`dist/claude-proxy-windows-amd64.exe`。
 
-1. 先构建前端：`cd frontend && bun run build`；如果本机 `bun` 不在 PATH，可用 `npm run build`。
+1. 先构建前端：`cd frontend && npm run build`。
 2. 将 `frontend/dist/*` 复制到 `backend-go/frontend/dist/`，确保 Go embed 打包到最新 UI。
 3. 回到 `backend-go/`，读取根目录 `VERSION`，生成 `BuildTime`，读取 `git rev-parse --short HEAD`，并设置 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64`。
 4. 使用版本注入编译，**禁止裸 `go build`**：
@@ -70,7 +71,7 @@ bun run test                 # vitest 单测（现有 quickInputParser 等）
 ## 代码规范
 
 - Go：`go fmt ./...`，遵循官方规范；提交前 `make check` 通过
-- 前端：遵循 Prettier + ESLint 风格；`bun run type-check` 常跑；新图标先注册 iconMap（`bun run check:icons` 把关）
+- 前端：遵循 Prettier + ESLint 风格；`npm run type-check` 常跑；新图标先注册 iconMap（`npm run check:icons` 把关）
 - 后端测试：新增/修改逻辑补 `_test.go`，优先表驱动 + `httptest`；前端复杂逻辑用 vitest 补单测
 - 提交信息遵循 Conventional Commits：`feat:` / `fix:` / `refactor:` / `chore:` / `docs:`
 
