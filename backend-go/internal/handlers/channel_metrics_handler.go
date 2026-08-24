@@ -126,64 +126,6 @@ func GetAllKeyMetrics(metricsManager *metrics.MetricsManager) gin.HandlerFunc {
 	}
 }
 
-// GetChannelMetrics 获取渠道指标（兼容旧 API，返回空数据）
-// Deprecated: 使用 GetChannelMetricsWithConfig 代替
-func GetChannelMetrics(metricsManager *metrics.MetricsManager) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 返回所有 Key 的指标
-		allMetrics := metricsManager.GetAllKeyMetrics()
-
-		result := make([]gin.H, 0, len(allMetrics))
-		for _, m := range allMetrics {
-			if m == nil {
-				continue
-			}
-
-			successRate := float64(100)
-			if m.RequestCount > 0 {
-				successRate = float64(m.SuccessCount) / float64(m.RequestCount) * 100
-			}
-
-			item := gin.H{
-				"metricsKey":          m.MetricsKey,
-				"baseUrl":             m.BaseURL,
-				"keyMask":             m.KeyMask,
-				"requestCount":        m.RequestCount,
-				"successCount":        m.SuccessCount,
-				"failureCount":        m.FailureCount,
-				"successRate":         successRate,
-				"consecutiveFailures": m.ConsecutiveFailures,
-			}
-
-			if m.LastSuccessAt != nil {
-				item["lastSuccessAt"] = m.LastSuccessAt.Format("2006-01-02T15:04:05Z07:00")
-			}
-			if m.LastFailureAt != nil {
-				item["lastFailureAt"] = m.LastFailureAt.Format("2006-01-02T15:04:05Z07:00")
-			}
-			if m.CircuitBrokenAt != nil {
-				item["circuitBrokenAt"] = m.CircuitBrokenAt.Format("2006-01-02T15:04:05Z07:00")
-			}
-
-			result = append(result, item)
-		}
-
-		c.JSON(200, result)
-	}
-}
-
-// GetResponsesChannelMetrics 获取 Responses 渠道指标
-// Deprecated: 使用 GetChannelMetricsWithConfig 代替
-func GetResponsesChannelMetrics(metricsManager *metrics.MetricsManager) gin.HandlerFunc {
-	return GetChannelMetrics(metricsManager)
-}
-
-// ResumeChannel 恢复熔断渠道（重置熔断状态，保留历史统计）
-// isResponses 参数指定是 Messages 渠道还是 Responses 渠道
-func ResumeChannel(sch *scheduler.ChannelScheduler, isResponses bool) gin.HandlerFunc {
-	return ResumeChannelByKind(sch, channelKindFromLegacyFlag(isResponses))
-}
-
 // ResumeChannelByKind 恢复指定一等公民渠道的熔断状态
 func ResumeChannelByKind(sch *scheduler.ChannelScheduler, kind scheduler.ChannelKind) gin.HandlerFunc {
 	return func(c *gin.Context) {

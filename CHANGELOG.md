@@ -122,7 +122,7 @@
 
 ### 文档
 
-- **新增 ADR** — `docs/adr/ADR-0001~0004`：核心层收敛、协议注册机制、流式框架、渐进重构节奏
+- **新增 ADR** — `docs/adr/ADR-0001~0004`：核心层收敛、协议注册机制、流式框架、渐进重构节奏（已移除）
 - **新增术语表** — `docs/glossary.md`
 
 ---
@@ -147,7 +147,7 @@
 
 ### 文档
 
-- **新增文档** — `docs/MODEL_SUFFIX_HANDLING.md` 详细说明后缀处理机制和使用场景
+- **新增文档** — `docs/MODEL_SUFFIX_HANDLING.md` 详细说明后缀处理机制和使用场景（已移除）
 - **更新文档** — `CLAUDE.md` 添加模型支持章节，说明静态模型列表和上下文窗口后缀
 
 ### 说明
@@ -271,7 +271,7 @@
 - **文档结构重组**
   - 创建 `docs/` 统一存放技术文档
   - 移动 `ENVIRONMENT.md` → `docs/ENVIRONMENT.md`
-  - 移动 `PERFORMANCE_ANALYSIS.md` → `docs/PERFORMANCE_ANALYSIS.md`
+  - 移动 `PERFORMANCE_ANALYSIS.md` → `docs/PERFORMANCE_ANALYSIS.md`（已移除）
   - 根目录只保留标准文件（`README.md`/`CHANGELOG.md`/`CLAUDE.md`/`AGENTS.md`/`LICENSE`）
   - 更新 `CLAUDE.md` 和 `AGENTS.md` 新增文档编写规范约束
 

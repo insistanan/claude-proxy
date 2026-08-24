@@ -36,8 +36,8 @@
 | **首字节超时** | `RESPONSE_HEADER_TIMEOUT`（默认 120s）：从发请求到收到响应头的最大等待。 | `internal/httpclient` |
 | **空闲超时（Idle Timeout）** | `STREAM_IDLE_TIMEOUT`（默认 300s）：流中两次数据事件间最大间隔，挡"流中挂起"。 | `internal/httpclient/idle_timeout_reader.go` |
 | **断连中止** | 流式转发 goroutine `select ctx.Done()`，客户端断连立即中止上游请求，防泄漏。`HandleStreamResponseCtx` 是 Provider 接口方法，五个 provider 均实现。 | `internal/providers`、`internal/handlers/streams/stream.go` |
-| **流式合成（StreamSynthesizer）** | 把各上游的流式事件拉平为文本/工具调用序列，**仅用于日志与 Token 观测**；协议 SSE 转换是独立状态机（`converters/responses_stream.go`）。两者为已知重复，见 capabilities 待治理。 | `internal/utils/stream_synthesizer.go` |
-| **缓存键规范化（canonical JSON）** | 结构化 JSON 归一化后哈希作缓存键（键排序、稳定序列化）。当前有两处实现（`providers/responses_messages.go`、`converters/responses_protocol.go`），已知重复待治理。 | `internal/providers`、`internal/converters` |
+| **流式合成（StreamSynthesizer）** | 把各上游的流式事件拉平为文本/工具调用序列，**仅用于日志与 Token 观测**；协议 SSE 转换是独立状态机（`converters/responses_stream.go`）。两者经核实非重复（encoder/decoder 互逆对偶，输入域互斥），见 capabilities.md。 | `internal/utils/stream_synthesizer.go` |
+| **缓存键规范化（canonical JSON）** | 结构化 JSON 归一化后哈希作缓存键（键排序、稳定序列化）。已收敛为 `utils.CanonicalJSON` 单一实现（原 `providers/responses_messages.go` 与 `converters/responses_protocol.go` 各一份，v3.0.0 合并）。 | `internal/utils` |
 
 ## 前端
 
