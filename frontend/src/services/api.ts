@@ -111,8 +111,8 @@ export interface Channel {
   visionCapable?: boolean // 渠道是否原生支持图片理解
   excludeFromConversation?: boolean // 不参与常规对话调度，仅作为图片理解渠道使用
   disablePromptCacheKey?: boolean // 不向上游发送 prompt_cache_key
-  visionLayerEnabled?: boolean // 是否为当前渠道启用图片理解层
-  visionLayerChannelId?: string // 图片理解层指定调用的稳定渠道标识
+  visionLayerEnabled?: boolean // 是否为当前渠道指定优先图片理解渠道
+  visionLayerChannelId?: string // 优先调用的稳定渠道标识；未启用时自动使用公共池
   visionLayerModel?: string // 可选：覆盖透传给图片理解渠道的模型名
   temporary?: boolean // 临时渠道：一天后自动移入弃用池
   temporaryUntil?: string // 临时渠道到期时间

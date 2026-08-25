@@ -579,9 +579,9 @@
 
                   <div class="d-flex align-center justify-space-between">
                     <div>
-                      <div class="text-body-1 font-weight-medium">添加图片理解层</div>
+                      <div class="text-body-1 font-weight-medium">指定图片理解渠道</div>
                       <div class="text-caption text-medium-emphasis">
-                        当前模型不直接看图，由指定的图片理解模型先生成看图结果，再由当前模型回答。
+                        默认自动使用公共图片理解池；启用后优先使用指定渠道，再按公共池和当前分组回退。
                       </div>
                     </div>
                     <v-switch v-model="form.visionLayerEnabled" inset color="secondary" hide-details />
@@ -596,7 +596,7 @@
                     :loading="visionChannelsLoading"
                     :disabled="visionChannelOptions.length === 0"
                     placeholder="选择一个支持图片理解的渠道"
-                    hint="图片会交给该渠道处理；默认原样透传用户请求的模型名。"
+                    hint="该渠道优先处理图片；失败后仍会自动尝试公共池和当前分组。"
                     persistent-hint
                     prepend-inner-icon="mdi-image-search-outline"
                     variant="outlined"

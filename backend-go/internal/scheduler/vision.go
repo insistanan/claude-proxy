@@ -76,17 +76,33 @@ func (s *ChannelScheduler) SelectVisionChannel(ctx context.Context, kind Channel
 	return nil, fmt.Errorf("图片理解渠道 %q 不存在", channelID)
 }
 
-// ListFallbackVisionChannels 返回公共图片理解渠道池中可用的渠道列表，
-// 排除已尝试过的渠道 ID。用于图片理解渠道失败后的自动回退。
-// 返回的渠道按健康度排序（健康优先）。
-func (s *ChannelScheduler) ListFallbackVisionChannels(ctx context.Context, kind ChannelKind, excludeChannelID string, ownerPoolID string) []*SelectionResult {
+// ListPublicVisionChannels 按配置序号返回公共图片理解池中可用的渠道。
+// excludeChannelID 用于排除已经尝试过的显式图片理解渠道。
+func (s *ChannelScheduler) ListPublicVisionChannels(ctx context.Context, kind ChannelKind, excludeChannelID string) []*SelectionResult {
+	return s.listVisionChannels(ctx, kind, excludeChannelID, "", true)
+}
+
+// ListPoolVisionChannels 按配置序号返回 ownerPoolID 分组中可用的图片理解渠道。
+// 公共图片理解渠道不属于分组候选，确保公共池全部失败后才进入该阶段。
+func (s *ChannelScheduler) ListPoolVisionChannels(ctx context.Context, kind ChannelKind, excludeChannelID string, ownerPoolID string) []*SelectionResult {
+	return s.listVisionChannels(ctx, kind, excludeChannelID, ownerPoolID, false)
+}
+
+func (s *ChannelScheduler) listVisionChannels(ctx context.Context, kind ChannelKind, excludeChannelID string, ownerPoolID string, public bool) []*SelectionResult {
 	if ctx == nil {
 		return nil
 	}
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
 	channelID := strings.TrimSpace(excludeChannelID)
-	ownerPoolID = strings.TrimSpace(ownerPoolID)
-	if ownerPoolID == "" {
-		ownerPoolID = config.DefaultChannelPoolID
+	if !public {
+		ownerPoolID = strings.TrimSpace(ownerPoolID)
+		if ownerPoolID == "" {
+			ownerPoolID = config.DefaultChannelPoolID
+		}
 	}
 
 	cfg := s.configManager.GetConfig()
@@ -112,19 +128,21 @@ func (s *ChannelScheduler) ListFallbackVisionChannels(ctx context.Context, kind 
 		if upstream.ID == channelID {
 			continue
 		}
-		// 必须标记为支持图片理解
 		if !upstream.VisionCapable {
 			continue
 		}
-		// 必须是公共图片理解渠道（ExcludeFromConversation=true）或同池渠道
-		targetPoolID := strings.TrimSpace(upstream.PoolID)
-		if targetPoolID == "" {
-			targetPoolID = config.DefaultChannelPoolID
-		}
-		if !upstream.ExcludeFromConversation && targetPoolID != ownerPoolID {
+		if public != upstream.ExcludeFromConversation {
 			continue
 		}
-		// 必须可用且健康
+		if !public {
+			targetPoolID := strings.TrimSpace(upstream.PoolID)
+			if targetPoolID == "" {
+				targetPoolID = config.DefaultChannelPoolID
+			}
+			if targetPoolID != ownerPoolID {
+				continue
+			}
+		}
 		if config.GetChannelStatus(upstream) != config.ChannelStatusActive || len(upstream.APIKeys) == 0 {
 			continue
 		}
@@ -132,10 +150,14 @@ func (s *ChannelScheduler) ListFallbackVisionChannels(ctx context.Context, kind 
 		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, index) {
 			continue
 		}
+		reason := "vision_layer_public_pool"
+		if !public {
+			reason = "vision_layer_owner_pool"
+		}
 		results = append(results, &SelectionResult{
 			Upstream:     upstream.Clone(),
 			ChannelIndex: index,
-			Reason:       "vision_layer_fallback",
+			Reason:       reason,
 		})
 	}
 	return results

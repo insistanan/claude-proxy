@@ -40,8 +40,8 @@ type UpstreamConfig struct {
 	LowQuality              bool       `json:"lowQuality,omitempty"`              // 低质量渠道标记：启用后强制本地估算 token，偏差>5%时使用本地值
 	VisionCapable           bool       `json:"visionCapable"`                     // 渠道是否原生支持图片理解，可直接接收图片，也可被图片理解层调用
 	ExcludeFromConversation bool       `json:"excludeFromConversation,omitempty"` // 不参与常规对话调度，仅可作为图片理解渠道使用
-	VisionLayerEnabled      bool       `json:"visionLayerEnabled,omitempty"`      // 是否为不支持图片的当前渠道启用图片理解层
-	VisionLayerChannelID    string     `json:"visionLayerChannelId,omitempty"`    // 图片理解层指定调用的稳定渠道标识
+	VisionLayerEnabled      bool       `json:"visionLayerEnabled,omitempty"`      // 是否为不支持图片的当前渠道指定优先图片理解渠道
+	VisionLayerChannelID    string     `json:"visionLayerChannelId,omitempty"`    // 优先调用的稳定渠道标识；未启用时自动使用公共图片理解池
 	VisionLayerModel        string     `json:"visionLayerModel,omitempty"`        // 可选：覆盖透传给图片理解渠道的模型名
 	Temporary               bool       `json:"temporary,omitempty"`               // 临时渠道：到期后自动移入弃用池
 	TemporaryUntil          *time.Time `json:"temporaryUntil,omitempty"`          // 临时渠道到期时间
