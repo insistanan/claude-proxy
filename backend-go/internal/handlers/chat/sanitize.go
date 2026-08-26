@@ -41,7 +41,39 @@ func sanitizeOpenAIChatPayloadForUpstream(payload map[string]interface{}) error 
 			}
 		}
 	}
+
+	sanitizeOpenAIChatModalities(payload)
+
 	return nil
+}
+
+// sanitizeOpenAIChatModalities 归一化 modalities 字段：对象格式 → 数组格式。
+// OpenAI Chat Completions API 规范要求 modalities 为数组（["text", "audio"]），
+// 但部分客户端发送对象格式 { "text": true, "audio": true }，直接透传会导致上游 400。
+func sanitizeOpenAIChatModalities(payload map[string]interface{}) {
+	raw, exists := payload["modalities"]
+	if !exists || raw == nil {
+		return
+	}
+	if _, ok := raw.([]interface{}); ok {
+		return
+	}
+	obj, ok := raw.(map[string]interface{})
+	if !ok {
+		return
+	}
+	out := make([]interface{}, 0, 2)
+	if enabled, _ := obj["text"].(bool); enabled {
+		out = append(out, "text")
+	}
+	if enabled, _ := obj["audio"].(bool); enabled {
+		out = append(out, "audio")
+	}
+	if len(out) > 0 {
+		payload["modalities"] = out
+	} else {
+		delete(payload, "modalities")
+	}
 }
 
 func sanitizeOpenAIChatMessagesForUpstream(payload map[string]interface{}) error {

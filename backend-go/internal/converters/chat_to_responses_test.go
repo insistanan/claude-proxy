@@ -332,6 +332,13 @@ func TestConvertOpenAIChatToResponses_ToolCall(t *testing.T) {
 	for _, ev := range allEvents {
 		if strings.Contains(ev, "response.output_item.added") && strings.Contains(ev, "function_call") {
 			hasFuncAdded = true
+			// 验证 output_item.added 携带 name 字段（Fix #1）
+			payload := extractSSEPayload(ev)
+			root := gjson.Parse(payload)
+			itemName := root.Get("item.name").String()
+			if itemName != "get_weather" {
+				t.Errorf("output_item.added 的 item.name 应为 get_weather，实际: %q", itemName)
+			}
 		}
 		if strings.Contains(ev, "response.function_call_arguments.delta") {
 			hasFuncDelta = true
@@ -350,6 +357,129 @@ func TestConvertOpenAIChatToResponses_ToolCall(t *testing.T) {
 	if !hasFuncDone {
 		t.Error("should have function_call_arguments.done event")
 	}
+}
+
+func TestConvertOpenAIChatToResponses_ParallelToolCalls(t *testing.T) {
+	ctx := context.Background()
+
+	// 两个并行 tool call，首 chunk 各携带 id+name
+	sseLines := []string{
+		`data: {"id":"chatcmpl-para","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_a1","type":"function","function":{"name":"get_weather","arguments":""}},{"index":1,"id":"call_a2","type":"function","function":{"name":"get_time","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-para","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":\"NYC\"}"}},{"index":1,"function":{"arguments":"{\"tz\":\"EST\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-para","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	}
+
+	originalReq := []byte(`{"model":"gpt-4o","input":"Weather and time?","tools":[{"name":"get_weather"},{"name":"get_time"}]}`)
+
+	var state any
+	var allEvents []string
+	for _, line := range sseLines {
+		events := ConvertOpenAIChatToResponses(ctx, "gpt-4o", originalReq, nil, []byte(line), &state)
+		allEvents = append(allEvents, events...)
+	}
+
+	// 收集所有 output_item.added 事件的 name
+	addedNames := make(map[int]string)
+	doneCount := 0
+	for _, ev := range allEvents {
+		if strings.Contains(ev, "response.output_item.added") {
+			payload := extractSSEPayload(ev)
+			root := gjson.Parse(payload)
+			oi := int(root.Get("output_index").Int())
+			addedNames[oi] = root.Get("item.name").String()
+		}
+		if strings.Contains(ev, "response.output_item.done") {
+			doneCount++
+		}
+	}
+
+	if len(addedNames) != 2 {
+		t.Errorf("应有 2 个 output_item.added 事件，实际: %d", len(addedNames))
+	}
+	if addedNames[0] != "get_weather" {
+		t.Errorf("output_index 0 的 name 应为 get_weather，实际: %q", addedNames[0])
+	}
+	if addedNames[1] != "get_time" {
+		t.Errorf("output_index 1 的 name 应为 get_time，实际: %q", addedNames[1])
+	}
+	if doneCount != 2 {
+		t.Errorf("应有 2 个 output_item.done 事件，实际: %d", doneCount)
+	}
+}
+
+func TestConvertOpenAIChatToResponses_ReasoningTextToolCallMixedOutputIndex(t *testing.T) {
+	ctx := context.Background()
+
+	// reasoning → text → tool_call 的混合输出，验证 output_index 连续递增
+	sseLines := []string{
+		// reasoning content
+		`data: {"id":"chatcmpl-mix","object":"chat.completion.chunk","created":1234567890,"model":"o1","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me think..."},"finish_reason":null}]}`,
+		// text content
+		`data: {"id":"chatcmpl-mix","object":"chat.completion.chunk","created":1234567890,"model":"o1","choices":[{"index":0,"delta":{"content":"I'll check the weather."},"finish_reason":null}]}`,
+		// tool call
+		`data: {"id":"chatcmpl-mix","object":"chat.completion.chunk","created":1234567890,"model":"o1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_mix1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"NYC\"}"}}]},"finish_reason":null}]}`,
+		// finish
+		`data: {"id":"chatcmpl-mix","object":"chat.completion.chunk","created":1234567890,"model":"o1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+
+	originalReq := []byte(`{"model":"o1","input":"Weather in NYC?","tools":[{"name":"get_weather"}]}`)
+
+	var state any
+	var allEvents []string
+	for _, line := range sseLines {
+		events := ConvertOpenAIChatToResponses(ctx, "o1", originalReq, nil, []byte(line), &state)
+		allEvents = append(allEvents, events...)
+	}
+
+	// reasoning → output_index 0
+	// text → output_index 1
+	// tool_call (idx=0) → output_index 2 (0 + reasoning(1) + text(1))
+	reasoningIdx := -1
+	textIdx := -1
+	funcAddedIdx := -1
+	funcDoneIdx := -1
+
+	for _, ev := range allEvents {
+		payload := extractSSEPayload(ev)
+		root := gjson.Parse(payload)
+		oi := int(root.Get("output_index").Int())
+
+		if strings.Contains(ev, "response.reasoning_summary_part.added") {
+			reasoningIdx = oi
+		}
+		if strings.Contains(ev, "response.output_text.delta") {
+			textIdx = oi
+		}
+		if strings.Contains(ev, "response.output_item.added") && strings.Contains(ev, "function_call") {
+			funcAddedIdx = oi
+		}
+		if strings.Contains(ev, "response.function_call_arguments.done") {
+			funcDoneIdx = oi
+		}
+	}
+
+	if reasoningIdx != 0 {
+		t.Errorf("reasoning output_index 应为 0，实际: %d", reasoningIdx)
+	}
+	if textIdx != 1 {
+		t.Errorf("text output_index 应为 1，实际: %d", textIdx)
+	}
+	if funcAddedIdx != 2 {
+		t.Errorf("function_call output_item.added output_index 应为 2，实际: %d", funcAddedIdx)
+	}
+	if funcDoneIdx != 2 {
+		t.Errorf("function_call_arguments.done output_index 应为 2，实际: %d", funcDoneIdx)
+	}
+}
+
+func extractSSEPayload(ev string) string {
+	for _, line := range strings.Split(ev, "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			return strings.TrimPrefix(line, "data: ")
+		}
+	}
+	return ""
 }
 
 func TestConvertOpenAIChatToResponses_CustomToolCall(t *testing.T) {

@@ -281,14 +281,27 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 					item, _ = sjson.Set(item, "output_index", outputIndex)
 					item, _ = sjson.Set(item, "item.id", fmt.Sprintf("fc_%s", st.CurrentFCID))
 					item, _ = sjson.Set(item, "item.call_id", st.CurrentFCID)
+
+					// 提前提取 function.name，确保 output_item.added 事件携带 name 字段
+					if fn := tc.Get("function"); fn.Exists() {
+						if name := fn.Get("name"); name.Exists() && name.String() != "" {
+							st.FuncNames[idx] = name.String()
+							item, _ = sjson.Set(item, "item.name", name.String())
+						}
+					} else if st.FuncNames[idx] != "" {
+						item, _ = sjson.Set(item, "item.name", st.FuncNames[idx])
+					}
+
 					out = append(out, emitResponsesEvent("response.output_item.added", item))
 				}
 
 				// 处理 function
 				if function := tc.Get("function"); function.Exists() {
-					// 处理函数名
+					// 处理函数名（若尚未存储则补存）
 					if name := function.Get("name"); name.Exists() && name.String() != "" {
-						st.FuncNames[idx] = name.String()
+						if st.FuncNames[idx] == "" {
+							st.FuncNames[idx] = name.String()
+						}
 					}
 
 					// 处理参数

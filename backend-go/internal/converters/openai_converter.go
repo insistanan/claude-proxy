@@ -84,6 +84,12 @@ func (c *OpenAIChatConverter) ToProviderRequest(sess *types.Session, req *types.
 		delete(openaiReq, "tool_choice")
 		delete(openaiReq, "parallel_tool_calls")
 	}
+	if req.PromptCacheKey != "" {
+		openaiReq["prompt_cache_key"] = req.PromptCacheKey
+	}
+	if req.PromptCacheRetention != "" {
+		openaiReq["prompt_cache_retention"] = req.PromptCacheRetention
+	}
 
 	return openaiReq, nil
 }

@@ -889,3 +889,35 @@ func TestOpenAIFinishReasonToResponses(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAIChatConverter_ForwardsPromptCacheKey(t *testing.T) {
+	converter := &OpenAIChatConverter{}
+	sess := &types.Session{
+		ID:       "sess_cache",
+		Messages: []types.ResponsesItem{},
+	}
+
+	req := &types.ResponsesRequest{
+		Model:                "gpt-4",
+		Input:                "Hello!",
+		PromptCacheKey:       "my-cache-key-123",
+		PromptCacheRetention: "7d",
+	}
+
+	result, err := converter.ToProviderRequest(sess, req)
+	if err != nil {
+		t.Fatalf("转换失败: %v", err)
+	}
+
+	resultMap, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatal("结果不是 map[string]interface{}")
+	}
+
+	if resultMap["prompt_cache_key"] != "my-cache-key-123" {
+		t.Errorf("prompt_cache_key 应转发，期望 my-cache-key-123，实际: %v", resultMap["prompt_cache_key"])
+	}
+	if resultMap["prompt_cache_retention"] != "7d" {
+		t.Errorf("prompt_cache_retention 应转发，期望 7d，实际: %v", resultMap["prompt_cache_retention"])
+	}
+}

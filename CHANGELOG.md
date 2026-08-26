@@ -4,6 +4,24 @@
 
 ---
 
+## [v3.1.1] - 2026-08-27
+
+### 修复
+
+- **output_item.added 缺少 function name** — Chat→Responses 流式转换中，`response.output_item.added` 事件现在携带 `item.name`（从同 chunk 提取 `function.name`，或回退到先前 chunk 已存储的 name）
+- **modalities 对象格式未归一化** — `sanitizeOpenAIChatModalities` 将客户端发送的 `{"text":true,"audio":true}` 对象格式归一化为 `["text","audio"]` 数组，避免上游 400；全 false 时删除字段
+- **prompt_cache_key 未转发** — `OpenAIChatConverter.ToProviderRequest` 现在转发 `prompt_cache_key` 和 `prompt_cache_retention` 字段到上游请求
+
+### 测试
+
+- 新增 `TestConvertOpenAIChatToResponses_ParallelToolCalls`（并行 tool call name + output_index 验证）
+- 新增 `TestConvertOpenAIChatToResponses_ReasoningTextToolCallMixedOutputIndex`（reasoning→text→tool_call 混合 output_index 连续性）
+- 增强 `TestConvertOpenAIChatToResponses_ToolCall`（验证 output_item.added 携带 name）
+- 新增 3 个 modalities 归一化测试（对象→数组、数组保持、空值删除）
+- 新增 `TestOpenAIChatConverter_ForwardsPromptCacheKey`（prompt_cache_key 转发）
+
+---
+
 ## [v3.1.0] - 2026-08-26
 
 ### 新功能

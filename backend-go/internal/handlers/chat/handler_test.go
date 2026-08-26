@@ -123,3 +123,62 @@ func TestApplyChatModelMapping_RejectsInvalidReasoningEffort(t *testing.T) {
 		t.Fatal("非法 reasoning_effort 应返回错误")
 	}
 }
+
+func TestApplyChatModelMapping_NormalizesModalitiesObjectToArray(t *testing.T) {
+	input := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"modalities":{"text":true,"audio":true}}`)
+	out, err := applyChatModelMapping(input, &config.UpstreamConfig{})
+	if err != nil {
+		t.Fatalf("applyChatModelMapping 不应报错: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("解析结果失败: %v", err)
+	}
+
+	modalities, ok := payload["modalities"].([]interface{})
+	if !ok {
+		t.Fatalf("modalities 应归一化为数组，实际: %#v", payload["modalities"])
+	}
+	if len(modalities) != 2 {
+		t.Fatalf("modalities 应有 2 个元素，实际: %d", len(modalities))
+	}
+	if modalities[0] != "text" || modalities[1] != "audio" {
+		t.Fatalf("modalities 应为 [text, audio]，实际: %v", modalities)
+	}
+}
+
+func TestApplyChatModelMapping_KeepsModalitiesArrayAsIs(t *testing.T) {
+	input := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"modalities":["text"]}`)
+	out, err := applyChatModelMapping(input, &config.UpstreamConfig{})
+	if err != nil {
+		t.Fatalf("applyChatModelMapping 不应报错: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("解析结果失败: %v", err)
+	}
+
+	modalities, ok := payload["modalities"].([]interface{})
+	if !ok || len(modalities) != 1 || modalities[0] != "text" {
+		t.Fatalf("modalities 数组应原样保留，实际: %#v", payload["modalities"])
+	}
+}
+
+func TestApplyChatModelMapping_RemovesEmptyModalities(t *testing.T) {
+	input := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"modalities":{"text":false,"audio":false}}`)
+	out, err := applyChatModelMapping(input, &config.UpstreamConfig{})
+	if err != nil {
+		t.Fatalf("applyChatModelMapping 不应报错: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("解析结果失败: %v", err)
+	}
+
+	if _, exists := payload["modalities"]; exists {
+		t.Fatalf("modalities 全 false 时应删除，实际: %#v", payload["modalities"])
+	}
+}
