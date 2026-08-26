@@ -14,6 +14,7 @@ import (
 const (
 	defaultMaxIdle         = 7 * 24 * time.Hour
 	defaultCleanupInterval = 10 * time.Minute
+	retryMatchWindow       = 5 * time.Minute
 )
 
 type Observation struct {

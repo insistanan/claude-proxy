@@ -4,6 +4,18 @@
 
 ---
 
+## [v3.1.2] - 2026-08-27
+
+### 修复
+
+- **无 ID 客户端重试创建重复对话记录** — `resolveTranscriptLocked` 新增同深度重试匹配：当严格扩展未命中时，在 `frontierIndex` 中按同 depth + 同 frontierHash 查找失败记录并复用。筛选条件：上次失败（`LastError != ""`）、已结束（`ActiveRequests == 0`）、scope 一致、lane 一致、5 分钟窗口内；depth=1 要求 scopeHash 非空。带显式 ID 的客户端不受影响。
+
+### 测试
+
+- 新增 `retry_match_test.go`，覆盖 11 个场景：depth≥2 失败重试合并、depth=1 有/无 scope、成功后不合并、并发不合并、超时窗口不合并、不同 scope/lane 不合并、严格扩展优先、多次重试合并、空 transcript 不合并
+
+---
+
 ## [v3.1.1] - 2026-08-27
 
 ### 修复

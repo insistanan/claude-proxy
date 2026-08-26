@@ -146,15 +146,13 @@ func (r *Registry) resolveExplicitParentLocked(obs Observation) string {
 
 func (r *Registry) resolveTranscriptLocked(obs Observation) (*Record, string, string) {
 	incomingDepth := obs.Transcript.Depth()
-	if incomingDepth < 2 {
-		return nil, "", "anonymous"
-	}
 	clientFamily := normalizeClientFamily(obs.Identity.ClientFamily)
 	scopeHash := hashIdentityScope(obs.Identity.ScopeID)
 	laneHash := strings.TrimSpace(obs.Identity.LaneHash)
 	parentID := ""
 
 	// 只接受严格扩展。相同请求可能来自另一个标签或重试，不能据此合并。
+	// depth=1 无前序历史可扩展，跳过循环直接进入重试匹配。
 	for depth := incomingDepth - 1; depth >= 1; depth-- {
 		prefixHash := obs.Transcript.PrefixHashes[depth-1]
 		bucket := r.frontierIndex[frontierIndexKey(obs.APIKind, clientFamily, depth, prefixHash)]
@@ -192,7 +190,56 @@ func (r *Registry) resolveTranscriptLocked(obs Observation) (*Record, string, st
 	if parentID != "" {
 		return nil, parentID, "history_branch"
 	}
+
+	// 同深度重试匹配：严格扩展未命中时，尝试匹配同 frontier 的失败记录。
+	// 仅当上次请求失败（LastError != ""）且已结束（ActiveRequests == 0）时才合并。
+	// depth=1 要求 scopeHash 非空，否则无法区分不同用户的首条消息。
+	if rec := r.matchRetryLocked(obs, incomingDepth, clientFamily, scopeHash, laneHash); rec != nil {
+		return rec, "", "retry_match"
+	}
+
 	return nil, "", "anonymous"
+}
+
+func (r *Registry) matchRetryLocked(obs Observation, incomingDepth int, clientFamily string, scopeHash string, laneHash string) *Record {
+	if incomingDepth == 1 && scopeHash == "" {
+		return nil
+	}
+	frontierHash := obs.Transcript.FrontierHash()
+	if frontierHash == "" {
+		return nil
+	}
+	bucket := r.frontierIndex[frontierIndexKey(obs.APIKind, clientFamily, incomingDepth, frontierHash)]
+	if len(bucket) == 0 {
+		return nil
+	}
+	now := time.Now()
+	var best *Record
+	for recordID := range bucket {
+		rec := r.records[recordID]
+		if rec == nil || rec.lineage.FrontierDepth != incomingDepth || rec.lineage.FrontierHash != frontierHash {
+			continue
+		}
+		if rec.LastError == "" {
+			continue
+		}
+		if rec.ActiveRequests > 0 {
+			continue
+		}
+		if !scopeCompatible(rec.lineage.ScopeHash, scopeHash) {
+			continue
+		}
+		if !laneCompatible(rec.lineage.LaneHash, laneHash) {
+			continue
+		}
+		if !rec.LastCompletedAt.IsZero() && now.Sub(rec.LastCompletedAt) > retryMatchWindow {
+			continue
+		}
+		if best == nil || rec.LastCompletedAt.After(best.LastCompletedAt) {
+			best = rec
+		}
+	}
+	return best
 }
 
 func (r *Registry) applyObservationLineageLocked(rec *Record, obs Observation, resolution string, parentID string, now time.Time) {
