@@ -312,6 +312,9 @@ func (a *app) setupAdminAPI(apiGroup *gin.RouterGroup) {
 		Dashboard:   handlers.GetChannelDashboard(a.cfgManager, a.channelScheduler, scheduler.ChannelKindImages),
 	})
 
+	// 本代理自身暴露的模型列表（客户端配置页按协议分组导入用，走 Web 鉴权而非代理鉴权）
+	apiGroup.GET("/proxy-models", handlers.ProxyModelsHandler(a.cfgManager))
+
 	// 渠道性能报告（自适应负载均衡）
 	apiGroup.GET("/performance/report", func(c *gin.Context) {
 		reports := a.adaptiveScheduler.GetChannelPerformanceReport()
@@ -356,14 +359,8 @@ func (a *app) setupAdminAPI(apiGroup *gin.RouterGroup) {
 	apiGroup.POST("/settings/pi-agent/validate", a.piAgentAPI.ValidateProvider())
 	apiGroup.POST("/settings/pi-agent/providers/:id/discover-models", a.piAgentAPI.DiscoverModels())
 	apiGroup.POST("/settings/pi-agent/providers/:id/test", a.piAgentAPI.TestProvider())
-	apiGroup.GET("/settings/pi-agent/credentials", a.piAgentAPI.ListCredentials())
-	apiGroup.PUT("/settings/pi-agent/credentials/:id", a.piAgentAPI.UpdateCredential())
-	apiGroup.DELETE("/settings/pi-agent/credentials/:id", a.piAgentAPI.DeleteCredential())
 	apiGroup.GET("/settings/pi-agent/model-settings", a.piAgentAPI.GetModelSettings())
 	apiGroup.PATCH("/settings/pi-agent/model-settings", a.piAgentAPI.UpdateModelSettings())
-	apiGroup.GET("/settings/pi-agent/backups", a.piAgentAPI.ListBackups())
-	apiGroup.POST("/settings/pi-agent/backups", a.piAgentAPI.CreateBackup())
-	apiGroup.POST("/settings/pi-agent/backups/:id/restore", a.piAgentAPI.RestoreBackup())
 	apiGroup.GET("/skills", a.skillsAPI.List())
 	apiGroup.POST("/skills/content", a.skillsAPI.GetContent())
 	apiGroup.POST("/skills/backup/latest", a.skillsAPI.GetLatestBackup())

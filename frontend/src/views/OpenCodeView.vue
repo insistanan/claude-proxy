@@ -69,43 +69,24 @@
             <v-divider />
 
             <v-card-text class="pa-5">
-              <!-- 从代理渠道快速选择 -->
+              <!-- 连接本代理 -->
               <section class="agent-config-callout mb-5 channel-quick-pick">
                 <div class="agent-config-callout__title">
                   <v-icon size="18">mdi-lightning-bolt</v-icon>
-                  从渠道快速选择
+                  连接本代理
                 </div>
                 <div>
-                  <v-row>
-                    <v-col cols="12" sm="6">
-                      <v-select
-                        v-model="quickPickType"
-                        label="渠道类型"
-                        variant="outlined"
-                        density="comfortable"
-                        :items="quickPickTypeOptions"
-                        item-title="title"
-                        item-value="value"
-                      />
-                    </v-col>
-                    <v-col cols="12" sm="6">
-                      <v-select
-                        v-model="quickPickChannelIndex"
-                        label="渠道"
-                        variant="outlined"
-                        density="comfortable"
-                        :items="quickPickChannels"
-                        item-title="name"
-                        item-value="index"
-                        :loading="quickPickLoading"
-                        :disabled="!quickPickType"
-                        no-data-text="该类型下暂无渠道"
-                        clearable
-                      />
-                    </v-col>
-                  </v-row>
+                  <v-select
+                    v-model="quickPickType"
+                    label="模型协议"
+                    variant="outlined"
+                    density="comfortable"
+                    :items="quickPickTypeOptions"
+                    item-title="title"
+                    item-value="value"
+                  />
                   <div class="text-caption text-medium-emphasis mt-1">
-                    选择渠道后将自动填充协议、Base URL 与密钥，仍可手动微调
+                    选择协议后将自动连接本代理（{{ defaultBaseUrl }}）：协议、Base URL 与密钥自动填充，模型可一键导入
                   </div>
                 </div>
               </section>
@@ -163,7 +144,10 @@
                   <div class="text-subtitle-1 font-weight-bold">模型</div>
                   <div class="text-caption text-medium-emphasis">模型标识必须与上游 API 接收的模型名一致</div>
                 </div>
-                <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addModel(selectedProvider)">添加模型</v-btn>
+                <div class="d-flex ga-2">
+                  <v-btn size="small" color="secondary" variant="tonal" prepend-icon="mdi-download" :disabled="!quickPickType" @click="importProxyModelsToProvider">导入本代理模型</v-btn>
+                  <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addModel(selectedProvider)">添加模型</v-btn>
+                </div>
               </div>
 
               <div v-if="selectedProvider.models.length === 0" class="empty-models text-body-2 text-medium-emphasis py-6 text-center">添加至少一个模型后，它才会出现在 OpenCode 的模型列表。</div>
@@ -194,6 +178,10 @@
                       </v-col>
                       <v-col cols="12" sm="4">
                         <v-text-field v-model.number="model.outputLimit" label="最大输出 Token" type="number" min="0" variant="outlined" density="comfortable" />
+                      </v-col>
+                      <v-col cols="12" class="d-flex align-center">
+                        <v-switch v-model="model.supportsImage" label="支持图片输入（识图）" color="primary" density="compact" hide-details />
+                        <span class="text-caption text-medium-emphasis ml-3">开启后写入 options.attachment 与 options.modalities；本项目有图片理解层兜底</span>
                       </v-col>
                     </v-row>
 
@@ -245,10 +233,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import AgentConfigHeader from '@/components/AgentConfigHeader.vue'
 import AgentConfigLocation from '@/components/AgentConfigLocation.vue'
-import { api, channelApiByType, type OpenCodeConfig, type OpenCodeProtocol, type OpenCodeProvider, type OpenCodeVariant, type SaveOpenCodeProvider, type Channel, type ApiTab } from '@/services/api'
+import { api, type OpenCodeConfig, type OpenCodeProtocol, type OpenCodeProvider, type OpenCodeVariant, type SaveOpenCodeProvider, type ApiTab } from '@/services/api'
+import { useProxyProtocolPick, defaultQuickPickTypeOptions } from '@/composables/useChannelQuickPick'
+import { filterProxyModelsByKind, importProxyModels, buildOpenCodeModel } from '@/composables/useChannelModelImport'
+import { PROTOCOL_DEFAULTS } from '@/composables/channelDefaults'
+import { useAuthStore } from '@/stores/auth'
 
 interface EditableVariant {
   name: string
@@ -266,6 +258,7 @@ interface EditableModel {
   outputLimit: number
   variantsEnabled: boolean
   variants: EditableVariant[]
+  supportsImage: boolean
   optionsText: string
 }
 
@@ -314,19 +307,10 @@ const providers = ref<EditableProvider[]>([])
 const selectedProviderId = ref('')
 const notice = ref({ visible: false, type: 'success', message: '' })
 
-// 从渠道快速选择
-const quickPickTypeOptions: Array<{ title: string; value: ApiTab }> = [
-  { title: 'Messages', value: 'messages' },
-  { title: 'Responses', value: 'responses' },
-  { title: 'Gemini', value: 'gemini' },
-  { title: 'Chat', value: 'chat' }
-]
-const quickPickType = ref<ApiTab | null>(null)
-const quickPickChannels = ref<Channel[]>([])
-const quickPickLoading = ref(false)
-const quickPickChannelIndex = ref<number | null>(null)
+// 连接本代理（协议选择）
+const quickPickTypeOptions = defaultQuickPickTypeOptions
 
-// 渠道类型 -> OpenCode 协议映射
+// 渠道协议 -> OpenCode 协议映射
 const protocolForChannelType: Record<ApiTab, OpenCodeProtocol> = {
   messages: 'messages',
   responses: 'responses',
@@ -335,43 +319,40 @@ const protocolForChannelType: Record<ApiTab, OpenCodeProtocol> = {
   images: 'chat'
 }
 
-watch(quickPickType, async (type) => {
-  quickPickChannelIndex.value = null
-  quickPickChannels.value = []
-  if (!type) return
-  quickPickLoading.value = true
-  try {
-    const result = await channelApiByType(type).getChannels()
-    quickPickChannels.value = result.channels.filter(ch => ch.status !== 'deleted')
-  } catch {
-    quickPickChannels.value = []
-  } finally {
-    quickPickLoading.value = false
-  }
-})
-
-watch(quickPickChannelIndex, (channelIndex) => {
-  if (channelIndex === null) return
+const applyProtocol = async (type: ApiTab, defaultBaseUrl: Promise<string>) => {
   const provider = selectedProvider.value
   if (!provider) return
-  const channel = quickPickChannels.value.find(ch => ch.index === channelIndex)
-  if (!channel || !quickPickType.value) return
   // 自动切换协议与 SDK 包
-  provider.protocol = protocolForChannelType[quickPickType.value]
+  provider.protocol = protocolForChannelType[type]
   applyProtocolNpm(provider)
-  // 复用渠道的上游地址与密钥
-  provider.baseUrl = channel.baseUrl
-  if (channel.apiKeys.length > 0) {
-    provider.apiKey = channel.apiKeys[0]
+  // Base URL 默认填本代理地址，可手动改
+  provider.baseUrl = await defaultBaseUrl
+  // 密钥填本代理访问 key（Web 鉴权与代理鉴权共用同一 key）
+  const authStore = useAuthStore()
+  if (authStore.apiKey) {
+    provider.apiKey = authStore.apiKey
     provider.apiKeyAction = 'replace'
   }
-})
+}
+
+const { selectedType: quickPickType, defaultBaseUrl } = useProxyProtocolPick(applyProtocol)
 
 const selectedProvider = computed(() => providers.value.find(provider => provider.id === selectedProviderId.value) ?? null)
 const providerIdInUse = computed(() => Boolean(selectedProvider.value && config.value?.providers.some(provider => provider.id === selectedProvider.value?.id)))
 const localID = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 const stringifyJSON = (value: Record<string, unknown>) => Object.keys(value).length ? JSON.stringify(value, null, 2) : ''
+
+// 从后端 options 推断识图开关状态（attachment 为 false 或 modalities.input 不含 image 视为关闭）
+const detectSupportsImage = (options: Record<string, unknown>): boolean => {
+  if (options.attachment === false) return false
+  const modalities = options.modalities as { input?: string[] } | undefined
+  if (modalities?.input && Array.isArray(modalities.input)) {
+    return modalities.input.includes('image')
+  }
+  // 后端 applyOpenCodeImageDefaults 默认给 true + [text,image]，未显式关闭时视为开
+  return true
+}
 
 const toEditableProvider = (provider: OpenCodeProvider): EditableProvider => ({
   ...provider,
@@ -382,6 +363,10 @@ const toEditableProvider = (provider: OpenCodeProvider): EditableProvider => ({
   models: provider.models.map(model => {
     const options = { ...model.options }
     delete options.reasoningEffort
+    const supportsImage = detectSupportsImage(options)
+    // 识图字段从 options 中剥离，由专门开关管理
+    delete options.attachment
+    delete options.modalities
     // 从 model.variants 构建 editable variants
     const rawVariants = model.variants ?? {}
     const variantNames = Object.keys(rawVariants)
@@ -405,7 +390,7 @@ const toEditableProvider = (provider: OpenCodeProvider): EditableProvider => ({
         variants = makeDefaultVariants()
       }
     }
-    return { ...model, localId: localID(), variantsEnabled, variants, optionsText: stringifyJSON(options) }
+    return { ...model, localId: localID(), variantsEnabled, variants, supportsImage, optionsText: stringifyJSON(options) }
   })
 })
 
@@ -455,19 +440,54 @@ const removeProvider = (id: string) => {
   selectedProviderId.value = providers.value[0]?.id ?? ''
 }
 
+// 新增模型默认值：用 channelDefaults 的 chat 协议默认值（未选渠道时的合理兜底）
 const addModel = (provider: EditableProvider) => {
+  const defaults = PROTOCOL_DEFAULTS.chat
   provider.models.push({
     localId: localID(),
     key: '',
     apiModelId: '',
     name: '',
-    contextLimit: 200000,
-    inputLimit: 80000,
-    outputLimit: 64800,
+    contextLimit: defaults.contextLimit,
+    inputLimit: defaults.inputLimit,
+    outputLimit: defaults.outputLimit,
     variantsEnabled: false,
     variants: makeDefaultVariants(),
+    supportsImage: true,
     optionsText: ''
   })
+}
+
+// 一键导入本代理模型（按所选协议分组，导入即替换）
+const importProxyModelsToProvider = async () => {
+  const provider = selectedProvider.value
+  if (!provider || !quickPickType.value) return
+  try {
+    const response = await api.getProxyModels()
+    const modelIds = filterProxyModelsByKind(response.data, quickPickType.value)
+    if (modelIds.length === 0) {
+      notice.value = { visible: true, type: 'error', message: `本代理 ${quickPickType.value} 协议分组下暂无模型，请先在渠道管理中配置分组` }
+      return
+    }
+    const count = importProxyModels(quickPickType.value, modelIds, buildOpenCodeModel, (models) => {
+      provider.models = models.map(m => ({
+        localId: localID(),
+        key: m.key,
+        apiModelId: m.apiModelId,
+        name: m.name,
+        contextLimit: m.contextLimit,
+        inputLimit: m.inputLimit,
+        outputLimit: m.outputLimit,
+        variantsEnabled: true,
+        variants: Object.entries(m.variants).map(([name, v]) => ({ name, reasoningEffort: v.reasoningEffort, enabled: true })),
+        supportsImage: m.supportsImage,
+        optionsText: ''
+      }))
+    })
+    notice.value = { visible: true, type: 'success', message: `已导入本代理 ${quickPickType.value} 分组的 ${count} 个模型（已替换原有模型）` }
+  } catch (importError) {
+    notice.value = { visible: true, type: 'error', message: importError instanceof Error ? importError.message : '获取本代理模型列表失败' }
+  }
 }
 
 const removeModel = (provider: EditableProvider, localId: string) => {
@@ -526,6 +546,13 @@ const prepareProvider = (provider: EditableProvider): SaveOpenCodeProvider => {
     options: parseJSONObject(provider.optionsText, `提供商 ${provider.id} 的高级选项`),
     models: provider.models.map(model => {
       const options = parseJSONObject(model.optionsText, `模型 ${model.key || '新模型'} 的高级选项`)
+      // 识图开关写回 options（与后端 applyOpenCodeImageDefaults 字段对齐）
+      if (model.supportsImage) {
+        options.attachment = true
+        options.modalities = { input: ['text', 'image'], output: ['text'] }
+      } else {
+        options.attachment = false
+      }
       // variants
       const variants: Record<string, OpenCodeVariant> = {}
       if (model.variantsEnabled) {

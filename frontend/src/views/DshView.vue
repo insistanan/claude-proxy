@@ -20,6 +20,48 @@
         <v-chip v-else size="x-small" color="error" label>不可写</v-chip>
       </AgentConfigLocation>
 
+      <!-- 默认模型（置顶，方便快速选定启动模型） -->
+      <v-card elevation="0" class="settings-card agent-config-panel mb-5">
+        <div class="agent-config-panel-header">
+          <div>
+            <div class="agent-config-panel-title">默认模型</div>
+            <div class="agent-config-panel-subtitle">写入 settings.yaml 的 agent-default-model 字段；DSH 启动时自动选择该模型</div>
+          </div>
+        </div>
+        <v-divider />
+        <v-card-text class="pa-5">
+          <v-row>
+            <v-col cols="12" sm="6">
+              <v-select
+                v-model="defaultModelProvider"
+                label="默认提供商"
+                variant="outlined"
+                density="comfortable"
+                :items="providerKeys"
+                clearable
+                hint="选择已配置的提供商路由"
+                persistent-hint
+              />
+            </v-col>
+            <v-col cols="12" sm="6">
+              <v-select
+                v-model="defaultModelModel"
+                label="默认模型"
+                variant="outlined"
+                density="comfortable"
+                :items="defaultModelOptions"
+                item-title="label"
+                item-value="id"
+                clearable
+                :disabled="!defaultModelProvider"
+                :hint="defaultModelProvider ? '从该提供商的模型列表中选择' : '请先选择提供商'"
+                persistent-hint
+              />
+            </v-col>
+          </v-row>
+        </v-card-text>
+      </v-card>
+
       <v-row>
         <!-- 提供商列表 -->
         <v-col cols="12" lg="4">
@@ -68,43 +110,24 @@
             <v-divider />
 
             <v-card-text class="pa-5">
-              <!-- 从渠道快速选择 -->
+              <!-- 连接本代理 -->
               <section class="agent-config-callout mb-5 channel-quick-pick">
                 <div class="agent-config-callout__title">
                   <v-icon size="18">mdi-lightning-bolt</v-icon>
-                  从代理渠道快速选择
+                  连接本代理
                 </div>
                 <div>
-                  <v-row>
-                    <v-col cols="12" sm="6">
-                      <v-select
-                        v-model="quickPickType"
-                        label="渠道类型"
-                        variant="outlined"
-                        density="comfortable"
-                        :items="quickPickTypeOptions"
-                        item-title="title"
-                        item-value="value"
-                      />
-                    </v-col>
-                    <v-col cols="12" sm="6">
-                      <v-select
-                        v-model="quickPickChannelIndex"
-                        label="渠道"
-                        variant="outlined"
-                        density="comfortable"
-                        :items="quickPickChannels"
-                        item-title="name"
-                        item-value="index"
-                        :loading="quickPickLoading"
-                        :disabled="!quickPickType"
-                        no-data-text="该类型下暂无渠道"
-                        clearable
-                      />
-                    </v-col>
-                  </v-row>
+                  <v-select
+                    v-model="quickPickType"
+                    label="模型协议"
+                    variant="outlined"
+                    density="comfortable"
+                    :items="quickPickTypeOptions"
+                    item-title="title"
+                    item-value="value"
+                  />
                   <div class="text-caption text-medium-emphasis mt-1">
-                    选择渠道后将自动填充协议与 Base URL，密钥引用环境变量名也会自动生成
+                    选择协议后将自动连接本代理（{{ defaultBaseUrl }}）：协议、Base URL 与密钥环境变量名自动填充，模型可一键导入
                   </div>
                 </div>
               </section>
@@ -160,7 +183,10 @@
                   <div class="text-subtitle-1 font-weight-bold">模型</div>
                   <div class="text-caption text-medium-emphasis">每个模型可独立配置推理等级和输入模态</div>
                 </div>
-                <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addModel(selectedProvider)">添加模型</v-btn>
+                <div class="d-flex ga-2">
+                  <v-btn size="small" color="secondary" variant="tonal" prepend-icon="mdi-download" :disabled="!quickPickType" @click="importProxyModelsToProvider">导入本代理模型</v-btn>
+                  <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addModel(selectedProvider)">添加模型</v-btn>
+                </div>
               </div>
 
               <div v-if="!selectedProvider.models || selectedProvider.models.length === 0" class="empty-models text-body-2 text-medium-emphasis py-6 text-center">
@@ -259,48 +285,6 @@
           </v-card>
         </v-col>
       </v-row>
-
-      <!-- 默认模型 -->
-      <v-card elevation="0" class="settings-card agent-config-panel mt-5">
-        <div class="agent-config-panel-header">
-          <div>
-            <div class="agent-config-panel-title">默认模型</div>
-            <div class="agent-config-panel-subtitle">写入 settings.yaml 的 agent-default-model 字段；DSH 启动时自动选择该模型</div>
-          </div>
-        </div>
-        <v-divider />
-        <v-card-text class="pa-5">
-          <v-row>
-            <v-col cols="12" sm="6">
-              <v-select
-                v-model="defaultModelProvider"
-                label="默认提供商"
-                variant="outlined"
-                density="comfortable"
-                :items="providerKeys"
-                clearable
-                hint="选择已配置的提供商路由"
-                persistent-hint
-              />
-            </v-col>
-            <v-col cols="12" sm="6">
-              <v-select
-                v-model="defaultModelModel"
-                label="默认模型"
-                variant="outlined"
-                density="comfortable"
-                :items="defaultModelOptions"
-                item-title="label"
-                item-value="id"
-                clearable
-                :disabled="!defaultModelProvider"
-                :hint="defaultModelProvider ? '从该提供商的模型列表中选择' : '请先选择提供商'"
-                persistent-hint
-              />
-            </v-col>
-          </v-row>
-        </v-card-text>
-      </v-card>
     </template>
 
     <v-snackbar v-model="notice.visible" :color="notice.type" location="top right" :timeout="3500">{{ notice.message }}</v-snackbar>
@@ -311,7 +295,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import AgentConfigHeader from '@/components/AgentConfigHeader.vue'
 import AgentConfigLocation from '@/components/AgentConfigLocation.vue'
-import { api, channelApiByType, type DSHSettings, type DSHProvider, type DSHModel, type Channel, type ApiTab } from '@/services/api'
+import { api, type DSHSettings, type DSHProvider, type DSHModel, type ApiTab } from '@/services/api'
+import { useProxyProtocolPick, defaultQuickPickTypeOptions } from '@/composables/useChannelQuickPick'
+import { filterProxyModelsByKind, importProxyModels, buildDSHModel } from '@/composables/useChannelModelImport'
 
 // ---- 常量 ----
 
@@ -322,14 +308,9 @@ const apiProtocols = [
   { title: 'Gemini Generate Content', value: 'gemini-generate-content' }
 ]
 
-const quickPickTypeOptions: Array<{ title: string; value: ApiTab }> = [
-  { title: 'Messages', value: 'messages' },
-  { title: 'Responses', value: 'responses' },
-  { title: 'Gemini', value: 'gemini' },
-  { title: 'Chat', value: 'chat' }
-]
+const quickPickTypeOptions = defaultQuickPickTypeOptions
 
-// 渠道类型 -> DSH 协议映射
+// 渠道协议 -> DSH 协议映射
 const protocolForChannelType: Record<ApiTab, string> = {
   messages: 'anthropic-messages',
   responses: 'openai-responses',
@@ -367,12 +348,6 @@ const modelReasoningFlags = ref<Record<string, Record<string, boolean>>>({})
 // 路由标识编辑草稿
 const routeIdDraft = ref('')
 
-// 从渠道快速选择
-const quickPickType = ref<ApiTab | null>(null)
-const quickPickChannels = ref<Channel[]>([])
-const quickPickLoading = ref(false)
-const quickPickChannelIndex = ref<number | null>(null)
-
 // ---- 计算属性 ----
 
 const selectedProvider = computed(() => {
@@ -387,55 +362,25 @@ const defaultModelOptions = computed(() => {
   return provider.models.map(m => ({ id: m.id, label: m.name || m.id }))
 })
 
-// ---- 侦听器 ----
+// ---- 协议选择（连接本代理） ----
 
-watch(quickPickType, async (type) => {
-  quickPickChannelIndex.value = null
-  quickPickChannels.value = []
-  if (!type) return
-  quickPickLoading.value = true
-  try {
-    const result = await channelApiByType(type).getChannels()
-    quickPickChannels.value = result.channels.filter(ch => ch.status !== 'deleted')
-  } catch {
-    quickPickChannels.value = []
-  } finally {
-    quickPickLoading.value = false
-  }
-})
-
-watch(quickPickChannelIndex, (channelIndex) => {
-  if (channelIndex === null) return
+const applyProtocol = async (type: ApiTab, defaultBaseUrl: Promise<string>) => {
   const provider = selectedProvider.value
   if (!provider) return
-  const channel = quickPickChannels.value.find(ch => ch.index === channelIndex)
-  if (!channel || !quickPickType.value) return
   // 自动设置协议
-  provider.api = protocolForChannelType[quickPickType.value]
-  // 复用渠道的上游地址
-  provider.baseURL = channel.baseUrl
+  provider.api = protocolForChannelType[type]
+  // Base URL 默认填本代理地址，可手动改
+  provider.baseURL = await defaultBaseUrl
   // 生成 apiKeyEnv 名称
   if (!provider.apiKeyEnv) {
     const routeId = selectedProviderKey.value.toUpperCase().replace(/[^A-Z0-9]/g, '_')
     provider.apiKeyEnv = `${routeId}_API_KEY`
   }
-  // 如果所选渠道支持图片理解（原生或通过图片理解层），自动为所有模型启用图片输入
-  const channelSupportsImage = channel.visionCapable || channel.visionLayerEnabled
-  if (channelSupportsImage && provider.models) {
-    for (const [idx, model] of provider.models.entries()) {
-      const key = model.id || `__${idx}`
-      if (!modelInputFlags.value[key]) {
-        modelInputFlags.value[key] = { text: true, image: false }
-      }
-      modelInputFlags.value[key].image = true
-      // 同步到 model.input 字段
-      if (!model.input) model.input = []
-      if (!model.input.includes('image')) {
-        model.input = [...model.input, 'image']
-      }
-    }
-  }
-})
+}
+
+const { selectedType: quickPickType, defaultBaseUrl } = useProxyProtocolPick(applyProtocol)
+
+// ---- 侦听器 ----
 
 // 当切换选中的 provider 时，同步模型的 UI 状态和路由标识草稿
 watch(selectedProviderKey, () => {
@@ -444,6 +389,27 @@ watch(selectedProviderKey, () => {
 })
 
 // ---- 方法 ----
+
+// 一键导入本代理模型（按所选协议分组，导入即替换）
+const importProxyModelsToProvider = async () => {
+  const provider = selectedProvider.value
+  if (!provider || !quickPickType.value) return
+  try {
+    const response = await api.getProxyModels()
+    const modelIds = filterProxyModelsByKind(response.data, quickPickType.value)
+    if (modelIds.length === 0) {
+      notice.value = { visible: true, type: 'error', message: `本代理 ${quickPickType.value} 协议分组下暂无模型，请先在渠道管理中配置分组` }
+      return
+    }
+    const count = importProxyModels(quickPickType.value, modelIds, buildDSHModel, (models) => {
+      provider.models = models as DSHModel[]
+    })
+    syncModelFlags()
+    notice.value = { visible: true, type: 'success', message: `已导入本代理 ${quickPickType.value} 分组的 ${count} 个模型（已替换原有模型）` }
+  } catch (importError) {
+    notice.value = { visible: true, type: 'error', message: importError instanceof Error ? importError.message : '获取本代理模型列表失败' }
+  }
+}
 
 const syncModelFlags = () => {
   const provider = selectedProvider.value

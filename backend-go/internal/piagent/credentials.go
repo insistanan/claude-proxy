@@ -2,9 +2,7 @@ package piagent
 
 import (
 	"encoding/json"
-	"fmt"
 	"path/filepath"
-	"strings"
 )
 
 // CredentialView 是 auth.json 中单个凭据的脱敏视图。
@@ -51,60 +49,6 @@ func (s *Store) ReadRawAuth() (map[string]json.RawMessage, []byte, bool, error) 
 		return nil, nil, false, err
 	}
 	return ReadJSON(path)
-}
-
-// UpdateCredential 以 keep/replace/remove 三态更新 auth.json 中的 API key。
-func (s *Store) UpdateCredential(id, action, apiKey, revision string) (WriteResult, error) {
-	path, err := s.authPath()
-	if err != nil {
-		return WriteResult{}, err
-	}
-	root, raw, exists, err := ReadJSON(path)
-	if err != nil {
-		return WriteResult{}, err
-	}
-	if exists && revision == "" {
-		return WriteResult{}, ErrRevisionRequired
-	}
-	if revision != "" && SHA256Hex(raw) != revision {
-		return WriteResult{}, ErrRevisionMismatch
-	}
-
-	cred, exists := credentialObject(root, id)
-	if !exists {
-		if action != "replace" {
-			return WriteResult{}, fmt.Errorf("凭据不存在: %s", id)
-		}
-		cred = make(map[string]interface{})
-	}
-	// OAuth 凭据不能通过 API key 表单覆盖
-	if exists && hasOAuthFields(cred) {
-		return WriteResult{}, fmt.Errorf("provider %s 使用 OAuth 凭据，无法通过 API Key 表单修改", id)
-	}
-
-	switch action {
-	case "remove":
-		delete(root, id)
-	case "replace":
-		apiKey = strings.TrimSpace(apiKey)
-		if apiKey == "" {
-			return WriteResult{}, fmt.Errorf("新的 API Key 不能为空")
-		}
-		if !strings.Contains(apiKey, "{env:") {
-			delete(cred, "env")
-		}
-		cred["type"] = "api_key"
-		cred["key"] = apiKey
-		root[id] = mustMarshal(cred)
-	default:
-		return WriteResult{}, fmt.Errorf("无效的凭据操作: %s", action)
-	}
-
-	data, err := MarshalIndent(root)
-	if err != nil {
-		return WriteResult{}, err
-	}
-	return WriteFileAtomic(path, data, true, s.BackupDir)
 }
 
 // credentialView 构造单个凭据的脱敏视图。
@@ -167,26 +111,6 @@ func hasOAuthFields(cred map[string]interface{}) bool {
 		}
 	}
 	return false
-}
-
-func credentialObject(root map[string]json.RawMessage, id string) (map[string]interface{}, bool) {
-	raw, exists := root[id]
-	if !exists {
-		return nil, false
-	}
-	cred := make(map[string]interface{})
-	if err := json.Unmarshal(raw, &cred); err != nil {
-		return nil, false
-	}
-	return cred, true
-}
-
-func mustMarshal(value interface{}) json.RawMessage {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return json.RawMessage("null")
-	}
-	return data
 }
 
 func (s *Store) authPath() (string, error) {

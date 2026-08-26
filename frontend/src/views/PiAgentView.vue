@@ -1,7 +1,10 @@
 <template>
   <div class="agent-config-page piagent-page">
-    <AgentConfigHeader title="pi-agent 配置" subtitle="管理当前服务运行用户的 pi-agent 模型供应商、凭据与备份">
-      <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="loadAll">刷新</v-btn>
+    <AgentConfigHeader title="pi 配置" subtitle="管理当前服务运行用户的 pi-agent 模型供应商">
+      <template #default>
+        <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="loadAll">刷新</v-btn>
+        <v-btn color="primary" prepend-icon="mdi-content-save" :loading="savingProvider" :disabled="!selectedProvider" @click="saveSelectedProvider">保存</v-btn>
+      </template>
     </AgentConfigHeader>
 
     <v-alert v-if="disabled" type="warning" variant="tonal" class="mb-4">
@@ -25,343 +28,241 @@
         <v-chip v-else size="x-small" color="success" label>可写</v-chip>
       </AgentConfigLocation>
 
-      <v-tabs v-model="activeTab" color="primary" class="agent-config-tabs">
-        <v-tab value="providers" prepend-icon="mdi-server-network">供应商</v-tab>
-        <v-tab value="models" prepend-icon="mdi-tune">默认模型</v-tab>
-        <v-tab value="credentials" prepend-icon="mdi-key-chain">凭据</v-tab>
-        <v-tab value="backups" prepend-icon="mdi-backup-restore">备份</v-tab>
-      </v-tabs>
-
-      <v-window v-model="activeTab">
-        <!-- 供应商 -->
-        <v-window-item value="providers">
+      <!-- 默认模型设置（置顶，方便快速选定启动模型） -->
+      <v-card elevation="0" class="agent-config-panel mb-5">
+        <div class="agent-config-panel-header">
+          <div>
+            <div class="agent-config-panel-title">默认模型设置</div>
+            <div class="agent-config-panel-subtitle">写入 pi-agent 的 settings.json，其余字段保持不变</div>
+          </div>
+          <v-btn color="primary" prepend-icon="mdi-content-save" :loading="savingSettings" @click="saveModelSettings">保存设置</v-btn>
+        </div>
+        <v-divider />
+        <v-card-text class="pa-5">
           <v-row>
-            <v-col cols="12" lg="4">
-              <v-card class="provider-list-card" elevation="0">
-                <div class="agent-config-panel-header">
-                  <div class="agent-config-panel-title">供应商</div>
-                    <v-btn icon="mdi-plus" size="small" variant="text" title="添加供应商" aria-label="添加供应商" @click="addProvider" />
-                </div>
-                <v-divider />
-                <v-list v-if="providers.length" density="comfortable" nav class="py-2">
-                  <v-list-item v-for="provider in providers" :key="provider.localId" :active="selectedProviderId === provider.localId" :title="provider.name || provider.id" :subtitle="provider.id" rounded="sm" @click="selectProvider(provider.localId)">
-                    <template #prepend><v-icon size="20">mdi-server-network</v-icon></template>
-                    <template #append>
-                      <v-chip v-if="provider.apiKeyPresent" size="x-small" color="success" label>密钥</v-chip>
-                      <v-chip v-else-if="provider.hasOAuth" size="x-small" color="info" label>OAuth</v-chip>
-                    </template>
-                  </v-list-item>
-                </v-list>
-                <div v-else class="empty-providers text-center text-medium-emphasis px-6 py-10">
-                  <v-icon size="32" class="mb-3">mdi-server-network</v-icon>
-                  <div class="text-body-2">尚未配置供应商</div>
-                  <v-btn class="mt-4" size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addProvider">添加供应商</v-btn>
-                </div>
-              </v-card>
+            <v-col cols="12" md="6">
+              <v-select v-model="modelSettings.defaultProvider" label="默认供应商" variant="outlined" density="comfortable" :items="providers.map(p => ({ title: p.name || p.id, value: p.id }))" item-title="title" item-value="value" clearable />
             </v-col>
-
-            <v-col cols="12" lg="8">
-              <v-card v-if="selectedProvider" elevation="0" class="provider-editor-card">
-                <div class="agent-config-panel-header">
-                  <div>
-                    <div class="agent-config-panel-title">{{ selectedProvider.name || '新供应商' }}</div>
-                    <div class="agent-config-panel-subtitle">写入 pi-agent 的 models.json providers 字段</div>
-                  </div>
-                  <div class="agent-config-panel-actions">
-                    <v-tooltip text="连通性测试"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-test-tube" size="small" variant="text" aria-label="测试供应商连通性" :disabled="!isExistingProvider || discovering" :loading="testing" @click="testProvider" /></template></v-tooltip>
-                    <v-tooltip text="发现 OpenAI 兼容模型"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-magnify" size="small" variant="text" aria-label="发现 OpenAI 兼容模型" :disabled="!isExistingProvider || testing || (Boolean(selectedProvider.api) && !['openai-completions', 'openai-responses'].includes(selectedProvider.api))" :loading="discovering" @click="discoverModels" /></template></v-tooltip>
-                    <v-btn color="error" variant="text" size="small" prepend-icon="mdi-delete" :disabled="!isExistingProvider" @click="removeProvider(selectedProvider.id)">删除</v-btn>
-                    <v-btn color="primary" size="small" prepend-icon="mdi-content-save" :loading="savingProvider" @click="saveSelectedProvider">保存</v-btn>
-                  </div>
-                </div>
-                <v-divider />
-                <v-card-text class="pa-5">
-                  <v-row>
-                    <v-col cols="12" sm="6">
-                      <v-text-field v-model="selectedProvider.id" label="供应商标识" variant="outlined" density="comfortable" :disabled="isExistingProvider" hint="例如 anthropic；模型引用将使用 provider/model" persistent-hint />
-                    </v-col>
-                    <v-col cols="12" sm="6">
-                      <v-text-field v-model="selectedProvider.name" label="显示名称" variant="outlined" density="comfortable" placeholder="例如 Anthropic" />
-                    </v-col>
-                    <v-col cols="12" sm="6">
-                      <v-select v-model="selectedProvider.api" label="API 协议" variant="outlined" density="comfortable" :items="apiProtocols" item-title="title" item-value="value" clearable placeholder="不设置时使用默认协议" />
-                    </v-col>
-                    <v-col cols="12" sm="6">
-                      <v-text-field v-model="selectedProvider.baseUrl" label="Base URL" variant="outlined" density="comfortable" placeholder="例如 https://api.anthropic.com" />
-                    </v-col>
-                    <v-col cols="12" sm="6">
-                      <v-text-field v-model="selectedProvider.apiKey" label="API Key" type="password" variant="outlined" density="comfortable" :placeholder="selectedProvider.apiKeyPresent ? '当前：' + selectedProvider.apiKeyMasked + '（留空则保留）' : '填写 API Key'" />
-                    </v-col>
-                  </v-row>
-                  <v-expansion-panels variant="accordion" class="mt-2">
-                    <v-expansion-panel title="高级选项">
-                      <v-expansion-panel-text>
-                        <v-row>
-                          <v-col cols="12" md="4">
-                            <v-textarea v-model="selectedProvider.headersText" label="请求头 JSON" variant="outlined" density="comfortable" rows="4" auto-grow />
-                          </v-col>
-                          <v-col cols="12" md="4">
-                            <v-textarea v-model="selectedProvider.compatText" label="compat 兼容配置 JSON" variant="outlined" density="comfortable" rows="4" auto-grow />
-                          </v-col>
-                          <v-col cols="12" md="4">
-                            <v-textarea v-model="selectedProvider.modelOverridesText" label="模型覆盖 JSON" variant="outlined" density="comfortable" rows="4" auto-grow />
-                          </v-col>
-                        </v-row>
-                      </v-expansion-panel-text>
-                    </v-expansion-panel>
-                  </v-expansion-panels>
-
-                  <div class="d-flex align-center justify-space-between mt-6 mb-3">
-                    <div>
-                      <div class="text-subtitle-1 font-weight-bold">模型</div>
-                      <div class="text-caption text-medium-emphasis">模型 ID 必须与上游 API 接收的模型名一致</div>
-                    </div>
-                    <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addModel">添加模型</v-btn>
-                  </div>
-
-                  <div v-if="selectedProvider.models.length === 0" class="empty-models text-body-2 text-medium-emphasis py-6 text-center">添加至少一个模型后，它才会出现在 pi-agent 的模型列表中。</div>
-                  <v-expansion-panels v-else variant="accordion" class="model-panels">
-                    <v-expansion-panel v-for="(model, index) in selectedProvider.models" :key="model.localId">
-                      <template #title>
-                        <div class="d-flex align-center ga-2 overflow-hidden">
-                          <span class="font-weight-medium text-truncate">{{ model.name || model.id || '新模型' }}</span>
-                          <span v-if="model.id" class="text-caption text-medium-emphasis text-truncate">{{ model.id }}</span>
-                        </div>
-                      </template>
-                      <v-expansion-panel-text>
-                        <v-row>
-                          <v-col cols="12" sm="6">
-                            <v-text-field v-model="model.id" label="模型 ID" variant="outlined" density="comfortable" placeholder="例如 claude-opus-4-8" />
-                          </v-col>
-                          <v-col cols="12" sm="6">
-                            <v-text-field v-model="model.name" label="显示名称" variant="outlined" density="comfortable" placeholder="例如 Claude Opus 4.8" />
-                          </v-col>
-                          <v-col cols="12" sm="6">
-                            <v-select v-model="model.api" label="API 协议" variant="outlined" density="comfortable" :items="apiProtocols" item-title="title" item-value="value" clearable />
-                          </v-col>
-                          <v-col cols="12" sm="6">
-                            <v-text-field v-model="model.baseUrl" label="Base URL" variant="outlined" density="comfortable" placeholder="继承 provider 的 Base URL" />
-                          </v-col>
-                          <v-col cols="12" sm="4">
-                            <v-select v-model="model.reasoning" label="思考能力" variant="outlined" density="comfortable" :items="reasoningOptions" item-title="title" item-value="value" />
-                          </v-col>
-                          <v-col cols="12" sm="4">
-                            <v-text-field v-model.number="model.contextWindow" label="上下文窗口" type="number" min="0" variant="outlined" density="comfortable" />
-                          </v-col>
-                          <v-col cols="12" sm="4">
-                            <v-text-field v-model.number="model.maxTokens" label="最大输出 Token" type="number" min="0" variant="outlined" density="comfortable" />
-                          </v-col>
-                          <v-col cols="12" sm="6">
-                            <v-text-field v-model="model.inputText" label="输入能力（逗号分隔）" variant="outlined" density="comfortable" placeholder="text, image" />
-                          </v-col>
-                          <v-col cols="12" sm="6">
-                            <v-switch v-model="model.inputImage" label="支持图片" color="primary" hide-details />
-                          </v-col>
-                        </v-row>
-
-                        <!-- 费用 -->
-                        <v-expansion-panels variant="accordion" class="mt-2">
-                          <v-expansion-panel title="费用（每百万 token 美元）">
-                            <v-expansion-panel-text>
-                              <v-row>
-                                <v-col cols="6" sm="3">
-                                  <v-text-field v-model.number="model.costInput" label="输入" type="number" min="0" step="0.01" variant="outlined" density="comfortable" />
-                                </v-col>
-                                <v-col cols="6" sm="3">
-                                  <v-text-field v-model.number="model.costOutput" label="输出" type="number" min="0" step="0.01" variant="outlined" density="comfortable" />
-                                </v-col>
-                                <v-col cols="6" sm="3">
-                                  <v-text-field v-model.number="model.costCacheRead" label="缓存读取" type="number" min="0" step="0.01" variant="outlined" density="comfortable" />
-                                </v-col>
-                                <v-col cols="6" sm="3">
-                                  <v-text-field v-model.number="model.costCacheWrite" label="缓存写入" type="number" min="0" step="0.01" variant="outlined" density="comfortable" />
-                                </v-col>
-                              </v-row>
-                            </v-expansion-panel-text>
-                          </v-expansion-panel>
-                        </v-expansion-panels>
-
-                        <!-- 思考等级 -->
-                        <div class="mt-3 mb-1">
-                          <div class="text-body-2 font-weight-medium">思考等级映射（token 预算）</div>
-                          <div class="text-caption text-medium-emphasis">关闭/不支持的等级留空，开启的填写 token 预算数</div>
-                        </div>
-                        <v-row>
-                          <v-col v-for="tl in thinkingLevelsList" :key="tl.key" cols="6" sm="4" md="3">
-                            <div class="d-flex align-center ga-1">
-                              <v-checkbox v-model="model.tlEnabled[tl.key]" :label="tl.label" density="compact" hide-details class="tl-checkbox" />
-                              <v-text-field v-model="model.tlBudget[tl.key]" :disabled="!model.tlEnabled[tl.key]" variant="outlined" density="compact" type="number" min="0" placeholder="token" hide-details style="max-width: 100px;" />
-                            </div>
-                          </v-col>
-                        </v-row>
-
-                        <!-- 高级 JSON -->
-                        <v-expansion-panels variant="accordion" class="mt-2">
-                          <v-expansion-panel title="高级 JSON 字段">
-                            <v-expansion-panel-text>
-                              <v-row>
-                                <v-col cols="12" md="6">
-                                  <v-textarea v-model="model.headersText" label="请求头 JSON" variant="outlined" density="comfortable" rows="3" auto-grow />
-                                </v-col>
-                                <v-col cols="12" md="6">
-                                  <v-textarea v-model="model.compatText" label="compat JSON" variant="outlined" density="comfortable" rows="3" auto-grow />
-                                </v-col>
-                              </v-row>
-                            </v-expansion-panel-text>
-                          </v-expansion-panel>
-                        </v-expansion-panels>
-
-                        <div class="d-flex justify-end mt-2">
-                          <v-btn size="small" color="error" variant="text" prepend-icon="mdi-delete" @click="removeModel(index)">删除模型</v-btn>
-                        </div>
-                      </v-expansion-panel-text>
-                    </v-expansion-panel>
-                  </v-expansion-panels>
-                </v-card-text>
-              </v-card>
-
-              <v-card v-else elevation="0" class="empty-editor">
-                <div class="empty-providers text-center text-medium-emphasis px-6 py-16">
-                  <v-icon size="40" class="mb-3">mdi-server-network</v-icon>
-                  <div class="text-body-1 mb-2">选择一个供应商或创建新的供应商</div>
-                  <div class="text-caption">支持 anthropic-messages / openai-completions / openai-responses / google-generative-ai 四种协议</div>
-                </div>
-              </v-card>
+            <v-col cols="12" md="6">
+              <v-text-field v-model="modelSettings.defaultModel" label="默认模型" variant="outlined" density="comfortable" placeholder="例如 anthropic/claude-opus-4-8" />
+            </v-col>
+            <v-col cols="12" md="6">
+              <v-select v-model="modelSettings.defaultThinkingLevel" label="默认思考等级" variant="outlined" density="comfortable" :items="thinkingLevelsSettings" item-title="title" item-value="value" clearable />
             </v-col>
           </v-row>
-        </v-window-item>
+        </v-card-text>
+      </v-card>
 
-        <!-- 默认模型 -->
-        <v-window-item value="models">
-          <v-card elevation="0" class="agent-config-panel">
+      <!-- 供应商 + 模型（单页上段） -->
+      <v-row>
+        <v-col cols="12" lg="4">
+          <v-card class="provider-list-card" elevation="0">
+            <div class="agent-config-panel-header">
+              <div class="agent-config-panel-title">供应商</div>
+              <v-btn icon="mdi-plus" size="small" variant="text" title="添加供应商" aria-label="添加供应商" @click="addProvider" />
+            </div>
+            <v-divider />
+            <v-list v-if="providers.length" density="comfortable" nav class="py-2">
+              <v-list-item v-for="provider in providers" :key="provider.localId" :active="selectedProviderId === provider.localId" :title="provider.name || provider.id" :subtitle="provider.id" rounded="sm" @click="selectProvider(provider.localId)">
+                <template #prepend><v-icon size="20">mdi-server-network</v-icon></template>
+                <template #append>
+                  <v-chip v-if="provider.apiKeyPresent" size="x-small" color="success" label>密钥</v-chip>
+                  <v-chip v-else-if="provider.hasOAuth" size="x-small" color="info" label>OAuth</v-chip>
+                </template>
+              </v-list-item>
+            </v-list>
+            <div v-else class="empty-providers text-center text-medium-emphasis px-6 py-10">
+              <v-icon size="32" class="mb-3">mdi-server-network</v-icon>
+              <div class="text-body-2">尚未配置供应商</div>
+              <v-btn class="mt-4" size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addProvider">添加供应商</v-btn>
+            </div>
+          </v-card>
+        </v-col>
+
+        <v-col cols="12" lg="8">
+          <v-card v-if="selectedProvider" elevation="0" class="provider-editor-card">
             <div class="agent-config-panel-header">
               <div>
-                <div class="agent-config-panel-title">默认模型设置</div>
-                <div class="agent-config-panel-subtitle">写入 pi-agent 的 settings.json，其余字段保持不变</div>
+                <div class="agent-config-panel-title">{{ selectedProvider.name || '新供应商' }}</div>
+                <div class="agent-config-panel-subtitle">写入 pi-agent 的 models.json providers 字段</div>
               </div>
-              <v-btn color="primary" prepend-icon="mdi-content-save" :loading="savingSettings" @click="saveModelSettings">保存设置</v-btn>
+              <div class="agent-config-panel-actions">
+                <v-tooltip text="连通性测试"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-test-tube" size="small" variant="text" aria-label="测试供应商连通性" :disabled="!isExistingProvider || discovering" :loading="testing" @click="testProvider" /></template></v-tooltip>
+                <v-tooltip text="发现 OpenAI 兼容模型"><template #activator="{ props }"><v-btn v-bind="props" icon="mdi-magnify" size="small" variant="text" aria-label="发现 OpenAI 兼容模型" :disabled="!isExistingProvider || testing || (Boolean(selectedProvider.api) && !['openai-completions', 'openai-responses'].includes(selectedProvider.api))" :loading="discovering" @click="discoverModels" /></template></v-tooltip>
+                <v-btn color="error" variant="text" size="small" prepend-icon="mdi-delete" :disabled="!isExistingProvider" @click="removeProvider(selectedProvider.id)">删除</v-btn>
+                <v-btn color="primary" size="small" prepend-icon="mdi-content-save" :loading="savingProvider" @click="saveSelectedProvider">保存</v-btn>
+              </div>
             </div>
             <v-divider />
             <v-card-text class="pa-5">
+              <!-- 连接本代理 -->
+              <section class="agent-config-callout mb-5 channel-quick-pick">
+                <div class="agent-config-callout__title">
+                  <v-icon size="18">mdi-lightning-bolt</v-icon>
+                  连接本代理
+                </div>
+                <div>
+                  <v-select
+                    v-model="quickPickType"
+                    label="模型协议"
+                    variant="outlined"
+                    density="comfortable"
+                    :items="quickPickTypeOptions"
+                    item-title="title"
+                    item-value="value"
+                  />
+                  <div class="text-caption text-medium-emphasis mt-1">
+                    选择协议后将自动连接本代理（{{ defaultBaseUrl }}）：协议、Base URL 与密钥自动填充，模型可一键导入
+                  </div>
+                </div>
+              </section>
+
               <v-row>
-                <v-col cols="12" md="6">
-                  <v-select v-model="modelSettings.defaultProvider" label="默认供应商" variant="outlined" density="comfortable" :items="providers.map(p => ({ title: p.name || p.id, value: p.id }))" item-title="title" item-value="value" clearable />
+                <v-col cols="12" sm="6">
+                  <v-text-field v-model="selectedProvider.id" label="供应商标识" variant="outlined" density="comfortable" :disabled="isExistingProvider" hint="例如 anthropic；模型引用将使用 provider/model" persistent-hint />
                 </v-col>
-                <v-col cols="12" md="6">
-                  <v-text-field v-model="modelSettings.defaultModel" label="默认模型" variant="outlined" density="comfortable" placeholder="例如 anthropic/claude-opus-4-8" />
+                <v-col cols="12" sm="6">
+                  <v-text-field v-model="selectedProvider.name" label="显示名称" variant="outlined" density="comfortable" placeholder="例如 Anthropic" />
                 </v-col>
-                <v-col cols="12" md="6">
-                  <v-select v-model="modelSettings.defaultThinkingLevel" label="默认思考等级" variant="outlined" density="comfortable" :items="thinkingLevelsSettings" item-title="title" item-value="value" clearable />
+                <v-col cols="12" sm="6">
+                  <v-select v-model="selectedProvider.api" label="API 协议" variant="outlined" density="comfortable" :items="apiProtocols" item-title="title" item-value="value" clearable placeholder="不设置时使用默认协议" />
                 </v-col>
-                <v-col cols="12" md="6">
-                  <v-combobox v-model="modelSettings.enabledModels" label="启用的模型模式（回车添加）" variant="outlined" density="comfortable" multiple small-chips deletable-chips hint="支持 glob 模式，例如 anthropic/*" persistent-hint />
+                <v-col cols="12" sm="6">
+                  <v-text-field v-model="selectedProvider.baseUrl" label="Base URL" variant="outlined" density="comfortable" placeholder="例如 https://api.anthropic.com" />
+                </v-col>
+                <v-col cols="12" sm="6">
+                  <v-text-field v-model="selectedProvider.apiKey" label="API Key" type="password" variant="outlined" density="comfortable" :placeholder="selectedProvider.apiKeyPresent ? '当前：' + selectedProvider.apiKeyMasked + '（留空则保留）' : '填写 API Key'" />
                 </v-col>
               </v-row>
+              <v-expansion-panels variant="accordion" class="mt-2">
+                <v-expansion-panel title="高级选项（请求头 / compat / 模型覆盖）">
+                  <v-expansion-panel-text>
+                    <v-row>
+                      <v-col cols="12" md="4">
+                        <v-textarea v-model="selectedProvider.headersText" label="请求头 JSON" variant="outlined" density="comfortable" rows="4" auto-grow />
+                      </v-col>
+                      <v-col cols="12" md="4">
+                        <v-textarea v-model="selectedProvider.compatText" label="compat 兼容配置 JSON" variant="outlined" density="comfortable" rows="4" auto-grow />
+                      </v-col>
+                      <v-col cols="12" md="4">
+                        <v-textarea v-model="selectedProvider.modelOverridesText" label="模型覆盖 JSON" variant="outlined" density="comfortable" rows="4" auto-grow />
+                      </v-col>
+                    </v-row>
+                  </v-expansion-panel-text>
+                </v-expansion-panel>
+              </v-expansion-panels>
+
+              <div class="d-flex align-center justify-space-between mt-6 mb-3">
+                <div>
+                  <div class="text-subtitle-1 font-weight-bold">模型</div>
+                  <div class="text-caption text-medium-emphasis">模型 ID 必须与上游 API 接收的模型名一致</div>
+                </div>
+                <div class="d-flex ga-2">
+                  <v-btn size="small" color="secondary" variant="tonal" prepend-icon="mdi-download" :disabled="!quickPickType" @click="importProxyModelsToProvider">导入本代理模型</v-btn>
+                  <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addModel">添加模型</v-btn>
+                </div>
+              </div>
+
+              <div v-if="selectedProvider.models.length === 0" class="empty-models text-body-2 text-medium-emphasis py-6 text-center">添加至少一个模型后，它才会出现在 pi-agent 的模型列表中。</div>
+              <v-expansion-panels v-else variant="accordion" class="model-panels">
+                <v-expansion-panel v-for="(model, index) in selectedProvider.models" :key="model.localId">
+                  <template #title>
+                    <div class="d-flex align-center ga-2 overflow-hidden">
+                      <span class="font-weight-medium text-truncate">{{ model.name || model.id || '新模型' }}</span>
+                      <span v-if="model.id" class="text-caption text-medium-emphasis text-truncate">{{ model.id }}</span>
+                    </div>
+                  </template>
+                  <v-expansion-panel-text>
+                    <!-- 主界面：精简字段 -->
+                    <v-row>
+                      <v-col cols="12" sm="6">
+                        <v-text-field v-model="model.id" label="模型 ID" variant="outlined" density="comfortable" placeholder="例如 claude-opus-4-8" />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-text-field v-model="model.name" label="显示名称" variant="outlined" density="comfortable" placeholder="例如 Claude Opus 4.8" />
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <v-select v-model="model.reasoning" label="思考能力" variant="outlined" density="comfortable" :items="reasoningOptions" item-title="title" item-value="value" />
+                      </v-col>
+                      <v-col cols="12" sm="6" class="d-flex align-center">
+                        <span class="text-subtitle-2 font-weight-bold mr-3">输入能力</span>
+                        <v-checkbox v-model="model.inputTextEnabled" label="文本" density="compact" hide-details />
+                        <v-checkbox v-model="model.inputImage" label="图片（识图）" density="compact" hide-details />
+                      </v-col>
+                    </v-row>
+
+                    <!-- 高级：费用 / 思考等级映射 / 上下文 / JSON -->
+                    <v-expansion-panels variant="accordion" class="mt-2">
+                      <v-expansion-panel title="高级（费用 / 思考等级映射 / 上下文窗口 / JSON）">
+                        <v-expansion-panel-text>
+                          <v-row>
+                            <v-col cols="12" sm="6">
+                              <v-text-field v-model.number="model.contextWindow" label="上下文窗口" type="number" min="0" variant="outlined" density="comfortable" />
+                            </v-col>
+                            <v-col cols="12" sm="6">
+                              <v-text-field v-model.number="model.maxTokens" label="最大输出 Token" type="number" min="0" variant="outlined" density="comfortable" />
+                            </v-col>
+                          </v-row>
+
+                          <div class="mt-3 mb-1">
+                            <div class="text-body-2 font-weight-medium">思考等级映射（token 预算）</div>
+                            <div class="text-caption text-medium-emphasis">关闭/不支持的等级留空，开启的填写 token 预算数</div>
+                          </div>
+                          <v-row>
+                            <v-col v-for="tl in thinkingLevelsList" :key="tl.key" cols="6" sm="4" md="3">
+                              <div class="d-flex align-center ga-1">
+                                <v-checkbox v-model="model.tlEnabled[tl.key]" :label="tl.label" density="compact" hide-details class="tl-checkbox" />
+                                <v-text-field v-model="model.tlBudget[tl.key]" :disabled="!model.tlEnabled[tl.key]" variant="outlined" density="compact" type="number" min="0" placeholder="token" hide-details style="max-width: 100px;" />
+                              </div>
+                            </v-col>
+                          </v-row>
+
+                          <v-row class="mt-2">
+                            <v-col cols="6" sm="3">
+                              <v-text-field v-model.number="model.costInput" label="费用-输入" type="number" min="0" step="0.01" variant="outlined" density="comfortable" />
+                            </v-col>
+                            <v-col cols="6" sm="3">
+                              <v-text-field v-model.number="model.costOutput" label="费用-输出" type="number" min="0" step="0.01" variant="outlined" density="comfortable" />
+                            </v-col>
+                            <v-col cols="6" sm="3">
+                              <v-text-field v-model.number="model.costCacheRead" label="费用-缓存读取" type="number" min="0" step="0.01" variant="outlined" density="comfortable" />
+                            </v-col>
+                            <v-col cols="6" sm="3">
+                              <v-text-field v-model.number="model.costCacheWrite" label="费用-缓存写入" type="number" min="0" step="0.01" variant="outlined" density="comfortable" />
+                            </v-col>
+                          </v-row>
+
+                          <v-row class="mt-2">
+                            <v-col cols="12" md="6">
+                              <v-textarea v-model="model.headersText" label="请求头 JSON" variant="outlined" density="comfortable" rows="3" auto-grow />
+                            </v-col>
+                            <v-col cols="12" md="6">
+                              <v-textarea v-model="model.compatText" label="compat JSON" variant="outlined" density="comfortable" rows="3" auto-grow />
+                            </v-col>
+                          </v-row>
+                        </v-expansion-panel-text>
+                      </v-expansion-panel>
+                    </v-expansion-panels>
+
+                    <div class="d-flex justify-end mt-2">
+                      <v-btn size="small" color="error" variant="text" prepend-icon="mdi-delete" @click="removeModel(index)">删除模型</v-btn>
+                    </div>
+                  </v-expansion-panel-text>
+                </v-expansion-panel>
+              </v-expansion-panels>
             </v-card-text>
           </v-card>
-        </v-window-item>
 
-        <!-- 凭据 -->
-        <v-window-item value="credentials">
-          <v-card elevation="0" class="agent-config-panel">
-            <div class="agent-config-panel-header">
-              <span class="agent-config-panel-title">凭据</span>
-              <v-btn variant="text" icon="mdi-refresh" size="small" :loading="loading" aria-label="刷新凭据" title="刷新凭据" @click="loadCredentials" />
+          <v-card v-else elevation="0" class="empty-editor">
+            <div class="empty-providers text-center text-medium-emphasis px-6 py-16">
+              <v-icon size="40" class="mb-3">mdi-server-network</v-icon>
+              <div class="text-body-1 mb-2">选择一个供应商或创建新的供应商</div>
+              <div class="text-caption">支持 anthropic-messages / openai-completions / openai-responses / google-generative-ai 四种协议</div>
             </div>
-            <v-divider />
-            <v-table>
-              <thead>
-                <tr>
-                  <th>供应商</th>
-                  <th>类型</th>
-                  <th>密钥状态</th>
-                  <th>环境变量</th>
-                  <th class="text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="credential in credentials" :key="credential.id">
-                  <td class="font-weight-medium">{{ credential.id }}</td>
-                  <td><v-chip size="x-small" :color="credentialTypeColor(credential.type)" label>{{ credentialTypeLabel(credential.type) }}</v-chip></td>
-                  <td>
-                    <template v-if="credential.type === 'oauth'"><span class="text-medium-emphasis">OAuth 会话中</span></template>
-                    <template v-else-if="credential.keyPresent"><span class="mono-text">{{ credential.keyMasked }}</span></template>
-                    <template v-else><span class="text-medium-emphasis">未配置</span></template>
-                  </td>
-                  <td>
-                    <div v-if="credential.hasEnvValues" class="d-flex flex-wrap ga-1">
-                      <v-chip v-for="(masked, ek) in credential.envMasked" :key="ek" size="x-small" variant="outlined" label>{{ ek }}={{ masked }}</v-chip>
-                    </div>
-                    <span v-else class="text-medium-emphasis">-</span>
-                  </td>
-                  <td class="text-right">
-                    <v-btn v-if="credential.type === 'oauth'" size="small" color="error" variant="text" prepend-icon="mdi-logout" @click="removeCredential(credential)">退出</v-btn>
-                    <v-btn v-else size="small" color="primary" variant="tonal" prepend-icon="mdi-key" @click="openCredentialDialog(credential)">更新密钥</v-btn>
-                  </td>
-                </tr>
-                <tr v-if="credentials.length === 0"><td colspan="5" class="text-center text-medium-emphasis py-8">暂无凭据</td></tr>
-              </tbody>
-            </v-table>
           </v-card>
-        </v-window-item>
-
-        <!-- 备份 -->
-        <v-window-item value="backups">
-          <v-card elevation="0" class="agent-config-panel">
-            <div class="agent-config-panel-header">
-              <div>
-                <div class="agent-config-panel-title">备份</div>
-                <div class="agent-config-panel-subtitle">写入前自动备份，也可手动创建快照</div>
-              </div>
-              <div class="agent-config-panel-actions">
-                <v-btn v-for="kind in backupKinds" :key="kind.value" size="small" variant="tonal" color="primary" prepend-icon="mdi-plus" :disabled="creatingBackup !== ''" :loading="creatingBackup === kind.value" @click="createBackup(kind.value)">备份 {{ kind.label }}</v-btn>
-              </div>
-            </div>
-            <v-divider />
-            <v-table>
-              <thead>
-                <tr>
-                  <th>文件</th>
-                  <th>创建时间</th>
-                  <th>大小</th>
-                  <th>Revision</th>
-                  <th class="text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="backup in backups" :key="backup.id">
-                  <td class="font-weight-medium">{{ backup.file }}<v-chip v-if="backup.sensitive" size="x-small" color="warning" label class="ml-2">含密钥</v-chip></td>
-                  <td>{{ formatTime(backup.created) }}</td>
-                  <td>{{ formatSize(backup.size) }}</td>
-                  <td class="mono-text text-caption">{{ shortRevision(backup.revision) }}</td>
-                  <td class="text-right"><v-btn size="small" color="warning" variant="text" prepend-icon="mdi-backup-restore" @click="restoreBackup(backup)">恢复</v-btn></td>
-                </tr>
-                <tr v-if="backups.length === 0"><td colspan="5" class="text-center text-medium-emphasis py-8">暂无备份</td></tr>
-              </tbody>
-            </v-table>
-          </v-card>
-        </v-window-item>
-      </v-window>
+        </v-col>
+      </v-row>
     </template>
-
-    <!-- 更新密钥对话框 -->
-    <v-dialog v-model="credentialDialog.visible" max-width="480" persistent>
-      <v-card>
-        <v-card-title class="px-5 pt-4">更新密钥 - {{ credentialDialog.credential?.id }}</v-card-title>
-        <v-card-text class="pa-5">
-          <v-alert v-if="credentialDialog.credential?.keyPresent" type="info" variant="tonal" density="compact" class="mb-4">
-            当前密钥：{{ credentialDialog.credential?.keyMasked }}。输入新密钥将替换，清空后选择移除。
-          </v-alert>
-          <v-text-field v-model="credentialDialog.key" label="新的 API Key" type="password" variant="outlined" density="comfortable" placeholder="可填写 {env:VARIABLE} 环境引用" />
-          <div class="d-flex justify-space-between align-center mt-4">
-            <v-btn v-if="credentialDialog.credential?.keyPresent" color="error" variant="text" prepend-icon="mdi-delete" :disabled="savingCredential" @click="submitCredential('remove')">移除密钥</v-btn>
-            <v-spacer />
-            <v-btn variant="text" :disabled="savingCredential" @click="credentialDialog.visible = false">取消</v-btn>
-            <v-btn color="primary" prepend-icon="mdi-content-save" :loading="savingCredential" @click="submitCredential('replace')">保存</v-btn>
-          </div>
-        </v-card-text>
-      </v-card>
-    </v-dialog>
   </div>
 </template>
 
@@ -369,13 +270,15 @@
 import { computed, onMounted, ref } from 'vue'
 import AgentConfigHeader from '@/components/AgentConfigHeader.vue'
 import AgentConfigLocation from '@/components/AgentConfigLocation.vue'
-import { api, type ApiError, type PiAgentBackup, type PiAgentCredential, type PiAgentFileKind, type PiAgentProvider, type PiAgentStatus } from '@/services/api'
+import { api, type ApiError, type PiAgentProvider, type PiAgentStatus, type ApiTab } from '@/services/api'
+import { useProxyProtocolPick, defaultQuickPickTypeOptions } from '@/composables/useChannelQuickPick'
+import { filterProxyModelsByKind, importProxyModels, buildPiAgentModel } from '@/composables/useChannelModelImport'
+import { useAuthStore } from '@/stores/auth'
 
 const loading = ref(false)
 const disabled = ref(false)
 const loadError = ref('')
 const notice = ref({ visible: false, type: 'success' as 'success' | 'error', message: '' })
-const activeTab = ref('providers')
 const status = ref<PiAgentStatus | null>(null)
 
 const apiProtocols = [
@@ -410,6 +313,15 @@ const thinkingLevelsSettings = [
   { title: '最高', value: 'max' }
 ]
 
+// 渠道类型 -> pi-agent 协议映射
+const protocolForChannelType: Record<ApiTab, string> = {
+  messages: 'anthropic-messages',
+  responses: 'openai-responses',
+  gemini: 'google-generative-ai',
+  chat: 'openai-completions',
+  images: 'openai-completions'
+}
+
 // ---- 编辑模型接口 ----
 interface EditableModel {
   localId: string
@@ -426,7 +338,7 @@ interface EditableModel {
   costCacheWrite: number | null
   tlEnabled: Record<string, boolean>
   tlBudget: Record<string, string>
-  inputText: string
+  inputTextEnabled: boolean
   inputImage: boolean
   headersText: string
   compatText: string
@@ -480,6 +392,25 @@ const parseJSON = (text: string, field: string): Record<string, unknown> => {
   return parsed as Record<string, unknown>
 }
 
+// 连接本代理（协议选择）
+const quickPickTypeOptions = defaultQuickPickTypeOptions
+
+const applyProtocol = async (type: ApiTab, defaultBaseUrl: Promise<string>) => {
+  const provider = selectedProvider.value
+  if (!provider) return
+  // 自动切换协议
+  provider.api = protocolForChannelType[type]
+  // Base URL 默认填本代理地址，可手动改
+  provider.baseUrl = await defaultBaseUrl
+  // 密钥填本代理访问 key（Web 鉴权与代理鉴权共用同一 key）
+  const authStore = useAuthStore()
+  if (authStore.apiKey) {
+    provider.apiKey = authStore.apiKey
+  }
+}
+
+const { selectedType: quickPickType, defaultBaseUrl } = useProxyProtocolPick(applyProtocol)
+
 // 后端模型 → 编辑模型
 const toEditableModel = (m: Record<string, unknown>): EditableModel => {
   const tlMap = (m.thinkingLevelMap as Record<string, string | null>) ?? {}
@@ -506,7 +437,7 @@ const toEditableModel = (m: Record<string, unknown>): EditableModel => {
     costCacheRead: cost?.cacheRead ?? null,
     costCacheWrite: cost?.cacheWrite ?? null,
     tlEnabled, tlBudget,
-    inputText: input.filter(v => v !== 'image').join(', '),
+    inputTextEnabled: input.includes('text'),
     inputImage: input.includes('image'),
     headersText: toJSON(m.headers),
     compatText: toJSON(m.compat)
@@ -553,7 +484,7 @@ const toModelObj = (m: EditableModel): Record<string, unknown> => {
   }
   if (Object.keys(tlMap).length) obj.thinkingLevelMap = tlMap
   const input: string[] = []
-  m.inputText.split(',').map(s => s.trim()).filter(Boolean).forEach(v => { if (v !== 'image') input.push(v) })
+  if (m.inputTextEnabled) input.push('text')
   if (m.inputImage) input.push('image')
   if (input.length) obj.input = input
   const h = parseJSON(m.headersText, 'headers'); if (Object.keys(h).length) obj.headers = h
@@ -604,8 +535,49 @@ const addModel = () => {
     localId: localID(), id: '', name: '', api: '', baseUrl: '',
     reasoning: null, contextWindow: null, maxTokens: null,
     costInput: null, costOutput: null, costCacheRead: null, costCacheWrite: null,
-    ...makeDefaultTL(), inputText: '', inputImage: false, headersText: '', compatText: ''
+    ...makeDefaultTL(), inputTextEnabled: true, inputImage: false, headersText: '', compatText: ''
   })
+}
+
+// 一键导入本代理模型（按所选协议分组，导入即替换）
+const importProxyModelsToProvider = async () => {
+  const provider = selectedProvider.value
+  if (!provider || !quickPickType.value) return
+  try {
+    const response = await api.getProxyModels()
+    const modelIds = filterProxyModelsByKind(response.data, quickPickType.value)
+    if (modelIds.length === 0) {
+      notice.value = { visible: true, type: 'error', message: `本代理 ${quickPickType.value} 协议分组下暂无模型，请先在渠道管理中配置分组` }
+      return
+    }
+    const count = importProxyModels(quickPickType.value, modelIds, buildPiAgentModel, (models) => {
+      provider.models = models.map(m => ({
+        localId: localID(),
+        id: m.id,
+        name: m.name,
+        api: '',
+        baseUrl: '',
+        reasoning: m.reasoning,
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+        costInput: null,
+        costOutput: null,
+        costCacheRead: null,
+        costCacheWrite: null,
+        ...makeDefaultTL(),
+        // 思考等级映射默认开启 medium/high/xhigh/max
+        tlEnabled: { off: false, minimal: false, low: false, medium: true, high: true, xhigh: true, max: true },
+        tlBudget: { off: '', minimal: '', low: '', medium: '', high: '', xhigh: '', max: '' },
+        inputTextEnabled: m.input.includes('text'),
+        inputImage: m.input.includes('image'),
+        headersText: '',
+        compatText: ''
+      }))
+    })
+    notice.value = { visible: true, type: 'success', message: `已导入本代理 ${quickPickType.value} 分组的 ${count} 个模型（已替换原有模型）` }
+  } catch (importError) {
+    handleApiError(importError, '获取本代理模型列表失败')
+  }
 }
 
 const removeModel = (index: number) => {
@@ -688,7 +660,7 @@ const discoverModels = async () => {
           localId: localID(), id: modelID, name: '', api: '', baseUrl: '',
           reasoning: null, contextWindow: null, maxTokens: null,
           costInput: null, costOutput: null, costCacheRead: null, costCacheWrite: null,
-          ...makeDefaultTL(), inputText: '', inputImage: false, headersText: '', compatText: ''
+          ...makeDefaultTL(), inputTextEnabled: true, inputImage: false, headersText: '', compatText: ''
         })
         existing.add(modelID)
       }
@@ -729,80 +701,6 @@ const saveModelSettings = async () => {
   }
 }
 
-// ---- 凭据 ----
-const credentials = ref<PiAgentCredential[]>([])
-const credentialsRevision = ref('')
-const savingCredential = ref(false)
-const credentialDialog = ref({ visible: false, credential: null as PiAgentCredential | null, key: '' })
-
-const loadCredentials = async () => {
-  try {
-    const result = await api.getPiAgentCredentials()
-    credentials.value = result.credentials
-    credentialsRevision.value = result.revision
-  } catch (error) { handleApiError(error, '加载凭据失败') }
-}
-
-const openCredentialDialog = (credential: PiAgentCredential) => { credentialDialog.value = { visible: true, credential, key: '' } }
-
-const submitCredential = async (action: 'replace' | 'remove') => {
-  const credential = credentialDialog.value.credential
-  if (!credential) return
-  savingCredential.value = true
-  try {
-    await api.updatePiAgentCredential(credential.id, { revision: credentialsRevision.value, action, key: credentialDialog.value.key || undefined })
-    notice.value = { visible: true, type: 'success', message: action === 'replace' ? '密钥已更新' : '密钥已移除' }
-    credentialDialog.value.visible = false
-    await loadCredentials()
-  } catch (error) { handleApiError(error, action === 'replace' ? '更新密钥失败' : '移除密钥失败') }
-  finally { savingCredential.value = false }
-}
-
-const removeCredential = async (credential: PiAgentCredential) => {
-  if (!window.confirm(`退出 ${credential.id} 的 OAuth 会话？`)) return
-  try {
-    await api.deletePiAgentCredential(credential.id, credentialsRevision.value)
-    notice.value = { visible: true, type: 'success', message: `已退出 ${credential.id} 的 OAuth 会话` }
-    await loadCredentials()
-  } catch (error) { handleApiError(error, '退出 OAuth 会话失败') }
-}
-
-const credentialTypeLabel = (type: string) => ({ api_key: 'API Key', oauth: 'OAuth', unknown: '未知' })[type] ?? '未知'
-const credentialTypeColor = (type: string) => ({ api_key: 'success', oauth: 'info', unknown: 'grey' })[type] ?? 'grey'
-
-// ---- 备份 ----
-const backupKinds: Array<{ label: string; value: PiAgentFileKind }> = [
-  { label: 'models.json', value: 'models.json' }, { label: 'auth.json', value: 'auth.json' }, { label: 'settings.json', value: 'settings.json' }
-]
-const backups = ref<PiAgentBackup[]>([])
-const creatingBackup = ref<PiAgentFileKind | ''>('')
-
-const loadBackups = async () => {
-  try {
-    const result = await api.getPiAgentBackups()
-    backups.value = result.backups
-  } catch (error) { handleApiError(error, '加载备份失败') }
-}
-
-const createBackup = async (kind: PiAgentFileKind) => {
-  creatingBackup.value = kind
-  try {
-    const result = await api.createPiAgentBackup(kind)
-    notice.value = { visible: true, type: 'success', message: `已创建 ${kind} 备份` }
-    backups.value.unshift(result.backup)
-  } catch (error) { handleApiError(error, '创建备份失败') }
-  finally { creatingBackup.value = '' }
-}
-
-const restoreBackup = async (backup: PiAgentBackup) => {
-  if (!window.confirm(`确认从备份 ${backup.id} 恢复 ${backup.file}？`)) return
-  try {
-    await api.restorePiAgentBackup(backup.id)
-    notice.value = { visible: true, type: 'success', message: `已恢复 ${backup.file}` }
-    await loadAll(true)
-  } catch (error) { handleApiError(error, '恢复备份失败') }
-}
-
 // ---- 通用 ----
 const handleApiError = (error: unknown, fallback: string) => {
   const apiError = error as ApiError
@@ -818,17 +716,6 @@ const handleApiError = (error: unknown, fallback: string) => {
   }
   notice.value = { visible: true, type: 'error', message: apiError?.message || fallback }
 }
-
-const formatTime = (value: string) => {
-  if (!value) return '-'
-  try { return new Date(value).toLocaleString() } catch { return value }
-}
-const formatSize = (bytes: number) => {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-const shortRevision = (revision: string) => revision ? `${revision.slice(0, 8)}…` : '-'
 
 const loadStatus = async (): Promise<boolean> => {
   try {
@@ -868,7 +755,7 @@ const loadAll = async (silent = false) => {
   loadError.value = ''
   try {
     if (!await loadStatus() || disabled.value) return
-    await Promise.all([loadProviders(), loadCredentials(), loadModelSettings(), loadBackups()])
+    await Promise.all([loadProviders(), loadModelSettings()])
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : '加载 pi-agent 配置失败'
   } finally {

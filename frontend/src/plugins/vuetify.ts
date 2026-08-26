@@ -69,6 +69,7 @@ import {
   mdiDiamondStone,
   mdiApi,
   mdiLightningBolt,
+  mdiLinkVariant,
   mdiFormTextbox,
   mdiMenuDown,
   mdiMenuUp,
@@ -117,7 +118,8 @@ import {
   mdiTimerSand,
   mdiTestTube,
   mdiImage,
-  mdiTranslate
+  mdiTranslate,
+  mdiDownload
 } from '@mdi/js'
 
 // 图标名称到 SVG path 的映射 (使用 kebab-case)
@@ -223,6 +225,7 @@ const iconMap: Record<string, string> = {
   pin: mdiPin,
   'pin-outline': mdiPinOutline,
   'lightning-bolt': mdiLightningBolt,
+  'link-variant': mdiLinkVariant,
   'form-textbox': mdiFormTextbox,
   'clock-outline': mdiClockOutline,
   'chart-line-variant': mdiChartLineVariant,
@@ -276,7 +279,8 @@ const iconMap: Record<string, string> = {
   'timer-sand': mdiTimerSand,
   'test-tube': mdiTestTube,
   account: mdiAccount,
-  send: mdiSend
+  send: mdiSend,
+  download: mdiDownload
 }
 
 // 自定义 SVG iconset

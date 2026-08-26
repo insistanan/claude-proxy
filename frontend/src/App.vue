@@ -451,9 +451,9 @@ const navGroups = [
     key: 'clients',
     label: '客户端',
     items: [
-      { key: 'opencode', label: 'OpenCode', to: '/opencode' },
       { key: 'claude-code', label: 'Claude Code', to: '/claude-code' },
-      { key: 'pi-agent', label: 'pi-agent', to: '/pi-agent' },
+      { key: 'opencode', label: 'OpenCode', to: '/opencode' },
+      { key: 'pi-agent', label: 'pi', to: '/pi-agent' },
       { key: 'dsh', label: 'DSH', to: '/dsh' }
     ]
   }

@@ -26,15 +26,14 @@ type claudeCodeSettingsResponse struct {
 	CredentialKind    string                       `json:"credentialKind"`
 	CredentialMasked  string                       `json:"credentialMasked"`
 	CredentialPresent bool                         `json:"credentialPresent"`
-	Model             string                       `json:"model"`
-	ReasoningModel    string                       `json:"reasoningModel"`
 	ModelDefaults     []claudeCodeModelDefaultView `json:"modelDefaults"`
 }
 
 type claudeCodeModelDefaultView struct {
-	Family string `json:"family"`
-	Model  string `json:"model"`
-	Name   string `json:"name"`
+	Family     string `json:"family"`
+	Model      string `json:"model"`
+	Name       string `json:"name"`
+	Supports1M bool   `json:"supports1M"`
 }
 
 type saveClaudeCodeSettingsRequest struct {
@@ -42,15 +41,27 @@ type saveClaudeCodeSettingsRequest struct {
 	CredentialKind   string                       `json:"credentialKind"`
 	CredentialAction string                       `json:"credentialAction"`
 	Credential       string                       `json:"credential"`
-	Model            string                       `json:"model"`
-	ReasoningModel   string                       `json:"reasoningModel"`
 	ModelDefaults    []saveClaudeCodeModelDefault `json:"modelDefaults"`
 }
 
 type saveClaudeCodeModelDefault struct {
-	Family string `json:"family"`
-	Model  string `json:"model"`
-	Name   string `json:"name"`
+	Family     string `json:"family"`
+	Model      string `json:"model"`
+	Name       string `json:"name"`
+	Supports1M bool   `json:"supports1M"`
+}
+
+// claudeCode1MSuffix 是 Claude Code 客户端识别 1M 上下文的模型名后缀。
+// 写入 ANTHROPIC_DEFAULT_{FAMILY}_MODEL 时追加；读取时反向剥离以还原 supports1M 标记。
+const claudeCode1MSuffix = "[1m]"
+
+// parseClaudeCode1MSuffix 从模型名中识别 [1m] 后缀，返回去后缀的模型名与是否支持 1M。
+func parseClaudeCode1MSuffix(model string) (string, bool) {
+	trimmed := strings.TrimSpace(model)
+	if strings.HasSuffix(trimmed, claudeCode1MSuffix) {
+		return strings.TrimSuffix(trimmed, claudeCode1MSuffix), true
+	}
+	return trimmed, false
 }
 
 // GetClaudeCodeSettings 返回 Claude Code 全局 settings.json 中的代理与模型配置。
@@ -75,8 +86,6 @@ func GetClaudeCodeSettings() gin.HandlerFunc {
 			CredentialKind:    credentialKind,
 			CredentialMasked:  maskOpenCodeSecret(credential),
 			CredentialPresent: credential != "",
-			Model:             stringValue(env["ANTHROPIC_MODEL"]),
-			ReasoningModel:    stringValue(env["ANTHROPIC_REASONING_MODEL"]),
 			ModelDefaults:     claudeCodeModelDefaults(env),
 		})
 	}
@@ -109,8 +118,6 @@ func SaveClaudeCodeSettings() gin.HandlerFunc {
 		}
 		env := objectValue(root["env"])
 		setOptionalString(env, "ANTHROPIC_BASE_URL", req.BaseURL)
-		setOptionalString(env, "ANTHROPIC_MODEL", req.Model)
-		setOptionalString(env, "ANTHROPIC_REASONING_MODEL", req.ReasoningModel)
 		mergeClaudeCodeCredential(env, req)
 		mergeClaudeCodeModelDefaults(env, req.ModelDefaults)
 		if len(env) == 0 {
@@ -221,10 +228,13 @@ func mergeClaudeCodeCredential(env map[string]interface{}, req saveClaudeCodeSet
 func claudeCodeModelDefaults(env map[string]interface{}) []claudeCodeModelDefaultView {
 	defaults := make([]claudeCodeModelDefaultView, 0, len(claudeCodeModelFamilies))
 	for _, family := range claudeCodeModelFamilies {
+		rawModel := stringValue(env["ANTHROPIC_DEFAULT_"+family+"_MODEL"])
+		model, supports1M := parseClaudeCode1MSuffix(rawModel)
 		defaults = append(defaults, claudeCodeModelDefaultView{
-			Family: strings.ToLower(family),
-			Model:  stringValue(env["ANTHROPIC_DEFAULT_"+family+"_MODEL"]),
-			Name:   stringValue(env["ANTHROPIC_DEFAULT_"+family+"_MODEL_NAME"]),
+			Family:     strings.ToLower(family),
+			Model:      model,
+			Name:       stringValue(env["ANTHROPIC_DEFAULT_"+family+"_MODEL_NAME"]),
+			Supports1M: supports1M,
 		})
 	}
 	return defaults
@@ -240,7 +250,13 @@ func mergeClaudeCodeModelDefaults(env map[string]interface{}, defaults []saveCla
 		if !exists {
 			continue
 		}
-		setOptionalString(env, "ANTHROPIC_DEFAULT_"+family+"_MODEL", model.Model)
+		// 支持任一 family 的 1M 上下文时，向模型标识追加 [1m] 后缀，
+		// Claude Code 客户端据此启用 1M 模式；保存时按 family 独立判断。
+		modelID := strings.TrimSpace(model.Model)
+		if model.Supports1M && modelID != "" && !strings.HasSuffix(modelID, claudeCode1MSuffix) {
+			modelID = modelID + claudeCode1MSuffix
+		}
+		setOptionalString(env, "ANTHROPIC_DEFAULT_"+family+"_MODEL", modelID)
 		setOptionalString(env, "ANTHROPIC_DEFAULT_"+family+"_MODEL_NAME", model.Name)
 	}
 }

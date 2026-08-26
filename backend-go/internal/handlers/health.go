@@ -17,6 +17,7 @@ func HealthCheck(envCfg *config.EnvConfig, cfgManager *config.ConfigManager) gin
 			"timestamp": time.Now().Format(time.RFC3339),
 			"uptime":    time.Since(startTime).Seconds(),
 			"mode":      envCfg.Env,
+			"port":      envCfg.Port,
 			"version":   getVersion(),
 			"config": gin.H{
 				"upstreamCount":        len(config.Upstream),

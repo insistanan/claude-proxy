@@ -288,6 +288,8 @@ export interface ClaudeCodeModelDefault {
   family: string
   model: string
   name: string
+  /** 该 family 是否启用 1M 上下文（写入时在模型标识追加 [1m] 后缀） */
+  supports1M: boolean
 }
 
 export interface ClaudeCodeSettings {
@@ -298,8 +300,6 @@ export interface ClaudeCodeSettings {
   credentialKind: 'authToken' | 'apiKey'
   credentialMasked: string
   credentialPresent: boolean
-  model: string
-  reasoningModel: string
   modelDefaults: ClaudeCodeModelDefault[]
 }
 
@@ -420,7 +420,7 @@ export interface PiAgentDiscoverResult {
 
 export interface SaveClaudeCodeSettings extends Pick<
   ClaudeCodeSettings,
-  'baseUrl' | 'credentialKind' | 'model' | 'reasoningModel' | 'modelDefaults'
+  'baseUrl' | 'credentialKind' | 'modelDefaults'
 > {
   credentialAction: 'keep' | 'replace' | 'remove'
   credential?: string
@@ -1182,6 +1182,17 @@ class ApiService {
     })
   }
 
+  // ============== 本代理模型列表（客户端配置页用） ==============
+
+  /**
+   * 获取本代理自身暴露的模型列表（等同 /v1/models 的内容，但走 Web 鉴权）。
+   * 返回条目的 owned_by 形如 "pool:messages" / "pool:messages,responses"，
+   * 标识该模型属于哪些协议分组；owned_by 为 "api-proxy" 的是静态家族别名。
+   */
+  async getProxyModels(): Promise<ModelsResponse> {
+    return this.request('/proxy-models')
+  }
+
   // ============== DSH 配置 API ==============
 
   async getDSHSettings(): Promise<DSHSettings> {
@@ -1259,27 +1270,6 @@ class ApiService {
     })
   }
 
-  async getPiAgentCredentials(): Promise<PiAgentCredentialsResponse> {
-    return this.request('/settings/pi-agent/credentials')
-  }
-
-  async updatePiAgentCredential(
-    id: string,
-    payload: { revision: string; action: 'keep' | 'replace' | 'remove'; key?: string }
-  ): Promise<{ success: boolean; revision: string }> {
-    return this.request(`/settings/pi-agent/credentials/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload)
-    })
-  }
-
-  async deletePiAgentCredential(id: string, revision: string): Promise<{ success: boolean; revision: string }> {
-    return this.request(`/settings/pi-agent/credentials/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      body: JSON.stringify({ revision })
-    })
-  }
-
   async getPiAgentModelSettings(): Promise<PiAgentModelSettingsResponse> {
     return this.request('/settings/pi-agent/model-settings')
   }
@@ -1291,23 +1281,6 @@ class ApiService {
     return this.request('/settings/pi-agent/model-settings', {
       method: 'PATCH',
       body: JSON.stringify(payload)
-    })
-  }
-
-  async getPiAgentBackups(): Promise<PiAgentBackupsResponse> {
-    return this.request('/settings/pi-agent/backups')
-  }
-
-  async createPiAgentBackup(file: PiAgentFileKind): Promise<{ success: boolean; backup: PiAgentBackup }> {
-    return this.request('/settings/pi-agent/backups', {
-      method: 'POST',
-      body: JSON.stringify({ file })
-    })
-  }
-
-  async restorePiAgentBackup(id: string): Promise<{ success: boolean; revision: string; backup: string }> {
-    return this.request(`/settings/pi-agent/backups/${encodeURIComponent(id)}/restore`, {
-      method: 'POST'
     })
   }
 
@@ -1452,6 +1425,8 @@ export interface HealthResponse {
   timestamp: string
   uptime: number
   mode: string
+  /** 本代理监听端口，用于客户端配置页拼装默认 Base URL（http://localhost:{port}） */
+  port?: number
 }
 
 /**
