@@ -227,6 +227,7 @@ type ContentSafetyConfig struct {
 	SensitiveInfo SensitiveInfoConfig `json:"sensitiveInfo"`
 	Credential    CredentialConfig    `json:"credential"`
 	DangerousCmd  DangerousCmdConfig  `json:"dangerousCmd"`
+	Whitelist     WhitelistConfig     `json:"whitelist"`
 }
 
 // SensitiveWordConfig 敏感词检测设置。
@@ -263,6 +264,14 @@ type CredentialConfig struct {
 type DangerousCmdConfig struct {
 	Enabled      bool     `json:"enabled"`
 	EnabledRules []string `json:"enabledRules"`
+}
+
+// WhitelistConfig 内容安全白名单设置。命中白名单的片段跳过拦截但记录审计事件，
+// 让拦截记录页能看见"已放行"的条目。当前只支持按工具名放行：tool_result 与
+// tool_argument 来源的片段若关联到白名单中的工具名，则跳过全部检测维度。
+type WhitelistConfig struct {
+	Enabled   bool     `json:"enabled"`
+	ToolNames []string `json:"toolNames"`
 }
 
 const (
@@ -312,6 +321,10 @@ func DefaultContentSafetyConfig() ContentSafetyConfig {
 			ToolResultMode:   ContentSafetyModeBlock,
 			ToolArgumentMode: ContentSafetyModeBlock,
 			EnabledRules:     []string{},
+		},
+		Whitelist: WhitelistConfig{
+			Enabled:   false,
+			ToolNames: []string{},
 		},
 		DangerousCmd: DangerousCmdConfig{
 			Enabled:      false,

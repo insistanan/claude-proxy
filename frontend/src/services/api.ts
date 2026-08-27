@@ -228,6 +228,10 @@ export interface ContentSafetySettings {
     enabled: boolean
     enabledRules: DangerousCommandRule[]
   }
+  whitelist: {
+    enabled: boolean
+    toolNames: string[]
+  }
 }
 
 export type ContentSafetyMode = 'audit' | 'block' | 'mask'
@@ -607,7 +611,7 @@ export interface RequestLogsResponse {
 }
 
 export type ContentSafetyAPIType = 'messages' | 'responses' | 'chat' | 'gemini'
-export type BlockedLogType = 'sensitive_word' | 'sensitive_info' | 'credential' | 'dangerous_cmd'
+export type BlockedLogType = 'sensitive_word' | 'sensitive_info' | 'credential' | 'dangerous_cmd' | 'whitelist'
 
 export interface BlockedLogEntry {
   id: number

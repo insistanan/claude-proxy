@@ -175,6 +175,8 @@ func WriteAttachedContentSafetyError(c *gin.Context, err error) error {
 }
 
 // WriteAttachedStreamError 将内容安全流错误编码为当前协议的 SSE 事件。
+// 写完 error 事件后补发该协议的流终止序列，否则客户端只收到 error 事件而缺少
+// 结束信号，会一直等待导致 agent 卡死。
 func WriteAttachedStreamError(c *gin.Context, err error) error {
 	apiType, metadata, safetyErr, lookupErr := attachedSafetyError(c, err)
 	if lookupErr != nil {
@@ -184,10 +186,14 @@ func WriteAttachedStreamError(c *gin.Context, err error) error {
 	if payloadErr != nil {
 		return payloadErr
 	}
-	return writeAttachedSSEPayload(c, payload, eventName)
+	if err := writeAttachedSSEPayload(c, payload, eventName); err != nil {
+		return err
+	}
+	return writeAttachedSSEStreamTerminator(c, apiType)
 }
 
 // WriteAttachedStreamHookError 将内容安全基础设施错误编码为当前协议的 SSE 错误。
+// 同样补发流终止序列，避免客户端等待结束信号。
 func WriteAttachedStreamHookError(c *gin.Context, _ error) error {
 	attached, lookupErr := attachedPipelineFromContext(c)
 	if lookupErr != nil {
@@ -201,7 +207,10 @@ func WriteAttachedStreamHookError(c *gin.Context, _ error) error {
 	if payloadErr != nil {
 		return payloadErr
 	}
-	return writeAttachedSSEPayload(c, payload, eventName)
+	if err := writeAttachedSSEPayload(c, payload, eventName); err != nil {
+		return err
+	}
+	return writeAttachedSSEStreamTerminator(c, metadata.APIType)
 }
 
 func writeAttachedSSEPayload(c *gin.Context, payload any, eventName string) error {
@@ -229,6 +238,46 @@ func writeAttachedSSEPayload(c *gin.Context, payload any, eventName string) erro
 		flusher.Flush()
 	}
 	return nil
+}
+
+// writeAttachedSSEStreamTerminator 在内容安全 error 事件之后补发该协议的流终止序列。
+// 客户端（尤其 Claude Code / Codex 等 agent）在收到 error 事件后不会自动结束 SSE 读取
+// 循环，它们等的是 message_stop 等终止标记 + 连接关闭。
+// 缺少终止序列会导致 agent 一直等待，表现为"卡死、无法中断对话"。
+//
+// 各协议终止序列：
+//   - messages：event: message_stop + data: {"type":"message_stop"}
+//   - responses：event: response.completed + data，再发 data：dataini / images：无统一终止标记，靠连接关闭
+func writeAttachedSSEStreamTerminator(c *gin.Context, apiType string) error {
+	if c == nil || c.Writer == nil {
+		return nil
+	}
+	terminator := streamTerminatorForAPI(apiType)
+	if terminator == "" {
+		return nil
+	}
+	if _, writeErr := c.Writer.Write([]byte(terminator)); writeErr != nil {
+		return writeErr
+	}
+	if flusher, ok := c.Writer.(interface{ Flush() }); ok {
+		flusher.Flush()
+	}
+	return nil
+}
+
+func streamTerminatorForAPI(apiType string) string {
+	switch strings.ToLower(apiType) {
+	case "messages":
+		return "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	case "responses":
+		return "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"\",\"status\":\"failed\"}}\n\n[event-done]\n\n"
+	case "chat":
+		return "data: [DONE]\n\n"
+	case "gemini", "images":
+		return ""
+	default:
+		return ""
+	}
 }
 
 func attachedSafetyError(c *gin.Context, err error) (string, HookContext, *ContentSafetyError, error) {

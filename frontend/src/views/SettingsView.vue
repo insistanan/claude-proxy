@@ -251,6 +251,39 @@
               </div>
             </div>
 
+            <div class="safety-group">
+              <div class="setting-row safety-master-row">
+                <div class="setting-copy">
+                  <div class="text-body-1 font-weight-medium">白名单</div>
+                  <div class="text-body-2 text-medium-emphasis mt-1">
+                    命中工具名的 tool_result 与 tool_argument 跳过全部检测，并在拦截记录里留审计条目
+                  </div>
+                </div>
+                <v-switch
+                  v-model="contentSafety.whitelist.enabled"
+                  color="success"
+                  inset
+                  hide-details
+                  aria-label="启用白名单放行"
+                />
+              </div>
+              <v-combobox
+                v-model="contentSafety.whitelist.toolNames"
+                :disabled="!contentSafety.whitelist.enabled"
+                label="放行工具名"
+                placeholder="例如 tavily-search、tavily_search"
+                multiple
+                chips
+                closable-chips
+                variant="outlined"
+                density="comfortable"
+                hide-details="auto"
+                class="mt-3"
+                hint="回车添加，每个 chip 是一个工具名；匹配区分大小写"
+                persistent-hint
+              />
+            </div>
+
             <v-alert v-if="notice" :type="notice.type" variant="tonal" density="compact" class="mt-5">
               {{ notice.message }}
             </v-alert>
@@ -351,6 +384,10 @@ const defaultContentSafety = (): ContentSafetySettings => ({
   dangerousCmd: {
     enabled: false,
     enabledRules: []
+  },
+  whitelist: {
+    enabled: false,
+    toolNames: []
   }
 })
 
@@ -404,6 +441,11 @@ const normalizeContentSafety = (
         : dangerousCmd
           ? []
           : [...defaults.dangerousCmd.enabledRules]
+    },
+    whitelist: {
+      ...defaults.whitelist,
+      ...(settings.whitelist || {}),
+      toolNames: Array.isArray(settings.whitelist?.toolNames) ? [...settings.whitelist.toolNames] : []
     }
   }
 }

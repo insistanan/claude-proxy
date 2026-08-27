@@ -62,6 +62,10 @@
 
 images 的两点差异：① 请求体有 JSON 与 multipart/form-data 两种形态，后者走 `contentSafetyPreRequestHook.runMultipartFormSafety`（检查全部非文件文本部件；掩码改写后重编码表单，**新 boundary 同步回 Content-Type**），文件部件不扫描——图片内容由 vision 层负责；② 不接 post-response / stream 钩子：响应是 base64 图片或 URL，扫描多 MB base64 无检出收益。
 
+白名单（`ContentSafetyConfig.Whitelist`）：启用后 `tool_result` / `tool_argument` 来源的片段若携带的工具名命中 `ToolNames`，则跳过全部检测维度（敏感词/凭据/敏感信息），但仍写一条 `BlockTypeWhitelist` 审计事件到 blocked_store，让拦截记录页可见"已放行"条目。工具名在各协议提取器里提取：messages 用 `tool_use_id` 关联前一条 assistant 的 `tool_use.name`；chat 的 `tool`/`function` role 消息有 `name`，assistant 的 `tool_calls.function.name`；responses 用 `call_id` 关联 `function_call.name`；gemini 的 `functionCall.name` / `functionResponse.name`。流式阶段（post-response stream）逐 chunk 拼接，无完整工具名上下文，白名单不生效。
+
+流式拦截终止：`WriteAttachedStreamError` / `WriteAttachedStreamHookError` 在写完 error SSE 事件后补发该协议的流终止序列（messages 发 `message_stop`，responses 发 `response.completed` + ``，chat 发 `data: [DONE]`，gemini/images 无统一终止标记靠连接关闭）。不补终止序列客户端 agent 会一直等 `message_stop`，表现为"卡死、无法中断对话"。
+
 ## F5 responses 链路
 
 `/v1/responses` 已并入 `RunProxyRequest` 主骨架（F1），协议差异全部经 `ProtocolSpec` 闭包表达：BuildUpstreamRequest 内走 `converters` 转换（主分发在 `responses_protocol.go`，仅 Claude 上游走 factory.go 工厂）、`session.SessionManager` 会话管理（previous_response_id 链）与流式事件转换（`converters.ConvertUpstreamStreamLineToResponses`）都在 HandleSuccess/Provider 回调内完成。会话记录 ID 经 `utils.ContextKeyConversationUserID` 从骨架传入回调。多渠道模式下内容审核错误跨渠道转移（`AllowContentPolicyChannelFailover`），单渠道不生效。`/v1/responses/compact` 是唯一独立于主骨架的端点。

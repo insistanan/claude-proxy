@@ -19,13 +19,15 @@ const (
 )
 
 // SafetySegment 是协议请求中一个经过来源分类的文本片段。Mutable 为 false
-// 的片段只允许审计或阻断，不会被内容安全逻辑改写。
+// 的片段只允许审计或阻断，不会被内容安全逻辑改写。ToolName 标记片段来源的
+// 工具名（仅 tool_result / tool_argument 来源可能携带），用于白名单放行判定。
 type SafetySegment struct {
 	Protocol string
 	Source   string
 	Path     string
 	Text     string
 	Mutable  bool
+	ToolName string
 	replace  func(string)
 }
 
@@ -49,7 +51,31 @@ func extractSafetySegments(apiType string, root map[string]interface{}) ([]Safet
 func extractMessagesSafetySegments(root map[string]interface{}) []SafetySegment {
 	segments := make([]SafetySegment, 0, 8)
 	appendRootTextSegments(&segments, "messages", safetySourceSystem, "system", root, "system")
+	// 先扫描全部 assistant tool_use，建立 tool_use_id -> tool_name 映射，
+	// 供后续 user tool_result 块按 tool_use_id 反查工具名。
+	toolNameByID := make(map[string]string)
 	messages, _ := root["messages"].([]interface{})
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if strings.ToLower(stringValue(message["role"])) != "assistant" {
+			continue
+		}
+		blocks, _ := message["content"].([]interface{})
+		for _, rawBlock := range blocks {
+			block, ok := rawBlock.(map[string]interface{})
+			if !ok || !equalString(block["type"], "tool_use") {
+				continue
+			}
+			id := stringValue(block["id"])
+			name := stringValue(block["name"])
+			if id != "" && name != "" {
+				toolNameByID[id] = name
+			}
+		}
+	}
 	for messageIndex, rawMessage := range messages {
 		message, ok := rawMessage.(map[string]interface{})
 		if !ok {
@@ -68,9 +94,10 @@ func extractMessagesSafetySegments(root map[string]interface{}) []SafetySegment 
 				if !ok || !equalString(block["type"], "tool_use") {
 					continue
 				}
+				toolName := stringValue(block["name"])
 				if input, exists := block["input"]; exists {
-					appendImmutableJSONSegment(&segments, "messages", safetySourceToolArgument,
-						fmt.Sprintf("%s[%d].input", path, blockIndex), input)
+					appendImmutableJSONSegmentWithTool(&segments, "messages", safetySourceToolArgument,
+						fmt.Sprintf("%s[%d].input", path, blockIndex), input, toolName)
 				}
 			}
 			continue
@@ -91,8 +118,9 @@ func extractMessagesSafetySegments(root map[string]interface{}) []SafetySegment 
 			blockPath := fmt.Sprintf("%s[%d]", path, blockIndex)
 			switch stringValue(block["type"]) {
 			case "tool_result":
+				toolName := toolNameByID[stringValue(block["tool_use_id"])]
 				if value, exists := block["content"]; exists {
-					appendImmutableJSONSegment(&segments, "messages", safetySourceToolResult, blockPath+".content", value)
+					appendImmutableJSONSegmentWithTool(&segments, "messages", safetySourceToolResult, blockPath+".content", value, toolName)
 				}
 			case "", "text", "input_text":
 				appendMapTextField(&segments, "messages", safetySourceUser, blockPath, block)
@@ -131,7 +159,8 @@ func extractChatSafetySegments(root map[string]interface{}) []SafetySegment {
 		}
 		path := fmt.Sprintf("messages[%d].content", messageIndex)
 		if source == safetySourceToolResult {
-			appendImmutableJSONSegment(&segments, "chat", source, path, content)
+			toolName := stringValue(message["name"])
+			appendImmutableJSONSegmentWithTool(&segments, "chat", source, path, content, toolName)
 			continue
 		}
 		appendKnownTextContent(&segments, "chat", source, path, content, func(value string) {
@@ -153,6 +182,24 @@ func extractResponsesSafetySegments(root map[string]interface{}) []SafetySegment
 		return segments
 	}
 	items, _ := input.([]interface{})
+	// 先扫描所有 function_call / custom_tool_call / tool_search_call，建立
+	// call_id -> tool_name 映射，供后续 output 项按 call_id 反查工具名。
+	toolNameByCallID := make(map[string]string)
+	for _, rawItem := range items {
+		item, ok := rawItem.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		itemType := strings.ToLower(stringValue(item["type"]))
+		if itemType != "function_call" && itemType != "custom_tool_call" && itemType != "tool_search_call" {
+			continue
+		}
+		callID := stringValue(item["id"])
+		toolName := stringValue(item["name"])
+		if callID != "" && toolName != "" {
+			toolNameByCallID[callID] = toolName
+		}
+	}
 	for itemIndex, rawItem := range items {
 		item, ok := rawItem.(map[string]interface{})
 		if !ok {
@@ -162,15 +209,17 @@ func extractResponsesSafetySegments(root map[string]interface{}) []SafetySegment
 		path := fmt.Sprintf("input[%d]", itemIndex)
 		switch itemType {
 		case "function_call_output", "custom_tool_call_output", "tool_search_output":
+			toolName := toolNameByCallID[stringValue(item["call_id"])]
 			if output, exists := item["output"]; exists {
-				appendImmutableJSONSegment(&segments, "responses", safetySourceToolResult, path+".output", output)
+				appendImmutableJSONSegmentWithTool(&segments, "responses", safetySourceToolResult, path+".output", output, toolName)
 			}
 			continue
 		case "function_call", "custom_tool_call", "tool_search_call":
+			toolName := stringValue(item["name"])
 			if arguments, exists := item["arguments"]; exists {
-				appendImmutableJSONSegment(&segments, "responses", safetySourceToolArgument, path+".arguments", arguments)
+				appendImmutableJSONSegmentWithTool(&segments, "responses", safetySourceToolArgument, path+".arguments", arguments, toolName)
 			} else if input, exists := item["input"]; exists {
-				appendImmutableJSONSegment(&segments, "responses", safetySourceToolArgument, path+".input", input)
+				appendImmutableJSONSegmentWithTool(&segments, "responses", safetySourceToolArgument, path+".input", input, toolName)
 			}
 			continue
 		case "input_text":
@@ -216,17 +265,21 @@ func extractGeminiSafetySegments(root map[string]interface{}) []SafetySegment {
 			}
 			path := fmt.Sprintf("contents[%d].parts[%d]", contentIndex, partIndex)
 			if functionResponse, exists := part["functionResponse"]; exists {
+				toolName := ""
 				if response, ok := functionResponse.(map[string]interface{}); ok {
+					toolName = stringValue(response["name"])
 					if value, exists := response["response"]; exists {
-						appendImmutableJSONSegment(&segments, "gemini", safetySourceToolResult, path+".functionResponse.response", value)
+						appendImmutableJSONSegmentWithTool(&segments, "gemini", safetySourceToolResult, path+".functionResponse.response", value, toolName)
 					}
 				}
 				continue
 			}
 			if functionCall, exists := part["functionCall"]; exists {
+				toolName := ""
 				if call, ok := functionCall.(map[string]interface{}); ok {
+					toolName = stringValue(call["name"])
 					if args, exists := call["args"]; exists {
-						appendImmutableJSONSegment(&segments, "gemini", safetySourceToolArgument, path+".functionCall.args", args)
+						appendImmutableJSONSegmentWithTool(&segments, "gemini", safetySourceToolArgument, path+".functionCall.args", args, toolName)
 					}
 				}
 				continue
@@ -332,14 +385,20 @@ func appendChatMessageToolArguments(segments *[]SafetySegment, pathPrefix string
 	for callIndex, rawCall := range toolCalls {
 		call, _ := rawCall.(map[string]interface{})
 		function, _ := call["function"].(map[string]interface{})
+		if function == nil {
+			continue
+		}
+		toolName := stringValue(function["name"])
 		if arguments, exists := function["arguments"]; exists {
-			appendImmutableJSONSegment(segments, "chat", safetySourceToolArgument,
-				fmt.Sprintf("%s.tool_calls[%d].function.arguments", path, callIndex), arguments)
+			appendImmutableJSONSegmentWithTool(segments, "chat", safetySourceToolArgument,
+				fmt.Sprintf("%s.tool_calls[%d].function.arguments", path, callIndex), arguments, toolName)
 		}
 	}
 	if functionCall, ok := message["function_call"].(map[string]interface{}); ok {
+		toolName := stringValue(functionCall["name"])
 		if arguments, exists := functionCall["arguments"]; exists {
-			appendImmutableJSONSegment(segments, "chat", safetySourceToolArgument, path+".function_call.arguments", arguments)
+			appendImmutableJSONSegmentWithTool(segments, "chat", safetySourceToolArgument,
+				path+".function_call.arguments", arguments, toolName)
 		}
 	}
 }
@@ -395,6 +454,10 @@ func appendMapStringSegment(segments *[]SafetySegment, protocol, source, path st
 }
 
 func appendSafetySegment(segments *[]SafetySegment, protocol, source, path, value string, replace func(string)) {
+	appendSafetySegmentWithTool(segments, protocol, source, path, value, "", replace)
+}
+
+func appendSafetySegmentWithTool(segments *[]SafetySegment, protocol, source, path, value, toolName string, replace func(string)) {
 	if value == "" {
 		return
 	}
@@ -404,11 +467,16 @@ func appendSafetySegment(segments *[]SafetySegment, protocol, source, path, valu
 		Path:     path,
 		Text:     value,
 		Mutable:  replace != nil,
+		ToolName: toolName,
 		replace:  replace,
 	})
 }
 
 func appendImmutableJSONSegment(segments *[]SafetySegment, protocol, source, path string, value interface{}) {
+	appendImmutableJSONSegmentWithTool(segments, protocol, source, path, value, "")
+}
+
+func appendImmutableJSONSegmentWithTool(segments *[]SafetySegment, protocol, source, path string, value interface{}, toolName string) {
 	text, ok := value.(string)
 	if !ok {
 		body, err := json.Marshal(value)
@@ -417,7 +485,7 @@ func appendImmutableJSONSegment(segments *[]SafetySegment, protocol, source, pat
 		}
 		text = string(body)
 	}
-	appendSafetySegment(segments, protocol, source, path, text, nil)
+	appendSafetySegmentWithTool(segments, protocol, source, path, text, toolName, nil)
 }
 
 func applyContentSafetySegments(
@@ -431,6 +499,17 @@ func applyContentSafetySegments(
 	changed := false
 	for index := range segments {
 		segment := &segments[index]
+		// 白名单放行：命中工具名的 tool_result / tool_argument 跳过全部检测维度，
+		// 并记录一条 whitelist 审计事件，让拦截记录页可见"已放行"的条目。
+		if isWhitelistedSegment(snapshot, segment) {
+			if err := recordWhitelistAllowed(ctx, metadata, recorder, *segment); err != nil {
+				return changed, err
+			}
+			if segment.Mutable && segment.Text != "" {
+				segment.replace(segment.Text)
+			}
+			continue
+		}
 		if segment.Source == safetySourceUser || segment.Source == safetySourceSystem {
 			if match, ok := snapshot.words.FindFirst(segment.Text); ok {
 				return changed, &ContentSafetyError{
@@ -550,6 +629,61 @@ func infoRuleNames(matches []sensitive.InfoMatch) []string {
 		rules = append(rules, match.Rule)
 	}
 	return rules
+}
+
+// isWhitelistedSegment 判断片段是否命中白名单：仅 tool_result / tool_argument
+// 来源、且携带的工具名出现在白名单 ToolNames 中时放行。白名单未启用或工具名
+// 为空时一律不放行。
+func isWhitelistedSegment(snapshot *contentSafetySnapshot, segment *SafetySegment) bool {
+	if snapshot == nil || segment == nil {
+		return false
+	}
+	whitelist := snapshot.settings.Whitelist
+	if !whitelist.Enabled || len(whitelist.ToolNames) == 0 {
+		return false
+	}
+	if segment.Source != safetySourceToolResult && segment.Source != safetySourceToolArgument {
+		return false
+	}
+	toolName := strings.TrimSpace(segment.ToolName)
+	if toolName == "" {
+		return false
+	}
+	for _, allowed := range whitelist.ToolNames {
+		if strings.TrimSpace(allowed) == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+// recordWhitelistAllowed 写入一条 whitelist 审计事件，让拦截记录页能看见"已放行"
+// 的条目。同请求内同工具名 + 同路径去重，避免刷屏。
+func recordWhitelistAllowed(ctx context.Context, metadata HookContext, recorder BlockedLogRecorder, segment SafetySegment) error {
+	if recorder == nil || metadata.eventDeduper == nil {
+		return nil
+	}
+	toolName := strings.TrimSpace(segment.ToolName)
+	if toolName == "" {
+		return nil
+	}
+	eventKey := fmt.Sprintf("%s\x00%s\x00%s\x00%s", sensitive.BlockTypeWhitelist, segment.Source, segment.Path, toolName)
+	if metadata.eventDeduper.contains(eventKey) {
+		return nil
+	}
+	if _, err := recorder.Record(ctx, sensitive.BlockedLog{
+		APIType:       metadata.APIType,
+		BlockType:     sensitive.BlockTypeWhitelist,
+		RuleName:      toolName,
+		PromptSnippet: safetyEventSnippet("allow", segment),
+		ChannelName:   metadata.ChannelName,
+		Model:         metadata.Model,
+		RequestID:     metadata.RequestID,
+	}); err != nil {
+		return fmt.Errorf("写入白名单放行记录失败: %w", err)
+	}
+	metadata.eventDeduper.mark(eventKey)
+	return nil
 }
 
 func safetyEventSnippet(mode string, segment SafetySegment) string {

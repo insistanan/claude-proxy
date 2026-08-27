@@ -233,7 +233,8 @@ const blockTypeItems: Array<{ title: string; value: BlockedLogType | '' }> = [
   { title: '敏感词', value: 'sensitive_word' },
   { title: '个人信息', value: 'sensitive_info' },
   { title: '凭据', value: 'credential' },
-  { title: '危险命令', value: 'dangerous_cmd' }
+  { title: '危险命令', value: 'dangerous_cmd' },
+  { title: '白名单放行', value: 'whitelist' }
 ]
 
 const pageSizeItems = [20, 50, 100]
@@ -362,11 +363,11 @@ const apiTypeColor = (value: ContentSafetyAPIType) => ({
 })[value]
 
 const blockTypeLabel = (value: BlockedLogType) => ({
-  sensitive_word: '敏感词', sensitive_info: '个人信息', credential: '凭据', dangerous_cmd: '危险命令'
+  sensitive_word: '敏感词', sensitive_info: '个人信息', credential: '凭据', dangerous_cmd: '危险命令', whitelist: '白名单放行'
 })[value]
 
 const blockTypeColor = (value: BlockedLogType) => ({
-  sensitive_word: 'error', sensitive_info: 'warning', credential: 'error', dangerous_cmd: 'error'
+  sensitive_word: 'error', sensitive_info: 'warning', credential: 'error', dangerous_cmd: 'error', whitelist: 'success'
 })[value]
 
 const ruleLabels: Record<string, string> = {

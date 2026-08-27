@@ -19,6 +19,7 @@ const (
 	BlockTypeSensitiveInfo = "sensitive_info"
 	BlockTypeCredential    = "credential"
 	BlockTypeDangerousCmd  = "dangerous_cmd"
+	BlockTypeWhitelist     = "whitelist"
 
 	defaultBlockedLogPageSize = 20
 	maxBlockedLogPageSize     = 100
@@ -397,7 +398,7 @@ func validBlockedLogAPIType(value string) bool {
 
 func validBlockType(value string) bool {
 	switch value {
-	case BlockTypeSensitiveWord, BlockTypeSensitiveInfo, BlockTypeCredential, BlockTypeDangerousCmd:
+	case BlockTypeSensitiveWord, BlockTypeSensitiveInfo, BlockTypeCredential, BlockTypeDangerousCmd, BlockTypeWhitelist:
 		return true
 	default:
 		return false

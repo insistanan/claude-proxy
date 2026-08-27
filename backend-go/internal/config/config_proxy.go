@@ -248,6 +248,30 @@ func ValidateContentSafetyConfig(settings ContentSafetyConfig) error {
 		}
 		seenWords[word] = struct{}{}
 	}
+	if err := validateWhitelistConfig(settings.Whitelist); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateWhitelistConfig(settings WhitelistConfig) error {
+	if !settings.Enabled {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(settings.ToolNames))
+	for _, name := range settings.ToolNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return proxyConfigErrorf("白名单工具名不能为空")
+		}
+		if _, exists := seen[name]; exists {
+			return proxyConfigErrorf("白名单工具名 %q 重复", name)
+		}
+		seen[name] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return proxyConfigErrorf("白名单已启用，但未配置任何工具名")
+	}
 	return nil
 }
 
@@ -292,6 +316,7 @@ func cloneSettingsConfig(settings SettingsConfig) SettingsConfig {
 	settings.ContentSafety.SensitiveInfo.EnabledRules = append([]string{}, settings.ContentSafety.SensitiveInfo.EnabledRules...)
 	settings.ContentSafety.Credential.EnabledRules = append([]string{}, settings.ContentSafety.Credential.EnabledRules...)
 	settings.ContentSafety.DangerousCmd.EnabledRules = append([]string{}, settings.ContentSafety.DangerousCmd.EnabledRules...)
+	settings.ContentSafety.Whitelist.ToolNames = append([]string{}, settings.ContentSafety.Whitelist.ToolNames...)
 	return settings
 }
 
