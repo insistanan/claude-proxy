@@ -107,6 +107,32 @@ func TestBuildTargetURL_SkipVersionWithHash(t *testing.T) {
 	}
 }
 
+// TestMessagesResponsesURL_SkipVersionWithHash 验证 Messages→Responses 上游 URL
+// 构建与 utils.BuildUpstreamURL 约定一致（原私有 buildResponsesURL 已收敛，见治理记录）。
+func TestMessagesResponsesURL_SkipVersionWithHash(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{"normal", "https://api.example.com", "https://api.example.com/v1/responses"},
+		{"with_v1", "https://api.example.com/v1", "https://api.example.com/v1/responses"},
+		{"with_v1beta", "https://api.example.com/v1beta", "https://api.example.com/v1beta/responses"},
+		{"hash_skip", "https://api.example.com#", "https://api.example.com/responses"},
+		{"hash_with_slash", "https://api.example.com/#", "https://api.example.com/responses"},
+		{"trailing_slash", "https://api.example.com/", "https://api.example.com/v1/responses"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := utils.BuildUpstreamURL(tt.baseURL, "/v1", "/responses")
+			if got != tt.want {
+				t.Errorf("BuildUpstreamURL(%q, /v1, /responses) = %q, want %q", tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestGeminiURL_VersionPrefixDefaults 验证 Gemini 默认版本段为 /v1beta 且约定一致。
 func TestGeminiURL_VersionPrefixDefaults(t *testing.T) {
 	tests := []struct {

@@ -30,7 +30,7 @@
        → post-response 钩子 → scheduler.RecordSuccessWithUsage → 会话/对话成功标记
 ```
 
-渠道选择顺序（`SelectChannel`，见 `internal/scheduler/channel_scheduler.go`）：
+渠道选择顺序（`SelectChannel`，见 `internal/scheduler/selection.go`）：
 
 ```
 1. 对话路由覆盖（Route Override）— 最高优先级，冲突 409

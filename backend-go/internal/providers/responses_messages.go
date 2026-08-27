@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -75,7 +74,7 @@ func (p *MessagesResponsesProvider) ConvertToProviderRequest(c *gin.Context, ups
 		return nil, originalBodyBytes, fmt.Errorf("序列化Responses请求体失败: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, buildResponsesURL(upstream.GetEffectiveBaseURL()), bytes.NewReader(reqBodyBytes))
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, utils.BuildUpstreamURL(upstream.GetEffectiveBaseURL(), "/v1", "/responses"), bytes.NewReader(reqBodyBytes))
 	if err != nil {
 		return nil, originalBodyBytes, fmt.Errorf("创建Responses请求失败: %w", err)
 	}
@@ -250,20 +249,6 @@ func normalizeToolsForPromptCacheKey(tools []types.ClaudeTool) []map[string]inte
 		})
 	}
 	return out
-}
-
-func buildResponsesURL(baseURL string) string {
-	skipVersionPrefix := strings.HasSuffix(baseURL, "#")
-	if skipVersionPrefix {
-		baseURL = strings.TrimSuffix(baseURL, "#")
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-	endpoint := "/responses"
-	versionPattern := regexp.MustCompile(`/v\d+[a-z]*$`)
-	if !skipVersionPrefix && !versionPattern.MatchString(baseURL) {
-		endpoint = "/v1" + endpoint
-	}
-	return baseURL + endpoint
 }
 
 func claudeMessagesToResponsesInput(messages []types.ClaudeMessage, includeHistoryThinking bool) []interface{} {
