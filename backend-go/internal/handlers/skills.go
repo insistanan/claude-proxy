@@ -280,12 +280,8 @@ func (s *SkillsAPI) Consolidate() gin.HandlerFunc {
 			if item.LocationKey == "project" {
 				continue
 			}
-			files, err := readSkillFiles(item.Path)
-			if err != nil {
-				c.JSON(500, gin.H{"error": fmt.Sprintf("读取 %s 失败: %v", item.Name, err)})
-				return
-			}
-			if err := writeSkillFilesPreserving(filepath.Join(projectLocation.Path, item.Name), files); err != nil {
+			destination := filepath.Join(projectLocation.Path, item.Name)
+			if err := copySkillDir(item.Path, destination, true); err != nil {
 				c.JSON(500, gin.H{"error": fmt.Sprintf("归档 %s 失败: %v", item.Name, err)})
 				return
 			}
@@ -416,11 +412,6 @@ func (s *SkillsAPI) Copy() gin.HandlerFunc {
 			c.JSON(400, gin.H{"error": "Skill 路径无效"})
 			return
 		}
-		files, err := readSkillFiles(sourcePath)
-		if err != nil {
-			c.JSON(400, gin.H{"error": fmt.Sprintf("读取待复制 Skill 失败: %v", err)})
-			return
-		}
 		for _, target := range req.Targets {
 			location, ok := locationByKey[target]
 			if !ok {
@@ -438,7 +429,12 @@ func (s *SkillsAPI) Copy() gin.HandlerFunc {
 		}
 		for _, target := range req.Targets {
 			location := locationByKey[target]
-			if err := writeSkillFilesForLocation(location, req.Name, files); err != nil {
+			destination := filepath.Join(location.Path, req.Name)
+			if filepath.Dir(destination) != filepath.Clean(location.Path) {
+				c.JSON(400, gin.H{"error": "Skill 目标路径无效"})
+				return
+			}
+			if err := copySkillDir(sourcePath, destination, location.Key == "project"); err != nil {
 				c.JSON(500, gin.H{"error": fmt.Sprintf("复制到 %s 失败: %v", location.Agent, err)})
 				return
 			}
@@ -502,14 +498,12 @@ func (s *SkillsAPI) Backup() gin.HandlerFunc {
 		}
 		// 项目目录是可恢复的统一 Skill 来源。保存翻译时同步保留完整原 Skill，
 		// 即使原 Agent 目录之后被删除，也可以从项目目录复制回来。
-		if files, readErr := readSkillFiles(ref.Path); readErr == nil {
-			if writeErr := writeSkillFilesPreserving(projectSkillRootForName(req.Name), files); writeErr != nil {
+		if copyErr := copySkillDir(ref.Path, projectSkillRootForName(req.Name), true); copyErr != nil {
+			// 源 Skill 缺少附属资源或读取失败时降级为只同步 SKILL.md，保证项目目录始终有副本。
+			if writeErr := writeSkillFilesPreserving(projectSkillRootForName(req.Name), map[string][]byte{"SKILL.md": original}); writeErr != nil {
 				c.JSON(500, gin.H{"error": fmt.Sprintf("保存项目 Skill 副本失败: %v", writeErr)})
 				return
 			}
-		} else if writeErr := writeSkillFilesPreserving(projectSkillRootForName(req.Name), map[string][]byte{"SKILL.md": original}); writeErr != nil {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("保存项目 Skill 副本失败: %v", writeErr)})
-			return
 		}
 		c.JSON(200, gin.H{"success": true, "path": backupDir})
 	}
@@ -922,22 +916,39 @@ func translatedSkillDisplayName(content []byte) string {
 }
 
 const (
-	maxSkillCopyFiles      = 128
-	maxSkillCopyTotalBytes = 20 << 20
-	maxSkillCopyFileBytes  = 5 << 20
-	skillBackupsDirName    = ".backups"
+	// maxSkillCopyFileBytes 限制单次复制单个文件大小，防止误把超大文件塞进 Skill 目录后流式拷贝爆盘。
+	maxSkillCopyFileBytes = 30 << 20
+	skillBackupsDirName   = ".backups"
 )
 
-func readSkillFiles(source string) (map[string][]byte, error) {
-	info, err := os.Stat(source)
+// copySkillDir 把源 Skill 目录流式拷贝到目标目录，不把文件内容收进内存。
+// preserveBackups 为 true 时（用于项目目录）保留翻译备份目录，清理其余旧文件后写入。
+// 拒绝符号链接、校验单文件大小、校验目标路径不逃逸，并要求源目录包含 SKILL.md。
+func copySkillDir(source, destination string, preserveBackups bool) error {
+	sourceInfo, err := os.Stat(source)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if !info.IsDir() {
-		return nil, errors.New("Skill 来源不是目录")
+	if !sourceInfo.IsDir() {
+		return errors.New("Skill 来源不是目录")
 	}
-	files := make(map[string][]byte)
-	var totalSize int64
+
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		return err
+	}
+	if preserveBackups {
+		if err := cleanSkillDirPreservingBackups(destination); err != nil {
+			return err
+		}
+	} else if err := os.RemoveAll(destination); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		return err
+	}
+
+	cleanDest := filepath.Clean(destination)
+	sawSkillMD := false
 	err = filepath.WalkDir(source, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -951,42 +962,75 @@ func readSkillFiles(source string) (map[string][]byte, error) {
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("不支持复制符号链接: %s", entry.Name())
 		}
-		relative, err := filepath.Rel(source, current)
-		if err != nil {
-			return err
+		relative, relErr := filepath.Rel(source, current)
+		if relErr != nil {
+			return relErr
 		}
 		relative = filepath.ToSlash(relative)
 		if relative == "." || strings.HasPrefix(relative, "../") || strings.Contains(relative, "\\") {
 			return errors.New("Skill 文件路径无效")
 		}
-		if len(files) >= maxSkillCopyFiles {
-			return fmt.Errorf("Skill 文件数量超过 %d 个", maxSkillCopyFiles)
-		}
-		fileInfo, err := entry.Info()
-		if err != nil {
-			return err
+		fileInfo, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
 		}
 		if fileInfo.Size() > maxSkillCopyFileBytes {
 			return fmt.Errorf("Skill 文件过大: %s", relative)
 		}
-		content, err := os.ReadFile(current)
-		if err != nil {
-			return err
+		target := filepath.Join(cleanDest, filepath.FromSlash(relative))
+		if !strings.HasPrefix(target, cleanDest+string(os.PathSeparator)) {
+			return errors.New("Skill 文件路径无效")
 		}
-		totalSize += int64(len(content))
-		if totalSize > maxSkillCopyTotalBytes {
-			return fmt.Errorf("Skill 总大小超过 %d MB", maxSkillCopyTotalBytes/(1<<20))
+		if relative == "SKILL.md" {
+			sawSkillMD = true
 		}
-		files[relative] = content
-		return nil
+		return copySkillFile(current, target)
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if _, exists := files["SKILL.md"]; !exists {
-		return nil, errors.New("Skill 缺少 SKILL.md")
+	if !sawSkillMD {
+		return errors.New("Skill 缺少 SKILL.md")
 	}
-	return files, nil
+	return nil
+}
+
+// copySkillFile 用 io.Copy 逐文件拷贝，避免把整个 Skill 收进内存。
+func copySkillFile(source, target string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		return err
+	}
+	sourceFile, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	destinationFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(destinationFile, sourceFile); err != nil {
+		destinationFile.Close()
+		return err
+	}
+	return destinationFile.Close()
+}
+
+// cleanSkillDirPreservingBackups 清理目录内的非备份条目，保留新旧格式的翻译备份目录。
+func cleanSkillDirPreservingBackups(destination string) error {
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == skillBackupsDirName || skillBackupDirectoryPattern.MatchString(entry.Name()) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(destination, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeSkillFiles(destination string, files map[string][]byte) error {

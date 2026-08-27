@@ -8,7 +8,7 @@ bun.lock text diff
 * text=auto eol=lf
 
 # 明确标记文本文件
-*.go text diff=golang
+*.go text eol=lf diff=golang
 *.js text
 *.ts text
 *.vue text
