@@ -97,6 +97,10 @@ func extractText(payload map[string]interface{}) string {
 		if text := asString(message["content"]); text != "" {
 			return text
 		}
+		// OpenAI / 兼容中转会把 content 拆成多 part 数组，纯字符串取不到。
+		if parts := extractContentParts(message["content"]); parts != "" {
+			return parts
+		}
 	}
 	// Responses output_text
 	if text := asString(payload["output_text"]); text != "" {
@@ -161,6 +165,31 @@ func extractContentTypes(payload map[string]interface{}) []string {
 		add("text")
 	}
 	return types
+}
+
+// extractContentParts 处理 OpenAI / 兼容中转把 message.content 拆成多 part 数组的情况：
+// [{"type":"text","text":"北京"}] 之类。纯字符串 content 由 asString 兜底，这里只管数组。
+func extractContentParts(value interface{}) string {
+	parts, ok := value.([]interface{})
+	if !ok {
+		return ""
+	}
+	var texts []string
+	for _, item := range parts {
+		block, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// 跳过 reasoning / thinking 段，只取输出文本，与 Claude 分支口径一致。
+		blockType := asString(block["type"])
+		if blockType == "reasoning" || blockType == "thinking" {
+			continue
+		}
+		if text := asString(block["text"]); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 func hasSignature(payload map[string]interface{}) bool {

@@ -41,3 +41,25 @@ func TestExtractSVG(t *testing.T) {
 		t.Fatal("应抽出 SVG")
 	}
 }
+
+func TestExtractTextOpenAIContentArray(t *testing.T) {
+	raw := &RawResponse{JSON: map[string]interface{}{
+		"choices": []interface{}{
+			map[string]interface{}{
+				"message": map[string]interface{}{
+					"content": []interface{}{
+						map[string]interface{}{"type": "reasoning", "text": "内部思考不该被抽出来"},
+						map[string]interface{}{"type": "text", "text": "北京"},
+					},
+				},
+			},
+		},
+	}}
+	extracted, err := ExtractFromResponse(ExtractText, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extracted.Text != "北京" {
+		t.Fatalf("应从 content 数组抽出文本，得到 %q", extracted.Text)
+	}
+}

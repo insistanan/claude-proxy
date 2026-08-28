@@ -118,32 +118,48 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:        "iq-svg-circle",
-			Name:        "SVG 圆",
-			Description: "要求输出一段合法 SVG；判定会真的解析几何（半径/圆心/颜色），结果抽屉里可预览。",
+			Slug:        "iq-svg-pelican-bike",
+			Name:        "SVG 复杂场景",
+			Description: "要求画一只正在骑自行车的鹈鹕——多元素组合（鸟 + 自行车）+ 动态姿态，弱模型只能糊弄出几何形状或把鸟画成静态站立；先抽 SVG 几何外形，再由被测渠道自评是否真的画出了骑行中的鹈鹕。",
 			Category:    CategoryIQ,
 			Stimulus: Stimulus{
-				Prompt:      "Output a valid SVG snippet (no markdown) that draws a red circle of radius 40 centered at (50,50) inside a 100x100 viewBox.",
-				MaxTokens:   256,
+				Prompt:      "Output a single valid SVG snippet (no markdown, no explanation) that depicts a pelican riding a bicycle in motion. The pelican must be visibly seated on the bike and pedaling; show wheels, a frame, the bird's body, beak, and at least one limb on the pedal. Use a 300x200 viewBox.",
+				MaxTokens:   1024,
 				Temperature: 0,
 			},
-			Extract:                ExtractSpec{Kind: ExtractSVG},
-			Judge:                  JudgeSpec{Kind: JudgeSVG},
+			Extract: ExtractSpec{Kind: ExtractSVG},
+			Judge: JudgeSpec{
+				Kind: JudgeRubric,
+				AnalysisPrompt: `候选回答里应该有一段 SVG。判断它是否同时满足：
+1. SVG 合法且自包含（有 <svg> 与 </svg>，坐标/尺寸大致合理，不依赖外部资源）。
+2. 真的画了一只鹈鹕（识别得出喙、鸟身轮廓），而不是把"鸟"糊弄成一个普通圆点或人形。
+3. 真的画了一辆自行车（有车轮、车架），且鹈鹕位于车座上方、至少一只肢体接触踏板，体现"骑行中"的动态而非静态站立。
+4. 构图整体能让人一眼认出"鹈鹕骑自行车"，不是只能靠文字标签解释。
+四项全满足判 pass；满足 2~3 项判 suspect；只满足 1 项或以下、或完全跑题判 fail。`,
+			},
 			SampleCount:            1,
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:        "iq-svg-rects",
-			Name:        "SVG 双矩形",
-			Description: "两个不重叠矩形的 SVG；考察模型能否保持几何约束不穿帮。",
+			Slug:        "iq-svg-mandala",
+			Name:        "SVG 对称曼陀罗",
+			Description: "要求画 6 重旋转对称的曼陀罗花纹——内外两层、6 等分花瓣。弱模型只能堆几个随意圆点，画不出真旋转对称；与鹈鹕题互补：一个考叙事拟物，一个考几何变换。",
 			Category:    CategoryIQ,
 			Stimulus: Stimulus{
-				Prompt:      "Output a valid SVG snippet (no markdown) with a 200x100 viewBox containing two non-overlapping rectangles.",
-				MaxTokens:   256,
+				Prompt:      "Output a single valid SVG snippet (no markdown, no explanation) of a mandala with 6-fold rotational symmetry: an outer ring and an inner ring, each made of 6 identical petals evenly spaced around the center. Use a 200x200 viewBox with the center at (100,100). The petals must be genuinely identical and 60 degrees apart, not just scattered shapes.",
+				MaxTokens:   1024,
 				Temperature: 0,
 			},
-			Extract:                ExtractSpec{Kind: ExtractSVG},
-			Judge:                  JudgeSpec{Kind: JudgeSVG},
+			Extract: ExtractSpec{Kind: ExtractSVG},
+			Judge: JudgeSpec{
+				Kind: JudgeRubric,
+				AnalysisPrompt: `候选回答里应该有一段 SVG。判断它是否同时满足：
+1. SVG 合法且自包含（有 <svg> 与 </svg>，viewBox/坐标大致合理，不依赖外部资源）。
+2. 存在可识别的旋转对称结构：6 个相同花瓣围绕中心，相邻花瓣夹角约 60°，不是随便堆 6 个形状。
+3. 有内外两层环，每层都遵守 6 重对称，而不是只有单层或层间错位。
+4. 整体看上去像曼陀罗花纹，不是散乱的几何拼贴。
+四项全满足判 pass；满足 2~3 项判 suspect；只满足 1 项或以下、或完全跑题判 fail。`,
+			},
 			SampleCount:            1,
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
@@ -225,9 +241,9 @@ func (s *Store) SyncBuiltins() error {
 		{
 			Slug:        "iq-light",
 			Name:        "轻量智商",
-			Description: "5 道轻量智商题（数学、常识、SVG、开放权衡），直观判断回答质量；含 rubric 自评（额外 1 次请求），整体不算便宜，不能挂值班。",
+			Description: "5 道轻量智商题（数学、常识、SVG 复杂场景×2、开放权衡），直观判断回答质量；含 rubric 自评（额外 1 次请求），整体不算便宜，不能挂值班。",
 			ProbeIDs: []string{
-				ids["iq-candy-21"], ids["iq-china-capital"], ids["iq-svg-circle"], ids["iq-svg-rects"], ids["iq-rubric-tradeoff"],
+				ids["iq-candy-21"], ids["iq-china-capital"], ids["iq-svg-pelican-bike"], ids["iq-svg-mandala"], ids["iq-rubric-tradeoff"],
 			},
 			Cheap: false,
 		},
