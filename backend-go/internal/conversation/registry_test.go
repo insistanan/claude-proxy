@@ -79,6 +79,28 @@ func TestBuildIdentityKey_WithoutExplicitIDDoesNotMerge(t *testing.T) {
 	}
 }
 
+func TestResolveExistingRecordIDDoesNotCreateRecord(t *testing.T) {
+	registry := NewRegistry()
+	defer registry.Stop()
+
+	identity := Identity{ExplicitID: "response-thread-1", Source: "previous_response"}
+	if got := registry.ResolveExistingRecordID("responses", identity); got != "" {
+		t.Fatalf("missing identity resolved to %q", got)
+	}
+	if got := len(registry.List()); got != 0 {
+		t.Fatalf("lookup created %d records", got)
+	}
+
+	record := registry.ObserveRequest(Observation{
+		APIKind:  "responses",
+		Identity: identity,
+	})
+	registry.MarkComplete(record.ID, "responses")
+	if got := registry.ResolveExistingRecordID("responses", identity); got != record.ID {
+		t.Fatalf("resolved record ID = %q, want %q", got, record.ID)
+	}
+}
+
 func TestRegistryContinuesUniqueCursorHistory(t *testing.T) {
 	registry := NewRegistry()
 	defer registry.Stop()

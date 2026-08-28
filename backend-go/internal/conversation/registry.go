@@ -353,6 +353,31 @@ func (r *Registry) Get(recordID string) (*Record, bool) {
 	return cloneRecord(rec), true
 }
 
+// ResolveExistingRecordID 根据明确身份查找已有会话记录，但不会创建新记录或更新请求状态。
+// 控制面请求（例如 Responses compact）只应复用主链路已经建立的会话，不能因为一次
+// compact 请求凭空创建会话、污染请求计数，或把仅有 ScopeID 的并行客户端窗口强行合并。
+func (r *Registry) ResolveExistingRecordID(apiKind string, identity Identity) string {
+	if r == nil {
+		return ""
+	}
+	key := buildExplicitIdentityKey(Observation{
+		APIKind:  apiKind,
+		Identity: identity,
+	})
+	if key == "" {
+		return ""
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	recordID, ok := r.identityIndex[key]
+	if !ok || r.records[recordID] == nil {
+		return ""
+	}
+	return recordID
+}
+
 func (r *Registry) SetRouteOverride(recordID string, kind string, channelIndex int, channelName string) (*Record, error) {
 	now := time.Now()
 

@@ -14,6 +14,25 @@ func ExtractConversationID(c *gin.Context, bodyBytes []byte) string {
 	return ResolveConversationIdentity(c, bodyBytes).ExplicitID
 }
 
+// ResolveExistingConversationID 将控制面请求中的明确身份解析为已存在的内部会话记录 ID。
+// 主请求经过 ObserveConversationRequest 后，调度器使用的是内部记录 ID；compact 等控制面
+// 请求不能直接把外部 ID 当作内部 ID，否则亲和性会分裂。未找到已有记录时返回空，避免
+// 控制面请求创建孤儿亲和记录或误合并并行客户端窗口。
+func ResolveExistingConversationID(
+	channelScheduler *scheduler.ChannelScheduler,
+	kind scheduler.ChannelKind,
+	identity conversation.Identity,
+) string {
+	if channelScheduler == nil {
+		return identity.ExplicitID
+	}
+	registry := channelScheduler.GetConversationRegistry()
+	if registry == nil {
+		return identity.ExplicitID
+	}
+	return registry.ResolveExistingRecordID(string(kind), identity)
+}
+
 func ObserveConversationRequest(
 	channelScheduler *scheduler.ChannelScheduler,
 	kind scheduler.ChannelKind,

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -214,7 +215,7 @@ func (r *Registry) matchRetryLocked(obs Observation, incomingDepth int, clientFa
 		return nil
 	}
 	now := time.Now()
-	var best *Record
+	candidates := make([]*Record, 0, len(bucket))
 	for recordID := range bucket {
 		rec := r.records[recordID]
 		if rec == nil || rec.lineage.FrontierDepth != incomingDepth || rec.lineage.FrontierHash != frontierHash {
@@ -235,11 +236,20 @@ func (r *Registry) matchRetryLocked(obs Observation, incomingDepth int, clientFa
 		if !rec.LastCompletedAt.IsZero() && now.Sub(rec.LastCompletedAt) > retryMatchWindow {
 			continue
 		}
-		if best == nil || rec.LastCompletedAt.After(best.LastCompletedAt) {
-			best = rec
-		}
+		candidates = append(candidates, rec)
 	}
-	return best
+	// frontierIndex 是 map，不能依赖遍历顺序决定并发失败记录的归并对象。
+	// 优先最近完成的记录；时间相同时用稳定 ID 打破平局，保证重启前后结果可复现。
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].LastCompletedAt.Equal(candidates[j].LastCompletedAt) {
+			return candidates[i].LastCompletedAt.After(candidates[j].LastCompletedAt)
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	if len(candidates) == 0 {
+		return nil
+	}
+	return candidates[0]
 }
 
 func (r *Registry) applyObservationLineageLocked(rec *Record, obs Observation, resolution string, parentID string, now time.Time) {

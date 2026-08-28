@@ -53,8 +53,11 @@ func CompactHandler(
 			return
 		}
 
-		// 提取对话标识用于 Trace 亲和性
-		userID := proxycore.ExtractConversationID(c, bodyBytes)
+		// compact 是控制面操作：只复用主请求已经建立的内部会话，不创建新的会话记录。
+		// 这样不会改变客户端协议，同时避免外部 conversation ID 与内部记录 ID 分裂。
+		identity := proxycore.ResolveConversationIdentity(c, bodyBytes)
+		conversationID := proxycore.ResolveExistingConversationID(
+			channelScheduler, scheduler.ChannelKindResponses, identity)
 		model := compactRequestModel(bodyBytes)
 		hooks.AttachHookPipeline(c, contentSafetyPipeline, hooks.HookContext{
 			APIType: string(scheduler.ChannelKindResponses),
@@ -66,7 +69,7 @@ func CompactHandler(
 		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindResponses, model)
 
 		if isMultiChannel {
-			handleMultiChannelCompact(c, envCfg, cfgManager, channelScheduler, bodyBytes, userID, model)
+			handleMultiChannelCompact(c, envCfg, cfgManager, channelScheduler, bodyBytes, conversationID, model)
 		} else {
 			handleSingleChannelCompact(c, envCfg, cfgManager, bodyBytes, model)
 		}
@@ -149,7 +152,7 @@ func handleMultiChannelCompact(
 	cfgManager *config.ConfigManager,
 	channelScheduler *scheduler.ChannelScheduler,
 	bodyBytes []byte,
-	userID string,
+	conversationID string,
 	model string,
 ) {
 	failedChannels := make(map[int]bool)
@@ -157,7 +160,7 @@ func handleMultiChannelCompact(
 	var lastErr *compactError
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		selection, err := channelScheduler.SelectChannel(c.Request.Context(), userID, failedChannels, scheduler.ChannelKindResponses, model)
+		selection, err := channelScheduler.SelectChannel(c.Request.Context(), conversationID, failedChannels, scheduler.ChannelKindResponses, model)
 		if err != nil {
 			break
 		}
@@ -180,9 +183,9 @@ func handleMultiChannelCompact(
 			if successKey != "" {
 				channelScheduler.RecordSuccessWithUsage(upstream.BaseURL, successKey, channelIndex, nil, scheduler.ChannelKindResponses)
 				// compact 属同一对话，成功也要建立/续期对话级粘滞（与主链路一致）
-				channelScheduler.MarkConversationSuccess(userID, scheduler.ChannelKindResponses, channelIndex, upstream.Name)
-				// 只有真正成功的请求才设置用户级 Trace 亲和
-				channelScheduler.SetTraceAffinityForKind(scheduler.ChannelKindResponses, userID, channelIndex)
+				channelScheduler.MarkConversationSuccess(conversationID, scheduler.ChannelKindResponses, channelIndex, upstream.Name)
+				// 只有真正成功的请求才设置会话级 Trace 亲和
+				channelScheduler.SetTraceAffinityForKind(scheduler.ChannelKindResponses, conversationID, channelIndex)
 				channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindResponses)
 			}
 			return
