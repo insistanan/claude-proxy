@@ -79,7 +79,7 @@ type CollectedUsageData struct {
 // NewStreamContext 创建流处理上下文
 func NewStreamContext(envCfg *config.EnvConfig) *Context {
 	ctx := &Context{
-		LoggingEnabled:    envCfg.IsDevelopment() && envCfg.EnableResponseLogs,
+		LoggingEnabled:    envCfg.EnableResponseLogs,
 		ContentBlockTypes: make(map[int]string),
 		ToolCalls:         make(map[int]*StreamToolCall),
 	}

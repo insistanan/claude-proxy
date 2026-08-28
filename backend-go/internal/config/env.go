@@ -1,8 +1,12 @@
 package config
 
 import (
+	"log"
 	"os"
+	"path/filepath"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
 
 type EnvConfig struct {
@@ -46,10 +50,12 @@ type EnvConfig struct {
 
 // NewEnvConfig 创建环境配置
 func NewEnvConfig() *EnvConfig {
-	// 支持 ENV 和 NODE_ENV（向后兼容）
+	// ENV 优先，NODE_ENV 兼容旧配置。都未设置时默认 production：
+	// 打包 exe / 便携目录不写 ENV 时不应落到 development（会放开 /admin/dev/info、Gin DebugMode）。
+	// 本地开发在 .env 显式写 ENV=development。
 	env := getEnv("ENV", "")
 	if env == "" {
-		env = getEnv("NODE_ENV", "development")
+		env = getEnv("NODE_ENV", "production")
 	}
 
 	return &EnvConfig{
@@ -98,6 +104,51 @@ func (c *EnvConfig) IsDevelopment() bool {
 // IsProduction 是否为生产环境
 func (c *EnvConfig) IsProduction() bool {
 	return c.Env == "production"
+}
+
+// LoadDotEnv 加载 .env。先读可执行文件同目录，再读进程工作目录；
+// 已存在的环境变量不覆盖。两条路径相同则只加载一次。
+// 返回实际加载成功的文件路径（可能为空）。
+func LoadDotEnv() []string {
+	loaded := make([]string, 0, 2)
+	for _, envPath := range candidateDotEnvPaths() {
+		if _, err := os.Stat(envPath); err != nil {
+			if !os.IsNotExist(err) {
+				log.Printf("[Env-Load] 无法访问 %s: %v", envPath, err)
+			}
+			continue
+		}
+		if err := godotenv.Load(envPath); err != nil {
+			log.Printf("[Env-Load] 加载失败 %s: %v", envPath, err)
+			continue
+		}
+		loaded = append(loaded, envPath)
+	}
+	return loaded
+}
+
+func candidateDotEnvPaths() []string {
+	paths := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	add := func(envPath string) {
+		if envPath == "" {
+			return
+		}
+		absolutePath, err := filepath.Abs(envPath)
+		if err != nil {
+			return
+		}
+		if _, exists := seen[absolutePath]; exists {
+			return
+		}
+		seen[absolutePath] = struct{}{}
+		paths = append(paths, absolutePath)
+	}
+	if executablePath, err := os.Executable(); err == nil {
+		add(filepath.Join(filepath.Dir(executablePath), ".env"))
+	}
+	add(".env")
+	return paths
 }
 
 // ShouldLog 是否应该记录日志

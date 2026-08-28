@@ -42,9 +42,7 @@ func SendRequest(req *http.Request, upstream *config.UpstreamConfig, envCfg *con
 	if envCfg.EnableRequestLogs {
 		log.Printf("[%s-Request-URL] 实际请求URL: %s", apiType, req.URL.String())
 		log.Printf("[%s-Request-Method] 请求方法: %s", apiType, req.Method)
-		if envCfg.IsDevelopment() {
-			logRequestDetails(req, envCfg, apiType)
-		}
+		logRequestDetails(req, envCfg, apiType)
 	}
 
 	resp, err := client.Do(req)
@@ -61,7 +59,7 @@ func SendRequest(req *http.Request, upstream *config.UpstreamConfig, envCfg *con
 	return resp, nil
 }
 
-// logRequestDetails 记录请求详情（仅开发模式）
+// logRequestDetails 记录请求头与请求体（受 ENABLE_REQUEST_LOGS / RAW_LOG_OUTPUT 控制）
 // apiType: 接口类型（Messages/Responses/Gemini），用于日志标签前缀
 func logRequestDetails(req *http.Request, envCfg *config.EnvConfig, apiType string) {
 	// 对请求头做敏感信息脱敏

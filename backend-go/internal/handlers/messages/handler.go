@@ -94,29 +94,27 @@ func handleNormalResponse(
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
 		log.Printf("[Messages-Timing] 响应完成: %dms, 状态: %d", responseTime, resp.StatusCode)
-		if envCfg.IsDevelopment() {
-			respHeaders := make(map[string]string)
-			for key, values := range resp.Header {
-				if len(values) > 0 {
-					respHeaders[key] = values[0]
-				}
+		respHeaders := make(map[string]string)
+		for key, values := range resp.Header {
+			if len(values) > 0 {
+				respHeaders[key] = values[0]
 			}
-			var respHeadersJSON []byte
-			if envCfg.RawLogOutput {
-				respHeadersJSON, _ = json.Marshal(respHeaders)
-			} else {
-				respHeadersJSON, _ = json.MarshalIndent(respHeaders, "", "  ")
-			}
-			log.Printf("[Messages-Response] 响应头:\n%s", string(respHeadersJSON))
-
-			var formattedBody string
-			if envCfg.RawLogOutput {
-				formattedBody = utils.FormatJSONBytesRaw(bodyBytes)
-			} else {
-				formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
-			}
-			log.Printf("[Messages-Response] 响应体:\n%s", formattedBody)
 		}
+		var respHeadersJSON []byte
+		if envCfg.RawLogOutput {
+			respHeadersJSON, _ = json.Marshal(respHeaders)
+		} else {
+			respHeadersJSON, _ = json.MarshalIndent(respHeaders, "", "  ")
+		}
+		log.Printf("[Messages-Response] 响应头:\n%s", string(respHeadersJSON))
+
+		var formattedBody string
+		if envCfg.RawLogOutput {
+			formattedBody = utils.FormatJSONBytesRaw(bodyBytes)
+		} else {
+			formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
+		}
+		log.Printf("[Messages-Response] 响应体:\n%s", formattedBody)
 	}
 
 	providerResp := &types.ProviderResponse{

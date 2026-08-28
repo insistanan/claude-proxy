@@ -67,6 +67,7 @@ npm run test                 # vitest 单测（现有 quickInputParser 等）
 
 - `backend-go/.config/config.json` 修改后自动生效，无需重启
 - `.env` 修改后需重启服务
+- 本地开发在 `backend-go/.env` 写 `ENV=development`（代码默认 production；不写则 Gin ReleaseMode，无 `/admin/dev/info`）
 
 ## 代码规范
 

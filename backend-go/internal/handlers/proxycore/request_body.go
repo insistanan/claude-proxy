@@ -48,28 +48,26 @@ func LogOriginalRequest(c *gin.Context, bodyBytes []byte, envCfg *config.EnvConf
 
 	log.Printf("[Request-Receive] 收到%s请求: %s %s", apiType, c.Request.Method, c.Request.URL.Path)
 
-	if envCfg.IsDevelopment() {
-		var formattedBody string
-		if envCfg.RawLogOutput {
-			formattedBody = utils.FormatJSONBytesRaw(bodyBytes)
-		} else {
-			formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
-		}
-		log.Printf("[Request-OriginalBody] 原始请求体:\n%s", formattedBody)
-
-		sanitizedHeaders := make(map[string]string)
-		for key, values := range c.Request.Header {
-			if len(values) > 0 {
-				sanitizedHeaders[key] = values[0]
-			}
-		}
-		maskedHeaders := utils.MaskSensitiveHeaders(sanitizedHeaders)
-		var headersJSON []byte
-		if envCfg.RawLogOutput {
-			headersJSON, _ = json.Marshal(maskedHeaders)
-		} else {
-			headersJSON, _ = json.MarshalIndent(maskedHeaders, "", "  ")
-		}
-		log.Printf("[Request-OriginalHeaders] 原始请求头:\n%s", string(headersJSON))
+	var formattedBody string
+	if envCfg.RawLogOutput {
+		formattedBody = utils.FormatJSONBytesRaw(bodyBytes)
+	} else {
+		formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
 	}
+	log.Printf("[Request-OriginalBody] 原始请求体:\n%s", formattedBody)
+
+	sanitizedHeaders := make(map[string]string)
+	for key, values := range c.Request.Header {
+		if len(values) > 0 {
+			sanitizedHeaders[key] = values[0]
+		}
+	}
+	maskedHeaders := utils.MaskSensitiveHeaders(sanitizedHeaders)
+	var headersJSON []byte
+	if envCfg.RawLogOutput {
+		headersJSON, _ = json.Marshal(maskedHeaders)
+	} else {
+		headersJSON, _ = json.MarshalIndent(maskedHeaders, "", "  ")
+	}
+	log.Printf("[Request-OriginalHeaders] 原始请求头:\n%s", string(headersJSON))
 }

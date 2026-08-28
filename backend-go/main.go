@@ -30,7 +30,6 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 )
 
 //go:embed all:frontend/dist
@@ -466,9 +465,11 @@ func (a *app) shutdown() {
 }
 
 func main() {
-	// 加载环境变量
-	if err := godotenv.Load(); err != nil {
+	loadedEnvFiles := config.LoadDotEnv()
+	if len(loadedEnvFiles) == 0 {
 		log.Println("没有找到 .env 文件，使用环境变量或默认值")
+	} else {
+		log.Printf("[Env-Load] 已加载: %s", strings.Join(loadedEnvFiles, ", "))
 	}
 
 	// 设置版本信息到 handlers 包

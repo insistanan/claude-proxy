@@ -29,7 +29,7 @@ func logStreamCompletion(ctx *Context, envCfg *config.EnvConfig, startTime time.
 			ctx.EventCount, ctx.ContentBlockCount, blockTypeSummary)
 	}
 
-	if envCfg.IsDevelopment() {
+	if envCfg.EnableResponseLogs {
 		logSynthesizedContent(ctx)
 	}
 
@@ -61,7 +61,7 @@ func logStreamCompletion(ctx *Context, envCfg *config.EnvConfig, startTime time.
 
 // logPartialResponse 记录部分响应日志
 func logPartialResponse(ctx *Context, envCfg *config.EnvConfig) {
-	if envCfg.EnableResponseLogs && envCfg.IsDevelopment() {
+	if envCfg.EnableResponseLogs {
 		logSynthesizedContent(ctx)
 	}
 }

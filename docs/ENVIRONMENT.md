@@ -1,18 +1,20 @@
 # 环境变量配置
 
-> 默认值以代码为准（`backend-go/internal/config/env.go` 的 `NewEnvConfig`）；`.env.example` 是推荐配置示例，与代码默认值允许不同（如 `ENV`、`ENABLE_CORS` 示例值即与默认值相反）。未设置的环境变量走下表"代码默认值"。
+> 默认值以代码为准（`backend-go/internal/config/env.go` 的 `NewEnvConfig`）；`.env.example` 是推荐配置示例，与代码默认值允许不同（如 `ENABLE_CORS`、`ENABLE_REQUEST_LOGS` 示例值即与默认值相反）。未设置的环境变量走下表"代码默认值"。
+>
+> `.env` 由 `config.LoadDotEnv` 加载：先读可执行文件同目录，再读进程工作目录；已存在的环境变量不覆盖。`go run` / air 的二进制在临时目录，实际吃的是工作目录 `.env`。
 
 ## 后端（Go）
 
 | 变量 | 代码默认值 | 说明 |
 |------|-----------|------|
 | `PORT` | 3000 | 服务器端口 |
-| `ENV` | development（`NODE_ENV` 兼容） | 运行环境：`development` / `production`。`production` 关闭 /admin/dev/info 路由并收紧 CORS；`.env.example` 建议 production |
+| `ENV` | production（`NODE_ENV` 兼容） | 运行环境：`development` / `production`。未设置时默认 production。只影响 Gin 模式、`/admin/dev/info`、CORS localhost；不控制请求/响应体日志。本地开发显式写 `ENV=development` |
 | `PROXY_ACCESS_KEY` | your-proxy-access-key | 访问密钥（生产环境必须修改） |
 | `ENABLE_WEB_UI` | true | 是否启用 Web 管理界面 |
 | `LOG_LEVEL` | info | 日志级别：`error` / `warn` / `info` / `debug` |
-| `ENABLE_REQUEST_LOGS` | true | 记录请求日志（`false` 才关闭） |
-| `ENABLE_RESPONSE_LOGS` | true | 记录响应日志 |
+| `ENABLE_REQUEST_LOGS` | true | 记录请求日志（含请求体/头；`false` 才关闭）。不跟 `ENV` 走 |
+| `ENABLE_RESPONSE_LOGS` | true | 记录响应日志（含响应体与流式合成内容）。不跟 `ENV` 走 |
 | `QUIET_POLLING_LOGS` | true | 静默前端轮询日志 |
 | `RAW_LOG_OUTPUT` | false | 原始日志输出（不缩进、不截断） |
 | `SSE_DEBUG_LEVEL` | off | SSE 调试级别：`off` / `summary` / `full` |
