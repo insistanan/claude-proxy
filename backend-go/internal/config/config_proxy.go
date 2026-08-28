@@ -196,6 +196,9 @@ func ValidateContentSafetyConfig(settings ContentSafetyConfig) error {
 	); err != nil {
 		return err
 	}
+	if err := validateIPMaskScope(settings.SensitiveInfo.IPMaskScope); err != nil {
+		return err
+	}
 	if err := validateEnabledRuleSelection("凭据", settings.Credential.Enabled, settings.Credential.EnabledRules); err != nil {
 		return err
 	}
@@ -292,6 +295,17 @@ func validateSafetyMode(label, mode string, allowMask bool) error {
 		}
 	}
 	return proxyConfigErrorf("%s处理模式 %q 无效", label, mode)
+}
+
+func validateIPMaskScope(scope string) error {
+	switch strings.TrimSpace(scope) {
+	case SensitiveInfoIPMaskScopePublic, SensitiveInfoIPMaskScopeAll:
+		return nil
+	case "":
+		return proxyConfigErrorf("IP 掩码范围不能为空")
+	default:
+		return proxyConfigErrorf("不支持的 IP 掩码范围 %q", scope)
+	}
 }
 
 func validateRuleSelection(label string, rules []string, allowed map[string]struct{}) error {

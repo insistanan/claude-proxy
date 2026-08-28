@@ -300,6 +300,10 @@ func migrateContentSafetyConfig(settings *ContentSafetyConfig, rawJSON []byte) b
 				settings.SensitiveInfo.Mode = defaults.SensitiveInfo.Mode
 				changed = true
 			}
+			if _, exists := fields["ipMaskScope"]; !exists || strings.TrimSpace(settings.SensitiveInfo.IPMaskScope) == "" {
+				settings.SensitiveInfo.IPMaskScope = defaults.SensitiveInfo.IPMaskScope
+				changed = true
+			}
 		}
 	}
 

@@ -27,9 +27,8 @@ func TestInfoDetectorMasksEveryRule(t *testing.T) {
 		{name: "普通邮箱", rule: config.SensitiveInfoRuleEmail, input: "user@example.com", expected: "[MASKED_PII:email]"},
 		{name: "单字邮箱", rule: config.SensitiveInfoRuleEmail, input: "a@b.co", expected: "[MASKED_PII:email]"},
 		{name: "带标签邮箱", rule: config.SensitiveInfoRuleEmail, input: "first.last+tag@sub.example.org", expected: "[MASKED_PII:email]"},
-		{name: "内网IPv4", rule: config.SensitiveInfoRuleIPAddress, input: "192.168.1.1", expected: "[MASKED_PII:ip_address]"},
 		{name: "公网IPv4", rule: config.SensitiveInfoRuleIPAddress, input: "8.8.8.8", expected: "[MASKED_PII:ip_address]"},
-		{name: "IPv6", rule: config.SensitiveInfoRuleIPAddress, input: "2001:db8::1", expected: "[MASKED_PII:ip_address]"},
+		{name: "公网IPv6", rule: config.SensitiveInfoRuleIPAddress, input: "2607:f8b0:4005:808::200e", expected: "[MASKED_PII:ip_address]"},
 	}
 
 	for _, test := range tests {
@@ -43,6 +42,132 @@ func TestInfoDetectorMasksEveryRule(t *testing.T) {
 			}
 			if matches[0].Start != 0 || matches[0].End != len(test.input) {
 				t.Fatalf("命中偏移错误: %+v", matches[0])
+			}
+		})
+	}
+}
+
+func TestInfoDetectorPublicScopeSkipsNonPublicIPs(t *testing.T) {
+	detector, err := NewInfoDetector(defaultSensitiveInfoSettings())
+	if err != nil {
+		t.Fatalf("创建检测器失败: %v", err)
+	}
+
+	inputs := []string{
+		"监听地址 0.0.0.0:8080",
+		"回环地址 127.0.0.1",
+		"内网网关 192.168.1.1",
+		"内网段 10.0.0.5",
+		"容器网络 172.16.0.9",
+		"链路本地 169.254.1.1",
+		"组播 224.0.0.1",
+		"广播 255.255.255.255",
+		"文档示例 192.0.2.10",
+		"文档示例 198.51.100.7",
+		"文档示例 203.0.113.99",
+		"基准测试 198.18.0.2",
+		"运营商NAT 100.64.0.1",
+		"保留段 240.1.2.3",
+		"IPv6回环 ::1",
+		"IPv6链路本地 fe80::1",
+		"IPv6唯一本地 fd00::1",
+		"IPv6文档 2001:db8::1",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			masked, matches := detector.Mask(input)
+			if masked != input || len(matches) != 0 {
+				t.Fatalf("非公网地址不应被掩码: %q -> %q, matches: %+v", input, masked, matches)
+			}
+		})
+	}
+}
+
+func TestInfoDetectorAllScopeMasksEveryIP(t *testing.T) {
+	settings := defaultSensitiveInfoSettings()
+	settings.IPMaskScope = config.SensitiveInfoIPMaskScopeAll
+	detector, err := NewInfoDetector(settings)
+	if err != nil {
+		t.Fatalf("创建全量掩码检测器失败: %v", err)
+	}
+
+	inputs := []string{
+		"回环地址 127.0.0.1",
+		"内网网关 192.168.1.1",
+		"IPv6文档 2001:db8::1",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			masked, matches := detector.Mask(input)
+			if len(matches) != 1 || matches[0].Rule != config.SensitiveInfoRuleIPAddress {
+				t.Fatalf("全量掩码范围下应命中 IP 规则: %q -> %q, matches: %+v", input, masked, matches)
+			}
+			if masked == input {
+				t.Fatalf("全量掩码范围下地址未被替换: %q", masked)
+			}
+		})
+	}
+}
+
+func TestInfoDetectorVersionHintSkipsVersionNumbers(t *testing.T) {
+	detector, err := NewInfoDetector(defaultSensitiveInfoSettings())
+	if err != nil {
+		t.Fatalf("创建检测器失败: %v", err)
+	}
+
+	inputs := []string{
+		"version 1.2.3.4",
+		"appVersion: 52.109.0.7",
+		"my-build@18.31.4.10",
+		"release = 3.9.0.1",
+		"revision 12.0.0.1",
+		"Rev 6.1.2.3",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			masked, matches := detector.Mask(input)
+			if masked != input || len(matches) != 0 {
+				t.Fatalf("版本号语境不应被掩码: %q -> %q, matches: %+v", input, masked, matches)
+			}
+		})
+	}
+}
+
+func TestInfoDetectorVersionHintDoesNotMaskRealIPs(t *testing.T) {
+	detector, err := NewInfoDetector(defaultSensitiveInfoSettings())
+	if err != nil {
+		t.Fatalf("创建检测器失败: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "普通公网IP仍掩码",
+			input:    "服务器 8.8.4.4 可用",
+			expected: "服务器 [MASKED_PII:ip_address] 可用",
+		},
+		{
+			name:     "版本号关键词后接多段文本仍掩码",
+			input:    "版本回退到 8.8.4.4 之后失败",
+			expected: "版本回退到 [MASKED_PII:ip_address] 之后失败",
+		},
+		{
+			name:     "数字结尾的普通词不构成版本语境",
+			input:    "升级 release2 8.8.4.4 立刻生效",
+			expected: "升级 release2 [MASKED_PII:ip_address] 立刻生效",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			masked, matches := detector.Mask(test.input)
+			if masked != test.expected {
+				t.Fatalf("掩码结果错误: got %q, want %q", masked, test.expected)
+			}
+			if len(matches) != 1 || matches[0].Rule != config.SensitiveInfoRuleIPAddress {
+				t.Fatalf("命中明细错误: %+v", matches)
 			}
 		})
 	}
@@ -90,12 +215,34 @@ func TestInfoDetectorRuleSelectionAndInvalidValues(t *testing.T) {
 	}
 }
 
+func TestInfoDetectorIPMaskScopeValidation(t *testing.T) {
+	settings := config.SensitiveInfoConfig{
+		Enabled:      true,
+		EnabledRules: []string{config.SensitiveInfoRuleIPAddress},
+	}
+
+	// 零值等价于 public：既有调用方不填该字段时保持默认行为。
+	settings.IPMaskScope = ""
+	detector, err := NewInfoDetector(settings)
+	if err != nil {
+		t.Fatalf("空 IP 掩码范围应按默认 public 处理: %v", err)
+	}
+	if masked, _ := detector.Mask("内网 192.168.1.1"); masked != "内网 192.168.1.1" {
+		t.Fatalf("空范围应按 public 跳过内网地址: %q", masked)
+	}
+
+	settings.IPMaskScope = "unexpected"
+	if _, err := NewInfoDetector(settings); err == nil {
+		t.Fatal("未知 IP 掩码范围应返回错误")
+	}
+}
+
 func TestInfoDetectorMasksMultipleValuesDeterministically(t *testing.T) {
 	detector, err := NewInfoDetector(defaultSensitiveInfoSettings())
 	if err != nil {
 		t.Fatalf("创建检测器失败: %v", err)
 	}
-	input := "联系 user@example.com，电话 18012345523，服务地址 2001:db8::1。"
+	input := "联系 user@example.com，电话 18012345523，服务地址 2607:f8b0:4005:808::200e。"
 	masked, matches := detector.Mask(input)
 	expected := "联系 [MASKED_PII:email]，电话 [MASKED_PII:phone]，服务地址 [MASKED_PII:ip_address]。"
 	if masked != expected {
@@ -135,5 +282,6 @@ func defaultSensitiveInfoSettings() config.SensitiveInfoConfig {
 			config.SensitiveInfoRuleEmail,
 			config.SensitiveInfoRuleIPAddress,
 		},
+		IPMaskScope: config.SensitiveInfoIPMaskScopePublic,
 	}
 }

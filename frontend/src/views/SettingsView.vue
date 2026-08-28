@@ -149,6 +149,25 @@
                   hide-details
                 />
               </div>
+              <v-expand-transition>
+                <div
+                  v-if="
+                    contentSafety.sensitiveInfo.enabled && contentSafety.sensitiveInfo.enabledRules.includes('ip_address')
+                  "
+                  class="mode-setting-row ip-scope-row"
+                >
+                  <span class="text-body-2">IP 掩码范围</span>
+                  <v-btn-toggle
+                    v-model="contentSafety.sensitiveInfo.ipMaskScope"
+                    mandatory
+                    divided
+                    density="compact"
+                  >
+                    <v-btn value="public">仅公网地址</v-btn>
+                    <v-btn value="all">全部地址</v-btn>
+                  </v-btn-toggle>
+                </div>
+              </v-expand-transition>
             </div>
 
             <div class="safety-group">
@@ -372,7 +391,8 @@ const defaultContentSafety = (): ContentSafetySettings => ({
   sensitiveInfo: {
     enabled: false,
     mode: 'mask',
-    enabledRules: []
+    enabledRules: [],
+    ipMaskScope: 'public'
   },
   credential: {
     enabled: false,
@@ -418,7 +438,11 @@ const normalizeContentSafety = (
       ...defaults.sensitiveInfo,
       ...(sensitiveInfo || {}),
       enabled: legacyAPIKey && normalizedInfoRules.length === 0 ? false : Boolean(sensitiveInfo?.enabled),
-      enabledRules: normalizedInfoRules
+      enabledRules: normalizedInfoRules,
+      ipMaskScope:
+        sensitiveInfo?.ipMaskScope === 'all' || sensitiveInfo?.ipMaskScope === 'public'
+          ? sensitiveInfo.ipMaskScope
+          : 'public'
     },
     credential: {
       ...defaults.credential,
@@ -655,6 +679,10 @@ onMounted(loadSettings)
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.ip-scope-row {
+  margin: 10px 16px 12px;
 }
 
 .option-grid {

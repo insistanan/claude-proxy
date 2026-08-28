@@ -248,6 +248,11 @@ type SensitiveInfoConfig struct {
 	Enabled      bool     `json:"enabled"`
 	Mode         string   `json:"mode"`
 	EnabledRules []string `json:"enabledRules"`
+	// IPMaskScope 决定 IP 地址规则的生效范围：
+	//   - "public"：仅掩码公网单播地址（默认）
+	//   - "all"：所有合法形态的地址都掩码（包含私网/保留/文档段）
+	// 空字符串等价于 "public"。
+	IPMaskScope string `json:"ipMaskScope,omitempty"`
 }
 
 // CredentialConfig 凭据检测设置。用户输入允许审计、阻断或掩码；工具结果
@@ -279,6 +284,11 @@ const (
 	SensitiveInfoRuleIDCard    = "id_card"
 	SensitiveInfoRuleEmail     = "email"
 	SensitiveInfoRuleIPAddress = "ip_address"
+
+	// SensitiveInfoIPMaskScopePublic 仅掩码公网单播地址（默认行为）。
+	SensitiveInfoIPMaskScopePublic = "public"
+	// SensitiveInfoIPMaskScopeAll 掩码全部合法形态的地址，含私网/保留/文档段。
+	SensitiveInfoIPMaskScopeAll = "all"
 
 	ContentSafetyModeAudit = "audit"
 	ContentSafetyModeBlock = "block"
@@ -314,6 +324,7 @@ func DefaultContentSafetyConfig() ContentSafetyConfig {
 			Enabled:      false,
 			Mode:         ContentSafetyModeMask,
 			EnabledRules: []string{},
+			IPMaskScope:  SensitiveInfoIPMaskScopePublic,
 		},
 		Credential: CredentialConfig{
 			Enabled:          false,
