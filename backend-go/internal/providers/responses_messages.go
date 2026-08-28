@@ -560,6 +560,7 @@ func responsesResponseToClaude(resp *types.ResponsesResponse) *types.ClaudeRespo
 		Content: []types.ClaudeContent{},
 	}
 	var textParts []string
+	thinkingParts := make([]types.ClaudeContent, 0)
 	for _, item := range resp.Output {
 		switch item.Type {
 		case "message":
@@ -567,6 +568,13 @@ func responsesResponseToClaude(resp *types.ResponsesResponse) *types.ClaudeRespo
 				if text, ok := utils.ExtractTextFromBlock(block); ok && text != "" {
 					textParts = append(textParts, text)
 				}
+			}
+		case "reasoning":
+			if text := converters.ExtractResponsesReasoningText(item); text != "" {
+				thinkingParts = append(thinkingParts, types.ClaudeContent{
+					Type:     "thinking",
+					Thinking: text,
+				})
 			}
 		case "function_call", "custom_tool_call":
 			flushClaudeText(claudeResp, &textParts)
@@ -592,6 +600,9 @@ func responsesResponseToClaude(resp *types.ResponsesResponse) *types.ClaudeRespo
 		}
 	}
 	flushClaudeText(claudeResp, &textParts)
+	if len(thinkingParts) > 0 {
+		claudeResp.Content = append(thinkingParts, claudeResp.Content...)
+	}
 
 	claudeResp.StopReason = "end_turn"
 	for _, content := range claudeResp.Content {
@@ -690,10 +701,10 @@ func (s *responsesToClaudeStreamState) processLine(line string) []string {
 	case strings.Contains(eventType, "output_text.delta"):
 		out = append(out, s.emitTextDelta(root.Get("delta").String())...)
 	case strings.Contains(eventType, "reasoning") && strings.Contains(eventType, "delta"):
-		// Do NOT emit reasoning as Claude thinking blocks. Cursor stores thinking
-		// in the local conversation and re-sends it every turn, which is a major
-		// source of multi-turn context explosion when proxying reasoning models.
-		// Upstream still reasons; we simply do not materialize it into client history.
+		// 把 reasoning delta 转成 Claude thinking content block 发给客户端。
+		// 让 Claude Code 等原生支持 thinking 的客户端在思考区渲染。回传时代理
+		// 的 reasoning_content_cache 机制会自动补齐，无需客户端存储明文。
+		out = append(out, s.emitReasoningDelta(root.Get("delta").String())...)
 	case strings.Contains(eventType, "response.output_item.added"):
 		s.captureToolCall(root)
 	case strings.Contains(eventType, "response.output_item.done"):

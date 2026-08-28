@@ -7,8 +7,8 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
 
-// extractResponsesReasoningText pulls text from a Responses reasoning item.
-func extractResponsesReasoningText(item types.ResponsesItem) string {
+// ExtractResponsesReasoningText 从 Responses reasoning item 的 summary/content 抽出文本。
+func ExtractResponsesReasoningText(item types.ResponsesItem) string {
 	parts := make([]string, 0)
 	if item.Summary != nil {
 		switch summary := item.Summary.(type) {
@@ -113,7 +113,7 @@ func responsesItemToOpenAIMessageWithOptions(item types.ResponsesItem, includeHi
 		if !includeHistoryThinking {
 			return nil
 		}
-		text := extractResponsesReasoningText(item)
+		text := ExtractResponsesReasoningText(item)
 		if text == "" {
 			return nil
 		}

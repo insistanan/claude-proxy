@@ -6,7 +6,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/types"
 )
 
-func TestOpenAIProviderConvertToClaudeResponse_HidesReasoningContent(t *testing.T) {
+func TestOpenAIProviderConvertToClaudeResponse_EmitsReasoningAsThinking(t *testing.T) {
 	providerResp := &types.ProviderResponse{
 		Body: []byte(`{
 			"id":"chatcmpl_test",
@@ -25,15 +25,18 @@ func TestOpenAIProviderConvertToClaudeResponse_HidesReasoningContent(t *testing.
 	if err != nil {
 		t.Fatalf("ConvertToClaudeResponse() err = %v", err)
 	}
-	if len(got.Content) != 1 {
+	if len(got.Content) != 2 {
 		t.Fatalf("content = %#v", got.Content)
 	}
-	if got.Content[0].Type != "text" || got.Content[0].Text != "I will inspect the files." {
-		t.Fatalf("text content = %#v", got.Content[0])
+	if got.Content[0].Type != "thinking" || got.Content[0].Thinking != "need inspect files" {
+		t.Fatalf("thinking content = %#v", got.Content[0])
+	}
+	if got.Content[1].Type != "text" || got.Content[1].Text != "I will inspect the files." {
+		t.Fatalf("text content = %#v", got.Content[1])
 	}
 }
 
-func TestOpenAIProviderConvertToClaudeResponse_HidesEmbeddedThinkingTags(t *testing.T) {
+func TestOpenAIProviderConvertToClaudeResponse_EmitsEmbeddedThinkingAsThinking(t *testing.T) {
 	providerResp := &types.ProviderResponse{Body: []byte(`{
 		"choices":[{"finish_reason":"stop","message":{
 			"role":"assistant","content":"<think>private reasoning</think>Final answer."
@@ -44,7 +47,10 @@ func TestOpenAIProviderConvertToClaudeResponse_HidesEmbeddedThinkingTags(t *test
 	if err != nil {
 		t.Fatalf("ConvertToClaudeResponse() err = %v", err)
 	}
-	if len(got.Content) != 1 || got.Content[0].Text != "Final answer." {
+	if len(got.Content) != 2 {
+		t.Fatalf("content = %#v", got.Content)
+	}
+	if got.Content[0].Type != "thinking" || got.Content[0].Thinking != "private reasoning" || got.Content[1].Text != "Final answer." {
 		t.Fatalf("content = %#v", got.Content)
 	}
 }

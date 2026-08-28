@@ -51,8 +51,8 @@ func TestReasoningContentCache_EvictsOldest(t *testing.T) {
 }
 
 // TestReasoningContentRoundTrip_NonStream 覆盖非流式链路：
-// 上游返回 reasoning_content → 代理隐藏思考并缓存 → 客户端回传历史丢失明文 thinking
-// → messages→chat 转换时自动补回 reasoning_content。
+// 上游返回 reasoning_content → 代理下发 thinking block 并缓存 → 客户端回传历史丢失明文 thinking
+// → messages→chat 转换时仍从缓存补回 reasoning_content。
 func TestReasoningContentRoundTrip_NonStream(t *testing.T) {
 	clearReasoningContentCacheForTest()
 	defer clearReasoningContentCacheForTest()
@@ -72,8 +72,8 @@ func TestReasoningContentRoundTrip_NonStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConvertToClaudeResponse() err = %v", err)
 	}
-	if len(claudeResp.Content) != 1 || claudeResp.Content[0].Type != "text" {
-		t.Fatalf("claude content = %#v", claudeResp.Content)
+	if len(claudeResp.Content) != 2 || claudeResp.Content[0].Type != "thinking" || claudeResp.Content[1].Type != "text" {
+		t.Fatalf("claude content = %#v, want thinking then text", claudeResp.Content)
 	}
 
 	// 2. 下一轮客户端回传历史，assistant 消息只剩 text（明文 thinking 已丢失）

@@ -42,6 +42,8 @@
 | **ProtocolSpec** | 描述协议差异的插槽结构（ParseRequest / BuildUpstreamRequest / HandleSuccess / PreRoute / HookPipeline / AllowContentPolicyChannelFailover）。五协议均经 `RunProxyRequest` 通用骨架执行。 | `internal/handlers/proxycore/protocol.go` |
 | **上游适配器（Provider）** | 按 ServiceType 实现的上游接入点：构建上游请求、解析响应、流式处理。`GetProvider(serviceType)` 全集 = `{openai, gemini, claude, responses}`（无 codex）。visionlayer 的视觉描述走独立 `imageAdapterForService`，不共用 Provider 注册表。 | `internal/providers/provider.go` |
 | **转换器（Converter）** | 协议格式双向转换，分散在 converters 包多个文件，**非单一工厂**：`factory.go` 仅 Claude 上游走工厂（Resp/Gemini 直接分发）；Responses 主链路在 `responses_protocol.go`；Gemini↔Claude/OpenAI 在 `gemini_converter.go`；Chat↔Responses 在 `chat_to_responses.go` / `responses_to_chat.go`。 | `internal/converters` |
+| **Messages 出口 thinking** | Messages 入口把上游推理转成 Claude `thinking` content block 下发，让 Claude Code 在思考区渲染。来源：Chat `reasoning_content` / `<think>` 标签、Responses reasoning summary、Gemini thought。 | `internal/providers/openai.go`、`responses_messages.go`、`gemini.go` |
+| **推理内容缓存** | 按 assistant 消息指纹缓存 reasoning，供下一轮 Chat 上游要求回传 `reasoning_content` 时补齐。下发 thinking 不替代缓存。 | `internal/providers/reasoning_content_cache.go` |
 | **SSE（Server-Sent Events）** | 流式响应的 `data:` 行传输格式，转发时按协议解析/重建。 | `internal/utils/sse.go`（data 行解析/重建）、`internal/handlers/streams/stream_events.go`（Claude 事件判定与构造） |
 | **首字节超时** | `RESPONSE_HEADER_TIMEOUT`（默认 120s）：从发请求到收到响应头的最大等待。 | `internal/httpclient` |
 | **空闲超时（Idle Timeout）** | `STREAM_IDLE_TIMEOUT`（默认 300s）：流中两次数据事件间最大间隔，挡"流中挂起"。 | `internal/httpclient/idle_timeout_reader.go` |

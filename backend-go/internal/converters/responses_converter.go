@@ -101,7 +101,7 @@ func responsesItemToClaudeMessageWithOptions(item types.ResponsesItem, includeHi
 		if !includeHistoryThinking {
 			return nil, nil
 		}
-		text := extractResponsesReasoningText(item)
+		text := ExtractResponsesReasoningText(item)
 		if text == "" {
 			return nil, nil
 		}
