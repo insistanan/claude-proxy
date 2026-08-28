@@ -44,6 +44,10 @@
         <template #prepend><v-icon size="small" color="success">mdi-test-tube</v-icon></template>
         <v-list-item-title>快捷测试</v-list-item-title>
       </v-list-item>
+      <v-list-item v-if="showEval" @click="emit('eval')">
+        <template #prepend><v-icon size="small" color="primary">mdi-test-tube</v-icon></template>
+        <v-list-item-title>评测此渠道</v-list-item-title>
+      </v-list-item>
       <v-list-item @click="emit('ping')">
         <template #prepend><v-icon size="small">mdi-speedometer</v-icon></template>
         <v-list-item-title>测试延迟</v-list-item-title>
@@ -106,13 +110,15 @@ withDefaults(defineProps<{
   supportsVisionCapability?: boolean
   canDelete?: boolean
   allowReorder?: boolean
+  showEval?: boolean
 }>(), {
   position: 0,
   total: 1,
   copied: false,
   supportsVisionCapability: true,
   canDelete: true,
-  allowReorder: true
+  allowReorder: true,
+  showEval: true
 })
 
 const emit = defineEmits<{
@@ -121,6 +127,7 @@ const emit = defineEmits<{
   toggleVision: []
   copyConfig: []
   quickTest: []
+  eval: []
   ping: []
   logs: []
   promotion: []

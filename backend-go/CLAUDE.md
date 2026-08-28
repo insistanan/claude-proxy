@@ -55,6 +55,7 @@ log.Printf("[Component] 警告: 消息内容")
 | Responses | `[Responses-Stream]` | Responses 流式处理 |
 | Responses | `[Responses-Stream-Token]` | Responses Token 统计 |
 | Models | `[Models]` | 跨接口的模型列表合并操作 |
+| 评测 | `[Eval-Init]` / `[Eval-Seed]` / `[Eval-Run]` / `[Eval-Watch]` / `[Eval-Fingerprint]` / `[Eval-Shutdown]` | 评测工作台 |
 
 ## 工具使用注意事项
 

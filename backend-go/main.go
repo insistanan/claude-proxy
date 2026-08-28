@@ -14,6 +14,7 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
+	"github.com/BenedictKing/claude-proxy/internal/eval"
 	"github.com/BenedictKing/claude-proxy/internal/handlers"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/chat"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/gemini"
@@ -51,6 +52,7 @@ type app struct {
 	adaptiveScheduler     *scheduler.AdaptiveScheduler
 	piAgentAPI            *handlers.PiAgentAPI
 	skillsAPI             *handlers.SkillsAPI
+	evalService           *eval.Service
 	engine                *gin.Engine
 }
 
@@ -175,6 +177,12 @@ func newApp() (*app, error) {
 		return nil, fmt.Errorf("初始化 pi-agent 管理 API 失败: %w", err)
 	}
 	a.skillsAPI = handlers.NewSkillsAPI()
+
+	a.evalService, err = eval.NewService(eval.DefaultDBPath, a.cfgManager, a.envCfg, a.channelScheduler)
+	if err != nil {
+		return nil, fmt.Errorf("初始化评测工作台失败: %w", err)
+	}
+	a.evalService.Start()
 
 	// 从现有指标同步数据到性能画像
 	syncConfig := a.cfgManager.GetConfig()
@@ -373,6 +381,7 @@ func (a *app) setupAdminAPI(apiGroup *gin.RouterGroup) {
 	apiGroup.POST("/skills/copy", a.skillsAPI.Copy())
 	apiGroup.DELETE("/skills", a.skillsAPI.Delete())
 	apiGroup.POST("/skills/backup", a.skillsAPI.Backup())
+	handlers.RegisterEvalRoutes(apiGroup, a.evalService)
 }
 
 // setupProxyEndpoints 注册五协议代理端点。
@@ -434,6 +443,10 @@ func (a *app) logStartupInfo() {
 // 避免关闭期间后台循环与存储 Close 产生写并发。
 func (a *app) shutdown() {
 	a.channelScheduler.Stop()
+
+	if a.evalService != nil {
+		a.evalService.Stop()
+	}
 
 	if a.metricsStore != nil {
 		if err := a.metricsStore.Close(); err != nil {

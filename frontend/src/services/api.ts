@@ -1,5 +1,6 @@
 // API服务模块
 import { useAuthStore } from '@/stores/auth'
+import { readSSEStream } from '@/utils/sse'
 
 export class ApiError extends Error {
   readonly status: number
@@ -476,6 +477,137 @@ export interface ChannelPool {
   name: string
   modelMatcher: string
   priority: number
+}
+
+export interface EvalStimulus {
+  prompt: string
+  system?: string
+  maxTokens?: number
+  temperature?: number
+  thinking?: string
+  thinkingBudget?: number
+  forceJson?: boolean
+}
+
+export interface EvalExtractSpec {
+  kind: string
+}
+
+export interface EvalJudgeSpec {
+  kind: string
+  expected?: string
+  expectedNumber?: number
+  pattern?: string
+  caseInsensitive?: boolean
+  expectModelEcho?: boolean
+  expectContentTypes?: string[]
+  expectUsage?: boolean
+  expectThinking?: string
+  expectSignature?: string
+  minSamples?: number
+  failIfIdentical?: boolean
+  suspectUniqueRatio?: number
+  compareHistogram?: boolean
+  analysisPrompt?: string
+  expectThinkingUsage?: boolean
+}
+
+export interface EvalProbe {
+  id: string
+  slug: string
+  name: string
+  category: 'authenticity' | 'iq' | string
+  stimulus: EvalStimulus
+  extract: EvalExtractSpec
+  judge: EvalJudgeSpec
+  sampleCount: number
+  applicableServiceTypes: string[]
+  cheap: boolean
+  /** 内置题由 seed.go 维护，每次启动按代码同步，改不了删不了 */
+  builtin: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface EvalSuite {
+  id: string
+  slug: string
+  name: string
+  probeIds: string[]
+  cheap: boolean
+  builtin: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface EvalResult {
+  id: string
+  runId: string
+  channelId: string
+  probeId: string
+  probeName?: string
+  verdict: string
+  excerpt?: string
+  detail?: Record<string, unknown>
+  latencyMs: number
+  createdAt: number
+}
+
+export interface EvalRun {
+  id: string
+  suiteId: string
+  suiteName?: string
+  trigger: string
+  status: string
+  channelIds: string[]
+  model?: string
+  thinking?: string
+  estimatedCalls: number
+  skipReason?: string
+  error?: string
+  startedAt: number
+  finishedAt: number
+  createdAt: number
+  results?: EvalResult[]
+}
+
+export interface EvalWatchConfig {
+  enabled: boolean
+  suiteId: string
+  interval: string
+  channelIds: string[]
+  model?: string
+  thinking?: string
+  lastRunAt: number
+  nextRunAt: number
+  lastSkipReason?: string
+}
+
+export interface EvalChannelLatest {
+  channelId: string
+  aggregate: string
+  label: string
+  suiteName?: string
+  finishedAt: number
+  watching: boolean
+  runId?: string
+}
+
+export interface EvalStartRunRequest {
+  suiteId: string
+  channelIds: string[]
+  model?: string
+  thinking?: string
+  trigger?: string
+}
+
+export interface EvalValidateReport {
+  ok: boolean
+  mode: string
+  errors?: string[]
+  extractKind?: string
+  judgeKind?: string
+  cheap: boolean
 }
 
 export interface CreatedChannelResponse {
@@ -1417,6 +1549,98 @@ class ApiService {
   // Gemini Dashboard（使用后端统一接口）
 
   // ===== Images API =====
+
+  async listEvalProbes(): Promise<{ probes: EvalProbe[] }> {
+    return this.request('/eval/probes')
+  }
+
+  async createEvalProbe(probe: Partial<EvalProbe>): Promise<{ probe: EvalProbe; validate: EvalValidateReport }> {
+    return this.request('/eval/probes', { method: 'POST', body: JSON.stringify(probe) })
+  }
+
+  async updateEvalProbe(id: string, probe: Partial<EvalProbe>): Promise<{ probe: EvalProbe }> {
+    return this.request(`/eval/probes/${id}`, { method: 'PUT', body: JSON.stringify(probe) })
+  }
+
+  async deleteEvalProbe(id: string): Promise<void> {
+    return this.request(`/eval/probes/${id}`, { method: 'DELETE' })
+  }
+
+  async validateEvalProbe(probe: Partial<EvalProbe>): Promise<EvalValidateReport> {
+    return this.request('/eval/probes/validate', { method: 'POST', body: JSON.stringify(probe) })
+  }
+
+  async listEvalSuites(): Promise<{ suites: EvalSuite[] }> {
+    return this.request('/eval/suites')
+  }
+
+  async createEvalSuite(suite: Partial<EvalSuite>): Promise<{ suite: EvalSuite }> {
+    return this.request('/eval/suites', { method: 'POST', body: JSON.stringify(suite) })
+  }
+
+  async updateEvalSuite(id: string, suite: Partial<EvalSuite>): Promise<{ suite: EvalSuite }> {
+    return this.request(`/eval/suites/${id}`, { method: 'PUT', body: JSON.stringify(suite) })
+  }
+
+  async deleteEvalSuite(id: string): Promise<void> {
+    return this.request(`/eval/suites/${id}`, { method: 'DELETE' })
+  }
+
+  async startEvalRun(payload: EvalStartRunRequest): Promise<{ run: EvalRun }> {
+    return this.request('/eval/runs', { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  async listEvalRuns(): Promise<{ runs: EvalRun[]; busy: boolean; currentRunId: string }> {
+    return this.request('/eval/runs')
+  }
+
+  async getEvalRun(id: string): Promise<{ run: EvalRun }> {
+    return this.request(`/eval/runs/${id}`)
+  }
+
+  async cancelEvalRun(id: string): Promise<{ ok: boolean }> {
+    return this.request(`/eval/runs/${id}/cancel`, { method: 'POST' })
+  }
+
+  async getEvalLatestMap(): Promise<{ channels: Record<string, EvalChannelLatest>; watch: EvalWatchConfig; busy: boolean }> {
+    return this.request('/eval/channels/latest-map')
+  }
+
+  async getEvalWatch(): Promise<{ watch: EvalWatchConfig }> {
+    return this.request('/eval/watch')
+  }
+
+  async putEvalWatch(watch: Partial<EvalWatchConfig>): Promise<{ watch: EvalWatchConfig }> {
+    return this.request('/eval/watch', { method: 'PUT', body: JSON.stringify(watch) })
+  }
+
+  async estimateEvalRun(payload: EvalStartRunRequest): Promise<{ estimatedCalls: number; suiteCheap: boolean }> {
+    return this.request('/eval/estimate', { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  /**
+   * 订阅评测批次进度。后端只在 status / 已完成格子数变化时发帧，跑完自动关闭。
+   * EventSource 带不了 x-api-key，所以走 fetch + readSSEStream。
+   */
+  async streamEvalRun(
+    id: string,
+    onData: (payload: { run?: EvalRun; error?: string }) => void,
+    options?: { signal?: AbortSignal }
+  ): Promise<void> {
+    const headers: Record<string, string> = { Accept: 'text/event-stream' }
+    const apiKey = this.getApiKey()
+    if (apiKey) {
+      headers['x-api-key'] = apiKey
+    }
+    const response = await fetch(`${API_BASE}/eval/runs/${encodeURIComponent(id)}/events`, {
+      headers,
+      signal: options?.signal
+    })
+    if (!response.ok) {
+      throw new ApiError(`评测进度流打开失败: HTTP ${response.status}`, response.status)
+    }
+    await readSSEStream<{ run?: EvalRun; error?: string }>(response, onData, options)
+  }
 }
 
 // 健康检查响应类型

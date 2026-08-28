@@ -30,6 +30,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/eval',
+    name: 'eval',
+    component: () => import('@/views/EvalView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/opencode',
     name: 'opencode',
     component: () => import('@/views/OpenCodeView.vue'),

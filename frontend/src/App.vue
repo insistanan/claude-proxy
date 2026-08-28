@@ -423,7 +423,8 @@ const isClaudeCodePage = computed(() => route.name === 'claude-code')
 const isPiAgentPage = computed(() => route.name === 'pi-agent')
 const isDshPage = computed(() => route.name === 'dsh')
 const isSettingsPage = computed(() => route.name === 'settings')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isDshPage.value || isSettingsPage.value)
+const isEvalPage = computed(() => route.name === 'eval')
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isEvalPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isDshPage.value || isSettingsPage.value)
 
 const navGroups = [
   {
@@ -444,7 +445,8 @@ const navGroups = [
       { key: 'conversations', label: '对话', to: '/conversations' },
       { key: 'logs', label: '日志', to: '/logs' },
       { key: 'blocked-logs', label: '拦截', to: '/blocked-logs' },
-      { key: 'skills', label: 'Skills', to: '/skills' }
+      { key: 'skills', label: 'Skills', to: '/skills' },
+      { key: 'eval', label: '评测', to: '/eval' }
     ]
   },
   {
@@ -486,6 +488,9 @@ const topNavActive = computed(() => {
   }
   if (isSkillsPage.value) {
     return 'skills'
+  }
+  if (isEvalPage.value) {
+    return 'eval'
   }
   if (isOpenCodePage.value) {
     return 'opencode'

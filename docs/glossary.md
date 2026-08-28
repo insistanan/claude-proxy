@@ -25,6 +25,13 @@
 | **URL 健康排序** | 多 BaseURL 渠道按延迟与失败冷却动态排序选路。默认：失败冷却 30s、连续 3 次失败移末尾（main.go 注入）。 | `internal/urlhealth` |
 | **Pi Agent 配置管理** | 管理 Pi Coding Agent 的 providers / credentials / model-settings / backups：原子写（临时文件+rename）、写前备份、跨进程锁、revision 冲突检测。凭据文件 0600。配置目录 `~/.pi/agent`（可 `PI_AGENT_CONFIG_DIR` 覆盖）。路由在 main.go 直接注册 `/api/settings/pi-agent/*`。 | `internal/piagent`、`internal/handlers/pi_agent.go` |
 | **模型目录（modelcatalog）** | `/v1/models` 聚合层：静态别名 + 渠道池匹配 + 上游 `/models` 发现，内存目录 + 后台刷新。无独立路由，聚合入口挂在 messages 包 handler 下。 | `internal/modelcatalog`、`internal/handlers/messages/models.go` |
+| **评测探针（Probe）** | 一条可入库的检测题：刺激（prompt）+ 封闭抽取 + 封闭判定。存在 `.config/eval.db`，不写死在 Go。 | `internal/eval` |
+| **内置题 / 自建题** | 内置题（`builtin=true`）由 `seed.go` 定义，每次启动同步覆盖，UI 与 API 都改不了删不了——判定器和题目必须同版本。要定制就复制成自建题。 | `internal/eval/seed.go` |
+| **评测套件（Suite）** | 一组探针。便宜套件才能挂值班；真伪套件禁止 rubric。 | `internal/eval` |
+| **评测值班（Watch）** | 全局唯一的便宜套件定时任务。进程重启不立即触发；已有评测在跑则 skip。 | `internal/eval/watch.go` |
+| **评测结论聚合（latest-map）** | 按渠道取最近一次评测的聚合芯片：fail > suspect > pass；仅 error/insufficient/inapplicable 为中性；超过 7 天标过期。 | `internal/eval`、渠道行芯片 |
+| **inapplicable** | 评测结论：渠道/协议不适用（Images、备用池、弃用、熔断、serviceType 不匹配），不是 fail。 | `internal/eval` |
+| **指纹相近（fingerprintTwins）** | 同一批次里两个渠道的随机数直方图余弦相似度 ≥ 0.95，回填进结果 detail 供人看。只是提示，不改 verdict——同源官方中转也会相近。 | `internal/eval/runner.go` |
 
 ## 协议与流式
 

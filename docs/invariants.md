@@ -23,11 +23,14 @@
 - 流式：上游流总是 经 `HandleStreamResponseCtx`（断连中止）+ `IdleTimeoutReader`（空闲超时）转发；绝不 裸 `io.Copy`。
 - 视觉：图片请求总是 经 `visionlayer.PrepareRequest` 就地处理；绝不 绕过 `prepareRequestForUpstream` 把原始 base64 直接透传上游。
 - 日志：总是 `[Component-Action]` 标签、绝不 使用 emoji；上游 key 绝不 完整输出，一律 `utils.MaskAPIKey` 脱敏（标签表见 `backend-go/CLAUDE.md`）。
+- 评测：管理端诊断例外，**只观察不改调度**。发送走 `eval.Sender` + `proxycore.SendRequest`，绝不 走 `RunProxyRequest` / `ConvertToProviderRequest` / `PrepareUpstreamHeaders` / `scheduler.Record*`。未知 extract/judge kind 拒绝入库。真伪套件禁止 rubric。值班只能挂便宜套件。Images / 备用池 / 弃用 / 熔断记 `inapplicable`，不是 fail。`/v1/*` 铁律不变。
 
 ## 前端（frontend）
 
 - 图标：新 mdi 图标总是 先在 `src/plugins/vuetify.ts` 的 `iconMap` 注册再使用；绝不 直接写未注册名（`npm run check:icons` 机器拦截）。
 - 渠道 API：总是 走 `services/api.ts` 的 `channelApiByType` 工厂；绝不 在组件里拼接裸 fetch 调后端。
+- 评测 API：走 `services/api.ts` 的 `api.*Eval*` 方法；`/eval` 页用 `channelApiByType` 拉四协议渠道，绝不 用当前 tab 的 `currentChannelsData`。
+- 上游内容渲染：上游返回的 SVG / HTML 总是 当文本插值，或经 `evalSvgPreviewUrl` 走 `<img src="data:...">`；绝不 `v-html`。
 
 ## 完成定义（每个任务，全部满足才算完）
 

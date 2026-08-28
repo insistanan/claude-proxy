@@ -16,6 +16,11 @@
 | 单渠道内 key/URL/模型映射重试 | `proxycore.UpstreamAttempt{...}.TryWithModelMappingFailover()` | key 轮换 + 模型映射变更后重试同一循环；结果读 `UpstreamAttemptResult` 命名字段。19 参数的 legacy 长参数入口（`TryUpstreamWithModelMappingFailover` / `TryUpstreamWithAllKeys`）已删除，别再按位置返回值调用 |
 | 请求体读取 / 放回 | `proxycore.ReadRequestBody` / `RestoreRequestBody` | 大小上限走 env `MAX_REQUEST_BODY_SIZE_MB` |
 | 上游请求发送 | `proxycore.SendRequest` | 统一超时/代理/认证头 |
+| 按稳定 UUID 跨五类切片查渠道 | `config.FindChannelByID` | 评测/关联状态用；返回深拷贝。HTTP 渠道路由仍用切片下标 |
+| 评测题库 / 运行记录 | `internal/eval`（`.config/eval.db`） | WAL sqlite；探针/套件/批次/值班单行。内置题带 `builtin`，启动走 `Store.SyncBuiltins` 按 `seed.go` 覆盖（保留 ID），改删一律拒绝。取套件的探针一律走 `Store.SuiteWithProbes` / `ProbesForSuite`，别再各处循环 `GetProbe` |
+| 评测原生上游发送 | `eval.Sender` → `proxycore.SendRequest` | 空 `http.Header` 从头组认证/伪装；**禁止** `PrepareUpstreamHeaders`（会泄漏管理端 cookie / `x-proxy-key`）。不走转换器、不写 scheduler.Record* |
+| 评测探针可否直接入库 | `POST /api/eval/probes/validate` + `.claude/skills/eval-probe` | 分流 `can_add_directly` / `invalid_fields` / `unsupported_grader` / `needs_new_grader`。未知 kind 拒绝入库；真伪禁止 rubric；加题先走 skill，不要在 Go 里写死自建题 |
+| 上游用量归一化（评测侧） | `eval.extractUsage` | 返回 `hasThinkingUsage` 区分"没回报思考 token"与"思考为 0"。**故意不做"扣掉思考"的换算**：output 含不含思考各家口径不一（Anthropic/OpenAI 含、xAI 不含、Gemini 文档自相矛盾），中转还会改写，猜错方向只会让数字更假 |
 | 上游适配（构建请求/解析响应/流处理） | `providers.GetProvider(serviceType)` | `Provider` 接口；serviceType 全集 {openai, gemini, claude, responses}（无 codex）；messages 与 visionlayer 共用。注意 visionlayer 的视觉描述走独立 `imageAdapterForService` |
 | 协议格式双向转换 | `converters` 包（非单一工厂） | `factory.go` 仅 Claude 上游走工厂；Responses 主链路 `responses_protocol.go`；Gemini↔Claude/OpenAI 在 `gemini_converter.go`；Chat↔Responses 在 `chat_to_responses.go`/`responses_to_chat.go` |
 | SSE `data:` 行判定 / 载荷提取 | `utils.ParseSSEDataLine` / `utils.SSEDataJSON` / `utils.ParseSSEDataLineBytes` | 五协议流式链路（providers / handlers / converters）的唯一出处。冒号后空格按 SSE 规范可选，**禁止再写 `HasPrefix(line, "data: ")`**——部分上游不带空格，严格匹配会静默丢整行。只要 JSON 载荷用 `SSEDataJSON`；需区分 `[DONE]`（如据此 break 读流循环）用 `ParseSSEDataLine` + `utils.SSEDoneMarker`；`[]byte` 热路径用 `ParseSSEDataLineBytes`。**输出**构造仍写规范的 `data: ` 前缀，不走本函数。契约由 `utils/sse_test.go` + `handlers/streams/sse_tolerance_test.go` 锁定 |
@@ -50,9 +55,12 @@
 | 需求 | 现成实现 | 备注 |
 |---|---|---|
 | 渠道 API 调用 | `services/api.ts`（`channelApiByType` 工厂） | 五协议共用；store 层调用 |
+| 评测工作台 API | `services/api.ts` 的 `listEval*` / `startEvalRun` / `getEvalLatestMap` / `putEvalWatch` / `streamEvalRun` | 评测不是 ChannelKind，不走 `channelApiByType`。`/eval` 页用工厂拉四协议渠道 |
+| 评测结论文案 / 颜色 / 时间 / SVG 预览 | `utils/eval.ts` | 渠道行芯片、矩阵、结果抽屉共用一份映射。上游 SVG 只经 `evalSvgPreviewUrl` 走 `<img src="data:...">` |
+| 评测页交互块 | `components/EvalChannelPicker` / `EvalMatrix` / `EvalResultDrawer` / `EvalProbeManager` | 分组勾选、协议分组矩阵、格子抽屉、题库逐步表单；`EvalView` 只负责取数与编排 |
 | 客户端配置"从渠道快速选择" | `composables/useChannelQuickPick.ts` | 四客户端配置页（DSH/OpenCode/ClaudeCode/PiAgent）共用；选协议→加载渠道→选渠道→回填 provider。ClaudeCode 用 `useMessagesChannelQuickPick` 固定 messages |
 | 客户端配置"从渠道一键导入模型" | `composables/useChannelModelImport.ts` + `composables/channelDefaults.ts` | 渠道 `modelMapping`/`defaultModel` → 各客户端模型对象，导入即替换；默认值统一（思考 high、识图按渠道 vision 能力开、按协议 contextLimit/outputLimit） |
-| SSE 解析 | `utils/sse.ts` | 流式输出 |
+| SSE 解析 | `utils/sse.ts` | 流式输出；评测进度流（`api.streamEvalRun`）也走它——EventSource 带不了 `x-api-key`，一律 fetch + `readSSEStream` |
 | 自动刷新定时器 | `composables/useAutoRefresh.ts` | 跨视图复用 |
 | 主题切换 | `composables/useTheme.ts` + `plugins/vuetify.ts` | — |
 | 快捷测试输入解析 | `utils/quickInputParser.ts` | 有 vitest 单测 |

@@ -70,8 +70,27 @@ images 的两点差异：① 请求体有 JSON 与 multipart/form-data 两种形
 
 `/v1/responses` 已并入 `RunProxyRequest` 主骨架（F1），协议差异全部经 `ProtocolSpec` 闭包表达：BuildUpstreamRequest 内走 `converters` 转换（主分发在 `responses_protocol.go`，仅 Claude 上游走 factory.go 工厂）、`session.SessionManager` 会话管理（previous_response_id 链）与流式事件转换（`converters.ConvertUpstreamStreamLineToResponses`）都在 HandleSuccess/Provider 回调内完成。会话记录 ID 经 `utils.ContextKeyConversationUserID` 从骨架传入回调。多渠道模式下内容审核错误跨渠道转移（`AllowContentPolicyChannelFailover`），单渠道不生效。`/v1/responses/compact` 是唯一独立于主骨架的端点。
 
+## F6 评测原生发送（观察，不进生产调度）
+
+管理端 `/api/eval/*`（`WebAuthMiddleware`）。与 F1 并列，**不**走 `RunProxyRequest`。
+
+```
+FindChannelByID（稳定 UUID，跨五类切片）
+→ 空 http.Header + SetAuthenticationHeader / SetGeminiAuthenticationHeader
+  + 可选 ApplyClaudeCodeDisguise / ApplyCodexDisguise
+→ 按 serviceType 组原生 body（claude messages / openai chat / gemini generateContent / responses）
+→ 第一 BaseURL + ResolveUpstreamProxyURL + proxycore.SendRequest
+→ Extract（封闭 kind）→ Judge（封闭 kind；rubric 再发一封给同一渠道）
+→ 写 eval.db，批次结束后做跨渠道随机数指纹比对（只回填 detail，不改 verdict）
+→ 更新 latest-map
+```
+
+默认非流式。模型：请求覆盖优先（走 `ResolveUpstreamModel` 映射，但清掉 DefaultModel，免得覆盖值被吞）；否则渠道 `defaultModel`。值班 ticker 到期触发普通 `eval_runs`（`trigger=watch`）；Runner 忙则 skip。
+前端进度走 `GET /api/eval/runs/:id/events`（SSE），后端只在 status / 已完成格子数变化时发帧，终态自动断开。
+
 ## 模块间通信约定
 
 - 同 JVM：包间直接调用；跨层依赖在 main.go 组装注入，不在业务包内 new 全局单例。
 - 持久化：metrics / session / blocked 各自带 sqlite_store，路径由 main.go 注入。
+- 评测库：`.config/eval.db`，由 `eval.NewService` 在 main.go 注入；关闭顺序在调度器 Stop 之后。
 - 路由总表：main.go 是路由唯一真相；文档不复制路由清单。

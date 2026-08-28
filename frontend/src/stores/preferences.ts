@@ -26,6 +26,9 @@ export const usePreferencesStore = defineStore('preferences', () => {
   // 全局统计面板展开状态
   const showGlobalStats = ref(false)
 
+  const evalLastChannelIds = ref<string[]>([])
+  const evalLastSuiteId = ref('')
+
   // ===== 操作方法 =====
 
   /**
@@ -74,6 +77,11 @@ export const usePreferencesStore = defineStore('preferences', () => {
     showGlobalStats.value = !showGlobalStats.value
   }
 
+  function setEvalLastSelection(channelIds: string[], suiteId: string) {
+    evalLastChannelIds.value = channelIds
+    evalLastSuiteId.value = suiteId
+  }
+
   return {
     // 状态
     darkModePreference,
@@ -81,6 +89,8 @@ export const usePreferencesStore = defineStore('preferences', () => {
     claudeCodeDisguiseEnabled,
     codexDisguiseEnabled,
     showGlobalStats,
+    evalLastChannelIds,
+    evalLastSuiteId,
 
     // 方法
     setDarkMode,
@@ -89,6 +99,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
     toggleFuzzyMode,
     setClientDisguise,
     toggleGlobalStats,
+    setEvalLastSelection,
   }
 }, {
   // 持久化配置

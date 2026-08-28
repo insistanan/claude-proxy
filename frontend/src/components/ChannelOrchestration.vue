@@ -105,6 +105,18 @@
                 @keydown.enter.stop="$emit('edit', element)"
                 @keydown.space.stop="$emit('edit', element)"
               >{{ element.name }}</span>
+              <v-chip
+                v-if="evalChipFor(element)"
+                size="x-small"
+                :color="evalChipFor(element)!.color"
+                :title="evalChipFor(element)!.tooltip"
+                variant="tonal"
+                class="ml-2"
+                @click.stop="openEvalForChannel(element)"
+              >
+                <v-icon v-if="evalChipFor(element)!.watching" start size="12">mdi-clock-outline</v-icon>
+                {{ evalChipFor(element)!.label }}
+              </v-chip>
               <!-- 促销期标识 -->
               <v-chip
                 v-if="isInPromotion(element)"
@@ -338,11 +350,13 @@
                 :copied="copiedChannelIndex === element.index"
                 :supports-vision-capability="supportsVisionCapability"
                 :can-delete="canDeleteChannel(element)"
+                :show-eval="channelType !== 'images'"
                 @edit="$emit('edit', element)"
                 @duplicate="duplicateChannel(element.index)"
                 @toggle-vision="toggleVisionCapability(element)"
                 @copy-config="copyChannelConfig(element)"
                 @quick-test="handleQuickTest(element)"
+                @eval="openEvalForChannel(element)"
                 @ping="$emit('ping', element.index)"
                 @logs="openLogsDialog(element)"
                 @promotion="openPromotionDialog(element)"
@@ -378,11 +392,13 @@
           :copied="copiedChannelIndex === channel.index"
           :supports-vision-capability="supportsVisionCapability"
           :allow-reorder="false"
+          :show-eval="channelType !== 'images'"
           @edit="$emit('edit', channel)"
           @duplicate="duplicateChannel(channel.index)"
           @toggle-vision="toggleVisionCapability(channel)"
           @copy-config="copyChannelConfig(channel)"
           @quick-test="handleQuickTest(channel)"
+          @eval="openEvalForChannel(channel)"
           @ping="$emit('ping', channel.index)"
           @logs="openLogsDialog(channel)"
           @promotion="openPromotionDialog(channel)"
@@ -789,9 +805,11 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
-import { api, channelApiByType, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry } from '../services/api'
+import { api, channelApiByType, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry, type EvalChannelLatest } from '../services/api'
+import { evalAggregateColor, evalFormatTime } from '../utils/eval'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
 import ChannelPoolGrid from './ChannelPoolGrid.vue'
 import ChannelQuickMenu from './ChannelQuickMenu.vue'
@@ -799,6 +817,7 @@ import KeyTrendChart from './KeyTrendChart.vue'
 import QuickTestModal from './QuickTestModal.vue'
 
 const apexchart = VueApexCharts
+const router = useRouter()
 
 const props = defineProps<{
   channels: Channel[]
@@ -977,6 +996,42 @@ const toggleChannelChart = (channelIndex: number) => {
 const handleQuickTest = (channel: Channel) => {
   quickTestChannel.value = channel
   showQuickTestModal.value = true
+}
+
+const evalLatestMap = ref<Record<string, EvalChannelLatest>>({})
+let evalLatestTimer: ReturnType<typeof setInterval> | null = null
+
+const evalChipFor = (channel: Channel) => {
+  if (props.channelType === 'images') return null
+  if (channel.status === 'disabled' || channel.status === 'deprecated') return null
+  if (!channel.id) return null
+  const latest = evalLatestMap.value[channel.id]
+  if (!latest) return null
+  return {
+    label: latest.label,
+    color: evalAggregateColor(latest.aggregate),
+    watching: latest.watching,
+    tooltip: [
+      latest.suiteName || '未知套件',
+      evalFormatTime(latest.finishedAt),
+      latest.watching ? '值班中' : '未值班'
+    ].join(' · ')
+  }
+}
+
+const openEvalForChannel = (channel: Channel) => {
+  if (!channel.id) return
+  void router.push({ path: '/eval', query: { channel: channel.id } })
+}
+
+const refreshEvalLatestMap = async () => {
+  if (props.channelType === 'images') return
+  try {
+    const response = await api.getEvalLatestMap()
+    evalLatestMap.value = response.channels || {}
+  } catch {
+    // 渠道页芯片失败不打断编排；评测页会显示完整错误
+  }
 }
 
 // 复制渠道配置到剪贴板
@@ -1809,6 +1864,10 @@ const handleDeleteChannel = (channel: Channel) => {
 // 组件挂载时加载指标并启动延迟过期检查定时器
 onMounted(() => {
   refreshMetrics()
+  void refreshEvalLatestMap()
+  evalLatestTimer = setInterval(() => {
+    void refreshEvalLatestMap()
+  }, 30000)
   // 每 30 秒更新一次 currentTime，触发延迟显示的响应式更新
   latencyCheckTimer = setInterval(() => {
     currentTime.value = Date.now()
@@ -1828,6 +1887,10 @@ onUnmounted(() => {
   if (activityUpdateTimer) {
     clearInterval(activityUpdateTimer)
     activityUpdateTimer = null
+  }
+  if (evalLatestTimer) {
+    clearInterval(evalLatestTimer)
+    evalLatestTimer = null
   }
 })
 
