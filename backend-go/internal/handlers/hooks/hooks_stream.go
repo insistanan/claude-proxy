@@ -189,7 +189,7 @@ func WriteAttachedStreamError(c *gin.Context, err error) error {
 	if err := writeAttachedSSEPayload(c, payload, eventName); err != nil {
 		return err
 	}
-	return writeAttachedSSEStreamTerminator(c, apiType)
+	return writeAttachedSSEStreamTerminator(c, apiType, safetyErr.Code(), safetyErr.Error())
 }
 
 // WriteAttachedStreamHookError 将内容安全基础设施错误编码为当前协议的 SSE 错误。
@@ -210,7 +210,7 @@ func WriteAttachedStreamHookError(c *gin.Context, _ error) error {
 	if err := writeAttachedSSEPayload(c, payload, eventName); err != nil {
 		return err
 	}
-	return writeAttachedSSEStreamTerminator(c, metadata.APIType)
+	return writeAttachedSSEStreamTerminator(c, metadata.APIType, "CONTENT_SAFETY_HOOK_ERROR", "内容安全检查失败")
 }
 
 func writeAttachedSSEPayload(c *gin.Context, payload any, eventName string) error {
@@ -247,12 +247,12 @@ func writeAttachedSSEPayload(c *gin.Context, payload any, eventName string) erro
 //
 // 各协议终止序列：
 //   - messages：event: message_stop + data: {"type":"message_stop"}
-//   - responses：event: response.completed + data，再发 data：dataini / images：无统一终止标记，靠连接关闭
-func writeAttachedSSEStreamTerminator(c *gin.Context, apiType string) error {
+//   - responses：event: response.failed + data / images：无统一终止标记，靠连接关闭
+func writeAttachedSSEStreamTerminator(c *gin.Context, apiType, code, message string) error {
 	if c == nil || c.Writer == nil {
 		return nil
 	}
-	terminator := streamTerminatorForAPI(apiType)
+	terminator := streamTerminatorForAPI(apiType, code, message)
 	if terminator == "" {
 		return nil
 	}
@@ -265,12 +265,33 @@ func writeAttachedSSEStreamTerminator(c *gin.Context, apiType string) error {
 	return nil
 }
 
-func streamTerminatorForAPI(apiType string) string {
+func streamTerminatorForAPI(apiType, code, message string) string {
 	switch strings.ToLower(apiType) {
 	case "messages":
 		return "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 	case "responses":
-		return "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"\",\"status\":\"failed\"}}\n\n[event-done]\n\n"
+		if code == "" {
+			code = "stream_failed"
+		}
+		if message == "" {
+			message = "Responses 流已失败"
+		}
+		payload, err := json.Marshal(map[string]any{
+			"type": "response.failed",
+			"response": map[string]any{
+				"id":     "",
+				"object": "response",
+				"status": "failed",
+				"error": map[string]any{
+					"code":    code,
+					"message": message,
+				},
+			},
+		})
+		if err != nil {
+			return ""
+		}
+		return "event: response.failed\ndata: " + string(payload) + "\n\n"
 	case "chat":
 		return "data: [DONE]\n\n"
 	case "gemini", "images":
