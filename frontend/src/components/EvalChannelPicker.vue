@@ -29,6 +29,12 @@
       <v-btn size="small" variant="text" :disabled="!modelValue.length" @click="emitSelection([])">清空</v-btn>
     </div>
 
+    <div class="text-caption text-medium-emphasis mb-3">
+      <v-icon size="small" class="mr-1">mdi-help-circle-outline</v-icon>
+      每个渠道可单独指定模型（优先于「统一模型」）；留空则用该渠道自身 defaultModel。模型框聚焦时自动探测上游可用模型。已选
+      {{ modelValue.length }} 个渠道。
+    </div>
+
     <div v-if="!groups.length" class="text-body-2 text-medium-emphasis py-4">
       没有渠道
     </div>
@@ -58,9 +64,28 @@
           </v-icon>
           <span class="channel-name text-truncate">{{ channel.name }}</span>
           <v-chip v-if="channel.status === 'suspended'" size="x-small" variant="tonal" color="grey">熔断</v-chip>
-          <span class="text-caption text-medium-emphasis text-truncate">
-            {{ channel.defaultModel || '无默认模型' }}
-          </span>
+          <v-combobox
+            :model-value="channelModelOf(channel.id)"
+            :items="modelOptionsOf(channel.id)"
+            :loading="modelLoadingOf(channel.id)"
+            density="compact"
+            variant="outlined"
+            hide-details
+            label="模型"
+            placeholder="留空用渠道默认"
+            class="channel-model"
+            @click.stop
+            @keydown.stop
+            @focus="loadModels(channel.id)"
+            @update:model-value="(value: unknown) => updateChannelModel(channel.id, value)"
+          >
+            <template #no-data>
+              <div class="text-center px-2 text-caption text-medium-emphasis">
+                <template v-if="modelLoadingOf(channel.id)">正在探测上游模型...</template>
+                <template v-else>无匹配，可直接输入模型名</template>
+              </div>
+            </template>
+          </v-combobox>
         </div>
       </section>
     </div>
@@ -69,7 +94,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { ApiTab, Channel, ChannelPool } from '@/services/api'
+import { api, type ApiTab, type Channel, type ChannelPool } from '@/services/api'
 import { EVAL_PROTOCOL_KINDS, evalProtocolLabel } from '@/utils/eval'
 
 interface ChannelGroup {
@@ -87,14 +112,19 @@ const props = defineProps<{
   modelValue: string[]
   /** 当前生效的协议过滤 */
   protocols: ApiTab[]
+  /** channelId → 渠道专属模型覆盖，优先于统一 model */
+  channelModels?: Record<string, string>
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [string[]]
   'update:protocols': [ApiTab[]]
+  'update:channelModels': [Record<string, string>]
 }>()
 
 const search = ref('')
+const modelOptions = ref<Record<string, string[]>>({})
+const modelLoading = ref<Record<string, boolean>>({})
 
 const emitSelection = (ids: string[]) => emit('update:modelValue', ids)
 
@@ -188,12 +218,74 @@ const selectActiveFiltered = () =>
       .filter(channel => channel.status !== 'suspended')
       .map(channel => channel.id)
   )
+
+// ===== 逐渠道模型选择 =====
+
+const channelModelOf = (channelId: string): string => (props.channelModels || {})[channelId] || ''
+
+const modelOptionsOf = (channelId: string): string[] => modelOptions.value[channelId] || []
+
+const modelLoadingOf = (channelId: string): boolean => !!modelLoading.value[channelId]
+
+const updateChannelModel = (channelId: string, value: unknown) => {
+  const next = { ...(props.channelModels || {}) }
+  const model = typeof value === 'string' ? value.trim() : ''
+  if (model) {
+    next[channelId] = model
+  } else {
+    delete next[channelId]
+  }
+  emit('update:channelModels', next)
+}
+
+const channelById = (channelId: string): (Channel & { id: string }) | undefined => {
+  for (const kind of props.protocols) {
+    const found = (props.channelsByKind[kind] || []).find(channel => channel.id === channelId)
+    if (found && isSelectable(found)) return found
+  }
+  return undefined
+}
+
+/** 聚焦某个渠道的模型框时，探测一次上游可用模型（复用编辑渠道的 discover 逻辑）。 */
+const loadModels = async (channelId: string) => {
+  const channel = channelById(channelId)
+  if (!channel || modelOptions.value[channelId]) return
+
+  const baseUrl = channel.baseUrl?.trim() || channel.baseUrls?.find(url => url.trim())?.trim() || ''
+  if (!baseUrl) return
+
+  modelLoading.value = { ...modelLoading.value, [channelId]: true }
+  try {
+    const response = await api.discoverUpstreamModels({
+      baseUrl,
+      baseUrls: channel.baseUrls,
+      apiKey: channel.apiKeys?.[0] || '',
+      serviceType: channel.serviceType,
+      insecureSkipVerify: channel.insecureSkipVerify,
+      proxyMode: channel.proxyMode,
+      proxyUrl: channel.proxyUrl
+    })
+    const discovered = response.data
+      .map(item => item.id?.trim())
+      .filter((model): model is string => !!model)
+    const merged = Array.from(
+      new Set(([channel.defaultModel, ...discovered]).filter((model): model is string => !!model))
+    )
+    if (merged.length) {
+      modelOptions.value = { ...modelOptions.value, [channelId]: merged }
+    }
+  } catch {
+    // 探测失败不阻塞用户：仍可手动输入模型名。
+  } finally {
+    modelLoading.value = { ...modelLoading.value, [channelId]: false }
+  }
+}
 </script>
 
 <style scoped>
 .pool-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 12px;
 }
 
@@ -234,5 +326,11 @@ const selectActiveFiltered = () =>
   flex: 1 1 auto;
   min-width: 0;
   font-size: 0.875rem;
+}
+
+.channel-model {
+  flex: 0 1 200px;
+  min-width: 0;
+  max-width: 200px;
 }
 </style>

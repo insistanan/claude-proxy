@@ -516,6 +516,8 @@ export interface EvalProbe {
   id: string
   slug: string
   name: string
+  /** 题目用途说明，界面直接展示 */
+  description?: string
   category: 'authenticity' | 'iq' | string
   stimulus: EvalStimulus
   extract: EvalExtractSpec
@@ -533,6 +535,8 @@ export interface EvalSuite {
   id: string
   slug: string
   name: string
+  /** 套件用途说明，界面直接展示 */
+  description?: string
   probeIds: string[]
   cheap: boolean
   builtin: boolean
@@ -561,6 +565,8 @@ export interface EvalRun {
   status: string
   channelIds: string[]
   model?: string
+  /** channelId → 渠道专属模型覆盖，优先于统一 model */
+  channelModels?: Record<string, string>
   thinking?: string
   estimatedCalls: number
   skipReason?: string
@@ -577,6 +583,8 @@ export interface EvalWatchConfig {
   interval: string
   channelIds: string[]
   model?: string
+  /** channelId → 渠道专属模型覆盖，优先于统一 model */
+  channelModels?: Record<string, string>
   thinking?: string
   lastRunAt: number
   nextRunAt: number
@@ -597,6 +605,8 @@ export interface EvalStartRunRequest {
   suiteId: string
   channelIds: string[]
   model?: string
+  /** channelId → 渠道专属模型覆盖，优先于统一 model */
+  channelModels?: Record<string, string>
   thinking?: string
   trigger?: string
 }

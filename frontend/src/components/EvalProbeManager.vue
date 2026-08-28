@@ -21,6 +21,9 @@
               {{ probe.name }}
               <v-chip v-if="probe.builtin" size="x-small" variant="tonal" class="ml-1">内置</v-chip>
             </v-list-item-title>
+            <v-list-item-subtitle v-if="probe.description" class="text-caption mb-1">
+              {{ probe.description }}
+            </v-list-item-subtitle>
             <v-list-item-subtitle class="text-caption">
               {{ probe.category === 'authenticity' ? '真伪' : '智商' }} · 抽取 {{ probe.extract.kind }} ·
               判定 {{ probe.judge.kind }} · {{ probe.sampleCount }} 次 · {{ probe.cheap ? '便宜' : '费' }}

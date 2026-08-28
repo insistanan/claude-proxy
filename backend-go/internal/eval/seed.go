@@ -9,9 +9,10 @@ import (
 func seedProbes() []Probe {
 	probes := []Probe{
 		{
-			Slug:     "auth-model-echo",
-			Name:     "模型回显",
-			Category: CategoryAuthenticity,
+			Slug:        "auth-model-echo",
+			Name:        "模型回显",
+			Description: "让模型自报身份；中转若改了默认 model，这一题会与请求模型对不上（pass=如实回显）。",
+			Category:    CategoryAuthenticity,
 			Stimulus: Stimulus{
 				Prompt:      "Reply with only the exact model identifier you are running as. No extra words.",
 				MaxTokens:   64,
@@ -23,9 +24,10 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:     "auth-protocol-shape",
-			Name:     "协议外形",
-			Category: CategoryAuthenticity,
+			Slug:        "auth-protocol-shape",
+			Name:        "协议外形",
+			Description: "看响应是否带 usage、content type=text；中转若丢字段或改成其他形态，这一题会判 fail。",
+			Category:    CategoryAuthenticity,
 			Stimulus: Stimulus{
 				Prompt:      "Reply with the single word pong.",
 				MaxTokens:   32,
@@ -37,9 +39,10 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:     "auth-signature",
-			Name:     "思考签名",
-			Category: CategoryAuthenticity,
+			Slug:        "auth-signature",
+			Name:        "思考签名",
+			Description: "仅 Claude 适用：观察思考块是否带 thought_signature；伪造/缺失的中转在这里露馅。",
+			Category:    CategoryAuthenticity,
 			Stimulus: Stimulus{
 				Prompt:         "Think step by step about 17*19, then give the product only.",
 				MaxTokens:      256,
@@ -53,9 +56,10 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude},
 		},
 		{
-			Slug:     "auth-juice",
-			Name:     "思考用量",
-			Category: CategoryAuthenticity,
+			Slug:        "auth-juice",
+			Name:        "思考用量",
+			Description: "观测是否真的产生了思考 token；假思考/零思考的中转会被记 suspect。",
+			Category:    CategoryAuthenticity,
 			Stimulus: Stimulus{
 				Prompt:         "Think carefully: is 7919 a prime number? Answer yes or no, then the smallest factor if no.",
 				MaxTokens:      512,
@@ -69,9 +73,10 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:     "auth-random-numbers",
-			Name:     "随机数指纹",
-			Category: CategoryAuthenticity,
+			Slug:        "auth-random-numbers",
+			Name:        "随机数指纹",
+			Description: "同题采样 25 次取随机数做分布比对：全相同判 fail，跨渠道直方图高度相似只标注「指纹相近」供人工复核。",
+			Category:    CategoryAuthenticity,
 			Stimulus: Stimulus{
 				Prompt:      "Generate one uniformly random integer from 1 to 100 inclusive. Reply with the number only.",
 				MaxTokens:   16,
@@ -83,9 +88,10 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:     "iq-candy-21",
-			Name:     "糖果抽屉",
-			Category: CategoryIQ,
+			Slug:        "iq-candy-21",
+			Name:        "糖果抽屉",
+			Description: "抽屉原理数学题，标准答案 21；答案错说明模型或映射有问题。",
+			Category:    CategoryIQ,
 			Stimulus: Stimulus{
 				Prompt:      "一个抽屉里有红、黄、蓝三种颜色的袜子各 10 双。至少要取出多少只袜子，才能保证一定有 3 双同色袜子？只回答一个整数。",
 				MaxTokens:   32,
@@ -97,9 +103,10 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:     "iq-china-capital",
-			Name:     "闭卷常识",
-			Category: CategoryIQ,
+			Slug:        "iq-china-capital",
+			Name:        "闭卷常识",
+			Description: "最简单的常识题，答「北京」；连这都答错基本可断定映射到了残血模型。",
+			Category:    CategoryIQ,
 			Stimulus: Stimulus{
 				Prompt:      "中国的首都是哪座城市？只回答城市名。",
 				MaxTokens:   16,
@@ -111,9 +118,10 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:     "iq-svg-circle",
-			Name:     "SVG 圆",
-			Category: CategoryIQ,
+			Slug:        "iq-svg-circle",
+			Name:        "SVG 圆",
+			Description: "要求输出一段合法 SVG；判定会真的解析几何（半径/圆心/颜色），结果抽屉里可预览。",
+			Category:    CategoryIQ,
 			Stimulus: Stimulus{
 				Prompt:      "Output a valid SVG snippet (no markdown) that draws a red circle of radius 40 centered at (50,50) inside a 100x100 viewBox.",
 				MaxTokens:   256,
@@ -125,9 +133,10 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:     "iq-svg-rects",
-			Name:     "SVG 双矩形",
-			Category: CategoryIQ,
+			Slug:        "iq-svg-rects",
+			Name:        "SVG 双矩形",
+			Description: "两个不重叠矩形的 SVG；考察模型能否保持几何约束不穿帮。",
+			Category:    CategoryIQ,
 			Stimulus: Stimulus{
 				Prompt:      "Output a valid SVG snippet (no markdown) with a 200x100 viewBox containing two non-overlapping rectangles.",
 				MaxTokens:   256,
@@ -139,9 +148,10 @@ func seedProbes() []Probe {
 			ApplicableServiceTypes: []string{ServiceClaude, ServiceOpenAI, ServiceGemini, ServiceResponses},
 		},
 		{
-			Slug:     "iq-rubric-tradeoff",
-			Name:     "开放权衡",
-			Category: CategoryIQ,
+			Slug:        "iq-rubric-tradeoff",
+			Name:        "开放权衡",
+			Description: "开放论述题，由被测渠道自己当裁判再评一次（额外 1 次请求）；考察表达与归纳质量。",
+			Category:    CategoryIQ,
 			Stimulus: Stimulus{
 				Prompt:      "用不超过 120 字说明：在代理网关里，渠道评测为什么必须绕过调度器和协议转换器。给出至少两个会污染观测的具体机制。",
 				MaxTokens:   256,
@@ -195,24 +205,27 @@ func (s *Store) SyncBuiltins() error {
 
 	suites := []Suite{
 		{
-			Slug: "authenticity-cheap",
-			Name: "真伪快检",
+			Slug:        "authenticity-cheap",
+			Name:        "真伪快检",
+			Description: "4 道便宜真伪题（模型回显 / 协议外形 / 思考签名 / 思考用量），每渠道 ≤ 4 次请求，适合挂值班定时复查。",
 			ProbeIDs: []string{
 				ids["auth-model-echo"], ids["auth-protocol-shape"], ids["auth-signature"], ids["auth-juice"],
 			},
 			Cheap: true,
 		},
 		{
-			Slug: "authenticity-full",
-			Name: "真伪完整",
+			Slug:        "authenticity-full",
+			Name:        "真伪完整",
+			Description: "在快检基础上加随机数指纹（25 次采样），用于揪同源假渠道；不便宜，不能挂值班。",
 			ProbeIDs: []string{
 				ids["auth-model-echo"], ids["auth-protocol-shape"], ids["auth-signature"], ids["auth-juice"], ids["auth-random-numbers"],
 			},
 			Cheap: false,
 		},
 		{
-			Slug: "iq-light",
-			Name: "轻量智商",
+			Slug:        "iq-light",
+			Name:        "轻量智商",
+			Description: "5 道轻量智商题（数学、常识、SVG、开放权衡），直观判断回答质量；含 rubric 自评（额外 1 次请求），整体不算便宜，不能挂值班。",
 			ProbeIDs: []string{
 				ids["iq-candy-21"], ids["iq-china-capital"], ids["iq-svg-circle"], ids["iq-svg-rects"], ids["iq-rubric-tradeoff"],
 			},

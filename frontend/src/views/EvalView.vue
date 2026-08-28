@@ -4,6 +4,7 @@
       <div class="text-h5 font-weight-bold">评测</div>
       <div class="d-flex flex-wrap ga-2">
         <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="reloadAll">刷新</v-btn>
+        <v-btn variant="text" prepend-icon="mdi-history" @click="historyDrawer = true">历史</v-btn>
         <v-btn variant="text" prepend-icon="mdi-format-list-bulleted" @click="probeDrawer = true">题目</v-btn>
       </div>
     </div>
@@ -11,6 +12,9 @@
     <v-alert v-if="error" type="error" variant="tonal" class="mb-4" closable @click:close="error = ''">{{ error }}</v-alert>
 
     <v-card class="mb-4 pa-4" elevation="0" border>
+      <div v-if="selectedSuiteDescription" class="text-caption text-medium-emphasis mb-3">
+        {{ selectedSuiteDescription }}
+      </div>
       <div class="d-flex flex-wrap align-center ga-3">
         <v-select
           v-model="selectedSuiteId"
@@ -110,6 +114,7 @@
         <EvalChannelPicker
           v-model="selectedChannelIds"
           v-model:protocols="enabledProtocols"
+          v-model:channel-models="channelModels"
           :channels-by-kind="channelsByKind"
           :pools-by-kind="poolsByKind"
         />
@@ -133,6 +138,42 @@
 
       <EvalMatrix :run="currentRun" :probes="matrixProbes" :channels-by-kind="channelsByKind" @cell="openCell" />
     </v-card>
+
+    <v-navigation-drawer v-model="historyDrawer" location="end" temporary width="480">
+      <div class="pa-4">
+        <div class="d-flex align-center ga-2 mb-4">
+          <div class="text-h6">评测历史</div>
+          <v-spacer />
+          <v-btn icon="mdi-close" size="small" variant="text" @click="historyDrawer = false" />
+        </div>
+
+        <div v-if="!runHistory.length" class="text-body-2 text-medium-emphasis">还没有评测记录。</div>
+
+        <v-list v-else density="compact" bg-color="transparent">
+          <v-list-item
+            v-for="item in runHistory"
+            :key="item.id"
+            class="px-2 mb-1 run-history-item"
+            :active="currentRun?.id === item.id"
+            :ripple="false"
+            @click="selectRun(item.id)"
+          >
+            <v-list-item-title class="text-body-2 d-flex align-center ga-2">
+              {{ item.suiteName || '未知套件' }}
+              <v-chip size="x-small" variant="tonal" :color="evalRunStatusColor(item.status)">
+                {{ evalRunStatusLabel(item.status) }}
+              </v-chip>
+            </v-list-item-title>
+            <v-list-item-subtitle class="text-caption">
+              {{ item.channelIds.length }} 个渠道
+              <template v-if="item.trigger === 'watch'"> · 定时</template>
+              ·
+              {{ evalFormatTime(item.startedAt || item.createdAt) }}
+            </v-list-item-subtitle>
+          </v-list-item>
+        </v-list>
+      </div>
+    </v-navigation-drawer>
 
     <EvalResultDrawer v-model="cellDrawer" :selection="cellSelection" :channel-name-of="channelNameOf" />
     <EvalProbeManager v-model="probeDrawer" :probes="probes" @changed="reloadProbes" />
@@ -205,9 +246,12 @@ const selectedChannelIds = ref<string[]>([])
 const enabledProtocols = ref<ApiTab[]>([...EVAL_PROTOCOL_KINDS])
 const thinking = ref('inherit')
 const modelOverride = ref('')
+const channelModels = ref<Record<string, string>>({})
 
 const busy = ref(false)
 const currentRun = ref<EvalRun | null>(null)
+const runHistory = ref<EvalRun[]>([])
+const historyDrawer = ref(false)
 const probeDrawer = ref(false)
 const cellDrawer = ref(false)
 const cellSelection = ref<EvalCellSelection | null>(null)
@@ -227,8 +271,16 @@ const watchForm = ref({ enabled: false, suiteId: '', interval: '2h' })
 let runStream: AbortController | null = null
 
 const suiteItems = computed(() =>
-  suites.value.map(suite => ({ title: suite.name, value: suite.id }))
+  suites.value.map(suite => ({
+    title: suite.cheap ? `${suite.name} · 便宜` : suite.name,
+    value: suite.id,
+    props: { 'data-description': suite.description || '' } as Record<string, string>
+  }))
 )
+const selectedSuiteDescription = computed(() => {
+  const suite = suites.value.find(item => item.id === selectedSuiteId.value)
+  return suite?.description || ''
+})
 const cheapSuiteItems = computed(() =>
   suites.value.filter(suite => suite.cheap).map(suite => ({ title: suite.name, value: suite.id }))
 )
@@ -362,7 +414,18 @@ const reloadAll = async () => {
     }
     applyDeepLinkOrMemory()
 
+    // 评测页面的模型、思考和渠道选择同时作为值班配置的编辑入口。
+    // 刷新后必须恢复值班实际使用的完整配置，否则用户再次保存时会把旧值覆盖掉。
+    const deepLink = typeof route.query.channel === 'string' ? route.query.channel : ''
+    if (!deepLink && watchConfig.value.channelIds?.length) {
+      selectedChannelIds.value = [...watchConfig.value.channelIds]
+    }
+    modelOverride.value = watchConfig.value.model || ''
+    channelModels.value = { ...(watchConfig.value.channelModels || {}) }
+    thinking.value = watchConfig.value.thinking || 'inherit'
+
     const runId = runResponse.currentRunId || runResponse.runs?.[0]?.id
+    runHistory.value = runResponse.runs || []
     if (runId) {
       const detail = await api.getEvalRun(runId)
       currentRun.value = detail.run
@@ -377,6 +440,19 @@ const reloadAll = async () => {
   }
 }
 
+/** 从历史抽屉点开某次批次，把它展示到矩阵。不再自动跳回最新。 */
+const selectRun = async (runId: string) => {
+  if (!runId) return
+  error.value = ''
+  try {
+    const detail = await api.getEvalRun(runId)
+    currentRun.value = detail.run
+    historyDrawer.value = false
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 const startRun = async () => {
   starting.value = true
   error.value = ''
@@ -385,6 +461,7 @@ const startRun = async () => {
       suiteId: selectedSuiteId.value,
       channelIds: selectedChannelIds.value,
       model: modelOverride.value,
+      channelModels: channelModels.value,
       thinking: thinking.value
     })
     currentRun.value = response.run
@@ -419,6 +496,7 @@ const saveWatch = async () => {
       interval: watchForm.value.interval,
       channelIds: selectedChannelIds.value,
       model: modelOverride.value,
+      channelModels: channelModels.value,
       thinking: thinking.value
     })
     watchConfig.value = response.watch
@@ -461,5 +539,13 @@ onUnmounted(() => {
     align-items: flex-start;
     flex-direction: column;
   }
+}
+
+.run-history-item {
+  cursor: pointer;
+}
+
+.run-history-item:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
 }
 </style>
