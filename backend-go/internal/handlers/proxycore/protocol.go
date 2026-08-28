@@ -241,6 +241,13 @@ func handleSingleChannelProxy(
 		}
 	}
 
+	// 快捷测试跳过模型重定向，直接使用用户指定的请求模型
+	if IsQuickTestRequest(c, bodyBytes) {
+		upstream = upstream.Clone()
+		upstream.ModelMapping = nil
+		upstream.DefaultModel = ""
+	}
+
 	// 无 API Key 检查
 	if len(upstream.APIKeys) == 0 {
 		c.JSON(503, gin.H{

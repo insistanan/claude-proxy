@@ -316,6 +316,77 @@ func TestRunProxyRequestMultiChannelEndToEnd(t *testing.T) {
 	}
 }
 
+func TestRunProxyRequestQuickTestBypassesModelMappingAndDefaultModel(t *testing.T) {
+	env := newRunProxyTestEnv(t)
+	server := newRecordingUpstreamServer(t, nil)
+
+	if err := env.cfgManager.AddUpstream(config.UpstreamConfig{
+		Name:         "ch-redirect",
+		BaseURL:      server.URL(),
+		APIKeys:      []string{"key-redirect"},
+		DefaultModel: "upstream-default-model",
+		ModelMapping: map[string][]string{
+			"*": {"upstream-mapped-model"},
+		},
+	}); err != nil {
+		t.Fatalf("添加测试渠道失败: %v", err)
+	}
+
+	var upstreamReceivedModel string
+	rec := &specRecorder{}
+	spec := rec.newSpec()
+	spec.BuildUpstreamRequest = func(c *gin.Context, up *config.UpstreamConfig, apiKey string, bodyBytes []byte) (*http.Request, error) {
+		rec.mu.Lock()
+		rec.buildCalls++
+		rec.mu.Unlock()
+
+		upstreamModel := config.ResolveUpstreamModel("user-selected-model", up)
+		upstreamReceivedModel = upstreamModel
+
+		req, err := http.NewRequest(http.MethodPost, up.GetEffectiveBaseURL()+"/v1/test", bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		return req, nil
+	}
+
+	// 1. 快捷测试请求（带 metadata.purpose = quick_test 与 channel_index = 0）
+	w := performRunProxyRequest(t, env, spec, `{"model":"user-selected-model","metadata":{"channel_index":0,"purpose":"quick_test"}}`, "test-access-key")
+	if w.Code != http.StatusOK {
+		t.Fatalf("快捷测试期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if upstreamReceivedModel != "user-selected-model" {
+		t.Fatalf("快捷测试应绕过 ModelMapping 和 DefaultModel 直接使用请求模型，实际: %q", upstreamReceivedModel)
+	}
+
+	// 2. 快捷测试请求（通过请求头 X-Proxy-Purpose = quick_test）
+	wHeader := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(wHeader)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"user-selected-model","metadata":{"channel_index":0}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-access-key")
+	req.Header.Set("X-Proxy-Purpose", "quick_test")
+	c.Request = req
+	RunProxyRequest(c, env.envCfg, env.cfgManager, env.channelScheduler, spec)
+	if wHeader.Code != http.StatusOK {
+		t.Fatalf("请求头快捷测试期望 200，实际 %d，响应体: %s", wHeader.Code, wHeader.Body.String())
+	}
+	if upstreamReceivedModel != "user-selected-model" {
+		t.Fatalf("请求头快捷测试应绕过 ModelMapping 和 DefaultModel，实际: %q", upstreamReceivedModel)
+	}
+
+	// 3. 非测试的指定渠道请求（正常请求仍应触发 ModelMapping / DefaultModel）
+	wNormal := performRunProxyRequest(t, env, spec, `{"model":"user-selected-model","metadata":{"channel_index":0}}`, "test-access-key")
+	if wNormal.Code != http.StatusOK {
+		t.Fatalf("普通请求期望 200，实际 %d，响应体: %s", wNormal.Code, wNormal.Body.String())
+	}
+	if upstreamReceivedModel != "upstream-default-model" {
+		t.Fatalf("非测试请求应正常使用渠道 DefaultModel，实际: %q", upstreamReceivedModel)
+	}
+}
+
 // recordingUpstreamServer 模拟上游服务：记录收到的 x-api-key 并返回固定成功响应。
 type recordingUpstreamServer struct {
 	server *httptest.Server

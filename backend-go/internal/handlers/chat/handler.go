@@ -274,6 +274,7 @@ func stripChatRoutingMetadata(payload map[string]interface{}) {
 		return
 	}
 	delete(metadata, "channel_index")
+	delete(metadata, "purpose")
 	if len(metadata) == 0 {
 		delete(payload, "metadata")
 	}
@@ -315,15 +316,13 @@ func handleSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
 		log.Printf("[Chat-Timing] Chat 响应完成: %dms, 状态: %d", responseTime, resp.StatusCode)
-		if envCfg.IsDevelopment() {
-			var formattedBody string
-			if envCfg.RawLogOutput {
-				formattedBody = utils.FormatJSONBytesRaw(bodyBytes)
-			} else {
-				formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
-			}
-			log.Printf("[Chat-Response] 响应体:\n%s", formattedBody)
+		var formattedBody string
+		if envCfg.RawLogOutput {
+			formattedBody = utils.FormatJSONBytesRaw(bodyBytes)
+		} else {
+			formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
 		}
+		log.Printf("[Chat-Response] 响应体:\n%s", formattedBody)
 	}
 
 	usage := extractChatUsage(bodyBytes)

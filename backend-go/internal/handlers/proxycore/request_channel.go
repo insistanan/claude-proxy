@@ -9,7 +9,49 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
+	"github.com/gin-gonic/gin"
 )
+
+// IsQuickTestRequest 检查请求是否来自快捷测试（通过请求头或 metadata.purpose 判断）。
+func IsQuickTestRequest(c *gin.Context, bodyBytes []byte) bool {
+	if c != nil {
+		if purpose := strings.ToLower(strings.TrimSpace(c.GetHeader("X-Proxy-Purpose"))); purpose == "quick_test" {
+			return true
+		}
+		if purpose := strings.ToLower(strings.TrimSpace(c.GetHeader("X-Purpose"))); purpose == "quick_test" {
+			return true
+		}
+	}
+	if len(bodyBytes) == 0 {
+		return false
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+	decoder.UseNumber()
+
+	var payload map[string]interface{}
+	if err := decoder.Decode(&payload); err != nil {
+		return false
+	}
+
+	rawMetadata, exists := payload["metadata"]
+	if !exists || rawMetadata == nil {
+		return false
+	}
+
+	metadata, ok := rawMetadata.(map[string]interface{})
+	if !ok {
+		return false
+	}
+
+	if purpose, ok := metadata["purpose"].(string); ok {
+		if strings.ToLower(strings.TrimSpace(purpose)) == "quick_test" {
+			return true
+		}
+	}
+
+	return false
+}
 
 // AreAllKeysSuspended 检查渠道的所有 Key 是否都处于熔断状态
 // 用于判断是否需要启用强制探测模式

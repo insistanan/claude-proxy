@@ -1801,8 +1801,10 @@ export const testChannelWithModel = async (
   const threadId = sessionContext?.threadId || `thread-${generateUUID()}`
   const selectedModel = model?.trim() || ''
   if (!selectedModel) throw new Error('请选择或输入用于快捷测试的模型')
+  const testPurpose = sessionContext?.purpose || 'quick_test'
   const metadata = {
     channel_index: channelIndex,
+    purpose: testPurpose,
     user_id: sessionId,
     session_id: sessionId,
     thread_id: threadId
@@ -1812,7 +1814,8 @@ export const testChannelWithModel = async (
   let body: Record<string, unknown> = {}
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'x-api-key': accessKey
+    'x-api-key': accessKey,
+    'x-proxy-purpose': testPurpose
   }
 
   switch (apiType) {

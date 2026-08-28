@@ -13,7 +13,7 @@
 4. 钩子挂载     AttachHookPipeline（内容安全管线）
 5. 会话观测     ObserveConversationRequest（对话注册、attempt 记录、绑定 userID）
 6. 原生日志     LogOriginalRequest（脱敏）
-7. 指定渠道     body 带 channel_index → 直接单渠道分支
+7. 指定渠道     body 带 channel_index → 直接单渠道分支（快捷测试带 purpose: quick_test 或 X-Proxy-Purpose 头时跳过 ModelMapping 与 DefaultModel 重定向，直接使用请求模型）
 8. PreRoute    spec.PreRoute（协议特有前置路由；目前仅 chat 使用，为 modelcatalog 路由）
 9. 分派         IsMultiChannelModeForModel → 单渠道 或 多渠道 HandleMultiChannelFailover
 ```
