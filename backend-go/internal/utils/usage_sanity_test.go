@@ -57,11 +57,10 @@ func TestSanityCheckedInputTokens(t *testing.T) {
 			wantNeed:       true,
 		},
 		{
-			name:           "上游完全没报且量级够: 用估算填补",
+			name:           "上游完全没报且量级够: 保留缺失，避免整包估算",
 			estimatedTotal: 50000,
 			upstreamInput:  0,
-			wantCorrected:  50000,
-			wantNeed:       true,
+			wantNeed:       false,
 		},
 		{
 			name:           "小对话: 双边都够不到量级门槛，不介入",
@@ -89,12 +88,11 @@ func TestSanityCheckedInputTokens(t *testing.T) {
 			wantNeed:       false,
 		},
 		{
-			name:           "负数入参钳零后按未报处理",
+			name:           "负数入参钳零后按缺失处理",
 			estimatedTotal: 50000,
 			upstreamInput:  -5,
 			upstreamCached: -10,
-			wantCorrected:  50000,
-			wantNeed:       true,
+			wantNeed:       false,
 		},
 	}
 

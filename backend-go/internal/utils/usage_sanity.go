@@ -27,12 +27,30 @@ const (
 	// 只处理「长上下文被错报」这一类——小对话本来就不会触发任何客户端的压缩阈值，
 	// 错报也无害，不值得为它承担估算误差的风险。
 	usageSanityMinTokens = 20000
+
+	// maxSafeEstimatedInputTokens 只允许小请求在“上游完全没有 usage”时使用本地估算。
+	// 长上下文通常由客户端完整重发，直接把整个请求体估算值写入客户端 usage 会导致
+	// 压缩后仍被判定为满载，形成 compact thrash。
+	maxSafeEstimatedInputTokens = 8000
+
+	// UsageSanityMinTokensForTest 导出的量级门槛，供测试与调用方对齐（校验逻辑只读私有常量）。
+	UsageSanityMinTokensForTest = usageSanityMinTokens
 )
+
+// SafeEstimatedInputTokens 返回适合填补客户端 usage 的本地估算值。
+// 超过上限返回 0，表示宁可保留缺失值，也不把长上下文的整包估算冒充精确 usage。
+func SafeEstimatedInputTokens(estimated int) int {
+	if estimated <= 0 || estimated > maxSafeEstimatedInputTokens {
+		return 0
+	}
+	return estimated
+}
 
 // SanityCheckedInputTokens 交叉验证上游回报的上下文规模，返回应当下发给客户端的 input_tokens。
 //
 // estimatedTotal 是代理本地估算的真实上下文总规模（含缓存部分，即整个请求体的量）。
-// upstreamInput 是上游回报的 input_tokens。
+// upstreamInput 是上游回报的 input_tokens；0/1 且没有单独缓存量时视为缺失占位，
+// 不使用整包本地估算填回长请求，避免与 SafeEstimatedInputTokens 的保护互相抵消。
 // upstreamCached 是上游**单独回报、且不包含在 input_tokens 内**的缓存 token 总量：
 //   - Anthropic 语义（input_tokens 是未缓存余量）：传 cache_read + cache_creation 各档之和。
 //   - OpenAI 语义（cached_tokens 已含在 input_tokens 内）：传 0，否则会把缓存算两遍。
@@ -50,7 +68,10 @@ func SanityCheckedInputTokens(estimatedTotal, upstreamInput, upstreamCached int)
 	if upstreamCached < 0 {
 		upstreamCached = 0
 	}
-	upstreamTotal := upstreamInput + upstreamCached
+	upstreamTotal := saturatingAdd(upstreamInput, upstreamCached)
+	if upstreamInput <= 1 && upstreamCached == 0 {
+		return 0, false
+	}
 
 	// 量级门槛按双边取：多报场景下真实上下文很小（估算够不到门槛），
 	// 但上游报出的假大值本身就是需要拦截的对象，只看估算侧会漏掉整类问题。
@@ -58,10 +79,10 @@ func SanityCheckedInputTokens(estimatedTotal, upstreamInput, upstreamCached int)
 		return 0, false
 	}
 
-	// 双向判定：上游漏报（含完全没报）与上游虚报都会误导客户端的压缩决策，
-	// 只挡一个方向等于只修一半。
-	underReported := upstreamTotal == 0 || estimatedTotal > upstreamTotal*usageSanityRatio
-	overReported := upstreamTotal > estimatedTotal*usageSanityRatio
+	// 双向判定：上游明确少报与上游虚报都会误导客户端的压缩决策，
+	// 只挡一个方向等于只修一半。完全缺失/零值交给各协议自己的安全补全路径。
+	underReported := exceedsByRatio(estimatedTotal, upstreamTotal)
+	overReported := exceedsByRatio(upstreamTotal, estimatedTotal)
 	if !underReported && !overReported {
 		return 0, false
 	}
@@ -74,4 +95,31 @@ func SanityCheckedInputTokens(estimatedTotal, upstreamInput, upstreamCached int)
 		return 0, false
 	}
 	return corrected, true
+}
+
+// exceedsByRatio 判断 larger 是否严格大于 smaller 的 usageSanityRatio 倍，
+// 使用除法而不是乘法，避免上游恶意/损坏的大整数让乘法溢出后误判。
+func exceedsByRatio(larger, smaller int) bool {
+	if larger <= 0 || smaller < 0 {
+		return false
+	}
+	threshold := larger / usageSanityRatio
+	if larger%usageSanityRatio != 0 {
+		threshold++
+	}
+	return smaller < threshold
+}
+
+func saturatingAdd(left, right int) int {
+	if left <= 0 {
+		return right
+	}
+	if right <= 0 {
+		return left
+	}
+	maxInt := int(^uint(0) >> 1)
+	if left > maxInt-right {
+		return maxInt
+	}
+	return left + right
 }
