@@ -1,0 +1,7 @@
+#!/bin/sh
+root=$(git rev-parse --show-toplevel)
+if ! command -v node >/dev/null 2>&1; then
+  echo "[eol] 需要 node 才能规范化换行" >&2
+  exit 1
+fi
+exec node "$root/scripts/eol.mjs" --staged-fix

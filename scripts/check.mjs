@@ -4,8 +4,14 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 
 const isWin = process.platform === "win32";
-// Windows 下 npm 是 npm.cmd，spawn 需要带扩展名；其余平台直接用 npm。
 const npmCmd = isWin ? "npm.cmd" : "npm";
+
+function ensureHooksPath() {
+  const r = spawnSync("git", ["config", "--local", "--get", "core.hooksPath"], { encoding: "utf8" });
+  if (r.status === 0 && r.stdout.trim() === ".githooks") return;
+  const set = spawnSync("git", ["config", "--local", "core.hooksPath", ".githooks"], { encoding: "utf8" });
+  if (set.status !== 0) fail("设置 core.hooksPath", set.stderr);
+}
 
 function fail(name, detail) {
   console.error(`\n[check] FAILED: ${name}`);
@@ -31,6 +37,16 @@ function run(name, cmd, args, cwd, opts = {}) {
   if (r.status !== 0) fail(name);
   console.log("[check] OK");
 }
+
+ensureHooksPath();
+
+runValidated(
+  "工作区换行 LF",
+  "node",
+  ["scripts/eol.mjs", "--check"],
+  ".",
+  (out) => null,
+);
 
 runValidated(
   "后端 gofmt 校验",

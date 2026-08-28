@@ -55,3 +55,4 @@ cd frontend && npm run dev / build / check / test   # 前端
 ## 工具注意
 
 - `git diff` 指定文件用 `--` 分隔：`git diff -- path/to/file`（防路径歧义）
+- 文本文件一律 LF。Write/Edit 必须按字节保留或写出 LF，禁止把工作区改成 CRLF。
