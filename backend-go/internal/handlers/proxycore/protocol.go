@@ -35,7 +35,7 @@ type ProtocolSpec struct {
 
 	// PreRoute 可选：协议特有的前置路由（如 chat 的 modelcatalog 路由）。
 	// 返回 true 表示请求已被处理，主流程应直接返回。
-	PreRoute func(c *gin.Context, body []byte, model string, userID string, startTime time.Time) bool
+	PreRoute func(c *gin.Context, body []byte, model string, conversationID string, startTime time.Time) bool
 
 	// ParseRequest 解析请求体，返回本次请求的模型名、是否流式、提示词列表。
 	// 解析失败时应自行写出 4xx 响应并返回 ok=false。
@@ -104,7 +104,7 @@ func RunProxyRequest(
 	})
 
 	// 4. 会话观测
-	userID := ObserveConversationRequest(
+	conversationID := ObserveConversationRequest(
 		channelScheduler,
 		spec.Kind,
 		ResolveConversationIdentity(c, bodyBytes),
@@ -114,9 +114,9 @@ func RunProxyRequest(
 		utils.ExtractImageFingerprints(bodyBytes),
 		stream,
 	)
-	defer MarkConversationComplete(channelScheduler, userID, spec.Kind)
+	defer MarkConversationComplete(channelScheduler, conversationID, spec.Kind)
 	// 会话记录 ID 写入请求上下文，供协议回调（如 HandleSuccess）取用。
-	c.Set(utils.ContextKeyConversationUserID, userID)
+	c.Set(utils.ContextKeyConversationUserID, conversationID)
 
 	// 5. 记录原始请求
 	LogOriginalRequest(c, bodyBytes, envCfg, spec.LogName)
@@ -139,22 +139,22 @@ func RunProxyRequest(
 			})
 			return
 		}
-		handleSingleChannelProxy(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, upstream, channelIndex, startTime)
+		handleSingleChannelProxy(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, conversationID, upstream, channelIndex, startTime)
 		return
 	}
 
 	// 7. PreRoute（协议特有前置路由，如 chat 的 modelcatalog 路由）
 	if spec.PreRoute != nil {
-		if spec.PreRoute(c, bodyBytes, model, userID, startTime) {
+		if spec.PreRoute(c, bodyBytes, model, conversationID, startTime) {
 			return
 		}
 	}
 
 	// 8. 多渠道/单渠道分派
 	if channelScheduler.IsMultiChannelModeForModel(spec.Kind, model) {
-		handleMultiChannelProxy(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, startTime)
+		handleMultiChannelProxy(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, conversationID, startTime)
 	} else {
-		handleSingleChannelProxy(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, nil, 0, startTime)
+		handleSingleChannelProxy(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, conversationID, nil, 0, startTime)
 	}
 }
 
@@ -177,7 +177,7 @@ func buildProtocolAttempt(
 	bodyBytes []byte,
 	model string,
 	stream bool,
-	userID string,
+	conversationID string,
 	upstream *config.UpstreamConfig,
 	channelIndex int,
 	startTime time.Time,
@@ -190,7 +190,7 @@ func buildProtocolAttempt(
 	return NewAttemptBuilder(
 		c, envCfg, cfgManager, channelScheduler,
 		spec.Kind, spec.LogName, upstream, model, bodyBytes, stream,
-		channelIndex, userID,
+		channelIndex, conversationID,
 	).
 		WithURLResults(urlResults).
 		WithNextAPIKey(func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
@@ -223,7 +223,7 @@ func handleSingleChannelProxy(
 	bodyBytes []byte,
 	model string,
 	stream bool,
-	userID string,
+	conversationID string,
 	upstream *config.UpstreamConfig,
 	channelIndex int,
 	startTime time.Time,
@@ -251,8 +251,8 @@ func handleSingleChannelProxy(
 	}
 
 	// 对话路由冲突检查
-	if err := channelScheduler.ValidateFixedChannel(userID, spec.Kind, channelIndex); err != nil {
-		MarkConversationFailure(channelScheduler, userID, spec.Kind, err)
+	if err := channelScheduler.ValidateFixedChannel(conversationID, spec.Kind, channelIndex); err != nil {
+		MarkConversationFailure(channelScheduler, conversationID, spec.Kind, err)
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
 		return
 	}
@@ -262,19 +262,19 @@ func handleSingleChannelProxy(
 
 	// 单渠道：URL 用配置序，不参与 URL 健康统计（markURL 传 nil），
 	// 密钥降级按本协议渠道池写；内容审核跨渠道转移不生效（保持按 Key 分类语义）。
-	result := buildProtocolAttempt(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, upstream, channelIndex, startTime, urlResults, spec.Kind, nil, nil, false).TryWithModelMappingFailover()
+	result := buildProtocolAttempt(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, conversationID, upstream, channelIndex, startTime, urlResults, spec.Kind, nil, nil, false).TryWithModelMappingFailover()
 	if result.Handled {
 		if result.SuccessKey != "" {
-			MarkConversationSuccess(channelScheduler, userID, spec.Kind, channelIndex, upstream.Name)
+			MarkConversationSuccess(channelScheduler, conversationID, spec.Kind, channelIndex, upstream.Name)
 			channelScheduler.ConsumePromotionCount(channelIndex, spec.Kind)
 		} else if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-			MarkConversationFailure(channelScheduler, userID, spec.Kind, result.LastError)
+			MarkConversationFailure(channelScheduler, conversationID, spec.Kind, result.LastError)
 		}
 		return
 	}
 
 	log.Printf("[%s-Error] 所有API密钥都失败了", spec.LogName)
-	MarkConversationFailure(channelScheduler, userID, spec.Kind, result.LastError)
+	MarkConversationFailure(channelScheduler, conversationID, spec.Kind, result.LastError)
 	if spec.HandleAllKeysFailed != nil {
 		spec.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), result.FailoverError, result.LastError)
 	} else {
@@ -292,7 +292,7 @@ func handleMultiChannelProxy(
 	bodyBytes []byte,
 	model string,
 	stream bool,
-	userID string,
+	conversationID string,
 	startTime time.Time,
 ) {
 	HandleMultiChannelFailover(
@@ -301,7 +301,7 @@ func handleMultiChannelProxy(
 		channelScheduler,
 		spec.Kind,
 		spec.LogName,
-		userID,
+		conversationID,
 		model,
 		cfgManager.GetFuzzyModeEnabled(),
 		func(selection *scheduler.SelectionResult) MultiChannelAttemptResult {
@@ -318,7 +318,7 @@ func handleMultiChannelProxy(
 			// 多渠道：URL 用延迟排序序，回写 URL 健康状态；密钥降级按实际
 			// kind 写池（修复历史 bug：曾硬编码 messages 池，跨池降级写错渠道）。
 			// 内容审核跨渠道转移按 spec 开关生效。
-			result := buildProtocolAttempt(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, userID, upstream, channelIndex, startTime, sortedURLResults, spec.Kind,
+			result := buildProtocolAttempt(c, envCfg, cfgManager, channelScheduler, spec, bodyBytes, model, stream, conversationID, upstream, channelIndex, startTime, sortedURLResults, spec.Kind,
 				func(url string) { channelScheduler.MarkURLFailure(spec.Kind, channelIndex, url) },
 				func(url string) { channelScheduler.MarkURLSuccess(spec.Kind, channelIndex, url) },
 				spec.AllowContentPolicyChannelFailover,
@@ -339,15 +339,15 @@ func handleMultiChannelProxy(
 				return
 			}
 			if result.SuccessKey != "" {
-				MarkConversationSuccess(channelScheduler, userID, spec.Kind, selection.ChannelIndex, selection.Upstream.Name)
+				MarkConversationSuccess(channelScheduler, conversationID, spec.Kind, selection.ChannelIndex, selection.Upstream.Name)
 				return
 			}
 			if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-				MarkConversationFailure(channelScheduler, userID, spec.Kind, result.LastError)
+				MarkConversationFailure(channelScheduler, conversationID, spec.Kind, result.LastError)
 			}
 		},
 		func(ctx *gin.Context, failoverErr *FailoverError, lastError error) {
-			MarkConversationFailure(channelScheduler, userID, spec.Kind, lastError)
+			MarkConversationFailure(channelScheduler, conversationID, spec.Kind, lastError)
 			if spec.HandleAllFailed != nil {
 				spec.HandleAllFailed(ctx, failoverErr, lastError)
 			} else {

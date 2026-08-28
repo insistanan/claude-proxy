@@ -236,7 +236,7 @@ func TestRunProxyRequestPreRouteShortCircuitsDispatch(t *testing.T) {
 	env := newRunProxyTestEnv(t)
 	rec := &specRecorder{}
 	spec := rec.newSpec()
-	spec.PreRoute = func(c *gin.Context, body []byte, model string, userID string, startTime time.Time) bool {
+	spec.PreRoute = func(c *gin.Context, body []byte, model string, conversationID string, startTime time.Time) bool {
 		rec.mu.Lock()
 		rec.preRouteCalls++
 		rec.mu.Unlock()

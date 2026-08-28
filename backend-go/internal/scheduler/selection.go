@@ -99,7 +99,7 @@ func (s *ChannelScheduler) GetChannelInFlight(kind ChannelKind, channelIndex int
 // 请求发送前决定（见 prepareRequestForUpstream → visionlayer.PrepareRequest）。
 func (s *ChannelScheduler) SelectChannel(
 	ctx context.Context,
-	userID string,
+	conversationID string,
 	failedChannels map[int]bool,
 	kind ChannelKind,
 	requestedModel string,
@@ -156,7 +156,7 @@ func (s *ChannelScheduler) SelectChannel(
 	// 获取对应类型的指标管理器
 	metricsManager := s.getMetricsManager(kind)
 
-	if selected, hasOverride, err := s.selectConversationRouteOverride(userID, kind, routedChannels, failedChannels, registry); err != nil {
+	if selected, hasOverride, err := s.selectConversationRouteOverride(conversationID, kind, routedChannels, failedChannels, registry); err != nil {
 		return nil, err
 	} else if hasOverride {
 		return s.reserveAndReturn(selected, kind), nil
@@ -173,18 +173,18 @@ func (s *ChannelScheduler) SelectChannel(
 
 	// 2. 对话级亲和（粘滞：多轮会话复用最近成功的渠道；负载未过载时才沿用，
 	//    过载则放行给负载均衡处理。用于"不来回乱切"）
-	if selected := s.selectConversationAffinity(activeChannels, failedChannels, kind, userID, metricsManager); selected != nil {
+	if selected := s.selectConversationAffinity(activeChannels, failedChannels, kind, conversationID, metricsManager); selected != nil {
 		return s.reserveAndReturn(selected, kind), nil
 	}
 
 	// 3. 尝试使用自适应调度器（基于性能画像 + 在途预留；同优先级/评分接近候选间
 	//    按对话稳定散列分摊，让不同对话固定摊到不同供应商）
-	if selected := s.selectAdaptiveChannel(activeChannels, failedChannels, kind, requestedModel, userID, metricsManager); selected != nil {
+	if selected := s.selectAdaptiveChannel(activeChannels, failedChannels, kind, requestedModel, conversationID, metricsManager); selected != nil {
 		return s.reserveAndReturn(selected, kind), nil
 	}
 
-	// 4. 用户级 Trace 亲和（兜底：同一用户的新对话尚无对话级亲和时，沿用用户偏好渠道）
-	if selected := s.selectTraceAffinity(activeChannels, failedChannels, kind, userID, metricsManager); selected != nil {
+	// 4. 会话级 Trace 亲和（兜底：同一会话尚无对话级亲和时，沿用既有偏好渠道）
+	if selected := s.selectTraceAffinity(activeChannels, failedChannels, kind, conversationID, metricsManager); selected != nil {
 		return s.reserveAndReturn(selected, kind), nil
 	}
 
@@ -203,16 +203,16 @@ func (s *ChannelScheduler) SelectChannel(
 }
 
 func (s *ChannelScheduler) selectConversationRouteOverride(
-	userID string,
+	conversationID string,
 	kind ChannelKind,
 	routedChannels []ChannelInfo,
 	failedChannels map[int]bool,
 	registry *conversation.Registry,
 ) (*SelectionResult, bool, error) {
-	if userID == "" || registry == nil {
+	if conversationID == "" || registry == nil {
 		return nil, false, nil
 	}
-	override, ok := registry.GetRouteOverride(userID)
+	override, ok := registry.GetRouteOverride(conversationID)
 	if !ok {
 		return nil, false, nil
 	}
@@ -268,13 +268,13 @@ func (s *ChannelScheduler) selectConversationAffinity(
 	activeChannels []ChannelInfo,
 	failedChannels map[int]bool,
 	kind ChannelKind,
-	userID string,
+	conversationID string,
 	metricsManager *metrics.MetricsManager,
 ) *SelectionResult {
-	if userID == "" {
+	if conversationID == "" {
 		return nil
 	}
-	last, ok := s.GetConversationLastResolved(userID)
+	last, ok := s.GetConversationLastResolved(conversationID)
 	if !ok || last == nil || last.Kind != string(kind) {
 		return nil
 	}
@@ -286,29 +286,29 @@ func (s *ChannelScheduler) selectConversationAffinity(
 		}
 		if ch.Status != "active" {
 			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-ConvAffinity] 跳过对话亲和渠道 [%d] %s: 状态为 %s (user: %s)", prefix, preferredIdx, ch.Name, ch.Status, maskUserID(userID))
+			log.Printf("[%s-ConvAffinity] 跳过对话亲和渠道 [%d] %s: 状态为 %s (conversation: %s)", prefix, preferredIdx, ch.Name, ch.Status, maskConversationID(conversationID))
 			return nil
 		}
 		upstream := s.getUpstreamByIndex(preferredIdx, kind)
 		if upstream == nil || len(upstream.APIKeys) == 0 {
 			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-ConvAffinity] 跳过对话亲和渠道 [%d]: 无可用密钥 (user: %s)", prefix, preferredIdx, maskUserID(userID))
+			log.Printf("[%s-ConvAffinity] 跳过对话亲和渠道 [%d]: 无可用密钥 (conversation: %s)", prefix, preferredIdx, maskConversationID(conversationID))
 			return nil
 		}
 		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, preferredIdx) {
 			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-ConvAffinity] 跳过对话亲和渠道 [%d] %s: 不健康 (user: %s)", prefix, preferredIdx, ch.Name, maskUserID(userID))
+			log.Printf("[%s-ConvAffinity] 跳过对话亲和渠道 [%d] %s: 不健康 (conversation: %s)", prefix, preferredIdx, ch.Name, maskConversationID(conversationID))
 			return nil
 		}
 		// 负载未过载才粘滞；过载时放行给负载均衡，避免单渠道被多对话打满。
 		if !s.channelWithinAffinityLoad(kind, preferredIdx, upstream) {
 			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-ConvAffinity] 对话亲和渠道 [%d] %s 负载过载，放行给负载均衡 (inFlight: %d, user: %s)",
-				prefix, preferredIdx, ch.Name, s.GetChannelInFlight(kind, preferredIdx), maskUserID(userID))
+			log.Printf("[%s-ConvAffinity] 对话亲和渠道 [%d] %s 负载过载，放行给负载均衡 (inFlight: %d, conversation: %s)",
+				prefix, preferredIdx, ch.Name, s.GetChannelInFlight(kind, preferredIdx), maskConversationID(conversationID))
 			return nil
 		}
 		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-ConvAffinity] 使用对话亲和渠道: [%d] %s (user: %s)", prefix, preferredIdx, ch.Name, maskUserID(userID))
+		log.Printf("[%s-ConvAffinity] 使用对话亲和渠道: [%d] %s (conversation: %s)", prefix, preferredIdx, ch.Name, maskConversationID(conversationID))
 		return &SelectionResult{
 			Upstream:     upstream,
 			ChannelIndex: preferredIdx,
@@ -348,13 +348,13 @@ func (s *ChannelScheduler) selectTraceAffinity(
 	activeChannels []ChannelInfo,
 	failedChannels map[int]bool,
 	kind ChannelKind,
-	userID string,
+	conversationID string,
 	metricsManager *metrics.MetricsManager,
 ) *SelectionResult {
-	if userID == "" {
+	if conversationID == "" || s.traceAffinity == nil {
 		return nil
 	}
-	preferredIdx, ok := s.traceAffinity.GetPreferredChannelForKind(string(kind), userID)
+	preferredIdx, ok := s.traceAffinity.GetPreferredChannelForKind(string(kind), conversationID)
 	if !ok {
 		return nil
 	}
@@ -368,26 +368,26 @@ func (s *ChannelScheduler) selectTraceAffinity(
 		foundPreferredChannel = true
 		if ch.Status != "active" {
 			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 状态为 %s (user: %s)", prefix, preferredIdx, ch.Name, ch.Status, maskUserID(userID))
+			log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 状态为 %s (conversation: %s)", prefix, preferredIdx, ch.Name, ch.Status, maskConversationID(conversationID))
 			affinityInvalidated = true
 			continue
 		}
 		upstream := s.getUpstreamByIndex(preferredIdx, kind)
 		if upstream == nil || len(upstream.APIKeys) == 0 {
 			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Affinity] 跳过亲和渠道 [%d]: 无可用密钥 (user: %s)", prefix, preferredIdx, maskUserID(userID))
+			log.Printf("[%s-Affinity] 跳过亲和渠道 [%d]: 无可用密钥 (conversation: %s)", prefix, preferredIdx, maskConversationID(conversationID))
 			affinityInvalidated = true
 			continue
 		}
 		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, preferredIdx) {
 			failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, preferredIdx)
 			prefix := kindSchedulerLogPrefix(kind)
-			log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 不健康 (失败率: %.1f%%, user: %s)", prefix, preferredIdx, ch.Name, failureRate*100, maskUserID(userID))
+			log.Printf("[%s-Affinity] 跳过亲和渠道 [%d] %s: 不健康 (失败率: %.1f%%, conversation: %s)", prefix, preferredIdx, ch.Name, failureRate*100, maskConversationID(conversationID))
 			affinityInvalidated = true
 			continue
 		}
 		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Affinity] 使用 Trace 亲和渠道: [%d] %s (user: %s)", prefix, preferredIdx, ch.Name, maskUserID(userID))
+		log.Printf("[%s-Affinity] 使用 Trace 亲和渠道: [%d] %s (conversation: %s)", prefix, preferredIdx, ch.Name, maskConversationID(conversationID))
 		return &SelectionResult{
 			Upstream:     upstream,
 			ChannelIndex: preferredIdx,
@@ -396,12 +396,12 @@ func (s *ChannelScheduler) selectTraceAffinity(
 	}
 
 	if !foundPreferredChannel || affinityInvalidated {
-		s.traceAffinity.RemoveForKind(string(kind), userID)
+		s.traceAffinity.RemoveForKind(string(kind), conversationID)
 		prefix := kindSchedulerLogPrefix(kind)
 		if affinityInvalidated {
-			log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: user=%s, channel=%d (渠道不健康或状态异常)", prefix, maskUserID(userID), preferredIdx)
+			log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: conversation=%s, channel=%d (渠道不健康或状态异常)", prefix, maskConversationID(conversationID), preferredIdx)
 		} else {
-			log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: user=%s, channel=%d (渠道不存在)", prefix, maskUserID(userID), preferredIdx)
+			log.Printf("[%s-Affinity] 清除失效的 Trace 亲和性: conversation=%s, channel=%d (渠道不存在)", prefix, maskConversationID(conversationID), preferredIdx)
 		}
 	}
 	return nil
@@ -412,7 +412,7 @@ func (s *ChannelScheduler) selectAdaptiveChannel(
 	failedChannels map[int]bool,
 	kind ChannelKind,
 	requestedModel string,
-	userID string,
+	conversationID string,
 	metricsManager *metrics.MetricsManager,
 ) *SelectionResult {
 	s.mu.RLock()
@@ -427,7 +427,7 @@ func (s *ChannelScheduler) selectAdaptiveChannel(
 		failedChannels,
 		kind,
 		requestedModel,
-		userID,
+		conversationID,
 		metricsManager.IsChannelHealthyMultiURL,
 		s.getUpstreamByIndex,
 		func(channelIndex int) int64 {
@@ -666,10 +666,10 @@ func (s *ChannelScheduler) selectFallbackChannel(
 	return nil, fmt.Errorf("所有渠道都不可用")
 }
 
-// maskUserID 掩码 user_id（保护隐私）
-func maskUserID(userID string) string {
-	if len(userID) <= 16 {
+// maskConversationID 掩码内部 conversation record ID（保护隐私）。
+func maskConversationID(conversationID string) string {
+	if len(conversationID) <= 16 {
 		return "***"
 	}
-	return userID[:8] + "***" + userID[len(userID)-4:]
+	return conversationID[:8] + "***" + conversationID[len(conversationID)-4:]
 }

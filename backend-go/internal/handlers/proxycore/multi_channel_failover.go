@@ -43,7 +43,7 @@ func HandleMultiChannelFailover(
 	channelScheduler *scheduler.ChannelScheduler,
 	kind scheduler.ChannelKind,
 	apiType string,
-	userID string,
+	conversationID string,
 	requestedModel string,
 	fuzzyMode bool,
 	trySelectedChannel TrySelectedChannelFunc,
@@ -81,7 +81,7 @@ func HandleMultiChannelFailover(
 			// 继续正常流程
 		}
 
-		selection, err := channelScheduler.SelectChannel(c.Request.Context(), userID, failedChannels, kind, requestedModel)
+		selection, err := channelScheduler.SelectChannel(c.Request.Context(), conversationID, failedChannels, kind, requestedModel)
 		if err != nil {
 			lastError = err
 			break
@@ -113,17 +113,17 @@ func HandleMultiChannelFailover(
 			// 只有真正成功的请求才设置 Trace 亲和（客户端取消时 SuccessKey 为空）
 			if result.SuccessKey != "" {
 				// 对话级亲和已由 onHandled 回调（protocol.go 的 MarkConversationSuccess）写入，
-				// 这里只维护用户级 Trace 亲和。
-				// 仅在以下情况设置用户级亲和：
-				// 1. 该用户没有亲和记录（新会话）
+				// 这里只维护会话级 Trace 亲和。
+				// 仅在以下情况设置会话级亲和：
+				// 1. 该会话没有亲和记录（新会话）
 				// 2. 当前选择的原因是 trace_affinity（续期现有亲和）
-				// 3. 当前选择的原因不是 trace_affinity，但用户原来的亲和渠道在本次已失败（failover后建立新亲和）
+				// 3. 当前选择的原因不是 trace_affinity，但该会话原来的亲和渠道在本次已失败（failover后建立新亲和）
 				shouldSetAffinity := false
 				affinityMgr := channelScheduler.GetTraceAffinityManager()
 				if affinityMgr == nil {
 					shouldSetAffinity = true
 				} else {
-					if _, hasAffinity := affinityMgr.GetPreferredChannelForKind(string(kind), userID); !hasAffinity {
+					if _, hasAffinity := affinityMgr.GetPreferredChannelForKind(string(kind), conversationID); !hasAffinity {
 						// 情况1：新会话，建立亲和
 						shouldSetAffinity = true
 					} else if selection.Reason == "trace_affinity" {
@@ -131,7 +131,7 @@ func HandleMultiChannelFailover(
 						shouldSetAffinity = true
 					} else {
 						// 情况3：检查原亲和渠道是否在本次失败
-						if oldChannelIdx, ok := affinityMgr.GetPreferredChannelForKind(string(kind), userID); ok {
+						if oldChannelIdx, ok := affinityMgr.GetPreferredChannelForKind(string(kind), conversationID); ok {
 							if failedChannels[oldChannelIdx] {
 								// 原亲和渠道失败，允许建立新亲和
 								shouldSetAffinity = true
@@ -141,7 +141,7 @@ func HandleMultiChannelFailover(
 				}
 
 				if shouldSetAffinity {
-					channelScheduler.SetTraceAffinityForKind(kind, userID, channelIndex)
+					channelScheduler.SetTraceAffinityForKind(kind, conversationID, channelIndex)
 				}
 				channelScheduler.ConsumePromotionCount(channelIndex, kind)
 			}

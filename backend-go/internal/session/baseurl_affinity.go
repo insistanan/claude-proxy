@@ -16,7 +16,7 @@ type BaseURLAffinity struct {
 	LastUsedAt time.Time
 }
 
-// BaseURLAffinityManager 按 conversationID（或 userID 回退）记住最近成功的 BaseURL。
+// BaseURLAffinityManager 按 conversationID（必要时兼容旧 session key）记住最近成功的 BaseURL。
 type BaseURLAffinityManager struct {
 	mu       sync.RWMutex
 	affinity map[string]*BaseURLAffinity
@@ -89,9 +89,9 @@ func (manager *BaseURLAffinityManager) SetPreferredBaseURL(sessionKey string, ba
 
 	if baseURLAffinityDebug {
 		if logKind == 2 {
-			log.Printf("[BaseURL-Affinity] session %s: %s -> %s", maskUserID(sessionKey), previous, baseURL)
+			log.Printf("[BaseURL-Affinity] session %s: %s -> %s", maskSessionKey(sessionKey), previous, baseURL)
 		} else if logKind == 1 {
-			log.Printf("[BaseURL-Affinity] session %s sticky %s", maskUserID(sessionKey), baseURL)
+			log.Printf("[BaseURL-Affinity] session %s sticky %s", maskSessionKey(sessionKey), baseURL)
 		}
 	}
 }

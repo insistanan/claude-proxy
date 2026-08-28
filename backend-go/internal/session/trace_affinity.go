@@ -23,7 +23,7 @@ type TraceAffinity struct {
 // TraceAffinityManager 管理 trace 与渠道的亲和性
 type TraceAffinityManager struct {
 	mu       sync.RWMutex
-	affinity map[string]*TraceAffinity // key: channel_kind + user_id
+	affinity map[string]*TraceAffinity // key: channel_kind + conversation_id
 	ttl      time.Duration
 	stopCh   chan struct{} // 用于停止清理 goroutine
 }
@@ -51,16 +51,16 @@ func newTraceAffinityManagerWithTTL(ttl time.Duration) *TraceAffinityManager {
 	return mgr
 }
 
-// GetPreferredChannelForKind 获取指定渠道池内的 user_id 偏好渠道。
-func (m *TraceAffinityManager) GetPreferredChannelForKind(kind string, userID string) (int, bool) {
-	if userID == "" {
+// GetPreferredChannelForKind 获取指定渠道池内的 conversation record 偏好渠道。
+func (m *TraceAffinityManager) GetPreferredChannelForKind(kind string, conversationID string) (int, bool) {
+	if conversationID == "" {
 		return -1, false
 	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	affinity, exists := m.affinity[traceAffinityKey(kind, userID)]
+	affinity, exists := m.affinity[traceAffinityKey(kind, conversationID)]
 	if !exists {
 		return -1, false
 	}
@@ -73,9 +73,9 @@ func (m *TraceAffinityManager) GetPreferredChannelForKind(kind string, userID st
 	return affinity.ChannelIndex, true
 }
 
-// SetPreferredChannelForKind 设置指定渠道池内的 user_id 偏好渠道。
-func (m *TraceAffinityManager) SetPreferredChannelForKind(kind string, userID string, channelIndex int) {
-	if userID == "" {
+// SetPreferredChannelForKind 设置指定渠道池内的 conversation record 偏好渠道。
+func (m *TraceAffinityManager) SetPreferredChannelForKind(kind string, conversationID string, channelIndex int) {
+	if conversationID == "" {
 		return
 	}
 
@@ -83,7 +83,7 @@ func (m *TraceAffinityManager) SetPreferredChannelForKind(kind string, userID st
 	var oldChannel int
 
 	m.mu.Lock()
-	key := traceAffinityKey(kind, userID)
+	key := traceAffinityKey(kind, conversationID)
 	oldAffinity, existed := m.affinity[key]
 	if existed && oldAffinity.ChannelIndex != channelIndex {
 		logType, oldChannel = 2, oldAffinity.ChannelIndex
@@ -98,20 +98,20 @@ func (m *TraceAffinityManager) SetPreferredChannelForKind(kind string, userID st
 
 	if affinityDebug {
 		if logType == 2 {
-			log.Printf("[Affinity-Set] %s 用户亲和变更: %s -> 渠道[%d] (原渠道[%d])", normalizedAffinityKind(kind), maskUserID(userID), channelIndex, oldChannel)
+			log.Printf("[Affinity-Set] %s 会话亲和变更: %s -> 渠道[%d] (原渠道[%d])", normalizedAffinityKind(kind), maskSessionKey(conversationID), channelIndex, oldChannel)
 		} else if logType == 1 {
-			log.Printf("[Affinity-Set] 新建 %s 用户亲和: %s -> 渠道[%d]", normalizedAffinityKind(kind), maskUserID(userID), channelIndex)
+			log.Printf("[Affinity-Set] 新建 %s 会话亲和: %s -> 渠道[%d]", normalizedAffinityKind(kind), maskSessionKey(conversationID), channelIndex)
 		}
 	}
 }
 
 // RemoveForKind 移除指定渠道池内的亲和记录。
-func (m *TraceAffinityManager) RemoveForKind(kind string, userID string) {
+func (m *TraceAffinityManager) RemoveForKind(kind string, conversationID string) {
 	var oldChannel int
 	var existed bool
 
 	m.mu.Lock()
-	key := traceAffinityKey(kind, userID)
+	key := traceAffinityKey(kind, conversationID)
 	if affinity, exists := m.affinity[key]; exists {
 		oldChannel, existed = affinity.ChannelIndex, true
 		delete(m.affinity, key)
@@ -119,7 +119,7 @@ func (m *TraceAffinityManager) RemoveForKind(kind string, userID string) {
 	m.mu.Unlock()
 
 	if affinityDebug && existed {
-		log.Printf("[Affinity-Remove] 移除 %s 用户亲和: %s (原渠道[%d])", normalizedAffinityKind(kind), maskUserID(userID), oldChannel)
+		log.Printf("[Affinity-Remove] 移除 %s 会话亲和: %s (原渠道[%d])", normalizedAffinityKind(kind), maskSessionKey(conversationID), oldChannel)
 	}
 }
 
@@ -131,8 +131,8 @@ func normalizedAffinityKind(kind string) string {
 	return kind
 }
 
-func traceAffinityKey(kind string, userID string) string {
-	return normalizedAffinityKind(kind) + "\x00" + userID
+func traceAffinityKey(kind string, conversationID string) string {
+	return normalizedAffinityKind(kind) + "\x00" + conversationID
 }
 
 // RemoveByChannelForKind 移除指定渠道池中某个渠道的所有亲和记录。
@@ -158,9 +158,9 @@ func (m *TraceAffinityManager) Cleanup() int {
 	m.mu.Lock()
 	now := time.Now()
 	cleaned := 0
-	for userID, affinity := range m.affinity {
+	for conversationID, affinity := range m.affinity {
 		if now.Sub(affinity.LastUsedAt) > m.ttl {
-			delete(m.affinity, userID)
+			delete(m.affinity, conversationID)
 			cleaned++
 		}
 	}
@@ -168,7 +168,7 @@ func (m *TraceAffinityManager) Cleanup() int {
 	m.mu.Unlock()
 
 	if affinityDebug && cleaned > 0 {
-		log.Printf("[Affinity-Cleanup] 清理了 %d 条过期亲和记录 (TTL: %v)", cleaned, ttl)
+		log.Printf("[Affinity-Cleanup] 清理了 %d 条过期会话亲和记录 (TTL: %v)", cleaned, ttl)
 	}
 
 	return cleaned
@@ -219,13 +219,13 @@ func (m *TraceAffinityManager) GetTTL() time.Duration {
 	return m.ttl
 }
 
-// maskUserID 掩码 user_id（保护隐私）
+// maskSessionKey 掩码亲和键（保护隐私）。
 // 使用 rune 切片确保 UTF-8 安全
-func maskUserID(userID string) string {
-	if userID == "" {
+func maskSessionKey(sessionKey string) string {
+	if sessionKey == "" {
 		return "***"
 	}
-	runes := []rune(userID)
+	runes := []rune(sessionKey)
 	n := len(runes)
 	switch {
 	case n <= 4:

@@ -7,9 +7,9 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
 )
 
-func (s *ChannelScheduler) SetTraceAffinityForKind(kind ChannelKind, userID string, channelIndex int) {
-	if userID != "" {
-		s.traceAffinity.SetPreferredChannelForKind(string(kind), userID, channelIndex)
+func (s *ChannelScheduler) SetTraceAffinityForKind(kind ChannelKind, conversationID string, channelIndex int) {
+	if s != nil && s.traceAffinity != nil && conversationID != "" {
+		s.traceAffinity.SetPreferredChannelForKind(string(kind), conversationID, channelIndex)
 	}
 }
 
@@ -83,8 +83,8 @@ func (s *ChannelScheduler) ConsumePromotionCount(channelIndex int, kind ChannelK
 	s.configManager.ConsumePromotionCount(channelIndex, channelType)
 }
 
-func (s *ChannelScheduler) ValidateFixedChannel(userID string, kind ChannelKind, channelIndex int) error {
-	if userID == "" || s == nil {
+func (s *ChannelScheduler) ValidateFixedChannel(conversationID string, kind ChannelKind, channelIndex int) error {
+	if conversationID == "" || s == nil {
 		return nil
 	}
 	s.mu.RLock()
@@ -93,7 +93,7 @@ func (s *ChannelScheduler) ValidateFixedChannel(userID string, kind ChannelKind,
 	if registry == nil {
 		return nil
 	}
-	override, ok := registry.GetRouteOverride(userID)
+	override, ok := registry.GetRouteOverride(conversationID)
 	if !ok {
 		return nil
 	}
@@ -106,8 +106,8 @@ func (s *ChannelScheduler) ValidateFixedChannel(userID string, kind ChannelKind,
 	return nil
 }
 
-func (s *ChannelScheduler) MarkConversationSuccess(userID string, kind ChannelKind, channelIndex int, channelName string) {
-	if userID == "" || s == nil {
+func (s *ChannelScheduler) MarkConversationSuccess(conversationID string, kind ChannelKind, channelIndex int, channelName string) {
+	if conversationID == "" || s == nil {
 		return
 	}
 	s.mu.RLock()
@@ -116,11 +116,11 @@ func (s *ChannelScheduler) MarkConversationSuccess(userID string, kind ChannelKi
 	if registry == nil {
 		return
 	}
-	registry.MarkSuccess(userID, string(kind), channelIndex, channelName)
+	registry.MarkSuccess(conversationID, string(kind), channelIndex, channelName)
 }
 
-func (s *ChannelScheduler) MarkConversationAttempt(userID string, kind ChannelKind, channelIndex int, channelName string, requestedModel string, resolvedModel string, stream bool) {
-	if userID == "" || s == nil {
+func (s *ChannelScheduler) MarkConversationAttempt(conversationID string, kind ChannelKind, channelIndex int, channelName string, requestedModel string, resolvedModel string, stream bool) {
+	if conversationID == "" || s == nil {
 		return
 	}
 	s.mu.RLock()
@@ -129,11 +129,11 @@ func (s *ChannelScheduler) MarkConversationAttempt(userID string, kind ChannelKi
 	if registry == nil {
 		return
 	}
-	registry.MarkAttempt(userID, string(kind), channelIndex, channelName, requestedModel, resolvedModel, stream)
+	registry.MarkAttempt(conversationID, string(kind), channelIndex, channelName, requestedModel, resolvedModel, stream)
 }
 
-func (s *ChannelScheduler) MarkConversationFailure(userID string, kind ChannelKind, errorMessage string) {
-	if userID == "" || s == nil {
+func (s *ChannelScheduler) MarkConversationFailure(conversationID string, kind ChannelKind, errorMessage string) {
+	if conversationID == "" || s == nil {
 		return
 	}
 	s.mu.RLock()
@@ -142,11 +142,11 @@ func (s *ChannelScheduler) MarkConversationFailure(userID string, kind ChannelKi
 	if registry == nil {
 		return
 	}
-	registry.MarkFailure(userID, string(kind), errorMessage)
+	registry.MarkFailure(conversationID, string(kind), errorMessage)
 }
 
-func (s *ChannelScheduler) MarkConversationComplete(userID string, kind ChannelKind) {
-	if userID == "" || s == nil {
+func (s *ChannelScheduler) MarkConversationComplete(conversationID string, kind ChannelKind) {
+	if conversationID == "" || s == nil {
 		return
 	}
 	s.mu.RLock()
@@ -155,5 +155,5 @@ func (s *ChannelScheduler) MarkConversationComplete(userID string, kind ChannelK
 	if registry == nil {
 		return
 	}
-	registry.MarkComplete(userID, string(kind))
+	registry.MarkComplete(conversationID, string(kind))
 }

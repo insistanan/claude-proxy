@@ -60,14 +60,14 @@ func Handler(
 			prompts := proxycore.ExtractPromptsFromOpenAI(chatReq.Messages)
 			return chatReq.Model, chatReq.Stream, prompts, true
 		},
-		PreRoute: func(c *gin.Context, body []byte, model string, userID string, startTime time.Time) bool {
+		PreRoute: func(c *gin.Context, body []byte, model string, conversationID string, startTime time.Time) bool {
 			route, ok := modelcatalog.ResolveChatRoute(c.Request.Context(), cfgManager, model)
 			if !ok {
 				return false
 			}
 			var chatReq types.OpenAIRequest
 			_ = json.Unmarshal(body, &chatReq)
-			handleRoutedChat(c, envCfg, cfgManager, channelScheduler, route, body, model, chatReq.Stream, userID, startTime)
+			handleRoutedChat(c, envCfg, cfgManager, channelScheduler, route, body, model, chatReq.Stream, conversationID, startTime)
 			return true
 		},
 		BuildUpstreamRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string, body []byte) (*http.Request, error) {
@@ -93,12 +93,12 @@ func handleRoutedChat(
 	bodyBytes []byte,
 	model string,
 	stream bool,
-	userID string,
+	conversationID string,
 	startTime time.Time,
 ) {
 	upstream, err := chatRouteUpstream(cfgManager, route)
 	if err != nil {
-		proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		proxycore.MarkConversationFailure(channelScheduler, conversationID, scheduler.ChannelKindChat, err)
 		c.JSON(http.StatusNotFound, gin.H{
 			"error": gin.H{
 				"message": err.Error(),
@@ -108,15 +108,15 @@ func handleRoutedChat(
 		return
 	}
 
-	if err := channelScheduler.ValidateFixedChannel(userID, scheduler.ChannelKindChat, route.ChannelIndex); err != nil {
-		proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+	if err := channelScheduler.ValidateFixedChannel(conversationID, scheduler.ChannelKindChat, route.ChannelIndex); err != nil {
+		proxycore.MarkConversationFailure(channelScheduler, conversationID, scheduler.ChannelKindChat, err)
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "CONVERSATION_ROUTE_OVERRIDE"})
 		return
 	}
 
 	routedBody, err := replaceChatModel(bodyBytes, route.UpstreamModel)
 	if err != nil {
-		proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, err)
+		proxycore.MarkConversationFailure(channelScheduler, conversationID, scheduler.ChannelKindChat, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -125,7 +125,7 @@ func handleRoutedChat(
 	result := proxycore.NewAttemptBuilder(
 		c, envCfg, cfgManager, channelScheduler,
 		scheduler.ChannelKindChat, "Chat", upstream, model, routedBody, stream,
-		route.ChannelIndex, userID,
+		route.ChannelIndex, conversationID,
 	).
 		WithURLResults(urlResults).
 		WithNextAPIKey(func(upstream *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
@@ -148,16 +148,16 @@ func handleRoutedChat(
 		Build().TryWithModelMappingFailover()
 	if result.Handled {
 		if result.SuccessKey != "" {
-			proxycore.MarkConversationSuccess(channelScheduler, userID, scheduler.ChannelKindChat, route.ChannelIndex, route.ChannelName)
+			proxycore.MarkConversationSuccess(channelScheduler, conversationID, scheduler.ChannelKindChat, route.ChannelIndex, route.ChannelName)
 			channelScheduler.ConsumePromotionCount(route.ChannelIndex, scheduler.ChannelKindChat)
 		} else if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
-			proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
+			proxycore.MarkConversationFailure(channelScheduler, conversationID, scheduler.ChannelKindChat, result.LastError)
 		}
 		return
 	}
 
 	log.Printf("[Chat-Route] 路由模型失败: alias=%s channel=%d key=%s", route.Alias, route.ChannelIndex, route.KeyID)
-	proxycore.MarkConversationFailure(channelScheduler, userID, scheduler.ChannelKindChat, result.LastError)
+	proxycore.MarkConversationFailure(channelScheduler, conversationID, scheduler.ChannelKindChat, result.LastError)
 	proxycore.HandleAllKeysFailed(c, cfgManager.GetFuzzyModeEnabled(), result.FailoverError, result.LastError, "Chat")
 }
 

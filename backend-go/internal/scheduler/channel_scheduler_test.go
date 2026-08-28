@@ -162,10 +162,10 @@ func TestSelectChannel_PromotionPrecedesTraceAffinity(t *testing.T) {
 	scheduler, cleanup := createTestScheduler(t, cfg)
 	defer cleanup()
 
-	const userID = "promotion-before-affinity"
-	scheduler.SetTraceAffinityForKind(ChannelKindMessages, userID, 0)
+	const conversationID = "promotion-before-affinity"
+	scheduler.SetTraceAffinityForKind(ChannelKindMessages, conversationID, 0)
 
-	result, err := scheduler.SelectChannel(context.Background(), userID, map[int]bool{}, ChannelKindMessages, "")
+	result, err := scheduler.SelectChannel(context.Background(), conversationID, map[int]bool{}, ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("SelectChannel() error = %v", err)
 	}
@@ -246,10 +246,10 @@ func TestSelectChannel_UsesTraceAffinityWithoutPromotion(t *testing.T) {
 	scheduler, cleanup := createTestScheduler(t, cfg)
 	defer cleanup()
 
-	const userID = "affinity-without-promotion"
-	scheduler.SetTraceAffinityForKind(ChannelKindMessages, userID, 1)
+	const conversationID = "affinity-without-promotion"
+	scheduler.SetTraceAffinityForKind(ChannelKindMessages, conversationID, 1)
 
-	result, err := scheduler.SelectChannel(context.Background(), userID, map[int]bool{}, ChannelKindMessages, "")
+	result, err := scheduler.SelectChannel(context.Background(), conversationID, map[int]bool{}, ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("SelectChannel() error = %v", err)
 	}
@@ -526,7 +526,7 @@ func TestSelectChannel_DuplicatePrioritiesNormalizeToFailoverOrder(t *testing.T)
 	scheduler, cleanup := createTestScheduler(t, cfg)
 	defer cleanup()
 
-	// 使用不同 userID，避免 Trace 亲和把后续请求钉死在同一渠道
+	// 使用不同 conversationID，避免 Trace 亲和把后续请求钉死在同一渠道
 	first, err := scheduler.SelectChannel(context.Background(), "user-1", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("第一次选渠失败: %v", err)
