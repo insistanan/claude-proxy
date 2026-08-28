@@ -18,6 +18,39 @@ func hasPreviousResponseID(requestBody []byte) bool {
 	return strings.TrimSpace(gjson.GetBytes(requestBody, "previous_response_id").String()) != ""
 }
 
+// isCodexResponsesRequest 判断请求是否带有 Codex 专用的 client_metadata。
+// Codex 的 input_tokens 可能包含服务端注入的工具定义、缓存上下文和内部历史，
+// 不能用代理对请求体的近似估算覆盖上游 usage；否则客户端会看到远小于真实值的上下文，
+// 自动压缩永远不会按真实窗口触发。
+func isCodexResponsesRequest(requestBody []byte) bool {
+	if len(requestBody) == 0 {
+		return false
+	}
+
+	var request struct {
+		ClientMetadata map[string]json.RawMessage `json:"client_metadata"`
+	}
+	if err := json.Unmarshal(requestBody, &request); err != nil {
+		return false
+	}
+
+	for _, key := range []string{
+		"x-codex-window-id",
+		"x-codex-installation-id",
+		"x-codex-turn-metadata",
+	} {
+		raw, exists := request.ClientMetadata[key]
+		if !exists {
+			continue
+		}
+		value := strings.TrimSpace(string(raw))
+		if value != "" && value != "null" && value != `""` {
+			return true
+		}
+	}
+	return false
+}
+
 // patchResponsesUsage 补全 Responses 响应的 Token 统计
 func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envCfg *config.EnvConfig) {
 	// 检查是否有 Claude 原生缓存 token（有时才跳过 input_tokens 修补）
@@ -635,12 +668,12 @@ func upstreamCachedTokensFromUsageMap(usage map[string]interface{}) int {
 // correctUnderreportedInputTokensInCompletedEvent 校正下发给客户端的 response.completed 事件里
 // 被上游错报的 input_tokens，让 Cursor 这类依据回包 usage 做压缩决策的客户端看到真实上下文规模。
 //
-// 注意：如果请求携带 previous_response_id，说明客户端正在使用服务端链式上下文（如 Codex），
-// requestBody 仅包含单轮增量，不能拿本地增量估算去校正上游的服务端历史上下文，直接跳过。
+// 注意：携带 previous_response_id 或 Codex client_metadata 的请求不能用本地请求体估算校正。
+// 前者的 requestBody 仅包含单轮增量，后者的 input_tokens 还可能包含服务端注入内容。
 //
 // 只改下发给客户端的 SSE，不动 collectedUsage——计费、熔断、性能画像仍用上游原值。
 func correctUnderreportedInputTokensInCompletedEvent(event string, requestBody []byte, envCfg *config.EnvConfig) string {
-	if envCfg == nil || !envCfg.CorrectResponsesInputTokens || hasPreviousResponseID(requestBody) {
+	if envCfg == nil || !envCfg.CorrectResponsesInputTokens || hasPreviousResponseID(requestBody) || isCodexResponsesRequest(requestBody) {
 		return event
 	}
 	rewritten, _ := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
@@ -692,7 +725,7 @@ func correctUnderreportedInputTokensInCompletedEvent(event string, requestBody [
 // 注意：本函数改的是传入的 clientUsage 副本（调用方先做 `clientUsage := *resp.Usage` 再传入），
 // resp 原件保持上游原值——handler 随后仍要拿原件上报计费与请求日志。
 func correctUnderreportedInputTokensInResponse(resp *types.ResponsesResponse, clientUsage *types.ResponsesUsage, requestBody []byte, envCfg *config.EnvConfig) {
-	if resp == nil || clientUsage == nil || envCfg == nil || !envCfg.CorrectResponsesInputTokens || len(requestBody) == 0 || hasPreviousResponseID(requestBody) {
+	if resp == nil || clientUsage == nil || envCfg == nil || !envCfg.CorrectResponsesInputTokens || len(requestBody) == 0 || hasPreviousResponseID(requestBody) || isCodexResponsesRequest(requestBody) {
 		return
 	}
 	// 同流式：把上游单独回报的缓存量计入判定基数，避免误伤 Claude 语义的分开报数。

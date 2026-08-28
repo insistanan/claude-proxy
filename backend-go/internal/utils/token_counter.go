@@ -167,9 +167,14 @@ func EstimateResponsesRequestTokens(bodyBytes []byte) int {
 		total += estimateResponsesInputTokens(input)
 	}
 
-	// tools (每个工具约 100-200 tokens)
+	// tools（优先按定义本身估算；简单工具保留每个工具约 150 token 的下限）
 	if tools, ok := req["tools"].([]interface{}); ok {
-		total += len(tools) * 150
+		estimatedTools := estimateResponsesValueTokens(tools)
+		minimumTools := len(tools) * 150
+		if estimatedTools < minimumTools {
+			estimatedTools = minimumTools
+		}
+		total += estimatedTools
 	}
 
 	return total
@@ -189,9 +194,17 @@ func estimateResponsesInputTokens(input interface{}) int {
 				// 每条消息额外开销约 4 tokens
 				total += 4
 
-				// 处理 content 字段
-				if content := m["content"]; content != nil {
-					total += estimateContentTokens(content)
+				// Responses item 的有效内容不只在 content：Codex 会把工具执行结果
+				// 放在 custom_tool_call_output.output 中，函数调用结果也使用 output。
+				// 同时覆盖 custom_tool_call.input、function_call.arguments 和 reasoning.summary。
+				for _, key := range []string{"content", "input", "output", "arguments", "summary"} {
+					if value, exists := m[key]; exists && value != nil {
+						total += estimateResponsesValueTokens(value)
+					}
+				}
+
+				if name, ok := m["name"].(string); ok {
+					total += EstimateTokens(name) + 2
 				}
 
 				// 处理 tool_use
@@ -214,17 +227,20 @@ func estimateResponsesInputTokens(input interface{}) int {
 
 // estimateContentTokens 估算 content 字段的 token
 func estimateContentTokens(content interface{}) int {
+	return estimateResponsesValueTokens(content)
+}
+
+// estimateResponsesValueTokens 递归估算 Responses item 中的文本或结构化值。
+// Responses 的 content/output 既可能是字符串，也可能是多层数组/对象；只读取
+// text 会漏掉 custom_tool_call_output.output 这类长工具结果，进而严重低估上下文。
+func estimateResponsesValueTokens(content interface{}) int {
 	switch v := content.(type) {
 	case string:
 		return EstimateTokens(v)
 	case []interface{}:
 		total := 0
-		for _, block := range v {
-			if b, ok := block.(map[string]interface{}); ok {
-				if text, ok := b["text"].(string); ok {
-					total += EstimateTokens(text)
-				}
-			}
+		for _, item := range v {
+			total += estimateResponsesValueTokens(item)
 		}
 		return total
 	default:

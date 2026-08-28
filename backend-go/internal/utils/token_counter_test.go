@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/BenedictKing/claude-proxy/internal/types"
@@ -78,6 +79,19 @@ func TestEstimateResponsesRequestTokens(t *testing.T) {
 				},
 			},
 			minExpected: 300, // 2 tools * 150 = 300
+		},
+		{
+			name: "with_custom_tool_call_output",
+			request: map[string]interface{}{
+				"model": "gpt-5.6-luna",
+				"input": []interface{}{
+					map[string]interface{}{
+						"type":   "custom_tool_call_output",
+						"output": strings.Repeat("tool result ", 3000),
+					},
+				},
+			},
+			minExpected: 8000,
 		},
 	}
 

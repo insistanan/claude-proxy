@@ -321,6 +321,34 @@ func TestCorrectUnderreportedInputTokens(t *testing.T) {
 	largeBody := makeLargeResponsesRequestBody(t)
 	estimated := utils.EstimateResponsesRequestTokens(largeBody)
 
+	t.Run("Codex client metadata disables local correction", func(t *testing.T) {
+		var request map[string]interface{}
+		if err := json.Unmarshal(largeBody, &request); err != nil {
+			t.Fatalf("解析测试请求失败: %v", err)
+		}
+		request["client_metadata"] = map[string]interface{}{
+			"x-codex-window-id":     "window-1",
+			"x-codex-turn-metadata": "{\"request_kind\":\"turn\"}",
+		}
+		codexBody, err := json.Marshal(request)
+		if err != nil {
+			t.Fatalf("构造 Codex 测试请求失败: %v", err)
+		}
+		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":294466,\"output_tokens\":188,\"total_tokens\":294654}}}\n\n"
+		if out := correctUnderreportedInputTokensInCompletedEvent(event, codexBody, envCfg); out != event {
+			t.Fatalf("Codex usage 不应被本地估算覆盖:\n got  %q\n want %q", out, event)
+		}
+
+		resp := &types.ResponsesResponse{
+			Usage: types.ResponsesUsage{InputTokens: 294466, OutputTokens: 188, TotalTokens: 294654},
+		}
+		clientUsage := resp.Usage
+		correctUnderreportedInputTokensInResponse(resp, &clientUsage, codexBody, envCfg)
+		if clientUsage.InputTokens != 294466 || clientUsage.TotalTokens != 294654 {
+			t.Fatalf("Codex 非流式 usage 不应被本地估算覆盖: %+v", clientUsage)
+		}
+	})
+
 	t.Run("流式: 上游严重少报则校正并同步 total", func(t *testing.T) {
 		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":7723,\"output_tokens\":188,\"total_tokens\":7911}}}\n\n"
 		out := correctUnderreportedInputTokensInCompletedEvent(event, largeBody, envCfg)
