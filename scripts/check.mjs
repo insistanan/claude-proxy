@@ -41,7 +41,7 @@ function run(name, cmd, args, cwd, opts = {}) {
 ensureHooksPath();
 
 runValidated(
-  "工作区换行 LF",
+  "工作区换行校验",
   "node",
   ["scripts/eol.mjs", "--check"],
   ".",

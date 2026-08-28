@@ -4,8 +4,8 @@
 # bun.lock (文本格式) - 直接作为文本处理
 bun.lock text diff
 
-# 确保跨平台行尾符一致性
-* text=auto eol=lf
+# 跨平台行尾：Windows 工作区统一 CRLF，Go 与 shell 例外（工具链要求 LF）
+* text=auto eol=crlf
 
 # 明确标记文本文件
 *.go text eol=lf diff=golang
@@ -18,6 +18,13 @@ bun.lock text diff
 *.yml text
 *.toml text
 *.sh text eol=lf
+
+# git hook 脚本无后缀，bash 执行需 LF，显式排除
+/.githooks/* text eol=lf
+
+# 行尾守卫与门禁脚本本身保持 LF，避免 node 在极端环境下误解析
+/scripts/eol.mjs text eol=lf
+/scripts/check.mjs text eol=lf
 
 # 明确标记二进制文件
 *.png binary

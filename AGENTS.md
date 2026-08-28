@@ -55,4 +55,6 @@ cd frontend && npm run dev / build / check / test   # 前端
 ## 工具注意
 
 - `git diff` 指定文件用 `--` 分隔：`git diff -- path/to/file`（防路径歧义）
-- 文本文件一律 LF。Write/Edit 必须按字节保留或写出 LF，禁止把工作区改成 CRLF。
+- 文本文件行尾遵循 `.gitattributes` 规则：前端 / 文档 / 配置统一 CRLF；Go（`*.go`）与 shell（`*.sh`、`.githooks/*`）保持 LF（gofmt 与 bash 硬约束）。
+- Write/Edit 必须按字节保留目标文件的行尾：CRLF 文件写 CRLF、LF 文件写 LF，不得混入裸 LF。
+- 行尾守卫 `scripts/eol.mjs` 在 `npm run check` 与 pre-commit 自动校验，违规即阻断。
