@@ -44,7 +44,8 @@
 | 模型别名解析 / 上游模型映射 | `config.ResolveUpstreamModel` / `ResolveUpstreamModelList` | DefaultModel 优先，其后 `*` 通配 → 精确 → 双向 Contains 模糊；模型名原样匹配，不剥任何后缀 |
 | 上游 URL 拼接（`#` 后缀跳过版本前缀 / 版本段检测） | `utils.BuildUpstreamURL(baseURL, defaultVersionPrefix, endpoint)` | providers 四处 + handlers chat/images 的唯一出处；`HasVersionSuffix` 供检测 |
 | 模型目录 / 上游模型发现 | `modelcatalog` | `/v1/models` 聚合：静态别名 + 池匹配 + 上游发现；无独立路由，入口在 `handlers/messages/models.go` |
-| Token 估算（计费/日志） | `utils.EstimateTokens` / `EstimateResponsesRequestTokens` | 估算值，仅用于观测 |
+| Token 估算（计费/日志） | `utils.EstimateTokens` / `EstimateResponsesRequestTokens` | 估算值，仅用于观测。**唯一例外**：responses 透传分支的 `correctUnderreportedInputTokensIn*` 用它校正下发给客户端的 `input_tokens`（见下行），计费/熔断/画像仍用上游原值 |
+| 上游少报 input_tokens 校正（responses 透传） | `responses.correctUnderreportedInputTokensInCompletedEvent` / `...InResponse` | grok-4.6 等对长上下文只报未命中缓存的增量（549KB 请求体只报 7723），剥离累积缓存字段后这是客户端判断上下文占用的唯一依据，假小值会让 Cursor 永不触发压缩直至撞上游体积限制 413。仅在「估算 ≥ 20000 且 > 上游报数 2 倍」时改，只改下发值，开关 `CORRECT_RESPONSES_INPUT_TOKENS`（默认开） |
 | 敏感信息脱敏（日志用） | `utils.MaskAPIKey` / `MaskSensitiveHeaders` / `FormatJSONBytesForLog` | 日志输出一律走这里 |
 | gzip 解压 | `utils.DecompressGzipIfNeeded` | 上游响应 body |
 | 客户端伪装 | 头伪装 `utils/headers.go`（`ApplyClaudeCodeDisguise` / `ApplyCodexDisguise` / `PrepareUpstreamHeaders`）；请求体伪装 `utils/claude_disguise.go`（`ApplyClaudeCodeBodyDisguise`） | 两个文件分工：头 vs body，勿混用 |

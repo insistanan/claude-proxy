@@ -575,6 +575,31 @@ func TestShouldRetryWithNextKeyFuzzyMode(t *testing.T) {
 			wantFailover: true,
 			wantQuota:    true, // 配额相关
 		},
+		// 请求尺寸类 4xx：换 Key/换渠道不会改变请求体大小，不 failover
+		{
+			name:         "411 Length Required - no failover (request size error)",
+			statusCode:   411,
+			wantFailover: false,
+			wantQuota:    false,
+		},
+		{
+			name:         "413 Payload Too Large - no failover (request size error)",
+			statusCode:   413,
+			wantFailover: false,
+			wantQuota:    false,
+		},
+		{
+			name:         "414 URI Too Long - no failover (request size error)",
+			statusCode:   414,
+			wantFailover: false,
+			wantQuota:    false,
+		},
+		{
+			name:         "431 Request Header Fields Too Large - no failover (request size error)",
+			statusCode:   431,
+			wantFailover: false,
+			wantQuota:    false,
+		},
 		// 5xx 服务端错误在 Fuzzy 模式下触发 failover
 		{
 			name:         "500 Internal Server Error - failover in fuzzy mode",

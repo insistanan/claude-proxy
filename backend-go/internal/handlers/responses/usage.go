@@ -10,6 +10,28 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
+// maxSafeEstimatedInputTokens 限制本地估算的 input_tokens 上限。
+//
+// Cursor 这类全量重发历史的客户端，请求体常达 100k-300k tokens。
+// 若上游回包的 usage 缺失/被判定为虚假值，直接把 EstimateResponsesRequestTokens(requestBody)
+// 的全量估算塞进 input_tokens 下发给客户端，会让 Cursor 认为压缩后上下文依然是满的，
+// 触发 compact thrash（压不下去，反复在 200k 阈值附近触发压缩）。
+//
+// messages 侧（handlers/streams/stream_usage_patch.go）早已加 8000 上限保护，responses 侧
+// 必须对齐：只有小请求体（<= 8000）的估算值才信任并填补；超过则放弃填补（返回 0），
+// 让客户端用真实 usage 或自己的估算，而不是被代理的全量估算误导。
+const maxSafeEstimatedInputTokens = 8000
+
+// safeEstimatedInputTokens 返回带 8000 上限保护的 input_tokens 估算值。
+// 超过上限返回 0，表示放弃用本地估算填补 input_tokens。
+func safeEstimatedInputTokens(requestBody []byte) int {
+	estimated := utils.EstimateResponsesRequestTokens(requestBody)
+	if estimated > maxSafeEstimatedInputTokens {
+		return 0
+	}
+	return estimated
+}
+
 // patchResponsesUsage 补全 Responses 响应的 Token 统计
 func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envCfg *config.EnvConfig) {
 	// 检查是否有 Claude 原生缓存 token（有时才跳过 input_tokens 修补）
@@ -27,7 +49,9 @@ func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envC
 
 	// 如果 usage 完全为空，进行完整估算
 	if resp.Usage.InputTokens == 0 && resp.Usage.OutputTokens == 0 && resp.Usage.TotalTokens == 0 {
-		estimatedInput := utils.EstimateResponsesRequestTokens(requestBody)
+		// input 用带 8000 上限的保护值：Cursor 全量重发历史的请求体可达 100k-300k，
+		// 直接塞全量估算会让客户端误判压缩后上下文依然是满的（compact thrash）。
+		estimatedInput := safeEstimatedInputTokens(requestBody)
 		estimatedOutput := estimateResponsesOutputFromItems(resp.Output)
 		resp.Usage.InputTokens = estimatedInput
 		resp.Usage.OutputTokens = estimatedOutput
@@ -44,7 +68,8 @@ func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envC
 	patched := false
 
 	if needInputPatch {
-		resp.Usage.InputTokens = utils.EstimateResponsesRequestTokens(requestBody)
+		// 同样的 8000 上限保护，避免全量估算覆盖 input_tokens。
+		resp.Usage.InputTokens = safeEstimatedInputTokens(requestBody)
 		patched = true
 	}
 	if needOutputPatch {
@@ -301,7 +326,10 @@ func updateResponsesStreamUsage(collected *responsesStreamUsage, usageData respo
 // injectResponsesUsageToCompletedEvent 向 response.completed 事件注入 usage
 // 返回: 修改后的事件字符串, 估算的 inputTokens, 估算的 outputTokens
 func injectResponsesUsageToCompletedEvent(event string, requestBody []byte, outputText string, envCfg *config.EnvConfig) (string, int, int) {
-	inputTokens := utils.EstimateResponsesRequestTokens(requestBody)
+	// input 用带 8000 上限的保护值，理由同 safeEstimatedInputTokens：
+	// Cursor 全量重发历史的请求体极大，直接注入全量估算会让客户端误判上下文已满，
+	// 触发 compact thrash。超过上限则返回 0（放弃填补），让客户端用真实 usage 或自己的估算。
+	inputTokens := safeEstimatedInputTokens(requestBody)
 	outputTokens := utils.EstimateTokens(outputText)
 	totalTokens := inputTokens + outputTokens
 
@@ -473,7 +501,7 @@ func patchResponsesCompletedEventUsage(event string, requestBody []byte, outputT
 				// 修补 input_tokens（仅当没有 Claude 原生缓存时）
 				// OpenAI 的 cached_tokens 不应阻止 input_tokens 补全
 				if collected.InputTokens <= 1 && !collected.HasClaudeCache {
-					estimatedInput := utils.EstimateResponsesRequestTokens(requestBody)
+					estimatedInput := safeEstimatedInputTokens(requestBody)
 					usage["input_tokens"] = estimatedInput
 					collected.InputTokens = estimatedInput
 					patched = true
@@ -510,4 +538,219 @@ func patchResponsesCompletedEventUsage(event string, requestBody []byte, outputT
 		return string(patchedJSON), true
 	})
 	return rewritten
+}
+
+// stripAccumulatedCacheFromCompletedEvent 从 response.completed 事件里剥离累积式缓存统计。
+//
+// 背景：上游 grok-4.6（OpenAI 兼容格式）返回的 input_tokens_details.cached_tokens 是
+// 跨请求单调递增的累积缓存命中统计（204800、205056 ...），不是"当前请求已缓存的上下文大小"。
+// responses 透传分支原样转发该字段，Cursor 把它当成当前已缓存上下文大小，误判上下文一直满
+// 200k，反复触发压缩、压不下去（日志证据：压缩后请求体仅 30KB，上游仍回 cached_tokens=204800）。
+//
+// 真正 Claude 上游的 cache_read_input_tokens 是本次请求的真实缓存命中，不在剥离范围。
+// 本函数只针对 OpenAI 格式的 input_tokens_details / prompt_tokens_details，以及由它
+// 派生的 cache_read_input_tokens：把这两类字段从下发给客户端的 usage 里删掉，让客户端
+// 用 input_tokens（已扣除缓存的 uncached 真实值）判断上下文大小。
+func stripAccumulatedCacheFromCompletedEvent(event string) string {
+	if !strings.Contains(event, "cached_tokens") &&
+		!strings.Contains(event, "cache_read_input_tokens") {
+		return event
+	}
+	rewritten, _ := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(payload), &data); err != nil {
+			return "", false
+		}
+		if data["type"] != "response.completed" {
+			return "", false
+		}
+		response, ok := data["response"].(map[string]interface{})
+		if !ok {
+			return "", false
+		}
+		usage, ok := response["usage"].(map[string]interface{})
+		if !ok {
+			return "", false
+		}
+		changed := false
+		// 删除 OpenAI 累积式缓存统计字段
+		if _, exists := usage["input_tokens_details"]; exists {
+			delete(usage, "input_tokens_details")
+			changed = true
+		}
+		if _, exists := usage["prompt_tokens_details"]; exists {
+			delete(usage, "prompt_tokens_details")
+			changed = true
+		}
+		// 删除由 cached_tokens 派生的 cache_read_input_tokens（extractResponsesUsageFromMap 会把它
+		// 从 input_tokens_details.cached_tokens 拷贝过来，对累积式上游而言这个值是假大）。
+		// 仅当没有 Claude 原生缓存创建字段时才删（有 cache_creation_* 说明是 Claude 上游，保留）。
+		_, hasCacheCreation := usage["cache_creation_input_tokens"]
+		_, hasCacheCreation5m := usage["cache_creation_5m_input_tokens"]
+		_, hasCacheCreation1h := usage["cache_creation_1h_input_tokens"]
+		isClaudeNativeCache := hasCacheCreation || hasCacheCreation5m || hasCacheCreation1h
+		if _, exists := usage["cache_read_input_tokens"]; exists && !isClaudeNativeCache {
+			delete(usage, "cache_read_input_tokens")
+			changed = true
+		}
+		if !changed {
+			return "", false
+		}
+		patchedJSON, err := json.Marshal(data)
+		if err != nil {
+			return "", false
+		}
+		return string(patchedJSON), true
+	})
+	return rewritten
+}
+
+// inputTokensCorrectionRatio / minInputTokensForCorrection 控制"上游少报 input_tokens"的校正触发条件。
+//
+// 背景：grok-4.6 等上游对超长上下文只回报未命中缓存的增量部分——实测 549KB 的请求体
+// （本地估算约 157k tokens）上游只回报 input_tokens=7723。剥离累积式缓存字段后，
+// input_tokens 成了 Cursor 判断上下文占用的唯一依据，这个假小值会让 Cursor 认为上下文
+// 几乎是空的，永不触发压缩，一路堆到 1.13MB 撞上游 nginx 的 1MB 限制返回 413。
+//
+// 两个阈值必须同时满足才校正，缺一不可：
+//   - 倍数条件：本地估算是字符数近似（CJK 1.5、其他 3.5 字符/token），对正常上游有 ±30%
+//     误差，2 倍留足空间，避免把正常回报改坏。
+//   - 绝对下限：保证小请求永不进入校正路径，只处理"长上下文被少报"这一类。
+const (
+	inputTokensCorrectionRatio  = 2
+	minInputTokensForCorrection = 20000
+)
+
+// correctedInputTokens 判断上游回报的上下文规模是否严重少报，返回校正后的 input_tokens。
+// 第二个返回值为 false 表示不需要校正（调用方必须保持上游原值不动）。
+//
+// upstreamCached 传入上游回报的缓存 token 总量（cache_read + cache_creation 各档）。
+// 必须计入判定基数：Claude 语义下 input_tokens 不含缓存部分，只拿 input_tokens 比对会把
+// "正确分开报缓存"的上游误判为少报（271 + cache_read 204800 的真实上下文是 205071，
+// 只看 271 会以为少报 700 倍）。校正值同样扣掉缓存部分，保持 input 与 cache 字段不重叠，
+// 避免客户端把两者相加得到双倍上下文。
+func correctedInputTokens(requestBody []byte, upstreamInput, upstreamCached int) (int, bool) {
+	if len(requestBody) == 0 {
+		return 0, false
+	}
+	estimated := utils.EstimateResponsesRequestTokens(requestBody)
+	if estimated < minInputTokensForCorrection {
+		return 0, false
+	}
+	upstreamTotal := upstreamInput + upstreamCached
+	if upstreamTotal > 0 && estimated <= upstreamTotal*inputTokensCorrectionRatio {
+		return 0, false
+	}
+	// 扣掉上游已单独回报的缓存量，保持"input_tokens 不含缓存"的语义。
+	corrected := estimated - upstreamCached
+	if corrected <= upstreamInput {
+		return 0, false
+	}
+	return corrected, true
+}
+
+// upstreamCachedTokensFromUsageMap 汇总 usage 里上游单独回报的缓存 token 总量。
+// 注意本函数在累积式缓存剥离之后调用：OpenAI 的 cached_tokens 派生字段此时已被删除，
+// 剩下的只有 Claude 原生缓存字段（真实的本次缓存命中/创建量）。
+func upstreamCachedTokensFromUsageMap(usage map[string]interface{}) int {
+	total := 0
+	for _, key := range []string{
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+		"cache_creation_5m_input_tokens",
+		"cache_creation_1h_input_tokens",
+	} {
+		if v, ok := usage[key].(float64); ok && v > 0 {
+			total += int(v)
+		}
+	}
+	return total
+}
+
+// correctUnderreportedInputTokensInCompletedEvent 校正下发给客户端的 response.completed 事件里
+// 被上游少报的 input_tokens，让 Cursor 这类依据回包 usage 做压缩决策的客户端看到真实上下文规模。
+//
+// 只改下发给客户端的 SSE，不动 collectedUsage——计费、熔断、性能画像仍用上游原值。
+func correctUnderreportedInputTokensInCompletedEvent(event string, requestBody []byte, envCfg *config.EnvConfig) string {
+	if envCfg == nil || !envCfg.CorrectResponsesInputTokens {
+		return event
+	}
+	rewritten, _ := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(payload), &data); err != nil {
+			return "", false
+		}
+		if data["type"] != "response.completed" {
+			return "", false
+		}
+		response, ok := data["response"].(map[string]interface{})
+		if !ok {
+			return "", false
+		}
+		usage, ok := response["usage"].(map[string]interface{})
+		if !ok {
+			return "", false
+		}
+		upstreamInput := 0
+		if v, ok := usage["input_tokens"].(float64); ok {
+			upstreamInput = int(v)
+		}
+		corrected, need := correctedInputTokens(requestBody, upstreamInput, upstreamCachedTokensFromUsageMap(usage))
+		if !need {
+			return "", false
+		}
+		outputTokens := 0
+		if v, ok := usage["output_tokens"].(float64); ok {
+			outputTokens = int(v)
+		}
+		usage["input_tokens"] = corrected
+		usage["total_tokens"] = corrected + outputTokens
+		if envCfg.EnableResponseLogs {
+			log.Printf("[Responses-Stream-Token] 上游少报 input_tokens 校正: %d -> %d（本地估算，仅改下发值）",
+				upstreamInput, corrected)
+		}
+		patchedJSON, err := json.Marshal(data)
+		if err != nil {
+			return "", false
+		}
+		return string(patchedJSON), true
+	})
+	return rewritten
+}
+
+// correctUnderreportedInputTokensInResponse 非流式版本，语义同
+// correctUnderreportedInputTokensInCompletedEvent，作用于结构体字段而非 SSE 事件。
+func correctUnderreportedInputTokensInResponse(resp *types.ResponsesResponse, requestBody []byte, envCfg *config.EnvConfig) {
+	if resp == nil || envCfg == nil || !envCfg.CorrectResponsesInputTokens {
+		return
+	}
+	// 同流式：把上游单独回报的缓存量计入判定基数，避免误伤 Claude 语义的分开报数。
+	upstreamCached := resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens +
+		resp.Usage.CacheCreation5mInputTokens + resp.Usage.CacheCreation1hInputTokens
+	corrected, need := correctedInputTokens(requestBody, resp.Usage.InputTokens, upstreamCached)
+	if !need {
+		return
+	}
+	if envCfg.EnableResponseLogs {
+		log.Printf("[Responses-Token] 上游少报 input_tokens 校正: %d -> %d（本地估算，仅改下发值）",
+			resp.Usage.InputTokens, corrected)
+	}
+	resp.Usage.InputTokens = corrected
+	resp.Usage.TotalTokens = corrected + resp.Usage.OutputTokens
+}
+
+// stripAccumulatedCacheFromResponse 从非流式 ResponsesResponse 的 usage 里剥离累积式缓存统计。
+// 语义同 stripAccumulatedCacheFromCompletedEvent，作用于结构体字段而非 SSE 事件。
+func stripAccumulatedCacheFromResponse(resp *types.ResponsesResponse) {
+	if resp == nil {
+		return
+	}
+	// 有 Claude 原生缓存创建字段说明上游是 Claude，cache_read 是真实当前缓存，保留。
+	isClaudeNativeCache := resp.Usage.CacheCreationInputTokens > 0 ||
+		resp.Usage.CacheCreation5mInputTokens > 0 ||
+		resp.Usage.CacheCreation1hInputTokens > 0
+	resp.Usage.InputTokensDetails = nil
+	if !isClaudeNativeCache {
+		resp.Usage.CacheReadInputTokens = 0
+	}
 }

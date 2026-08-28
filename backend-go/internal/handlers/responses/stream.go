@@ -282,6 +282,16 @@ func handleStreamSuccess(
 					// 需要修补虚假值
 					eventToSend = patchResponsesCompletedEventUsage(event, originalRequestJSON, outputTextBuffer.String(), &collectedUsage, envCfg)
 				}
+				// 透传分支（上游本身就是 responses 协议）剥离累积式缓存统计：
+				// grok-4.6 等 OpenAI 兼容上游的 input_tokens_details.cached_tokens 是跨请求
+				// 单调递增的累积命中量，原样下发会让 Cursor 误判上下文一直满、反复触发压缩。
+				// 真正 Claude 上游的 cache_read_input_tokens 是本次真实缓存，函数内会保留。
+				if upstreamType == converters.ResponsesUpstreamResponses {
+					eventToSend = stripAccumulatedCacheFromCompletedEvent(eventToSend)
+					// 剥离缓存字段后 input_tokens 成了客户端判断上下文占用的唯一依据，
+					// 校正上游对长上下文的少报值，否则 Cursor 会误判上下文为空、永不触发压缩。
+					eventToSend = correctUnderreportedInputTokensInCompletedEvent(eventToSend, originalRequestJSON, envCfg)
+				}
 			}
 			if streamResponseID == "" {
 				streamResponseID = extractResponsesCompletedID(eventToSend)

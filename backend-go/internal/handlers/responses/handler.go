@@ -151,6 +151,15 @@ func handleSuccess(
 
 	// Token 补全逻辑
 	patchResponsesUsage(responsesResp, originalRequestJSON, envCfg)
+	// 透传分支剥离累积式缓存统计（同 stream.go 的 stripAccumulatedCacheFromCompletedEvent）：
+	// grok-4.6 等 OpenAI 兼容上游的 cached_tokens 是跨请求累积命中量，原样下发会让
+	// Cursor 误判上下文一直满、反复触发压缩。Claude 原生缓存不受影响（函数内判断保留）。
+	if upstreamType == converters.ResponsesUpstreamResponses {
+		stripAccumulatedCacheFromResponse(responsesResp)
+		// 剥离缓存字段后 input_tokens 成了客户端判断上下文占用的唯一依据，
+		// 校正上游对长上下文的少报值，否则 Cursor 会误判上下文为空、永不触发压缩。
+		correctUnderreportedInputTokensInResponse(responsesResp, originalRequestJSON, envCfg)
+	}
 	responseBody, err := utils.MarshalJSONNoEscape(responsesResp)
 	if err != nil {
 		return nil, fmt.Errorf("序列化 Responses 响应失败: %w", err)

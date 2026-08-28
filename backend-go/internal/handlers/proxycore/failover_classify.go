@@ -40,6 +40,14 @@ func shouldRetryWithNextKeyFuzzy(statusCode int, bodyBytes []byte, apiType strin
 		return false, false
 	}
 
+	// 请求尺寸类 4xx：请求体/URI 过大，换 Key 或换渠道不会改变请求体大小，
+	// failover 纯属浪费并把无辜 Key 标记失败。直接返回，让客户端收到原始错误。
+	// 411=Length Required, 413=Payload Too Large, 414=URI Too Long, 431=Request Headers Too Large
+	if statusCode == 411 || statusCode == 413 || statusCode == 414 || statusCode == 431 {
+		log.Printf("[%s-Failover-Fuzzy] 状态码 %d 为请求尺寸类错误，不进行 failover", apiType, statusCode)
+		return false, false
+	}
+
 	// 1. 检查是否为不可重试错误（内容审核等），无论是 500 还是其他状态码，这类错误都不应重试
 	if len(bodyBytes) > 0 {
 		if utils.IsNonRetryableUpstreamErrorBody(bodyBytes) {

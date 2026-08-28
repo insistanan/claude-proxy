@@ -17,6 +17,11 @@ type EnvConfig struct {
 	RawLogOutput         bool   // 原始日志输出（不缩进、不截断、不重排序）
 	SSEDebugLevel        string // SSE 调试级别: off, summary, full
 	RewriteResponseModel bool   // 是否改写响应中的 model 字段为请求的 model（默认 false）
+	// CorrectResponsesInputTokens 控制是否校正 responses 透传分支中被上游少报的 input_tokens。
+	// grok-4.6 等上游对长上下文只回报未命中缓存的增量（549KB 请求体只报 7723），
+	// 会让 Cursor 误判上下文为空、永不触发压缩，最终撞上游请求体大小限制返回 413。
+	// 校正只作用于下发给客户端的 usage，计费与性能画像仍用上游原值。
+	CorrectResponsesInputTokens bool
 
 	RequestTimeout     int
 	MaxRequestBodySize int64 // 请求体最大大小 (字节)，由 MB 配置转换
@@ -61,6 +66,8 @@ func NewEnvConfig() *EnvConfig {
 		RawLogOutput:         getEnv("RAW_LOG_OUTPUT", "false") == "true",
 		SSEDebugLevel:        getEnv("SSE_DEBUG_LEVEL", "off"),
 		RewriteResponseModel: getEnv("REWRITE_RESPONSE_MODEL", "false") == "true",
+
+		CorrectResponsesInputTokens: getEnv("CORRECT_RESPONSES_INPUT_TOKENS", "true") != "false",
 
 		RequestTimeout:     getEnvAsInt("REQUEST_TIMEOUT", 300000),
 		MaxRequestBodySize: getEnvAsInt64("MAX_REQUEST_BODY_SIZE_MB", 50) * 1024 * 1024, // MB 转换为字节
