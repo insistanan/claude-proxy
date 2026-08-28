@@ -1,6 +1,9 @@
 package eval
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	CategoryAuthenticity = "authenticity"
@@ -119,9 +122,11 @@ type JudgeSpec struct {
 
 // Probe 一条可入库的检测题。
 type Probe struct {
-	ID                     string      `json:"id"`
-	Slug                   string      `json:"slug"`
-	Name                   string      `json:"name"`
+	ID   string `json:"id"`
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+	// Description 给人看的"这题在查什么"。内置题由 seed.go 提供，界面直接展示。
+	Description            string      `json:"description,omitempty"`
 	Category               string      `json:"category"`
 	Stimulus               Stimulus    `json:"stimulus"`
 	Extract                ExtractSpec `json:"extract"`
@@ -138,33 +143,71 @@ type Probe struct {
 
 // Suite 一组探针。值班套件必须 cheap。内置套件同样由 seed.go 维护。
 type Suite struct {
-	ID        string   `json:"id"`
-	Slug      string   `json:"slug"`
-	Name      string   `json:"name"`
-	ProbeIDs  []string `json:"probeIds"`
-	Cheap     bool     `json:"cheap"`
-	Builtin   bool     `json:"builtin"`
-	CreatedAt int64    `json:"createdAt"`
-	UpdatedAt int64    `json:"updatedAt"`
+	ID          string   `json:"id"`
+	Slug        string   `json:"slug"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	ProbeIDs    []string `json:"probeIds"`
+	Cheap       bool     `json:"cheap"`
+	Builtin     bool     `json:"builtin"`
+	CreatedAt   int64    `json:"createdAt"`
+	UpdatedAt   int64    `json:"updatedAt"`
 }
 
 // Run 一次评测批次。
 type Run struct {
-	ID             string   `json:"id"`
-	SuiteID        string   `json:"suiteId"`
-	SuiteName      string   `json:"suiteName,omitempty"`
-	Trigger        string   `json:"trigger"`
-	Status         string   `json:"status"`
-	ChannelIDs     []string `json:"channelIds"`
-	Model          string   `json:"model,omitempty"`
-	Thinking       string   `json:"thinking,omitempty"`
-	EstimatedCalls int      `json:"estimatedCalls"`
-	SkipReason     string   `json:"skipReason,omitempty"`
-	Error          string   `json:"error,omitempty"`
-	StartedAt      int64    `json:"startedAt"`
-	FinishedAt     int64    `json:"finishedAt"`
-	CreatedAt      int64    `json:"createdAt"`
-	Results        []Result `json:"results,omitempty"`
+	ID         string   `json:"id"`
+	SuiteID    string   `json:"suiteId"`
+	SuiteName  string   `json:"suiteName,omitempty"`
+	Trigger    string   `json:"trigger"`
+	Status     string   `json:"status"`
+	ChannelIDs []string `json:"channelIds"`
+	// Model 是所有渠道共用的模型覆盖；ChannelModels 按渠道逐个覆盖，优先于 Model。
+	// 两者都空时各渠道用自己的 defaultModel。
+	Model          string            `json:"model,omitempty"`
+	ChannelModels  map[string]string `json:"channelModels,omitempty"`
+	Thinking       string            `json:"thinking,omitempty"`
+	EstimatedCalls int               `json:"estimatedCalls"`
+	SkipReason     string            `json:"skipReason,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	StartedAt      int64             `json:"startedAt"`
+	FinishedAt     int64             `json:"finishedAt"`
+	CreatedAt      int64             `json:"createdAt"`
+	Results        []Result          `json:"results,omitempty"`
+}
+
+// ModelForChannel 返回指定渠道本次评测应使用的模型覆盖。
+// 逐渠道覆盖（ChannelModels）优先于统一覆盖（Model）；都未指定则返回空，
+// 调用方随后会用渠道自己的 defaultModel。
+func (r Run) ModelForChannel(channelID string) string {
+	if r.ChannelModels != nil {
+		if model := strings.TrimSpace(r.ChannelModels[channelID]); model != "" {
+			return model
+		}
+	}
+	return strings.TrimSpace(r.Model)
+}
+
+// normalizeChannelModels 只保留当前批次选中的渠道，并对模型名做剥空白清洗。
+// 防止前端提交了"已取消勾选渠道"的残留模型值。
+func normalizeChannelModels(channelModels map[string]string, channelIDs []string) map[string]string {
+	result := make(map[string]string, len(channelIDs))
+	selected := make(map[string]struct{}, len(channelIDs))
+	for _, id := range channelIDs {
+		selected[id] = struct{}{}
+	}
+	for id, model := range channelModels {
+		if _, ok := selected[id]; !ok {
+			continue
+		}
+		if model = strings.TrimSpace(model); model != "" {
+			result[id] = model
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // Result 单个渠道 × 探针的结论。
@@ -183,15 +226,16 @@ type Result struct {
 
 // WatchConfig 全局唯一的值班配置。
 type WatchConfig struct {
-	Enabled        bool     `json:"enabled"`
-	SuiteID        string   `json:"suiteId"`
-	Interval       string   `json:"interval"`
-	ChannelIDs     []string `json:"channelIds"`
-	Model          string   `json:"model,omitempty"`
-	Thinking       string   `json:"thinking,omitempty"`
-	LastRunAt      int64    `json:"lastRunAt"`
-	NextRunAt      int64    `json:"nextRunAt"`
-	LastSkipReason string   `json:"lastSkipReason,omitempty"`
+	Enabled        bool              `json:"enabled"`
+	SuiteID        string            `json:"suiteId"`
+	Interval       string            `json:"interval"`
+	ChannelIDs     []string          `json:"channelIds"`
+	Model          string            `json:"model,omitempty"`
+	ChannelModels  map[string]string `json:"channelModels,omitempty"`
+	Thinking       string            `json:"thinking,omitempty"`
+	LastRunAt      int64             `json:"lastRunAt"`
+	NextRunAt      int64             `json:"nextRunAt"`
+	LastSkipReason string            `json:"lastSkipReason,omitempty"`
 }
 
 // ChannelLatest 渠道行芯片用的聚合结论。
@@ -210,8 +254,10 @@ type StartRunRequest struct {
 	SuiteID    string   `json:"suiteId"`
 	ChannelIDs []string `json:"channelIds"`
 	Model      string   `json:"model,omitempty"`
-	Thinking   string   `json:"thinking,omitempty"`
-	Trigger    string   `json:"trigger,omitempty"`
+	// ChannelModels 按渠道 UUID 指定模型，优先于 Model。前端的"逐渠道选模型"写这里。
+	ChannelModels map[string]string `json:"channelModels,omitempty"`
+	Thinking      string            `json:"thinking,omitempty"`
+	Trigger       string            `json:"trigger,omitempty"`
 }
 
 // ValidateReport 配套 skill / 管理题目用的分流结果。

@@ -112,7 +112,9 @@ func HandleMultiChannelFailover(
 			}
 			// 只有真正成功的请求才设置 Trace 亲和（客户端取消时 SuccessKey 为空）
 			if result.SuccessKey != "" {
-				// 仅在以下情况设置亲和性：
+				// 对话级亲和已由 onHandled 回调（protocol.go 的 MarkConversationSuccess）写入，
+				// 这里只维护用户级 Trace 亲和。
+				// 仅在以下情况设置用户级亲和：
 				// 1. 该用户没有亲和记录（新会话）
 				// 2. 当前选择的原因是 trace_affinity（续期现有亲和）
 				// 3. 当前选择的原因不是 trace_affinity，但用户原来的亲和渠道在本次已失败（failover后建立新亲和）

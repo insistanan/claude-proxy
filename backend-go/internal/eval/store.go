@@ -30,6 +30,9 @@ func NewStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 单连接串行化写入。代价是：任何在 rows 游标未关闭时发起的第二条查询都会
+	// 向连接池索要第二条连接，而池上限为 1 且等待不带超时，直接死锁并永久占住连接。
+	// 因此本文件里的列表查询一律用 JOIN 一次取全，绝不在 rows.Next() 循环里再查库。
 	db.SetMaxOpenConns(1)
 	store := &Store{db: db}
 	if err := store.migrate(); err != nil {
@@ -52,6 +55,7 @@ func (s *Store) migrate() error {
 			id TEXT PRIMARY KEY,
 			slug TEXT NOT NULL UNIQUE,
 			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
 			category TEXT NOT NULL,
 			stimulus_json TEXT NOT NULL,
 			extract_kind TEXT NOT NULL,
@@ -69,6 +73,7 @@ func (s *Store) migrate() error {
 			id TEXT PRIMARY KEY,
 			slug TEXT NOT NULL UNIQUE,
 			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
 			probe_ids_json TEXT NOT NULL,
 			cheap INTEGER NOT NULL DEFAULT 0,
 			builtin INTEGER NOT NULL DEFAULT 0,
@@ -82,6 +87,7 @@ func (s *Store) migrate() error {
 			status TEXT NOT NULL,
 			channel_ids_json TEXT NOT NULL,
 			model TEXT NOT NULL DEFAULT '',
+			channel_models_json TEXT NOT NULL DEFAULT '{}',
 			thinking TEXT NOT NULL DEFAULT '',
 			estimated_calls INTEGER NOT NULL DEFAULT 0,
 			skip_reason TEXT NOT NULL DEFAULT '',
@@ -132,12 +138,23 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("eval migrate: %w", err)
 		}
 	}
-	// 老库补列：builtin 是后加的，早于它建的库要就地升级。
-	if err := s.ensureColumn("eval_probes", "builtin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return fmt.Errorf("eval migrate: %w", err)
+	// 老库补列：这些列是后加的，早于它们建的库要就地升级。
+	addedColumns := []struct {
+		table      string
+		column     string
+		definition string
+	}{
+		{"eval_probes", "builtin", "INTEGER NOT NULL DEFAULT 0"},
+		{"eval_suites", "builtin", "INTEGER NOT NULL DEFAULT 0"},
+		{"eval_probes", "description", "TEXT NOT NULL DEFAULT ''"},
+		{"eval_suites", "description", "TEXT NOT NULL DEFAULT ''"},
+		{"eval_runs", "channel_models_json", "TEXT NOT NULL DEFAULT '{}'"},
+		{"eval_watch", "channel_models_json", "TEXT NOT NULL DEFAULT '{}'"},
 	}
-	if err := s.ensureColumn("eval_suites", "builtin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return fmt.Errorf("eval migrate: %w", err)
+	for _, item := range addedColumns {
+		if err := s.ensureColumn(item.table, item.column, item.definition); err != nil {
+			return fmt.Errorf("eval migrate: %w", err)
+		}
 	}
 	return nil
 }
@@ -188,9 +205,9 @@ func boolToInt(value bool) int {
 
 // probeColumns / suiteColumns 是列清单的唯一出处：加列时只改这里 + scan 函数，
 // 免得三处 SELECT 各写一遍再漏掉一处。
-const probeColumns = `id, slug, name, category, stimulus_json, extract_kind, extract_spec_json, judge_kind, judge_spec_json, sample_count, applicable_service_types_json, cheap, builtin, created_at, updated_at`
+const probeColumns = `id, slug, name, description, category, stimulus_json, extract_kind, extract_spec_json, judge_kind, judge_spec_json, sample_count, applicable_service_types_json, cheap, builtin, created_at, updated_at`
 
-const suiteColumns = `id, slug, name, probe_ids_json, cheap, builtin, created_at, updated_at`
+const suiteColumns = `id, slug, name, description, probe_ids_json, cheap, builtin, created_at, updated_at`
 
 // marshalProbe 把探针的四个 JSON 字段一次性序列化，Insert 与 Update 共用。
 func marshalProbe(probe Probe) (stimulus, extract, judge, serviceTypes string, err error) {
@@ -229,8 +246,8 @@ func (s *Store) InsertProbe(probe Probe) (Probe, error) {
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO eval_probes (`+probeColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		probe.ID, probe.Slug, probe.Name, probe.Category, stimulusJSON, probe.Extract.Kind, extractJSON, probe.Judge.Kind, judgeJSON, probe.SampleCount, typesJSON, boolToInt(probe.Cheap), boolToInt(probe.Builtin), probe.CreatedAt, probe.UpdatedAt,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		probe.ID, probe.Slug, probe.Name, probe.Description, probe.Category, stimulusJSON, probe.Extract.Kind, extractJSON, probe.Judge.Kind, judgeJSON, probe.SampleCount, typesJSON, boolToInt(probe.Cheap), boolToInt(probe.Builtin), probe.CreatedAt, probe.UpdatedAt,
 	)
 	if err != nil {
 		return Probe{}, err
@@ -286,8 +303,8 @@ func (s *Store) writeProbe(probe Probe) error {
 		return err
 	}
 	result, err := s.db.Exec(
-		`UPDATE eval_probes SET slug=?, name=?, category=?, stimulus_json=?, extract_kind=?, extract_spec_json=?, judge_kind=?, judge_spec_json=?, sample_count=?, applicable_service_types_json=?, cheap=?, builtin=?, updated_at=? WHERE id=?`,
-		probe.Slug, probe.Name, probe.Category, stimulusJSON, probe.Extract.Kind, extractJSON, probe.Judge.Kind, judgeJSON, probe.SampleCount, typesJSON, boolToInt(probe.Cheap), boolToInt(probe.Builtin), probe.UpdatedAt, probe.ID,
+		`UPDATE eval_probes SET slug=?, name=?, description=?, category=?, stimulus_json=?, extract_kind=?, extract_spec_json=?, judge_kind=?, judge_spec_json=?, sample_count=?, applicable_service_types_json=?, cheap=?, builtin=?, updated_at=? WHERE id=?`,
+		probe.Slug, probe.Name, probe.Description, probe.Category, stimulusJSON, probe.Extract.Kind, extractJSON, probe.Judge.Kind, judgeJSON, probe.SampleCount, typesJSON, boolToInt(probe.Cheap), boolToInt(probe.Builtin), probe.UpdatedAt, probe.ID,
 	)
 	if err != nil {
 		return err
@@ -325,7 +342,7 @@ func scanProbe(scanner interface {
 	var stimulusJSON, extractJSON, judgeJSON, typesJSON string
 	var cheap, builtin int
 	err := scanner.Scan(
-		&probe.ID, &probe.Slug, &probe.Name, &probe.Category,
+		&probe.ID, &probe.Slug, &probe.Name, &probe.Description, &probe.Category,
 		&stimulusJSON, &probe.Extract.Kind, &extractJSON, &probe.Judge.Kind, &judgeJSON,
 		&probe.SampleCount, &typesJSON, &cheap, &builtin, &probe.CreatedAt, &probe.UpdatedAt,
 	)
@@ -404,8 +421,8 @@ func (s *Store) InsertSuite(suite Suite) (Suite, error) {
 		return Suite{}, err
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO eval_suites (`+suiteColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		suite.ID, suite.Slug, suite.Name, probeIDsJSON, boolToInt(suite.Cheap), boolToInt(suite.Builtin), suite.CreatedAt, suite.UpdatedAt,
+		`INSERT INTO eval_suites (`+suiteColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		suite.ID, suite.Slug, suite.Name, suite.Description, probeIDsJSON, boolToInt(suite.Cheap), boolToInt(suite.Builtin), suite.CreatedAt, suite.UpdatedAt,
 	)
 	if err != nil {
 		return Suite{}, err
@@ -454,8 +471,8 @@ func (s *Store) writeSuite(suite Suite) error {
 		return err
 	}
 	result, err := s.db.Exec(
-		`UPDATE eval_suites SET slug=?, name=?, probe_ids_json=?, cheap=?, builtin=?, updated_at=? WHERE id=?`,
-		suite.Slug, suite.Name, probeIDsJSON, boolToInt(suite.Cheap), boolToInt(suite.Builtin), suite.UpdatedAt, suite.ID,
+		`UPDATE eval_suites SET slug=?, name=?, description=?, probe_ids_json=?, cheap=?, builtin=?, updated_at=? WHERE id=?`,
+		suite.Slug, suite.Name, suite.Description, probeIDsJSON, boolToInt(suite.Cheap), boolToInt(suite.Builtin), suite.UpdatedAt, suite.ID,
 	)
 	if err != nil {
 		return err
@@ -492,7 +509,7 @@ func scanSuite(scanner interface {
 	var suite Suite
 	var probeIDsJSON string
 	var cheap, builtin int
-	if err := scanner.Scan(&suite.ID, &suite.Slug, &suite.Name, &probeIDsJSON, &cheap, &builtin, &suite.CreatedAt, &suite.UpdatedAt); err != nil {
+	if err := scanner.Scan(&suite.ID, &suite.Slug, &suite.Name, &suite.Description, &probeIDsJSON, &cheap, &builtin, &suite.CreatedAt, &suite.UpdatedAt); err != nil {
 		return Suite{}, err
 	}
 	if err := unmarshalJSON(probeIDsJSON, &suite.ProbeIDs); err != nil {
@@ -580,14 +597,14 @@ func (s *Store) CreateRun(run Run) (Run, error) {
 	if run.Status == "" {
 		run.Status = RunQueued
 	}
-	channelIDsJSON, err := marshalJSON(run.ChannelIDs)
+	channelIDsJSON, channelModelsJSON, err := marshalRunChannels(run)
 	if err != nil {
 		return Run{}, err
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO eval_runs (id, suite_id, trigger, status, channel_ids_json, model, thinking, estimated_calls, skip_reason, error, started_at, finished_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.ID, run.SuiteID, run.Trigger, run.Status, channelIDsJSON, run.Model, run.Thinking, run.EstimatedCalls, run.SkipReason, run.Error, run.StartedAt, run.FinishedAt, run.CreatedAt,
+		`INSERT INTO eval_runs (`+runColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.ID, run.SuiteID, run.Trigger, run.Status, channelIDsJSON, run.Model, channelModelsJSON, run.Thinking, run.EstimatedCalls, run.SkipReason, run.Error, run.StartedAt, run.FinishedAt, run.CreatedAt,
 	)
 	if err != nil {
 		return Run{}, err
@@ -596,23 +613,48 @@ func (s *Store) CreateRun(run Run) (Run, error) {
 }
 
 func (s *Store) UpdateRun(run Run) error {
-	channelIDsJSON, err := marshalJSON(run.ChannelIDs)
+	channelIDsJSON, channelModelsJSON, err := marshalRunChannels(run)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.Exec(
-		`UPDATE eval_runs SET suite_id=?, trigger=?, status=?, channel_ids_json=?, model=?, thinking=?, estimated_calls=?, skip_reason=?, error=?, started_at=?, finished_at=? WHERE id=?`,
-		run.SuiteID, run.Trigger, run.Status, channelIDsJSON, run.Model, run.Thinking, run.EstimatedCalls, run.SkipReason, run.Error, run.StartedAt, run.FinishedAt, run.ID,
+		`UPDATE eval_runs SET suite_id=?, trigger=?, status=?, channel_ids_json=?, model=?, channel_models_json=?, thinking=?, estimated_calls=?, skip_reason=?, error=?, started_at=?, finished_at=? WHERE id=?`,
+		run.SuiteID, run.Trigger, run.Status, channelIDsJSON, run.Model, channelModelsJSON, run.Thinking, run.EstimatedCalls, run.SkipReason, run.Error, run.StartedAt, run.FinishedAt, run.ID,
 	)
 	return err
 }
 
-func scanRun(scanner interface {
+func marshalRunChannels(run Run) (channelIDs, channelModels string, err error) {
+	if channelIDs, err = marshalJSON(run.ChannelIDs); err != nil {
+		return "", "", err
+	}
+	if run.ChannelModels == nil {
+		run.ChannelModels = map[string]string{}
+	}
+	if channelModels, err = marshalJSON(run.ChannelModels); err != nil {
+		return "", "", err
+	}
+	return channelIDs, channelModels, nil
+}
+
+// runColumns 是 eval_runs 的列清单；runColumnsWithSuiteName 额外带上 JOIN 出来的套件名，
+// 供 scanRunWithSuiteName 消费。加列时改这两处 + scan 函数即可。
+const runColumns = `id, suite_id, trigger, status, channel_ids_json, model, channel_models_json, thinking, estimated_calls, skip_reason, error, started_at, finished_at, created_at`
+
+const runColumnsWithSuiteName = `r.id, r.suite_id, r.trigger, r.status, r.channel_ids_json, r.model, r.channel_models_json, r.thinking, r.estimated_calls, r.skip_reason, r.error, r.started_at, r.finished_at, r.created_at, COALESCE(s.name, '')`
+
+// scanRunWithSuiteName 读一行 run，最后一列是 JOIN 出来的套件名。
+// 套件名必须靠 JOIN 拿，不能在游标里再查库（见 NewStore 的单连接说明）。
+func scanRunWithSuiteName(scanner interface {
 	Scan(dest ...any) error
 }) (Run, error) {
 	var run Run
-	var channelIDsJSON string
-	if err := scanner.Scan(&run.ID, &run.SuiteID, &run.Trigger, &run.Status, &channelIDsJSON, &run.Model, &run.Thinking, &run.EstimatedCalls, &run.SkipReason, &run.Error, &run.StartedAt, &run.FinishedAt, &run.CreatedAt); err != nil {
+	var channelIDsJSON, channelModelsJSON string
+	if err := scanner.Scan(
+		&run.ID, &run.SuiteID, &run.Trigger, &run.Status, &channelIDsJSON, &run.Model, &channelModelsJSON,
+		&run.Thinking, &run.EstimatedCalls, &run.SkipReason, &run.Error, &run.StartedAt, &run.FinishedAt, &run.CreatedAt,
+		&run.SuiteName,
+	); err != nil {
 		return Run{}, err
 	}
 	if err := unmarshalJSON(channelIDsJSON, &run.ChannelIDs); err != nil {
@@ -621,12 +663,20 @@ func scanRun(scanner interface {
 	if run.ChannelIDs == nil {
 		run.ChannelIDs = []string{}
 	}
+	if err := unmarshalJSON(channelModelsJSON, &run.ChannelModels); err != nil {
+		return Run{}, err
+	}
+	if run.ChannelModels == nil {
+		run.ChannelModels = map[string]string{}
+	}
 	return run, nil
 }
 
 func (s *Store) GetRun(id string) (Run, error) {
-	row := s.db.QueryRow(`SELECT id, suite_id, trigger, status, channel_ids_json, model, thinking, estimated_calls, skip_reason, error, started_at, finished_at, created_at FROM eval_runs WHERE id=?`, id)
-	run, err := scanRun(row)
+	row := s.db.QueryRow(
+		`SELECT `+runColumnsWithSuiteName+`
+		 FROM eval_runs r LEFT JOIN eval_suites s ON s.id = r.suite_id WHERE r.id=?`, id)
+	run, err := scanRunWithSuiteName(row)
 	if err == sql.ErrNoRows {
 		return Run{}, fmt.Errorf("评测批次不存在")
 	}
@@ -638,9 +688,6 @@ func (s *Store) GetRun(id string) (Run, error) {
 		return Run{}, err
 	}
 	run.Results = results
-	if suite, suiteErr := s.GetSuite(run.SuiteID); suiteErr == nil {
-		run.SuiteName = suite.Name
-	}
 	return run, nil
 }
 
@@ -648,19 +695,19 @@ func (s *Store) ListRuns(limit int) ([]Run, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(`SELECT id, suite_id, trigger, status, channel_ids_json, model, thinking, estimated_calls, skip_reason, error, started_at, finished_at, created_at FROM eval_runs ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := s.db.Query(
+		`SELECT `+runColumnsWithSuiteName+`
+		 FROM eval_runs r LEFT JOIN eval_suites s ON s.id = r.suite_id
+		 ORDER BY r.created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var runs []Run
 	for rows.Next() {
-		run, err := scanRun(rows)
+		run, err := scanRunWithSuiteName(rows)
 		if err != nil {
 			return nil, err
-		}
-		if suite, suiteErr := s.GetSuite(run.SuiteID); suiteErr == nil {
-			run.SuiteName = suite.Name
 		}
 		runs = append(runs, run)
 	}
@@ -668,6 +715,35 @@ func (s *Store) ListRuns(limit int) ([]Run, error) {
 		runs = []Run{}
 	}
 	return runs, rows.Err()
+}
+
+// DeleteRun 删除一个批次。结果表有 ON DELETE CASCADE，只需删主表。
+func (s *Store) DeleteRun(id string) error {
+	result, err := s.db.Exec(`DELETE FROM eval_runs WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("评测批次不存在")
+	}
+	return nil
+}
+
+// RecoverStaleRuns 把上次进程留下的 queued / running 批次盖上终态。
+// Runner 的 busy 只存在内存里，崩溃或重启后 DB 里的"进行中"没人收尾，
+// 前端会一直显示幽灵批次并且按钮永远停在取消态。
+func (s *Store) RecoverStaleRuns() (int64, error) {
+	result, err := s.db.Exec(
+		`UPDATE eval_runs SET status=?, error=CASE WHEN error='' THEN ? ELSE error END, finished_at=?
+		 WHERE status IN (?, ?)`,
+		RunCancelled, "进程重启，批次未跑完", time.Now().Unix(), RunQueued, RunRunning,
+	)
+	if err != nil {
+		return 0, err
+	}
+	affected, _ := result.RowsAffected()
+	return affected, nil
 }
 
 func (s *Store) InsertResult(result Result) (Result, error) {
@@ -695,7 +771,10 @@ func (s *Store) InsertResult(result Result) (Result, error) {
 }
 
 func (s *Store) ListResults(runID string) ([]Result, error) {
-	rows, err := s.db.Query(`SELECT id, run_id, channel_id, probe_id, verdict, excerpt, detail_json, latency_ms, created_at FROM eval_results WHERE run_id=? ORDER BY created_at, id`, runID)
+	rows, err := s.db.Query(
+		`SELECT rs.id, rs.run_id, rs.channel_id, rs.probe_id, rs.verdict, rs.excerpt, rs.detail_json, rs.latency_ms, rs.created_at, COALESCE(p.name, '')
+		 FROM eval_results rs LEFT JOIN eval_probes p ON p.id = rs.probe_id
+		 WHERE rs.run_id=? ORDER BY rs.created_at, rs.id`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -704,7 +783,7 @@ func (s *Store) ListResults(runID string) ([]Result, error) {
 	for rows.Next() {
 		var result Result
 		var detailJSON string
-		if err := rows.Scan(&result.ID, &result.RunID, &result.ChannelID, &result.ProbeID, &result.Verdict, &result.Excerpt, &detailJSON, &result.LatencyMS, &result.CreatedAt); err != nil {
+		if err := rows.Scan(&result.ID, &result.RunID, &result.ChannelID, &result.ProbeID, &result.Verdict, &result.Excerpt, &detailJSON, &result.LatencyMS, &result.CreatedAt, &result.ProbeName); err != nil {
 			return nil, err
 		}
 		if err := unmarshalJSON(detailJSON, &result.Detail); err != nil {
@@ -712,9 +791,6 @@ func (s *Store) ListResults(runID string) ([]Result, error) {
 		}
 		if result.Detail == nil {
 			result.Detail = map[string]interface{}{}
-		}
-		if probe, probeErr := s.GetProbe(result.ProbeID); probeErr == nil {
-			result.ProbeName = probe.Name
 		}
 		results = append(results, result)
 	}
@@ -748,11 +824,11 @@ func (s *Store) UpdateResultDetail(id string, detail map[string]interface{}) err
 }
 
 func (s *Store) GetWatch() (WatchConfig, error) {
-	row := s.db.QueryRow(`SELECT enabled, suite_id, interval, channel_ids_json, model, thinking, last_run_at, next_run_at, last_skip_reason FROM eval_watch WHERE id=1`)
+	row := s.db.QueryRow(`SELECT enabled, suite_id, interval, channel_ids_json, model, channel_models_json, thinking, last_run_at, next_run_at, last_skip_reason FROM eval_watch WHERE id=1`)
 	var watch WatchConfig
 	var enabled int
-	var channelIDsJSON string
-	if err := row.Scan(&enabled, &watch.SuiteID, &watch.Interval, &channelIDsJSON, &watch.Model, &watch.Thinking, &watch.LastRunAt, &watch.NextRunAt, &watch.LastSkipReason); err != nil {
+	var channelIDsJSON, channelModelsJSON string
+	if err := row.Scan(&enabled, &watch.SuiteID, &watch.Interval, &channelIDsJSON, &watch.Model, &channelModelsJSON, &watch.Thinking, &watch.LastRunAt, &watch.NextRunAt, &watch.LastSkipReason); err != nil {
 		return WatchConfig{}, err
 	}
 	watch.Enabled = enabled == 1
@@ -761,6 +837,12 @@ func (s *Store) GetWatch() (WatchConfig, error) {
 	}
 	if watch.ChannelIDs == nil {
 		watch.ChannelIDs = []string{}
+	}
+	if err := unmarshalJSON(channelModelsJSON, &watch.ChannelModels); err != nil {
+		return WatchConfig{}, err
+	}
+	if watch.ChannelModels == nil {
+		watch.ChannelModels = map[string]string{}
 	}
 	if watch.Interval == "" {
 		watch.Interval = Interval2h
@@ -773,9 +855,16 @@ func (s *Store) PutWatch(watch WatchConfig) error {
 	if err != nil {
 		return err
 	}
+	if watch.ChannelModels == nil {
+		watch.ChannelModels = map[string]string{}
+	}
+	channelModelsJSON, err := marshalJSON(watch.ChannelModels)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.Exec(
-		`UPDATE eval_watch SET enabled=?, suite_id=?, interval=?, channel_ids_json=?, model=?, thinking=?, last_run_at=?, next_run_at=?, last_skip_reason=? WHERE id=1`,
-		boolToInt(watch.Enabled), watch.SuiteID, watch.Interval, channelIDsJSON, watch.Model, watch.Thinking, watch.LastRunAt, watch.NextRunAt, watch.LastSkipReason,
+		`UPDATE eval_watch SET enabled=?, suite_id=?, interval=?, channel_ids_json=?, model=?, channel_models_json=?, thinking=?, last_run_at=?, next_run_at=?, last_skip_reason=? WHERE id=1`,
+		boolToInt(watch.Enabled), watch.SuiteID, watch.Interval, channelIDsJSON, watch.Model, channelModelsJSON, watch.Thinking, watch.LastRunAt, watch.NextRunAt, watch.LastSkipReason,
 	)
 	return err
 }

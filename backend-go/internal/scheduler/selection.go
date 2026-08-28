@@ -89,7 +89,10 @@ func (s *ChannelScheduler) GetChannelInFlight(kind ChannelKind, channelIndex int
 }
 
 // SelectChannel 选择最佳渠道
-// 优先级: 促销期渠道（忽略Trace亲和） > Trace亲和（仅在无促销时生效） > 自适应调度 > 渠道优先级顺序
+// 优先级: 对话路由覆盖 > 促销期渠道（忽略亲和） > 对话级亲和（粘滞，负载未过载时沿用）
+//
+//	> 自适应 + 对话散列（同优先级/评分接近候选间按稳定散列分摊） > 用户级 Trace 亲和（兜底） > 按优先级降级
+//
 // 同一协议下并发新对话会尽量分摊到不同供应商，同时仍遵循优先级、健康与促销规则。
 //
 // 图片不参与选渠：是否直接处理图片或启用图片理解层，由被选中渠道的配置在
@@ -168,23 +171,30 @@ func (s *ChannelScheduler) SelectChannel(
 		return nil, noActiveChannelError(kind)
 	}
 
-	// 2. 检查 Trace 亲和性（仅在无促销渠道时生效，保证同一会话连续性）
+	// 2. 对话级亲和（粘滞：多轮会话复用最近成功的渠道；负载未过载时才沿用，
+	//    过载则放行给负载均衡处理。用于"不来回乱切"）
+	if selected := s.selectConversationAffinity(activeChannels, failedChannels, kind, userID, metricsManager); selected != nil {
+		return s.reserveAndReturn(selected, kind), nil
+	}
+
+	// 3. 尝试使用自适应调度器（基于性能画像 + 在途预留；同优先级/评分接近候选间
+	//    按对话稳定散列分摊，让不同对话固定摊到不同供应商）
+	if selected := s.selectAdaptiveChannel(activeChannels, failedChannels, kind, requestedModel, userID, metricsManager); selected != nil {
+		return s.reserveAndReturn(selected, kind), nil
+	}
+
+	// 4. 用户级 Trace 亲和（兜底：同一用户的新对话尚无对话级亲和时，沿用用户偏好渠道）
 	if selected := s.selectTraceAffinity(activeChannels, failedChannels, kind, userID, metricsManager); selected != nil {
 		return s.reserveAndReturn(selected, kind), nil
 	}
 
-	// 3. 尝试使用自适应调度器（基于性能画像 + 在途预留）
-	if selected := s.selectAdaptiveChannel(activeChannels, failedChannels, kind, requestedModel, metricsManager); selected != nil {
-		return s.reserveAndReturn(selected, kind), nil
-	}
-
-	// 4. 按优先级遍历活跃渠道（降级方案）
+	// 5. 按优先级遍历活跃渠道（降级方案）
 	// 同优先级内收集候选，再按 in-flight 选负载最低者，避免并发新对话全打到第一家供应商。
 	if selected := s.selectPriorityChannel(activeChannels, failedChannels, kind, requestedModel, metricsManager); selected != nil {
 		return s.reserveAndReturn(selected, kind), nil
 	}
 
-	// 5. 当前分组所有健康渠道都失败，选择失败率最低的作为降级
+	// 6. 当前分组所有健康渠道都失败，选择失败率最低的作为降级
 	fallback, err := s.selectFallbackChannel(activeChannels, failedChannels, kind)
 	if err != nil {
 		return nil, err
@@ -250,6 +260,89 @@ func noActiveChannelError(kind ChannelKind) error {
 		return fmt.Errorf("不支持的渠道类型: %s", kind)
 	}
 }
+
+// selectConversationAffinity 对话级敏感：若对话已有"最近成功/尝试"命中的渠道，
+// 且该渠道在本次分组中仍可用、健康且在途负载未过载，则沿用（保证同一对话不来回乱切）。
+// 一旦渠道过载 / 不健康 / 已失败 / 不可用，便放行给后续负载均衡处理。
+func (s *ChannelScheduler) selectConversationAffinity(
+	activeChannels []ChannelInfo,
+	failedChannels map[int]bool,
+	kind ChannelKind,
+	userID string,
+	metricsManager *metrics.MetricsManager,
+) *SelectionResult {
+	if userID == "" {
+		return nil
+	}
+	last, ok := s.GetConversationLastResolved(userID)
+	if !ok || last == nil || last.Kind != string(kind) {
+		return nil
+	}
+	preferredIdx := last.ChannelIndex
+
+	for _, ch := range activeChannels {
+		if ch.Index != preferredIdx || failedChannels[preferredIdx] {
+			continue
+		}
+		if ch.Status != "active" {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-ConvAffinity] 跳过对话亲和渠道 [%d] %s: 状态为 %s (user: %s)", prefix, preferredIdx, ch.Name, ch.Status, maskUserID(userID))
+			return nil
+		}
+		upstream := s.getUpstreamByIndex(preferredIdx, kind)
+		if upstream == nil || len(upstream.APIKeys) == 0 {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-ConvAffinity] 跳过对话亲和渠道 [%d]: 无可用密钥 (user: %s)", prefix, preferredIdx, maskUserID(userID))
+			return nil
+		}
+		if !metricsManager.IsChannelHealthyWithKeys(upstream.BaseURL, upstream.APIKeys, preferredIdx) {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-ConvAffinity] 跳过对话亲和渠道 [%d] %s: 不健康 (user: %s)", prefix, preferredIdx, ch.Name, maskUserID(userID))
+			return nil
+		}
+		// 负载未过载才粘滞；过载时放行给负载均衡，避免单渠道被多对话打满。
+		if !s.channelWithinAffinityLoad(kind, preferredIdx, upstream) {
+			prefix := kindSchedulerLogPrefix(kind)
+			log.Printf("[%s-ConvAffinity] 对话亲和渠道 [%d] %s 负载过载，放行给负载均衡 (inFlight: %d, user: %s)",
+				prefix, preferredIdx, ch.Name, s.GetChannelInFlight(kind, preferredIdx), maskUserID(userID))
+			return nil
+		}
+		prefix := kindSchedulerLogPrefix(kind)
+		log.Printf("[%s-ConvAffinity] 使用对话亲和渠道: [%d] %s (user: %s)", prefix, preferredIdx, ch.Name, maskUserID(userID))
+		return &SelectionResult{
+			Upstream:     upstream,
+			ChannelIndex: preferredIdx,
+			Reason:       "conversation_affinity",
+		}
+	}
+	return nil
+}
+
+// channelWithinAffinityLoad 判定某渠道是否仍在上限内，允许对话亲和沿用。
+// 结合真实 ActiveRequests（性能画像）与选渠预留 in-flight，避免"空转排队"也不换渠道。
+func (s *ChannelScheduler) channelWithinAffinityLoad(
+	kind ChannelKind,
+	channelIndex int,
+	upstream *config.UpstreamConfig,
+) bool {
+	baseURLs := upstream.GetAllBaseURLs()
+	inflight := s.GetChannelInFlight(kind, channelIndex)
+
+	// profileManager 提供真实并发余量感知；其 ActiveRequests 按 baseURL+model 聚合，
+	// 这里用聚合快照(全 model)近似。没有画像时退化为仅看选渠预留。
+	if s.profileManager != nil {
+		agg := s.profileManager.GetAggregateProfileSnapshot(baseURLs, upstream.APIKeys, "", channelIndex)
+		if agg.ActiveRequests+inflight >= int64(affinityLoadThreshold) {
+			return false
+		}
+	} else if inflight >= int64(affinityLoadThreshold) {
+		return false
+	}
+	return true
+}
+
+// affinityLoadThreshold 对话亲和过载阈值：在途(预留+真实)达到该值即放行给负载均衡。
+const affinityLoadThreshold = 3
 
 func (s *ChannelScheduler) selectTraceAffinity(
 	activeChannels []ChannelInfo,
@@ -319,6 +412,7 @@ func (s *ChannelScheduler) selectAdaptiveChannel(
 	failedChannels map[int]bool,
 	kind ChannelKind,
 	requestedModel string,
+	userID string,
 	metricsManager *metrics.MetricsManager,
 ) *SelectionResult {
 	s.mu.RLock()
@@ -333,6 +427,7 @@ func (s *ChannelScheduler) selectAdaptiveChannel(
 		failedChannels,
 		kind,
 		requestedModel,
+		userID,
 		metricsManager.IsChannelHealthyMultiURL,
 		s.getUpstreamByIndex,
 		func(channelIndex int) int64 {

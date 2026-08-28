@@ -37,13 +37,16 @@ type channelCandidate struct {
 // 同优先级内，综合评分差距在此阈值内时优先按负载分摊
 const adaptiveScoreLoadTieThreshold = 8.0
 
-// SelectBestChannel 基于性能画像选择最佳渠道（支持模型过滤）
+// SelectBestChannel 基于性能画像选择最佳渠道（支持模型过滤 + 对话稳定散列分摊）
 // 策略：优先级分组 + 模型支持过滤 + 健康评分 + 负载均衡（含选渠预留）
+// 同优先级/评分接近的候选间按 conversationID 稳定散列分布，让不同对话固定摊到不同供应商，
+// 而非每次都"选当前负载最低"，从而避免多对话全堆到同一家。
 func (as *AdaptiveScheduler) SelectBestChannel(
 	activeChannels []ChannelInfo,
 	failedChannels map[int]bool,
 	kind ChannelKind,
 	requestedModel string, // 用户请求的模型名
+	conversationID string, // 对话标识，用于稳定散列分摊
 	isHealthyFunc func(baseURLs []string, apiKeys []string, channelIndex int) bool,
 	getUpstreamFunc func(int, ChannelKind) *config.UpstreamConfig,
 	getInFlightFunc func(channelIndex int) int64,
@@ -58,7 +61,7 @@ func (as *AdaptiveScheduler) SelectBestChannel(
 	// 在每个优先级组内进行自适应选择
 	for _, priority := range priorities {
 		group := priorityGroups[priority]
-		selected := as.selectFromGroup(group, failedChannels, kind, requestedModel, isHealthyFunc, getUpstreamFunc, getInFlightFunc)
+		selected := as.selectFromGroup(group, failedChannels, kind, requestedModel, conversationID, isHealthyFunc, getUpstreamFunc, getInFlightFunc)
 		if selected != nil {
 			prefix := kindSchedulerLogPrefix(kind)
 			log.Printf("[%s-Adaptive] 选择渠道 [%d] %s (优先级: %d, 模型: %s, 健康评分: %.1f, 负载: %d, 等级: %s)",
@@ -91,6 +94,7 @@ func (as *AdaptiveScheduler) selectFromGroup(
 	failedChannels map[int]bool,
 	kind ChannelKind,
 	requestedModel string,
+	conversationID string,
 	isHealthyFunc func(baseURLs []string, apiKeys []string, channelIndex int) bool,
 	getUpstreamFunc func(int, ChannelKind) *config.UpstreamConfig,
 	getInFlightFunc func(channelIndex int) int64,
@@ -166,8 +170,21 @@ func (as *AdaptiveScheduler) selectFromGroup(
 		return candidates[i].channel.Index < candidates[j].channel.Index
 	})
 
-	// 选择评分最高的
+	// 稳定散列分摊：同组内各候选评分接近（都在阈值带内）时，让对话按 conversationID
+	// 稳定地落在不同候选上。candidates 已按"评分优先、负载次之"稳定排序，
+	// 我们把 state 初始化为排序后的顺序，再依据对话散列在"评分接近的候选带"内做稳定偏移，
+	// 使不同对话固定摊到不同供应商，同时仍不越过评分显著更高的渠道。
 	best := candidates[0]
+	if conversationID != "" {
+		groupSize := len(candidates)
+		// 评分显著高于其余时，直接取最优第一候选（尊重性能）；否则按散列轮转分摊。
+		if groupSize > 1 && candidates[0].finalScore-candidates[groupSize-1].finalScore <= adaptiveScoreLoadTieThreshold {
+			offset := stableHashOffset(conversationID, groupSize)
+			if offset > 0 {
+				best = candidates[offset%groupSize]
+			}
+		}
+	}
 
 	return &AdaptiveSelectionResult{
 		Upstream:        best.upstream,
@@ -177,6 +194,23 @@ func (as *AdaptiveScheduler) selectFromGroup(
 		ActiveLoad:      best.activeReqs,
 		PerformanceTier: best.profile.PerformanceTier,
 	}
+}
+
+// stableHashOffset 对对话标识做稳定散列，返回 [0, mod) 的确定性偏移。
+// 同一对话永远得到同一偏移，从而实现"对话固定摊到固定渠道"（不来回切）。
+func stableHashOffset(conversationID string, mod int) int {
+	if mod <= 0 {
+		return 0
+	}
+	sum := uint64(1469598103934665603) // FNV-1a 64
+	for i := 0; i < len(conversationID); i++ {
+		sum ^= uint64(conversationID[i])
+		sum *= 1099511628211
+	}
+	if sum == 0 {
+		sum = 1
+	}
+	return int(sum % uint64(mod))
 }
 
 // selectBestModelProfile 在渠道支持的模型列表中选择性能最优的模型画像。

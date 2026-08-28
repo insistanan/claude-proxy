@@ -97,6 +97,7 @@ func (r *Runner) Start(req StartRunRequest) (Run, error) {
 		Status:         RunQueued,
 		ChannelIDs:     req.ChannelIDs,
 		Model:          strings.TrimSpace(req.Model),
+		ChannelModels:  normalizeChannelModels(req.ChannelModels, req.ChannelIDs),
 		Thinking:       firstNonEmpty(req.Thinking, ThinkingInherit),
 		EstimatedCalls: EstimateCalls(probes, len(req.ChannelIDs)),
 	})
@@ -199,7 +200,7 @@ func (r *Runner) runProbe(ctx context.Context, run Run, channelID string, probe 
 		return result
 	}
 
-	options := SendOptions{ModelOverride: run.Model, ThinkingOverride: run.Thinking}
+	options := SendOptions{ModelOverride: run.ModelForChannel(channelID), ThinkingOverride: run.Thinking}
 	var samples []Extracted
 	var lastExcerpt string
 	var totalLatency int64

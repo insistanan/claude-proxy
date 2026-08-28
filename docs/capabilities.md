@@ -10,7 +10,7 @@
 |---|---|---|
 | 渠道 CRUD / key 管理 / Ping | `core/channelcrud` | 五协议共享单份实现；新增协议只需填 Ops 并注册 |
 | 渠道路由注册 | `handlers.RegisterChannelRoutes` | main.go 按 `ChannelKind` 声明式注册 |
-| 渠道选择（过滤熔断） | `scheduler.ChannelScheduler.SelectChannel` / `ReserveChannel` | 顺序：对话路由覆盖 → 促销 → Trace 亲和 → 自适应 → 按优先级降级（同优先级选 in-flight 最低）；绝不自行挑渠道 |
+| 渠道选择（过滤熔断） | `scheduler.ChannelScheduler.SelectChannel` / `ReserveChannel` | 顺序：对话路由覆盖 → 促销 → 对话级亲和（粘滞，in-flight ≤ 3 才沿用） → 自适应 + 对话稳定散列（同优先级/评分接近候选间按 conversationID 稳定散列分布） → 用户级 Trace 亲和（兜底） → 按优先级降级（同优先级选 in-flight 最低）；绝不自行挑渠道 |
 | 上游失败是否值得重试（状态码分类 + 不可重试错误码） | `utils.ClassifyUpstreamStatus` / `utils.IsNonRetryableUpstreamErrorBody` / `utils.IsContentPolicyErrorBody`（另有 `IsNonRetryableUpstreamErrorCode` / `IsContentPolicyErrorCode` 收裸错误码） | 主链路 `proxycore.ShouldRetryWithNextKey` 与 `visionlayer.shouldRetryVisionAttempt` 的共同底座。**两层判断缺一不可**：状态码可重试不代表值得重试，响应体里的内容审核 / 请求内容非法错误码一票否决——只看状态码会对审核类 403 轮询所有 Key 空转，并把无辜 Key 标记为失败。`handlers/proxycore` 依赖 `visionlayer`，谓词只能放 utils（放 proxycore 会成循环依赖）。契约由 `utils/upstream_error_test.go` + `visionlayer/vision_layer_test.go:TestShouldRetryVisionAttemptSkipsNonRetryableBody` 锁定 |
 | 跨渠道 failover | `proxycore.HandleMultiChannelFailover` | 候选渠道逐个尝试，含视觉渠道选择 |
 | 单渠道内 key/URL/模型映射重试 | `proxycore.UpstreamAttempt{...}.TryWithModelMappingFailover()` | key 轮换 + 模型映射变更后重试同一循环；结果读 `UpstreamAttemptResult` 命名字段。19 参数的 legacy 长参数入口（`TryUpstreamWithModelMappingFailover` / `TryUpstreamWithAllKeys`）已删除，别再按位置返回值调用 |
@@ -37,6 +37,8 @@
 | Responses 多轮会话 | `session.SessionManager` | `previous_response_id` 链，SQLite 持久化；默认保留 7 天、上限 5000（main.go 注入） |
 | Trace 亲和（同用户绑同渠道） | `session.TraceAffinityManager` | 经 scheduler 的 `SetTraceAffinityForKind` 入口（messages 专用旧入口与 Update 入口已作死代码删除） |
 | 对话注册 / 路由覆盖 | `conversation.Registry` | scheduler 注入；冲突校验 `ValidateFixedChannel`，调度时优先级最高 |
+| 对话级亲和（粘滞，负载感知） | `scheduler.ChannelScheduler.selectConversationAffinity` / `GetConversationLastResolved` | 同一对话复用最近成功渠道（`Record.LastResolved`，经 `MarkConversationSuccess` 写入）；渠道健康且 in-flight ≤ 3 才沿用，过载/失败/不可用则放行给负载均衡 |
+| 对话稳定散列分摊 | `adaptiveScheduler.stableHashOffset` + `selectFromGroup` | 同优先级/评分接近候选间按 conversationID 的 FNV-1a 散列做确定性偏移，让不同对话固定摊到不同供应商，而非都选当前负载最低 |
 | 请求成败/用量记录 | `scheduler.RecordRequest*` / `RecordSuccess*` / `RecordFailure` | 按 kind 分发至对应 MetricsManager；勿直接建 |
 | 取用指标管理器 | `scheduler.ChannelScheduler.MetricsManager(kind)` | 五协议各一份实例的唯一取用入口；按协议命名的 `GetXxxMetricsManager()` 薄壳已删除，调用侧不要按 kind 分支 |
 | 熔断判定 | `metrics.MetricsManager.ShouldSuspendKey(baseURL, apiKey, kind)` | 滑动窗口失败率阈值；注意方法名是 `ShouldSuspendKey` |

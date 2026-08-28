@@ -480,6 +480,21 @@ func (r *Registry) GetRouteOverride(recordID string) (*RouteOverride, bool) {
 	return &override, true
 }
 
+// GetLastResolved 返回对话最近一次"成功/尝试"命中的渠道。
+// 用作对话级亲和（conversation stickiness）的依据：多轮会话优先复用最近成功的渠道，
+// 只有在它过载、不可用或本协议不匹配时才迁移，从而兼顾"分布"与"不来回乱切"。
+func (r *Registry) GetLastResolved(recordID string) (*ChannelRef, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	rec := r.records[recordID]
+	if rec == nil || rec.LastResolved == nil {
+		return nil, false
+	}
+	resolved := *rec.LastResolved
+	return &resolved, true
+}
+
 // LoadConversationImageUnderstanding 读取当前对话内的图片理解结果。
 func (r *Registry) LoadConversationImageUnderstanding(conversationID string, cacheKey string) (string, bool, error) {
 	if r == nil {

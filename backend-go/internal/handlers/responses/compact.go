@@ -179,7 +179,9 @@ func handleMultiChannelCompact(
 			// compact 不产生 usage，但仍需记录成功以更新熔断器/权重
 			if successKey != "" {
 				channelScheduler.RecordSuccessWithUsage(upstream.BaseURL, successKey, channelIndex, nil, scheduler.ChannelKindResponses)
-				// 只有真正成功的请求才设置 Trace 亲和
+				// compact 属同一对话，成功也要建立/续期对话级粘滞（与主链路一致）
+				channelScheduler.MarkConversationSuccess(userID, scheduler.ChannelKindResponses, channelIndex, upstream.Name)
+				// 只有真正成功的请求才设置用户级 Trace 亲和
 				channelScheduler.SetTraceAffinityForKind(scheduler.ChannelKindResponses, userID, channelIndex)
 				channelScheduler.ConsumePromotionCount(channelIndex, scheduler.ChannelKindResponses)
 			}
