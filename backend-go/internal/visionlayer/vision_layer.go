@@ -369,6 +369,14 @@ func describeImages(
 		}
 		candidates := loadCandidates()
 		for _, candidate := range candidates {
+			if candidate == nil || candidate.Upstream == nil {
+				continue
+			}
+			// 列表接口只负责筛选候选；真正开始尝试时才预留 in-flight，
+			// 避免把尚未尝试的后备渠道也算入负载，并让并发请求看到当前尝试。
+			candidate.Kind = kind
+			channelScheduler.ReserveChannel(kind, candidate.ChannelIndex)
+			candidate.Reserved = true
 			result, failCount, err := describeImagesOnChannel(c, envCfg, cfgManager, channelScheduler, kind, candidate, visionModelInput, profile, images, 2)
 			if candidate.Reserved {
 				channelScheduler.ReleaseChannelReservation(candidate.Kind, candidate.ChannelIndex)
