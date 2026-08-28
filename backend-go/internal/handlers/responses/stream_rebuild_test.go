@@ -138,10 +138,13 @@ func assertResponsesUsage(t *testing.T, event string, wantInput, wantOutput int)
 // grok-4.6 等 OpenAI 兼容上游的 input_tokens_details.cached_tokens 是跨请求
 // 单调递增的累积命中量，原样下发会让 Cursor 误判上下文一直满、反复触发压缩。
 func TestStripAccumulatedCache(t *testing.T) {
+	dummyBodyWithoutPreviousID := []byte(`{"model":"grok-4.6","input":"hello"}`)
+	dummyBodyWithPreviousID := []byte(`{"model":"gpt-5.6-luna","input":"hello","previous_response_id":"resp_123"}`)
+
 	t.Run("流式: 剥离 OpenAI 累积 cached_tokens 与派生 cache_read", func(t *testing.T) {
 		// 上游返回 input_tokens=205071(含缓存), cached_tokens=204800 → 代理已减为 271
 		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":271,\"output_tokens\":188,\"total_tokens\":459,\"input_tokens_details\":{\"cached_tokens\":204800}}}}\n\n"
-		out := stripAccumulatedCacheFromCompletedEvent(event)
+		out := stripAccumulatedCacheFromCompletedEvent(event, dummyBodyWithoutPreviousID)
 
 		data := extractCompletedPayload(t, out)
 		usage := data["response"].(map[string]interface{})["usage"].(map[string]interface{})
@@ -161,9 +164,24 @@ func TestStripAccumulatedCache(t *testing.T) {
 		assertSameLineStructure(t, event, out)
 	})
 
+	t.Run("流式: 携带 previous_response_id 时保留 input_tokens_details 且不剥离", func(t *testing.T) {
+		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":919612,\"output_tokens\":532,\"total_tokens\":920144,\"input_tokens_details\":{\"cached_tokens\":913152}}}}\n\n"
+		out := stripAccumulatedCacheFromCompletedEvent(event, dummyBodyWithPreviousID)
+
+		data := extractCompletedPayload(t, out)
+		usage := data["response"].(map[string]interface{})["usage"].(map[string]interface{})
+		if _, exists := usage["input_tokens_details"]; !exists {
+			t.Errorf("携带 previous_response_id 时 input_tokens_details 应保留")
+		}
+		if got, _ := usage["input_tokens"].(float64); int(got) != 919612 {
+			t.Errorf("input_tokens 不应被改动: %v, want 919612", usage["input_tokens"])
+		}
+		assertSameLineStructure(t, event, out)
+	})
+
 	t.Run("流式: Claude 原生缓存保留 cache_read", func(t *testing.T) {
 		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"cache_creation_input_tokens\":200,\"cache_read_input_tokens\":150}}}\n\n"
-		out := stripAccumulatedCacheFromCompletedEvent(event)
+		out := stripAccumulatedCacheFromCompletedEvent(event, dummyBodyWithoutPreviousID)
 
 		usage := extractCompletedPayload(t, out)["response"].(map[string]interface{})["usage"].(map[string]interface{})
 		if got, _ := usage["cache_read_input_tokens"].(float64); int(got) != 150 {
@@ -176,7 +194,7 @@ func TestStripAccumulatedCache(t *testing.T) {
 
 	t.Run("流式: 无缓存字段原样返回", func(t *testing.T) {
 		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\n"
-		out := stripAccumulatedCacheFromCompletedEvent(event)
+		out := stripAccumulatedCacheFromCompletedEvent(event, dummyBodyWithoutPreviousID)
 		if out != event {
 			t.Fatalf("无缓存字段应原样返回:\n got  %q\n want %q", out, event)
 		}
@@ -184,7 +202,7 @@ func TestStripAccumulatedCache(t *testing.T) {
 
 	t.Run("流式: 非 completed 事件原样返回", func(t *testing.T) {
 		event := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"
-		out := stripAccumulatedCacheFromCompletedEvent(event)
+		out := stripAccumulatedCacheFromCompletedEvent(event, dummyBodyWithoutPreviousID)
 		if out != event {
 			t.Fatalf("非 completed 事件应原样返回")
 		}
@@ -199,7 +217,7 @@ func TestStripAccumulatedCache(t *testing.T) {
 				InputTokensDetails:   &types.InputTokensDetails{CachedTokens: 204800},
 			},
 		}
-		stripAccumulatedCacheFromResponse(resp)
+		stripAccumulatedCacheFromResponse(resp, dummyBodyWithoutPreviousID)
 		if resp.Usage.InputTokensDetails != nil {
 			t.Errorf("InputTokensDetails 应被剥离")
 		}
@@ -207,6 +225,23 @@ func TestStripAccumulatedCache(t *testing.T) {
 			t.Errorf("派生的 CacheReadInputTokens 应被剥离: %d", resp.Usage.CacheReadInputTokens)
 		}
 		if resp.Usage.InputTokens != 271 {
+			t.Errorf("InputTokens 被改动: %d", resp.Usage.InputTokens)
+		}
+	})
+
+	t.Run("非流式: 携带 previous_response_id 时保留缓存", func(t *testing.T) {
+		resp := &types.ResponsesResponse{
+			Usage: types.ResponsesUsage{
+				InputTokens:        919612,
+				OutputTokens:       532,
+				InputTokensDetails: &types.InputTokensDetails{CachedTokens: 913152},
+			},
+		}
+		stripAccumulatedCacheFromResponse(resp, dummyBodyWithPreviousID)
+		if resp.Usage.InputTokensDetails == nil || resp.Usage.InputTokensDetails.CachedTokens != 913152 {
+			t.Errorf("携带 previous_response_id 时 InputTokensDetails 应保留")
+		}
+		if resp.Usage.InputTokens != 919612 {
 			t.Errorf("InputTokens 被改动: %d", resp.Usage.InputTokens)
 		}
 	})
@@ -219,7 +254,7 @@ func TestStripAccumulatedCache(t *testing.T) {
 				CacheReadInputTokens:     150,
 			},
 		}
-		stripAccumulatedCacheFromResponse(resp)
+		stripAccumulatedCacheFromResponse(resp, dummyBodyWithoutPreviousID)
 		if resp.Usage.CacheReadInputTokens != 150 {
 			t.Errorf("Claude cache_read 应保留: %d", resp.Usage.CacheReadInputTokens)
 		}
@@ -314,6 +349,28 @@ func TestCorrectUnderreportedInputTokens(t *testing.T) {
 		usage := extractCompletedPayload(t, out)["response"].(map[string]interface{})["usage"].(map[string]interface{})
 		if got, _ := usage["input_tokens"].(float64); int(got) > 20000 {
 			t.Errorf("假大值应被压回估算量级, got %v", usage["input_tokens"])
+		}
+	})
+
+	t.Run("流式: 携带 previous_response_id 时跳过校正", func(t *testing.T) {
+		// 链式增量请求：requestBody 极小，但服务端历史累计 919612 tokens，不能被误判为多报而改写
+		chainBody := []byte(`{"model":"gpt-5.6-luna","input":"next question","previous_response_id":"resp_123"}`)
+		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":919612,\"output_tokens\":532,\"total_tokens\":920144}}}\n\n"
+		out := correctUnderreportedInputTokensInCompletedEvent(event, chainBody, envCfg)
+		if out != event {
+			t.Fatalf("带 previous_response_id 的链式请求不应被改写:\n got  %q\n want %q", out, event)
+		}
+	})
+
+	t.Run("非流式: 携带 previous_response_id 时跳过校正", func(t *testing.T) {
+		chainBody := []byte(`{"model":"gpt-5.6-luna","input":"next question","previous_response_id":"resp_123"}`)
+		resp := &types.ResponsesResponse{
+			Usage: types.ResponsesUsage{InputTokens: 919612, OutputTokens: 532, TotalTokens: 920144},
+		}
+		clientUsage := resp.Usage
+		correctUnderreportedInputTokensInResponse(resp, &clientUsage, chainBody, envCfg)
+		if clientUsage.InputTokens != 919612 || clientUsage.TotalTokens != 920144 {
+			t.Errorf("带 previous_response_id 的非流式请求不应被改写: got %+v", clientUsage)
 		}
 	})
 

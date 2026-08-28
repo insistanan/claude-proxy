@@ -16,6 +16,7 @@
 | 单渠道内 key/URL/模型映射重试 | `proxycore.UpstreamAttempt{...}.TryWithModelMappingFailover()` | key 轮换 + 模型映射变更后重试同一循环；结果读 `UpstreamAttemptResult` 命名字段。19 参数的 legacy 长参数入口（`TryUpstreamWithModelMappingFailover` / `TryUpstreamWithAllKeys`）已删除，别再按位置返回值调用 |
 | 请求体读取 / 放回 | `proxycore.ReadRequestBody` / `RestoreRequestBody` | 大小上限走 env `MAX_REQUEST_BODY_SIZE_MB` |
 | 上游请求发送 | `proxycore.SendRequest` | 统一超时/代理/认证头 |
+| 加载 `.env` | `config.LoadDotEnv` | 先 exe 同目录再 cwd；不覆盖已有环境变量。`main.go` 唯一入口，禁止再写 `godotenv.Load()` |
 | 按稳定 UUID 跨五类切片查渠道 | `config.FindChannelByID` | 评测/关联状态用；返回深拷贝。HTTP 渠道路由仍用切片下标 |
 | 评测题库 / 运行记录 | `internal/eval`（`.config/eval.db`） | WAL sqlite；探针/套件/批次/值班单行。内置题带 `builtin`，启动走 `Store.SyncBuiltins` 按 `seed.go` 覆盖（保留 ID），改删一律拒绝。取套件的探针一律走 `Store.SuiteWithProbes` / `ProbesForSuite`，别再各处循环 `GetProbe` |
 | 评测原生上游发送 | `eval.Sender` → `proxycore.SendRequest` | 空 `http.Header` 从头组认证/伪装；**禁止** `PrepareUpstreamHeaders`（会泄漏管理端 cookie / `x-proxy-key`）。不走转换器、不写 scheduler.Record* |
@@ -23,6 +24,8 @@
 | 上游用量归一化（评测侧） | `eval.extractUsage` | 返回 `hasThinkingUsage` 区分"没回报思考 token"与"思考为 0"。**故意不做"扣掉思考"的换算**：output 含不含思考各家口径不一（Anthropic/OpenAI 含、xAI 不含、Gemini 文档自相矛盾），中转还会改写，猜错方向只会让数字更假 |
 | 上游适配（构建请求/解析响应/流处理） | `providers.GetProvider(serviceType)` | `Provider` 接口；serviceType 全集 {openai, gemini, claude, responses}（无 codex）；messages 与 visionlayer 共用。注意 visionlayer 的视觉描述走独立 `imageAdapterForService` |
 | 协议格式双向转换 | `converters` 包（非单一工厂） | `factory.go` 仅 Claude 上游走工厂；Responses 主链路 `responses_protocol.go`；Gemini↔Claude/OpenAI 在 `gemini_converter.go`；Chat↔Responses 在 `chat_to_responses.go`/`responses_to_chat.go` |
+| Messages 出口 thinking 下发 | `providers/openai.go`（Chat 上游）、`providers/responses_messages.go`（Responses 上游）、`providers/gemini.go`（Gemini thought） | Messages 入口把上游推理转成 Claude `thinking` content block（thinking 在 text 之前）。Chat：`reasoning_content` + `<think>`/`<thinking>` 标签；Responses：`reasoning` item / `reasoning_summary_text.delta`；重复正文走 `stripReasoningPrefixFromContent`。Responses summary 抽取复用 `converters.ExtractResponsesReasoningText` |
+| 推理内容缓存（Chat 回传补齐） | `providers/reasoning_content_cache.go` | 按 assistant 消息指纹缓存 reasoning，供下一轮 Chat 上游要求回传 `reasoning_content` 时补齐。下发 thinking 不替代缓存：Claude Code 可能把明文转成 `redacted_thinking` 或丢弃 |
 | SSE `data:` 行判定 / 载荷提取 | `utils.ParseSSEDataLine` / `utils.SSEDataJSON` / `utils.ParseSSEDataLineBytes` | 五协议流式链路（providers / handlers / converters）的唯一出处。冒号后空格按 SSE 规范可选，**禁止再写 `HasPrefix(line, "data: ")`**——部分上游不带空格，严格匹配会静默丢整行。只要 JSON 载荷用 `SSEDataJSON`；需区分 `[DONE]`（如据此 break 读流循环）用 `ParseSSEDataLine` + `utils.SSEDoneMarker`；`[]byte` 热路径用 `ParseSSEDataLineBytes`。**输出**构造仍写规范的 `data: ` 前缀，不走本函数。契约由 `utils/sse_test.go` + `handlers/streams/sse_tolerance_test.go` 锁定 |
 | SSE 事件改写（拆行改载荷再拼回） | `utils.RewriteSSEDataLines` | token 修补 / usage 注入 / id-model 改写 / 整体替换的唯一骨架。**禁止再自行 `strings.Split(event, "\n")` 后逐行 `WriteString(line); WriteString("\n")`**——那样会给以 `\n\n` 结尾的事件多补一个换行（等于凭空插入一个空事件分隔）。回调返回 `changed=false` 的行与非 data 行**原样**写回（保留上游 `data:` / `data: ` 写法），无一行改写时返回值与入参逐字节相同；改写过的行统一写 `utils.SSEDataLinePrefix`。契约由 `utils/sse_test.go:TestRewriteSSEDataLines*` + `handlers/streams/stream_rebuild_test.go` + `handlers/responses/stream_rebuild_test.go` 锁定 |
 | 流式事件合成（日志/Token 观测） | `utils.StreamSynthesizer` | 拉平为文本/工具调用序列，仅用于日志与 Token 统计，**不参与协议 SSE 转换**（协议转换走 `converters/responses_stream.go`） |
@@ -47,7 +50,7 @@
 | 上游 URL 拼接（`#` 后缀跳过版本前缀 / 版本段检测） | `utils.BuildUpstreamURL(baseURL, defaultVersionPrefix, endpoint)` | providers 四处 + handlers chat/images 的唯一出处；`HasVersionSuffix` 供检测 |
 | 模型目录 / 上游模型发现 | `modelcatalog` | `/v1/models` 聚合：静态别名 + 池匹配 + 上游发现；无独立路由，入口在 `handlers/messages/models.go` |
 | Token 估算（计费/日志） | `utils.EstimateTokens` / `EstimateRequestTokens` / `EstimateResponsesRequestTokens` | 估算值；除下方专用校正点外仅用于观测 |
-| 上游 usage 合理性校验（多协议下发兜底） | `utils.SanityCheckedInputTokens` | 代理以本地请求体估算与上游声明的上下文规模交叉验证，差 ≥2 倍且量级 ≥20000 时按上游协议语义重建下发的 input_tokens（Anthropic 扣掉 cache 之和；OpenAI input_tokens 已含 cached 不再扣）。接入点：`handlers/responses/usage.go`、`handlers/responses/stream.go`、`handlers/streams/stream.go`、`handlers/messages/handler.go`。chat / gemini **不接入**：下发原样透传上游字节、内部记账已归一化且无实测故障。仅改下发值，计费、熔断、性能画像继续用上游原值（responses 非流式侧结构体副本隔离，stream 流式侧不动 `ctx.CollectedUsage`） |
+| 上游 usage 合理性校验（多协议下发兜底） | `utils.SanityCheckedInputTokens` | 代理以本地请求体估算与上游声明的上下文规模交叉验证，差 ≥2 倍且量级 ≥20000 时按上游协议语义重建下发的 input_tokens（Anthropic 扣掉 cache 之和；OpenAI input_tokens 已含 cached 不再扣）。接入点：`handlers/responses/usage.go`、`handlers/responses/stream.go`、`handlers/streams/stream.go`、`handlers/messages/handler.go`。注意：带 `previous_response_id` 的 Responses 链式请求（Codex 等）跳过此校正与累积缓存剥离，避免增量估算误改服务端历史上下文。chat / gemini **不接入**：下发原样透传上游字节、内部记账已归一化且无实测故障。仅改下发值，计费、熔断、性能画像继续用上游原值（responses 非流式侧结构体副本隔离，stream 流式侧不动 `ctx.CollectedUsage`） |
 | 敏感信息脱敏（日志用） | `utils.MaskAPIKey` / `MaskSensitiveHeaders` / `FormatJSONBytesForLog` | 日志输出一律走这里 |
 | gzip 解压 | `utils.DecompressGzipIfNeeded` | 上游响应 body |
 | 客户端伪装 | 头伪装 `utils/headers.go`（`ApplyClaudeCodeDisguise` / `ApplyCodexDisguise` / `PrepareUpstreamHeaders`）；请求体伪装 `utils/claude_disguise.go`（`ApplyClaudeCodeBodyDisguise`） | 两个文件分工：头 vs body，勿混用 |
@@ -86,6 +89,8 @@
 
 ## 治理记录
 
+- **ENV 默认 production / 日志与 development 解耦**：原先 `ENV`/`NODE_ENV` 都未设置时落到 `development`，打包 exe 便携目录不写 ENV 就会开 `/admin/dev/info` 且 Gin DebugMode；同时请求/响应体、合成流内容又绑死 `IsDevelopment()`，正式模式反而看不到排查日志。现改为未设置默认 production；`.env` 由 `config.LoadDotEnv` 先读 exe 同目录再读 cwd；详细日志只跟 `ENABLE_REQUEST_LOGS` / `ENABLE_RESPONSE_LOGS` / `RAW_LOG_OUTPUT` / `SSE_DEBUG_LEVEL` 走。契约由 `config/env_test.go` 锁定。
+- **Messages 出口 thinking 下发**：原先 Messages→Chat / Messages→Responses 故意吞掉上游推理（只缓存不下发），Claude Code 看不到思考区，部分上游把思考混进 `content` 时还会当正文显示。现改为把 `reasoning_content`、`<think>`/`<thinking>` 标签、Responses reasoning summary 转成 Claude `thinking` content block 下发（thinking 在 text 之前）；content 与 reasoning 重复时剥离正文前缀。缓存保留，供下一轮 Chat 回传补齐。
 - **v3.0.0**：canonical JSON 两份实现合并为 `utils.CanonicalJSON`（`providers/responses_messages.go`、`providers/openai.go`、`converters/responses_protocol.go` 改调用）。
 - **架构治理**：上游 URL 拼接约定（`#`后缀跳过版本前缀 + 版本段检测）从 6 处独立实现收敛为 `utils.BuildUpstreamURL` 单一出处（providers/claude、gemini、openai、responses + handlers/chat、handlers/images）；顺带消除 chat/images 两包重复的 `chatVersionPattern`。`session.Session` 纯数据结构下沉至 `internal/types/session.go`，converters 不再 import session（session 包保留类型别名兼容既有引用）。**后续补漏**：`providers/responses_messages.go` 的私有 `buildResponsesURL`（Messages→Responses 上游路径）与 `BuildUpstreamURL` 行为完全重叠，属治理遗漏，已替换为 `utils.BuildUpstreamURL(baseURL, "/v1", "/responses")` 并删除私有实现，契约由 `providers/url_builder_test.go:TestMessagesResponsesURL_SkipVersionWithHash` 锁定。
 - **流式脚手架收敛**：四份 `HandleStreamResponseCtx`（claude/openai/gemini/responses_messages）的重复骨架（双通道构造、send/fail 断连中止、1MB SSE scanner、断连类错误判定）收敛为 `providers/stream_pump.go` 的 `streamPump`；顺带修复漂移：openai/gemini/responses_messages 恢复 `defer close(errChan)`（消费方 `ProcessStreamEvents` 对通道关闭有专门分支，close 不清除已缓冲错误），openai 注释"避免竞态条件"的理由经核实不成立。

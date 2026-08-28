@@ -8,7 +8,15 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/tidwall/gjson"
 )
+
+func hasPreviousResponseID(requestBody []byte) bool {
+	if len(requestBody) == 0 {
+		return false
+	}
+	return strings.TrimSpace(gjson.GetBytes(requestBody, "previous_response_id").String()) != ""
+}
 
 // patchResponsesUsage 补全 Responses 响应的 Token 统计
 func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envCfg *config.EnvConfig) {
@@ -530,7 +538,14 @@ func patchResponsesCompletedEventUsage(event string, requestBody []byte, outputT
 // 本函数只针对 OpenAI 格式的 input_tokens_details / prompt_tokens_details，以及由它
 // 派生的 cache_read_input_tokens：把这两类字段从下发给客户端的 usage 里删掉，让客户端
 // 用 input_tokens（已扣除缓存的 uncached 真实值）判断上下文大小。
-func stripAccumulatedCacheFromCompletedEvent(event string) string {
+//
+// 注意：如果请求携带 previous_response_id，说明客户端（如 Codex）正在进行链式增量会话，
+// 上游返回的 cached_tokens 是服务端在 previous_response_id 链上的真实缓存，且客户端原生识别
+// input_tokens_details，此时严禁剥离。
+func stripAccumulatedCacheFromCompletedEvent(event string, requestBody []byte) string {
+	if hasPreviousResponseID(requestBody) {
+		return event
+	}
 	if !strings.Contains(event, "cached_tokens") &&
 		!strings.Contains(event, "cache_read_input_tokens") {
 		return event
@@ -620,9 +635,12 @@ func upstreamCachedTokensFromUsageMap(usage map[string]interface{}) int {
 // correctUnderreportedInputTokensInCompletedEvent 校正下发给客户端的 response.completed 事件里
 // 被上游错报的 input_tokens，让 Cursor 这类依据回包 usage 做压缩决策的客户端看到真实上下文规模。
 //
+// 注意：如果请求携带 previous_response_id，说明客户端正在使用服务端链式上下文（如 Codex），
+// requestBody 仅包含单轮增量，不能拿本地增量估算去校正上游的服务端历史上下文，直接跳过。
+//
 // 只改下发给客户端的 SSE，不动 collectedUsage——计费、熔断、性能画像仍用上游原值。
 func correctUnderreportedInputTokensInCompletedEvent(event string, requestBody []byte, envCfg *config.EnvConfig) string {
-	if envCfg == nil || !envCfg.CorrectResponsesInputTokens {
+	if envCfg == nil || !envCfg.CorrectResponsesInputTokens || hasPreviousResponseID(requestBody) {
 		return event
 	}
 	rewritten, _ := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
@@ -674,7 +692,7 @@ func correctUnderreportedInputTokensInCompletedEvent(event string, requestBody [
 // 注意：本函数改的是传入的 clientUsage 副本（调用方先做 `clientUsage := *resp.Usage` 再传入），
 // resp 原件保持上游原值——handler 随后仍要拿原件上报计费与请求日志。
 func correctUnderreportedInputTokensInResponse(resp *types.ResponsesResponse, clientUsage *types.ResponsesUsage, requestBody []byte, envCfg *config.EnvConfig) {
-	if resp == nil || clientUsage == nil || envCfg == nil || !envCfg.CorrectResponsesInputTokens || len(requestBody) == 0 {
+	if resp == nil || clientUsage == nil || envCfg == nil || !envCfg.CorrectResponsesInputTokens || len(requestBody) == 0 || hasPreviousResponseID(requestBody) {
 		return
 	}
 	// 同流式：把上游单独回报的缓存量计入判定基数，避免误伤 Claude 语义的分开报数。
@@ -694,8 +712,8 @@ func correctUnderreportedInputTokensInResponse(resp *types.ResponsesResponse, cl
 
 // stripAccumulatedCacheFromResponse 从非流式 ResponsesResponse 的 usage 里剥离累积式缓存统计。
 // 语义同 stripAccumulatedCacheFromCompletedEvent，作用于结构体字段而非 SSE 事件。
-func stripAccumulatedCacheFromResponse(resp *types.ResponsesResponse) {
-	if resp == nil {
+func stripAccumulatedCacheFromResponse(resp *types.ResponsesResponse, requestBody []byte) {
+	if resp == nil || hasPreviousResponseID(requestBody) {
 		return
 	}
 	// 有 Claude 原生缓存创建字段说明上游是 Claude，cache_read 是真实当前缓存，保留。

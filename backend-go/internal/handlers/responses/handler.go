@@ -110,29 +110,27 @@ func handleSuccess(
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
 		log.Printf("[Responses-Timing] Responses 响应完成: %dms, 状态: %d", responseTime, resp.StatusCode)
-		if envCfg.IsDevelopment() {
-			respHeaders := make(map[string]string)
-			for key, values := range resp.Header {
-				if len(values) > 0 {
-					respHeaders[key] = values[0]
-				}
+		respHeaders := make(map[string]string)
+		for key, values := range resp.Header {
+			if len(values) > 0 {
+				respHeaders[key] = values[0]
 			}
-			var respHeadersJSON []byte
-			if envCfg.RawLogOutput {
-				respHeadersJSON, _ = json.Marshal(respHeaders)
-			} else {
-				respHeadersJSON, _ = json.MarshalIndent(respHeaders, "", "  ")
-			}
-			log.Printf("[Responses-Response] 响应头:\n%s", string(respHeadersJSON))
-
-			var formattedBody string
-			if envCfg.RawLogOutput {
-				formattedBody = utils.FormatJSONBytesRaw(bodyBytes)
-			} else {
-				formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
-			}
-			log.Printf("[Responses-Response] 响应体:\n%s", formattedBody)
 		}
+		var respHeadersJSON []byte
+		if envCfg.RawLogOutput {
+			respHeadersJSON, _ = json.Marshal(respHeaders)
+		} else {
+			respHeadersJSON, _ = json.MarshalIndent(respHeaders, "", "  ")
+		}
+		log.Printf("[Responses-Response] 响应头:\n%s", string(respHeadersJSON))
+
+		var formattedBody string
+		if envCfg.RawLogOutput {
+			formattedBody = utils.FormatJSONBytesRaw(bodyBytes)
+		} else {
+			formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
+		}
+		log.Printf("[Responses-Response] 响应体:\n%s", formattedBody)
 	}
 
 	responsesResp, err := converters.ConvertUpstreamResponseToResponses(upstreamType, originalRequestJSON, bodyBytes, "")
@@ -174,11 +172,13 @@ func handleSuccess(
 	}
 	// 透传分支剥离累积式缓存统计（同 stream.go 的 stripAccumulatedCacheFromCompletedEvent）：
 	// grok-4.6 等 OpenAI 兼容上游的 cached_tokens 是跨请求累积命中量，原样下发会让
-	// Cursor 误判上下文一直满、反复触发压缩。Claude 原生缓存不受影响（函数内判断保留）
+	// Cursor 误判上下文一直满、反复触发压缩。Claude 原生缓存与携带 previous_response_id 的
+	// 链式增量请求不受影响（函数内判断保留）
 	if upstreamType == converters.ResponsesUpstreamResponses {
-		stripAccumulatedCacheFromResponse(responsesResp)
+		stripAccumulatedCacheFromResponse(responsesResp, originalRequestJSON)
 		// 剥离缓存字段后 input_tokens 成了客户端判断上下文占用的唯一依据，
 		// 校正上游对长上下文的错报值，否则 Cursor 会误判上下文为空、永不触发压缩。
+		// 携带 previous_response_id 的链式请求跳过校正，避免增量估算篡改服务端历史上下文。
 		clientUsage := responsesResp.Usage
 		correctUnderreportedInputTokensInResponse(responsesResp, &clientUsage, originalRequestJSON, envCfg)
 		responsesResp.Usage = clientUsage
