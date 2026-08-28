@@ -72,6 +72,8 @@ const RUN_STATUS_LABELS: Record<string, string> = {
   queued: '排队中',
   running: '进行中',
   done: '已完成',
+  partial: '部分完成',
+  failed: '失败',
   cancelled: '已取消',
   skipped: '已跳过'
 }
@@ -85,6 +87,10 @@ export const evalRunStatusColor = (status?: string): string => {
       return 'info'
     case 'done':
       return 'success'
+    case 'partial':
+      return 'warning'
+    case 'failed':
+      return 'error'
     default:
       return 'grey'
   }

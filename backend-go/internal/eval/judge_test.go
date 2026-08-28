@@ -60,7 +60,7 @@ func TestAggregateVerdicts(t *testing.T) {
 
 func TestParseRubricReasonsAcceptsLegacyReason(t *testing.T) {
 	reasons := parseRubricReasons(map[string]interface{}{
-		"reasons": []interface{}{"缺机制", "跑题"},
+		"reasons":  []interface{}{"缺机制", "跑题"},
 		"evidence": "第二段",
 	})
 	if len(reasons) != 2 || reasons[0] != "缺机制" {

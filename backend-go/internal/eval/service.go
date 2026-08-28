@@ -22,6 +22,12 @@ func NewService(path string, cfg *config.ConfigManager, envCfg *config.EnvConfig
 	if err != nil {
 		return nil, err
 	}
+	// 进程重启后，库里可能残留上次崩溃/中断留下的 queued / running 幽灵批次。
+	// Runner 的 busy 只存在内存里，不清掉它们在 UI 上会一直显示进行中并锁住「开始」。
+	if _, err := store.RecoverStaleRuns(); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("清理评测残留批次失败: %w", err)
+	}
 	if err := store.SyncBuiltins(); err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("同步评测内置题库失败: %w", err)
@@ -89,6 +95,9 @@ func (s *Service) PutWatch(incoming WatchConfig) (WatchConfig, error) {
 	if strings.TrimSpace(incoming.Interval) == "" {
 		incoming.Interval = Interval2h
 	}
+	incoming.Model = strings.TrimSpace(incoming.Model)
+	incoming.Thinking = firstNonEmpty(incoming.Thinking, ThinkingInherit)
+	incoming.ChannelModels = normalizeChannelModels(incoming.ChannelModels, incoming.ChannelIDs)
 	if strings.TrimSpace(incoming.SuiteID) == "" {
 		// 关掉值班时前端可能不带套件；保留原套件，只落盘开关。
 		if incoming.Enabled {

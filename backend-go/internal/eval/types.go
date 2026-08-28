@@ -37,6 +37,8 @@ const (
 	RunQueued    = "queued"
 	RunRunning   = "running"
 	RunDone      = "done"
+	RunPartial   = "partial"
+	RunFailed    = "failed"
 	RunCancelled = "cancelled"
 	RunSkipped   = "skipped"
 

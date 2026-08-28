@@ -105,11 +105,12 @@ func (w *Watch) tick() {
 	}
 
 	_, err = w.runner.Start(StartRunRequest{
-		SuiteID:    watch.SuiteID,
-		ChannelIDs: watch.ChannelIDs,
-		Model:      watch.Model,
-		Thinking:   watch.Thinking,
-		Trigger:    TriggerWatch,
+		SuiteID:       watch.SuiteID,
+		ChannelIDs:    watch.ChannelIDs,
+		Model:         watch.Model,
+		ChannelModels: watch.ChannelModels,
+		Thinking:      watch.Thinking,
+		Trigger:       TriggerWatch,
 	})
 	now := time.Now().Unix()
 	if err != nil {
@@ -120,7 +121,9 @@ func (w *Watch) tick() {
 			log.Printf("[Eval-Watch] 启动失败: %v", err)
 		}
 		watch.NextRunAt = now + intervalSeconds
-		_ = w.store.PutWatch(watch)
+		if persistErr := w.store.PutWatch(watch); persistErr != nil {
+			log.Printf("[Eval-Watch] 启动失败后保存状态失败: %v", persistErr)
+		}
 		return
 	}
 	watch.LastRunAt = now

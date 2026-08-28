@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,10 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// ErrNotFound 表示评测存储中请求的对象不存在。调用方可据此区分“不存在”与
+// 数据库锁、损坏或连接失败等真实存储错误，避免同步内置数据时误插入。
+var ErrNotFound = errors.New("评测对象不存在")
 
 // Store 评测题库与运行记录。路径约定与 metrics/conversations 一样落在 .config。
 type Store struct {
@@ -261,6 +266,9 @@ func (s *Store) SyncBuiltinProbe(probe Probe) error {
 	probe.Builtin = true
 	existing, err := s.GetProbeBySlug(probe.Slug)
 	if err != nil {
+		if !errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("读取内置探针 %s 失败: %w", probe.Slug, err)
+		}
 		if _, insertErr := s.InsertProbe(probe); insertErr != nil {
 			return insertErr
 		}
@@ -311,7 +319,7 @@ func (s *Store) writeProbe(probe Probe) error {
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("探针不存在")
+		return fmt.Errorf("%w: 探针不存在", ErrNotFound)
 	}
 	return nil
 }
@@ -330,7 +338,7 @@ func (s *Store) DeleteProbe(id string) error {
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("探针不存在")
+		return fmt.Errorf("%w: 探针不存在", ErrNotFound)
 	}
 	return nil
 }
@@ -372,8 +380,8 @@ func scanProbe(scanner interface {
 func (s *Store) GetProbe(id string) (Probe, error) {
 	row := s.db.QueryRow(`SELECT `+probeColumns+` FROM eval_probes WHERE id=?`, id)
 	probe, err := scanProbe(row)
-	if err == sql.ErrNoRows {
-		return Probe{}, fmt.Errorf("探针不存在")
+	if errors.Is(err, sql.ErrNoRows) {
+		return Probe{}, fmt.Errorf("%w: 探针不存在", ErrNotFound)
 	}
 	return probe, err
 }
@@ -381,8 +389,8 @@ func (s *Store) GetProbe(id string) (Probe, error) {
 func (s *Store) GetProbeBySlug(slug string) (Probe, error) {
 	row := s.db.QueryRow(`SELECT `+probeColumns+` FROM eval_probes WHERE slug=?`, slug)
 	probe, err := scanProbe(row)
-	if err == sql.ErrNoRows {
-		return Probe{}, fmt.Errorf("探针不存在")
+	if errors.Is(err, sql.ErrNoRows) {
+		return Probe{}, fmt.Errorf("%w: 探针不存在", ErrNotFound)
 	}
 	return probe, err
 }
@@ -435,6 +443,9 @@ func (s *Store) SyncBuiltinSuite(suite Suite) error {
 	suite.Builtin = true
 	existing, err := s.GetSuiteBySlug(suite.Slug)
 	if err != nil {
+		if !errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("读取内置套件 %s 失败: %w", suite.Slug, err)
+		}
 		if _, insertErr := s.InsertSuite(suite); insertErr != nil {
 			return insertErr
 		}
@@ -479,7 +490,7 @@ func (s *Store) writeSuite(suite Suite) error {
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("套件不存在")
+		return fmt.Errorf("%w: 套件不存在", ErrNotFound)
 	}
 	return nil
 }
@@ -498,7 +509,7 @@ func (s *Store) DeleteSuite(id string) error {
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("套件不存在")
+		return fmt.Errorf("%w: 套件不存在", ErrNotFound)
 	}
 	return nil
 }
@@ -526,8 +537,8 @@ func scanSuite(scanner interface {
 func (s *Store) GetSuite(id string) (Suite, error) {
 	row := s.db.QueryRow(`SELECT `+suiteColumns+` FROM eval_suites WHERE id=?`, id)
 	suite, err := scanSuite(row)
-	if err == sql.ErrNoRows {
-		return Suite{}, fmt.Errorf("套件不存在")
+	if errors.Is(err, sql.ErrNoRows) {
+		return Suite{}, fmt.Errorf("%w: 套件不存在", ErrNotFound)
 	}
 	return suite, err
 }
@@ -535,8 +546,8 @@ func (s *Store) GetSuite(id string) (Suite, error) {
 func (s *Store) GetSuiteBySlug(slug string) (Suite, error) {
 	row := s.db.QueryRow(`SELECT `+suiteColumns+` FROM eval_suites WHERE slug=?`, slug)
 	suite, err := scanSuite(row)
-	if err == sql.ErrNoRows {
-		return Suite{}, fmt.Errorf("套件不存在")
+	if errors.Is(err, sql.ErrNoRows) {
+		return Suite{}, fmt.Errorf("%w: 套件不存在", ErrNotFound)
 	}
 	return suite, err
 }
@@ -561,17 +572,57 @@ func (s *Store) ListSuites() ([]Suite, error) {
 	return suites, rows.Err()
 }
 
-// ProbesForSuite 按套件里的 probeIds 顺序取出探针。缺任何一条即报错，不静默跳过。
-func (s *Store) ProbesForSuite(suite Suite) ([]Probe, error) {
-	probes := make([]Probe, 0, len(suite.ProbeIDs))
-	for _, probeID := range suite.ProbeIDs {
-		probe, err := s.GetProbe(probeID)
-		if err != nil {
-			return nil, fmt.Errorf("套件 %s 引用的探针 %s 读取失败: %w", suite.Slug, probeID, err)
+// probesForSuite 按 ProbeIDs 顺序一次性取全探针，单条 JOIN 不带游标内再查库
+// （见 NewStore 的单连接说明：循环 GetProbe 会因独占连接死锁）。
+// 缺任何一条 ProbeID 即报错，不静默跳过。
+func (s *Store) probesForSuite(suiteID string, probeIDs []string) ([]Probe, error) {
+	if len(probeIDs) == 0 {
+		return []Probe{}, nil
+	}
+	placeholders := make([]string, len(probeIDs))
+	args := make([]any, 0, len(probeIDs))
+	for index, id := range probeIDs {
+		placeholders[index] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.Query(
+		`SELECT p.`+probeColumns+`
+		 FROM eval_probes p
+		 WHERE p.id IN (`+strings.Join(placeholders, ",")+`)
+		`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byID := make(map[string]Probe, len(probeIDs))
+	for rows.Next() {
+		probe, scanErr := scanProbe(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		byID[probe.ID] = probe
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	probes := make([]Probe, 0, len(probeIDs))
+	for _, id := range probeIDs {
+		probe, ok := byID[id]
+		if !ok {
+			return nil, fmt.Errorf("套件 %s 引用的探针 %s 缺失", suiteID, id)
 		}
 		probes = append(probes, probe)
 	}
 	return probes, nil
+}
+
+// ProbesForSuite 按套件里的 probeIds 顺序取出探针。缺任何一条即报错，不静默跳过。
+func (s *Store) ProbesForSuite(suite Suite) ([]Probe, error) {
+	return s.probesForSuite(suite.ID, suite.ProbeIDs)
 }
 
 // SuiteWithProbes 是 GetSuite + ProbesForSuite 的组合，供 estimate / validate / 值班共用。
@@ -617,11 +668,21 @@ func (s *Store) UpdateRun(run Run) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(
+	result, err := s.db.Exec(
 		`UPDATE eval_runs SET suite_id=?, trigger=?, status=?, channel_ids_json=?, model=?, channel_models_json=?, thinking=?, estimated_calls=?, skip_reason=?, error=?, started_at=?, finished_at=? WHERE id=?`,
 		run.SuiteID, run.Trigger, run.Status, channelIDsJSON, run.Model, channelModelsJSON, run.Thinking, run.EstimatedCalls, run.SkipReason, run.Error, run.StartedAt, run.FinishedAt, run.ID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: 评测批次不存在", ErrNotFound)
+	}
+	return nil
 }
 
 func marshalRunChannels(run Run) (channelIDs, channelModels string, err error) {
@@ -677,8 +738,8 @@ func (s *Store) GetRun(id string) (Run, error) {
 		`SELECT `+runColumnsWithSuiteName+`
 		 FROM eval_runs r LEFT JOIN eval_suites s ON s.id = r.suite_id WHERE r.id=?`, id)
 	run, err := scanRunWithSuiteName(row)
-	if err == sql.ErrNoRows {
-		return Run{}, fmt.Errorf("评测批次不存在")
+	if errors.Is(err, sql.ErrNoRows) {
+		return Run{}, fmt.Errorf("%w: 评测批次不存在", ErrNotFound)
 	}
 	if err != nil {
 		return Run{}, err
@@ -725,7 +786,7 @@ func (s *Store) DeleteRun(id string) error {
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("评测批次不存在")
+		return fmt.Errorf("%w: 评测批次不存在", ErrNotFound)
 	}
 	return nil
 }
@@ -818,7 +879,7 @@ func (s *Store) UpdateResultDetail(id string, detail map[string]interface{}) err
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		return fmt.Errorf("结果 %s 不存在", id)
+		return fmt.Errorf("%w: 结果 %s 不存在", ErrNotFound, id)
 	}
 	return nil
 }

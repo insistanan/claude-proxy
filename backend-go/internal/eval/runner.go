@@ -129,12 +129,15 @@ func (r *Runner) execute(ctx context.Context, run Run, suite Suite, probes []Pro
 	if err := r.store.UpdateRun(run); err != nil {
 		// 写不进去也不能让批次烂在 queued：前端会一直等一个永远不来的终态。
 		log.Printf("[Eval-Run] 标记批次开始失败: %v", err)
-		r.finish(run, RunCancelled, fmt.Sprintf("标记批次开始失败: %v", err))
+		if _, finishErr := r.finish(run, RunFailed, fmt.Sprintf("标记批次开始失败: %v", err)); finishErr != nil {
+			log.Printf("[Eval-Run] 保存失败终态失败: %v", finishErr)
+		}
 		return
 	}
 	log.Printf("[Eval-Run] 开始 %s 套件=%s 渠道=%d 预估请求=%d trigger=%s", run.ID, suite.Name, len(run.ChannelIDs), run.EstimatedCalls, run.Trigger)
 
 	var stored []Result
+	var persistenceErrors []error
 	cancelled := false
 	for _, channelID := range run.ChannelIDs {
 		if ctx.Err() != nil {
@@ -149,7 +152,7 @@ func (r *Runner) execute(ctx context.Context, run Run, suite Suite, probes []Pro
 			result := r.runProbe(ctx, run, channelID, probe)
 			saved, err := r.store.InsertResult(result)
 			if err != nil {
-				log.Printf("[Eval-Run] 写入结果失败: %v", err)
+				persistenceErrors = append(persistenceErrors, fmt.Errorf("写入结果 channel=%s probe=%s: %w", channelID, probe.ID, err))
 				continue
 			}
 			stored = append(stored, saved)
@@ -157,27 +160,42 @@ func (r *Runner) execute(ctx context.Context, run Run, suite Suite, probes []Pro
 	}
 
 	if !cancelled {
-		r.compareFingerprints(stored)
+		if err := r.compareFingerprints(stored); err != nil {
+			persistenceErrors = append(persistenceErrors, err)
+		}
 	}
 
 	status := RunDone
 	if cancelled {
 		status = RunCancelled
 	}
-	run = r.finish(run, status, "")
-	r.writeLatest(run, suite, stored)
+	run.FinishedAt = time.Now().Unix()
+	if err := r.writeLatest(run, suite, stored); err != nil {
+		persistenceErrors = append(persistenceErrors, err)
+	}
+	errMessage := ""
+	if len(persistenceErrors) > 0 {
+		errMessage = errors.Join(persistenceErrors...).Error()
+		if status == RunDone {
+			status = RunPartial
+		}
+	}
+	var finishErr error
+	run, finishErr = r.finish(run, status, errMessage)
+	if finishErr != nil {
+		log.Printf("[Eval-Run] 保存批次终态失败: %v", finishErr)
+	}
 	log.Printf("[Eval-Run] 结束 %s status=%s", run.ID, run.Status)
 }
 
 // finish 给批次盖终态。状态和错误一起落盘，保证前端总能等到一个终态而不是无限转圈。
-func (r *Runner) finish(run Run, status, errMessage string) Run {
+func (r *Runner) finish(run Run, status, errMessage string) (Run, error) {
 	run.Status = status
 	run.Error = errMessage
-	run.FinishedAt = time.Now().Unix()
-	if err := r.store.UpdateRun(run); err != nil {
-		log.Printf("[Eval-Run] 结束批次失败: %v", err)
+	if run.FinishedAt == 0 {
+		run.FinishedAt = time.Now().Unix()
 	}
-	return run
+	return run, r.store.UpdateRun(run)
 }
 
 func (r *Runner) runProbe(ctx context.Context, run Run, channelID string, probe Probe) Result {
@@ -246,7 +264,7 @@ func (r *Runner) runProbe(ctx context.Context, run Run, channelID string, probe 
 		return result
 	}
 
-	requestedModel := rawRequestedModel(located, run.Model)
+	requestedModel := rawRequestedModel(located, run.ModelForChannel(channelID))
 	verdict, excerpt, detail := Judge(JudgeInput{Probe: probe, RequestedModel: requestedModel, Samples: samples})
 	result.Verdict = verdict
 	result.Excerpt = excerpt
@@ -376,7 +394,8 @@ func inapplicableReason(located config.LocatedChannel, probe Probe, sch *schedul
 
 // compareFingerprints 批次跑完后做跨渠道随机数指纹比对。只回填 detail 供抽屉展示，不改 verdict——
 // 指纹相近只是"值得人看一眼"，判成 fail 会误伤同源但合法的官方中转。
-func (r *Runner) compareFingerprints(results []Result) {
+func (r *Runner) compareFingerprints(results []Result) error {
+	var persistenceErrors []error
 	byProbe := map[string][]Result{}
 	for _, result := range results {
 		if result.Verdict == VerdictInapplicable || result.Verdict == VerdictError {
@@ -390,7 +409,7 @@ func (r *Runner) compareFingerprints(results []Result) {
 		}
 		probe, err := r.store.GetProbe(probeID)
 		if err != nil {
-			log.Printf("[Eval-Fingerprint] 读取探针 %s 失败: %v", probeID, err)
+			persistenceErrors = append(persistenceErrors, fmt.Errorf("指纹比对读取探针 %s: %w", probeID, err))
 			continue
 		}
 		if probe.Judge.Kind != JudgeDistribution || !probe.Judge.CompareHistogram {
@@ -431,10 +450,14 @@ func (r *Runner) compareFingerprints(results []Result) {
 			}
 			detail["fingerprintTwins"] = list
 			if err := r.store.UpdateResultDetail(item.result.ID, detail); err != nil {
-				log.Printf("[Eval-Fingerprint] 回填指纹结论失败 %s: %v", item.result.ID, err)
+				persistenceErrors = append(persistenceErrors, fmt.Errorf("指纹比对回填结果 %s: %w", item.result.ID, err))
 			}
 		}
 	}
+	if len(persistenceErrors) > 0 {
+		return errors.Join(persistenceErrors...)
+	}
+	return nil
 }
 
 type fingerprintSeries struct {
@@ -446,21 +469,28 @@ func fingerprintTwin(channelID string, similarity float64) map[string]interface{
 	return map[string]interface{}{"channelId": channelID, "similarity": similarity}
 }
 
-func (r *Runner) writeLatest(run Run, suite Suite, results []Result) {
+func (r *Runner) writeLatest(run Run, suite Suite, results []Result) error {
 	byChannel := map[string][]string{}
 	for _, result := range results {
 		byChannel[result.ChannelID] = append(byChannel[result.ChannelID], result.Verdict)
 	}
+	var persistenceErrors []error
 	for channelID, verdicts := range byChannel {
 		aggregate := AggregateVerdicts(verdicts)
-		_ = r.store.SaveChannelLatest(ChannelLatest{
+		if err := r.store.SaveChannelLatest(ChannelLatest{
 			ChannelID:  channelID,
 			RunID:      run.ID,
 			SuiteName:  suite.Name,
 			Aggregate:  aggregate,
 			FinishedAt: run.FinishedAt,
-		}, suite.ID)
+		}, suite.ID); err != nil {
+			persistenceErrors = append(persistenceErrors, fmt.Errorf("写入渠道最新结论 channel=%s: %w", channelID, err))
+		}
 	}
+	if len(persistenceErrors) > 0 {
+		return errors.Join(persistenceErrors...)
+	}
+	return nil
 }
 
 // AggregateVerdicts 把一个渠道本批次的多条结论收敛成一枚芯片。

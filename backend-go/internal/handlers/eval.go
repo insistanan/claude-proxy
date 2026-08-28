@@ -245,7 +245,7 @@ func (a *EvalAPI) RunEvents(c *gin.Context) {
 			}
 		}
 		switch run.Status {
-		case eval.RunDone, eval.RunCancelled, eval.RunSkipped:
+		case eval.RunDone, eval.RunPartial, eval.RunFailed, eval.RunCancelled, eval.RunSkipped:
 			return false
 		}
 		return true
