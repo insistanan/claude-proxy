@@ -171,9 +171,9 @@
           >
             <div class="d-flex align-center">
               <v-icon size="20" class="mr-2">mdi-chart-areaspline</v-icon>
-              <span class="text-subtitle-1 font-weight-bold">
-                {{ channelStore.activeTab === 'messages' ? 'Messages' : (channelStore.activeTab === 'responses' ? 'Responses' : (channelStore.activeTab === 'gemini' ? 'Gemini' : (channelStore.activeTab === 'images' ? 'Images' : 'OpenAI Chat'))) }} 流量统计
-              </span>
+             <span class="text-subtitle-1 font-weight-bold">
+                {{ channelStore.activeTab === 'messages' ? 'Messages' : (channelStore.activeTab === 'responses' ? 'Responses' : (channelStore.activeTab === 'gemini' ? 'Gemini' : (channelStore.activeTab === 'images' ? 'Images' : 'Chat'))) }} 流量统计
+             </span>
             </div>
             <v-btn
               icon

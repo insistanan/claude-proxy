@@ -126,7 +126,7 @@
                   <div class="flex-grow-1">
                     <div class="text-body-2 font-weight-medium">渠道类型</div>
                     <div class="text-caption text-medium-emphasis">
-                      {{ props.channelType === 'gemini' ? 'Gemini' : props.channelType === 'responses' ? 'Responses' : props.channelType === 'chat' ? 'OpenAI Chat' : props.channelType === 'images' ? 'Images' : 'Messages' }} -
+                      {{ props.channelType === 'gemini' ? 'Gemini' : props.channelType === 'responses' ? 'Responses' : props.channelType === 'chat' ? 'Chat' : props.channelType === 'images' ? 'Images' : 'Messages' }} -
                       {{ getDefaultServiceType() }}
                     </div>
                   </div>
@@ -829,10 +829,10 @@ const getDefaultServiceType = (): string => {
     return 'Responses (原生接口)'
   }
   if (props.channelType === 'chat') {
-    return 'OpenAI Chat'
+    return 'Chat'
   }
   if (props.channelType === 'images') {
-    return 'OpenAI Images'
+    return 'Images'
   }
   return 'Messages'
 }
@@ -1054,25 +1054,25 @@ const serviceTypeOptions = computed(() => {
   if (props.channelType === 'gemini') {
     return [
       { title: 'Gemini', value: 'gemini' },
-      { title: 'OpenAI', value: 'openai' },
-      { title: 'Claude', value: 'claude' }
+      { title: 'Chat', value: 'openai' },
+      { title: 'Messages', value: 'claude' }
     ]
   }
   if (props.channelType === 'chat') {
     return [
-      { title: 'OpenAI Chat', value: 'openai' }
+      { title: 'Chat', value: 'openai' }
     ]
   }
   if (props.channelType === 'responses') {
     return [
       { title: 'Responses (原生接口)', value: 'responses' },
-      { title: 'OpenAI', value: 'openai' },
-      { title: 'Claude', value: 'claude' }
+      { title: 'Chat', value: 'openai' },
+      { title: 'Messages', value: 'claude' }
     ]
   } else {
     return [
-      { title: 'OpenAI', value: 'openai' },
-      { title: 'Claude', value: 'claude' },
+      { title: 'Chat', value: 'openai' },
+      { title: 'Messages', value: 'claude' },
       { title: 'Responses', value: 'responses' },
       { title: 'Gemini', value: 'gemini' }
     ]

@@ -290,10 +290,14 @@ const reasoningEfforts = [
   { title: '低', value: 'low' },
   { title: '中', value: 'medium' },
   { title: '高', value: 'high' },
-  { title: '超高', value: 'xhigh' }
+  { title: '超高', value: 'xhigh' },
+  { title: '最高', value: 'max' }
 ]
 
-const defaultVariantNames = ['none', 'low', 'medium', 'high', 'xhigh']
+// 思考等级从低到高的标准排序，用于加载后端配置时保证 variants 显示顺序一致
+const reasoningEffortOrder = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+
+const defaultVariantNames = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
 
 function makeDefaultVariants(): EditableVariant[] {
   return defaultVariantNames.map(name => ({ name, reasoningEffort: name, enabled: true }))
@@ -367,9 +371,17 @@ const toEditableProvider = (provider: OpenCodeProvider): EditableProvider => ({
     // 识图字段从 options 中剥离，由专门开关管理
     delete options.attachment
     delete options.modalities
-    // 从 model.variants 构建 editable variants
+    // From model.variants build editable variants; sort by standard effort order (low to high)
     const rawVariants = model.variants ?? {}
-    const variantNames = Object.keys(rawVariants)
+    const variantNames = Object.keys(rawVariants).sort((a, b) => {
+      const indexA = reasoningEffortOrder.indexOf(a)
+      const indexB = reasoningEffortOrder.indexOf(b)
+      // Known levels sort by predefined order; unknown levels sort last, stable
+      if (indexA === -1 && indexB === -1) return a.localeCompare(b)
+      if (indexA === -1) return 1
+      if (indexB === -1) return -1
+      return indexA - indexB
+    })
     let variants: EditableVariant[]
     let variantsEnabled: boolean
     if (variantNames.length > 0) {
@@ -380,7 +392,7 @@ const toEditableProvider = (provider: OpenCodeProvider): EditableProvider => ({
         enabled: true
       }))
     } else {
-      // 从旧版 model.options.reasoningEffort 迁移
+      // Migrate from legacy model.options.reasoningEffort
       const oldEffort = typeof model.options.reasoningEffort === 'string' ? model.options.reasoningEffort : ''
       if (oldEffort) {
         variantsEnabled = true
