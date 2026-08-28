@@ -162,7 +162,9 @@ func buildNativeBody(serviceType, model string, stimulus Stimulus, thinking stri
 	if maxTokens <= 0 {
 		maxTokens = 256
 	}
-	enableThinking := thinking == ThinkingEnabled || (thinking == ThinkingInherit && stimulus.Thinking == ThinkingEnabled)
+	// 等级解析：inherit 跟随题目，题目没开就关闭；off 显式关闭；
+	// enabled 兼容旧值等价 medium；low/medium/high/max 直接映射。
+	effort := thinkingEffort(thinking, stimulus.Thinking)
 	budget := stimulus.ThinkingBudget
 	if budget <= 0 {
 		budget = 1024
@@ -180,8 +182,8 @@ func buildNativeBody(serviceType, model string, stimulus Stimulus, thinking stri
 		if stimulus.System != "" {
 			payload["system"] = stimulus.System
 		}
-		if enableThinking {
-			payload["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": budget}
+		if effort != "" {
+			payload["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": claudeThinkingBudget(effort, budget)}
 			payload["temperature"] = 1
 		} else {
 			payload["temperature"] = stimulus.Temperature
@@ -200,8 +202,8 @@ func buildNativeBody(serviceType, model string, stimulus Stimulus, thinking stri
 			"max_tokens":  maxTokens,
 			"temperature": stimulus.Temperature,
 		}
-		if enableThinking {
-			payload["reasoning_effort"] = "medium"
+		if effort != "" {
+			payload["reasoning_effort"] = effort
 		}
 		body, err := json.Marshal(payload)
 		return body, "/chat/completions", err
@@ -215,8 +217,8 @@ func buildNativeBody(serviceType, model string, stimulus Stimulus, thinking stri
 		if stimulus.System != "" {
 			payload["instructions"] = stimulus.System
 		}
-		if enableThinking {
-			payload["reasoning"] = map[string]interface{}{"effort": "medium"}
+		if effort != "" {
+			payload["reasoning"] = map[string]interface{}{"effort": effort}
 		}
 		storeFalse := false
 		payload["store"] = storeFalse
@@ -237,9 +239,9 @@ func buildNativeBody(serviceType, model string, stimulus Stimulus, thinking stri
 				"parts": []map[string]interface{}{{"text": stimulus.System}},
 			}
 		}
-		if enableThinking {
+		if effort != "" {
 			generation := payload["generationConfig"].(map[string]interface{})
-			budget32 := int32(budget)
+			budget32 := int32(geminiThinkingBudget(effort, budget))
 			generation["thinkingConfig"] = map[string]interface{}{
 				"includeThoughts": true,
 				"thinkingBudget":  budget32,
@@ -253,6 +255,54 @@ func buildNativeBody(serviceType, model string, stimulus Stimulus, thinking stri
 		return body, "", err
 	default:
 		return nil, "", fmt.Errorf("不支持的 serviceType %s", serviceType)
+	}
+}
+
+// thinkingEffort 把思考选择归一化成 effort（""=不思考）。inherit 跟随题目。
+func thinkingEffort(override, stimulus string) string {
+	value := override
+	if value == "" || value == ThinkingInherit {
+		value = stimulus
+	}
+	switch value {
+	case "", ThinkingOff, "none", "false":
+		return ""
+	case ThinkingEnabled:
+		return ThinkingMedium
+	case ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingMax:
+		return value
+	default:
+		// 未知等级按 medium 兜底，别把上游请求整坏。
+		return ThinkingMedium
+	}
+}
+
+// claudeThinkingBudget 把 effort 映射成 Claude thinking budget_tokens。
+// xhigh/max 意味着更深的思考预算，按 effort 逐级放大。
+func claudeThinkingBudget(effort string, fallback int) int {
+	switch effort {
+	case ThinkingLow:
+		return 1024
+	case ThinkingHigh:
+		return 8192
+	case ThinkingMax:
+		return 16000
+	default:
+		return fallback
+	}
+}
+
+// geminiThinkingBudget 把 effort 映射成 Gemini thinkingConfig.thinkingBudget。
+func geminiThinkingBudget(effort string, fallback int) int {
+	switch effort {
+	case ThinkingLow:
+		return 512
+	case ThinkingHigh:
+		return 8192
+	case ThinkingMax:
+		return 16384
+	default:
+		return fallback
 	}
 }
 

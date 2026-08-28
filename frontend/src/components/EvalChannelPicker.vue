@@ -24,70 +24,98 @@
         @update:model-value="search = ($event || '').trim()"
       />
 
+      <v-spacer />
+
       <v-btn size="small" variant="text" @click="selectAllFiltered">全选筛选</v-btn>
       <v-btn size="small" variant="text" @click="selectActiveFiltered">只选活跃</v-btn>
       <v-btn size="small" variant="text" :disabled="!modelValue.length" @click="emitSelection([])">清空</v-btn>
     </div>
 
-    <div class="text-caption text-medium-emphasis mb-3">
+    <div class="text-caption text-medium-emphasis mb-2">
       <v-icon size="small" class="mr-1">mdi-help-circle-outline</v-icon>
-      每个渠道可单独指定模型（优先于「统一模型」）；留空则用该渠道自身 defaultModel。模型框聚焦时自动探测上游可用模型。已选
-      {{ modelValue.length }} 个渠道。
+      每个渠道可单独指定模型与思考等级（优先于「统一模型 / 统一思考」）；留空则用全局设置。
+      模型框聚焦时自动探测上游可用模型。已选 {{ modelValue.length }} 个渠道。
     </div>
 
-    <div v-if="!groups.length" class="text-body-2 text-medium-emphasis py-4">
+    <div v-if="!rows.length" class="text-body-2 text-medium-emphasis py-4">
       没有渠道
     </div>
 
-    <div v-else class="pool-grid">
-      <section v-for="group in groups" :key="group.key" class="pool-card">
-        <header class="pool-card-header">
-          <div class="text-body-2 font-weight-medium text-truncate">{{ group.title }}</div>
-          <v-btn size="x-small" variant="text" @click="toggleGroup(group)">
-            {{ isGroupFullySelected(group) ? '取消' : '全选' }}
-          </v-btn>
-        </header>
-
-        <div
-          v-for="channel in group.channels"
-          :key="channel.id"
-          class="channel-row"
-          :class="{ 'channel-row--selected': isSelected(channel.id) }"
-          role="button"
-          tabindex="0"
-          @click="toggleChannel(channel.id)"
-          @keydown.enter.prevent="toggleChannel(channel.id)"
-          @keydown.space.prevent="toggleChannel(channel.id)"
-        >
-          <v-icon size="18" :color="isSelected(channel.id) ? 'primary' : undefined">
-            {{ isSelected(channel.id) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline' }}
-          </v-icon>
-          <span class="channel-name text-truncate">{{ channel.name }}</span>
-          <v-chip v-if="channel.status === 'suspended'" size="x-small" variant="tonal" color="grey">熔断</v-chip>
-          <v-combobox
-            :model-value="channelModelOf(channel.id)"
-            :items="modelOptionsOf(channel.id)"
-            :loading="modelLoadingOf(channel.id)"
-            density="compact"
-            variant="outlined"
-            hide-details
-            label="模型"
-            placeholder="留空用渠道默认"
-            class="channel-model"
-            @click.stop
-            @keydown.stop
-            @focus="loadModels(channel.id)"
-            @update:model-value="(value: unknown) => updateChannelModel(channel.id, value)"
+    <div v-else class="picker-table-wrap">
+      <table class="picker-table">
+        <thead>
+          <tr>
+            <th class="col-check"></th>
+            <th class="col-protocol">协议</th>
+            <th class="col-channel">渠道</th>
+            <th class="col-model">模型</th>
+            <th class="col-thinking">思考等级</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="channel in rows"
+            :key="channel.id"
+            :class="{ 'row--selected': isSelected(channel.id) }"
+            role="button"
+            tabindex="0"
+            @click="toggleChannel(channel.id)"
+            @keydown.enter.prevent="toggleChannel(channel.id)"
+            @keydown.space.prevent="toggleChannel(channel.id)"
           >
-            <template #no-data>
-              <div class="text-center px-2 text-caption text-medium-emphasis">
-                <template v-if="modelLoadingOf(channel.id)">正在探测上游模型...</template>
-                <template v-else>无匹配，可直接输入模型名</template>
-              </div>
-            </template>
-          </v-combobox>
-        </div>
-      </section>
+            <td class="col-check">
+              <v-icon size="18" :color="isSelected(channel.id) ? 'primary' : undefined">
+                {{ isSelected(channel.id) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline' }}
+              </v-icon>
+            </td>
+            <td class="col-protocol">
+              <v-chip size="x-small" variant="outlined" color="grey">{{ evalProtocolLabel(channel.kind) }}</v-chip>
+              <v-chip v-if="channel.status === 'suspended'" size="x-small" variant="tonal" color="grey">熔断</v-chip>
+            </td>
+            <td class="col-channel">
+              <span class="text-truncate font-weight-medium">{{ channel.name }}</span>
+            </td>
+            <td class="col-model">
+              <v-combobox
+                :model-value="channelModelOf(channel.id)"
+                :items="modelOptionsOf(channel.id)"
+                :loading="modelLoadingOf(channel.id)"
+                density="compact"
+                variant="outlined"
+                hide-details
+                placeholder="统一模型"
+                @click.stop
+                @keydown.stop
+                @focus="loadModels(channel.id)"
+                @update:model-value="(value: unknown) => updateChannelModel(channel.id, value)"
+              >
+                <template #no-data>
+                  <div class="text-center px-2 text-caption text-medium-emphasis">
+                    <template v-if="modelLoadingOf(channel.id)">正在探测上游模型...</template>
+                    <template v-else>无匹配，可直接输入模型名</template>
+                  </div>
+                </template>
+              </v-combobox>
+            </td>
+            <td class="col-thinking">
+              <v-select
+                :model-value="channelThinkingOf(channel.id)"
+                :items="THINKING_ITEMS"
+                item-title="title"
+                item-value="value"
+                density="compact"
+                variant="outlined"
+                hide-details
+                placeholder="跟随全局"
+                clearable
+                @click.stop
+                @keydown.stop
+                @update:model-value="(value: unknown) => updateChannelThinking(channel.id, value)"
+              />
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </template>
@@ -95,13 +123,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { api, type ApiTab, type Channel, type ChannelPool } from '@/services/api'
-import { EVAL_PROTOCOL_KINDS, evalProtocolLabel } from '@/utils/eval'
+import { EVAL_PROTOCOL_KINDS, EVAL_THINKING_ITEMS, evalProtocolLabel } from '@/utils/eval'
 
-interface ChannelGroup {
-  key: string
-  title: string
-  channels: Array<Channel & { id: string }>
+interface PickerRow extends Channel {
+  id: string
+  kind: ApiTab
 }
+
+const THINKING_ITEMS = EVAL_THINKING_ITEMS.filter(item => item.value !== 'inherit')
 
 const props = defineProps<{
   /** 四协议渠道，由 /eval 页统一拉取 */
@@ -114,12 +143,15 @@ const props = defineProps<{
   protocols: ApiTab[]
   /** channelId → 渠道专属模型覆盖，优先于统一 model */
   channelModels?: Record<string, string>
+  /** channelId → 渠道专属思考等级覆盖，优先于统一 thinking */
+  channelThinking?: Record<string, string>
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [string[]]
   'update:protocols': [ApiTab[]]
   'update:channelModels': [Record<string, string>]
+  'update:channelThinking': [Record<string, string>]
 }>()
 
 const search = ref('')
@@ -150,36 +182,23 @@ const matchesSearch = (channel: Channel) => {
   )
 }
 
-const poolNameOf = (kind: ApiTab, poolId?: string) => {
-  if (!poolId) return '未分组'
-  return (props.poolsByKind[kind] || []).find(pool => pool.id === poolId)?.name || '未分组'
-}
-
 /**
- * 按「协议 × 渠道池」分组。不同协议的同名池不合并——同名不代表同一批上游，
- * 合并会让用户以为勾了一个其实勾了两个协议的渠道。
+ * 全部可选渠道拍平成一行一个。按「协议 → 池名」排序分组展示；
+ * 不同协议的同名池不合并——同名不代表同一批上游。
  */
-const groups = computed<ChannelGroup[]>(() => {
-  const map = new Map<string, ChannelGroup>()
+const rows = computed<PickerRow[]>(() => {
+  const list: PickerRow[] = []
   for (const kind of props.protocols) {
     for (const channel of props.channelsByKind[kind] || []) {
       if (!isSelectable(channel)) continue
       if (!matchesSearch(channel)) continue
-      const poolName = poolNameOf(kind, channel.poolId)
-      const key = `${kind}:${channel.poolId || ''}`
-      const group = map.get(key) || {
-        key,
-        title: `${poolName} · ${evalProtocolLabel(kind)}`,
-        channels: []
-      }
-      group.channels.push(channel)
-      map.set(key, group)
+      list.push({ ...channel, kind })
     }
   }
-  return [...map.values()]
+  return list
 })
 
-const filteredChannels = computed(() => groups.value.flatMap(group => group.channels))
+const filteredChannels = computed(() => rows.value)
 
 const isSelected = (channelId: string) => props.modelValue.includes(channelId)
 
@@ -189,19 +208,6 @@ const toggleChannel = (channelId: string) => {
     return
   }
   emitSelection([...props.modelValue, channelId])
-}
-
-const isGroupFullySelected = (group: ChannelGroup) =>
-  group.channels.length > 0 && group.channels.every(channel => isSelected(channel.id))
-
-const toggleGroup = (group: ChannelGroup) => {
-  const groupIds = group.channels.map(channel => channel.id)
-  if (isGroupFullySelected(group)) {
-    emitSelection(props.modelValue.filter(id => !groupIds.includes(id)))
-    return
-  }
-  const merged = new Set([...props.modelValue, ...groupIds])
-  emitSelection([...merged])
 }
 
 /** 全选/只选活跃都只作用于当前筛选结果，不动筛选之外已勾的渠道。 */
@@ -219,7 +225,7 @@ const selectActiveFiltered = () =>
       .map(channel => channel.id)
   )
 
-// ===== 逐渠道模型选择 =====
+// ===== 逐渠道模型 / 思考等级选择 =====
 
 const channelModelOf = (channelId: string): string => (props.channelModels || {})[channelId] || ''
 
@@ -238,13 +244,21 @@ const updateChannelModel = (channelId: string, value: unknown) => {
   emit('update:channelModels', next)
 }
 
-const channelById = (channelId: string): (Channel & { id: string }) | undefined => {
-  for (const kind of props.protocols) {
-    const found = (props.channelsByKind[kind] || []).find(channel => channel.id === channelId)
-    if (found && isSelectable(found)) return found
+const channelThinkingOf = (channelId: string): string => (props.channelThinking || {})[channelId] || ''
+
+const updateChannelThinking = (channelId: string, value: unknown) => {
+  const next = { ...(props.channelThinking || {}) }
+  const level = typeof value === 'string' ? value.trim() : ''
+  if (level) {
+    next[channelId] = level
+  } else {
+    delete next[channelId]
   }
-  return undefined
+  emit('update:channelThinking', next)
 }
+
+const channelById = (channelId: string): PickerRow | undefined =>
+  rows.value.find(channel => channel.id === channelId)
 
 /** 聚焦某个渠道的模型框时，探测一次上游可用模型（复用编辑渠道的 discover 逻辑）。 */
 const loadModels = async (channelId: string) => {
@@ -283,54 +297,73 @@ const loadModels = async (channelId: string) => {
 </script>
 
 <style scoped>
-.pool-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 12px;
-}
-
-.pool-card {
+.picker-table-wrap {
+  max-height: 420px;
+  overflow-y: auto;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 8px;
-  padding: 8px 8px 10px;
 }
 
-.pool-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 4px 6px;
+.picker-table {
+  border-collapse: collapse;
+  width: 100%;
 }
 
-.channel-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
-  border-radius: 6px;
+.picker-table th,
+.picker-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  vertical-align: middle;
+}
+
+.picker-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgb(var(--v-theme-surface));
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  text-align: left;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+}
+
+.picker-table tbody tr {
   cursor: pointer;
+  transition: background 0.1s;
 }
 
-.channel-row:hover,
-.channel-row:focus-visible {
-  background: rgba(var(--v-theme-on-surface), 0.06);
-  outline: none;
+.picker-table tbody tr:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
 }
 
-.channel-row--selected {
-  background: rgba(var(--v-theme-primary), 0.1);
+.picker-table tbody tr.row--selected {
+  background: rgba(var(--v-theme-primary), 0.08);
 }
 
-.channel-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 0.875rem;
+.col-check {
+  width: 36px;
 }
 
-.channel-model {
-  flex: 0 1 200px;
-  min-width: 0;
-  max-width: 200px;
+.col-protocol {
+  width: 110px;
+  white-space: nowrap;
+}
+
+.col-channel {
+  width: 240px;
+}
+
+.col-channel span {
+  display: inline-block;
+  max-width: 100%;
+}
+
+.col-model {
+  width: 240px;
+}
+
+.col-thinking {
+  width: 150px;
 }
 </style>

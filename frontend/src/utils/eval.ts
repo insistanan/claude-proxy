@@ -108,6 +108,105 @@ export const evalFormatTime = (unixSeconds?: number): string => {
   return new Date(unixSeconds * 1000).toLocaleString()
 }
 
+/** 批次耗时：起止秒级时间戳差，返回人读的「12 秒 / 3 分 5 秒 / 1 小时 2 分」。 */
+export const evalDurationLabel = (startedAt?: number, finishedAt?: number): string => {
+  if (!startedAt) return '—'
+  const end = finishedAt || Math.floor(Date.now() / 1000)
+  let seconds = end - startedAt
+  if (seconds < 0) seconds = 0
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  const restSeconds = seconds % 60
+  if (minutes < 60) return restSeconds ? `${minutes} 分 ${restSeconds} 秒` : `${minutes} 分`
+  const hours = Math.floor(minutes / 60)
+  const restMinutes = minutes % 60
+  return restMinutes ? `${hours} 小时 ${restMinutes} 分` : `${hours} 小时`
+}
+
+/** 把一批 result 的 verdict 汇总成计数，用于批次概览与历史条目。 */
+export interface EvalVerdictTally {
+  pass: number
+  suspect: number
+  fail: number
+  error: number
+  insufficient: number
+  inapplicable: number
+  pending: number
+  total: number
+}
+
+export const tallyVerdicts = (
+  results: EvalResult[] | undefined,
+  cellCount: number
+): EvalVerdictTally => {
+  const tally: EvalVerdictTally = {
+    pass: 0,
+    suspect: 0,
+    fail: 0,
+    error: 0,
+    insufficient: 0,
+    inapplicable: 0,
+    pending: 0,
+    total: cellCount
+  }
+  if (!results) return tally
+  for (const result of results) {
+    switch (result.verdict) {
+      case 'pass':
+        tally.pass += 1
+        break
+      case 'suspect':
+        tally.suspect += 1
+        break
+      case 'fail':
+        tally.fail += 1
+        break
+      case 'error':
+        tally.error += 1
+        break
+      case 'insufficient':
+        tally.insufficient += 1
+        break
+      case 'inapplicable':
+        tally.inapplicable += 1
+        break
+      default:
+        tally.pending += 1
+    }
+  }
+  tally.pending = Math.max(0, cellCount - results.length)
+  return tally
+}
+
+/** 历史卡片 mini 统计条用的分项：带颜色、标签、计数、占比。按"好→坏"排。 */
+export interface TallySegment {
+  key: string
+  color: string
+  label: string
+  count: number
+  ratio: number
+}
+
+const TALLY_SEGMENT_DEFS = [
+  { key: 'pass', color: 'success', label: '通过' },
+  { key: 'suspect', color: 'warning', label: '存疑' },
+  { key: 'fail', color: 'error', label: '失败' },
+  { key: 'error', color: 'grey', label: '错误' },
+  { key: 'insufficient', color: 'grey', label: '不足' },
+  { key: 'inapplicable', color: 'grey', label: '不适用' },
+  { key: 'pending', color: 'grey', label: '待跑' }
+] as const
+
+/** 把 EvalVerdictTally 转成非零分项数组，用于批次概览条。 */
+export const tallyToSegments = (tally: EvalVerdictTally | null | undefined): TallySegment[] => {
+  if (!tally || tally.total === 0) return []
+  return TALLY_SEGMENT_DEFS.filter(segment => tally[segment.key as keyof EvalVerdictTally] > 0).map(segment => ({
+    ...segment,
+    count: tally[segment.key as keyof EvalVerdictTally] as number,
+    ratio: (tally[segment.key as keyof EvalVerdictTally] as number) / tally.total
+  }))
+}
+
 /** 距离某个秒级时间戳还有多久，用于"下次运行"提示。 */
 export const evalCountdownLabel = (unixSeconds?: number): string => {
   if (!unixSeconds) return '—'
@@ -121,3 +220,26 @@ export const evalCountdownLabel = (unixSeconds?: number): string => {
   if (hours < 24) return restMinutes ? `${hours} 小时 ${restMinutes} 分后` : `${hours} 小时后`
   return `${Math.round(hours / 24)} 天后`
 }
+
+/**
+ * 评测思考等级（批次级 ThinkingOverride）。
+ * inherit 跟随题目 stimulus.thinking；off 关闭；enabled 兼容旧值等价 medium；
+ * low/medium/high/max 按协议映射（Claude→budget_tokens，OpenAI/Responses→reasoning_effort，Gemini→thinkingBudget）。
+ */
+export const EVAL_THINKING_ITEMS = [
+  { title: '跟随题目', value: 'inherit' },
+  { title: '关闭', value: 'off' },
+  { title: '低', value: 'low' },
+  { title: '中', value: 'medium' },
+  { title: '高', value: 'high' },
+  { title: '最大', value: 'max' }
+] as const
+
+export const evalThinkingLabel = (value?: string): string =>
+  EVAL_THINKING_ITEMS.find(item => item.value === value)?.title ?? value ?? '—'
+
+/** 题目级的思考选项（stimulus.thinking），只控制"开不开"。 */
+export const EVAL_STIMULUS_THINKING_ITEMS = [
+  { title: '跟随批次', value: '' },
+  { title: '开启思考', value: 'enabled' }
+] as const

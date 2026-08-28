@@ -43,6 +43,7 @@ import {
   mdiArrowUpBold,
   mdiArrowDownBold,
   mdiCheck,
+  mdiAccountGroupOutline,
   mdiContentCopy,
   mdiContentSave,
   mdiAlert,
@@ -283,6 +284,7 @@ const iconMap: Record<string, string> = {
   'timer-sand': mdiTimerSand,
   'test-tube': mdiTestTube,
   account: mdiAccount,
+  'account-group-outline': mdiAccountGroupOutline,
   send: mdiSend,
   download: mdiDownload
 }

@@ -733,6 +733,40 @@ func scanRunWithSuiteName(scanner interface {
 	return run, nil
 }
 
+// scanRunWithSuiteNameAndTally 在 scanRunWithSuiteName 基础上再读 7 列 verdict 聚合。
+// 只给 ListRuns 用——它不返回 Results 但要带 Tally 给历史卡片画 mini 条。
+func scanRunWithSuiteNameAndTally(scanner interface {
+	Scan(dest ...any) error
+}) (Run, error) {
+	var run Run
+	var channelIDsJSON, channelModelsJSON string
+	var tally RunTally
+	if err := scanner.Scan(
+		&run.ID, &run.SuiteID, &run.Trigger, &run.Status, &channelIDsJSON, &run.Model, &channelModelsJSON,
+		&run.Thinking, &run.EstimatedCalls, &run.SkipReason, &run.Error, &run.StartedAt, &run.FinishedAt, &run.CreatedAt,
+		&run.SuiteName,
+		&tally.Pass, &tally.Suspect, &tally.Fail, &tally.Error, &tally.Insufficient, &tally.Inapplicable, &tally.Total,
+	); err != nil {
+		return Run{}, err
+	}
+	if err := unmarshalJSON(channelIDsJSON, &run.ChannelIDs); err != nil {
+		return Run{}, err
+	}
+	if run.ChannelIDs == nil {
+		run.ChannelIDs = []string{}
+	}
+	if err := unmarshalJSON(channelModelsJSON, &run.ChannelModels); err != nil {
+		return Run{}, err
+	}
+	if run.ChannelModels == nil {
+		run.ChannelModels = map[string]string{}
+	}
+	if tally.Total > 0 {
+		run.Tally = &tally
+	}
+	return run, nil
+}
+
 func (s *Store) GetRun(id string) (Run, error) {
 	row := s.db.QueryRow(
 		`SELECT `+runColumnsWithSuiteName+`
@@ -749,24 +783,65 @@ func (s *Store) GetRun(id string) (Run, error) {
 		return Run{}, err
 	}
 	run.Results = results
+	run.Tally = tallyFromResults(results)
 	return run, nil
+}
+
+// tallyFromResults 从已落库的 results 现算一次聚合计数，供 GetRun 填 Tally。
+// ListRuns 不走这里，它直接在 SQL 里聚合。
+func tallyFromResults(results []Result) *RunTally {
+	if len(results) == 0 {
+		return nil
+	}
+	tally := RunTally{Total: len(results)}
+	for _, result := range results {
+		switch result.Verdict {
+		case VerdictPass:
+			tally.Pass++
+		case VerdictSuspect:
+			tally.Suspect++
+		case VerdictFail:
+			tally.Fail++
+		case VerdictError:
+			tally.Error++
+		case VerdictInsufficient:
+			tally.Insufficient++
+		case VerdictInapplicable:
+			tally.Inapplicable++
+		}
+	}
+	return &tally
 }
 
 func (s *Store) ListRuns(limit int) ([]Run, error) {
 	if limit <= 0 {
 		limit = 20
 	}
+	// 用子查询顺带聚合 verdict 计数，避免对每个批次再发一条 ListResults。
+	// SUM(verdict=? AND 1=1) 这种写法在 SQLite 下把布尔条件转成 0/1 求和。
 	rows, err := s.db.Query(
-		`SELECT `+runColumnsWithSuiteName+`
-		 FROM eval_runs r LEFT JOIN eval_suites s ON s.id = r.suite_id
-		 ORDER BY r.created_at DESC LIMIT ?`, limit)
+		`SELECT `+runColumnsWithSuiteName+`,
+			COALESCE(SUM(CASE WHEN rv.verdict=? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN rv.verdict=? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN rv.verdict=? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN rv.verdict=? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN rv.verdict=? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN rv.verdict=? THEN 1 ELSE 0 END), 0),
+			COALESCE(COUNT(rv.id), 0)
+		 FROM eval_runs r
+		 LEFT JOIN eval_suites s ON s.id = r.suite_id
+		 LEFT JOIN eval_results rv ON rv.run_id = r.id
+		 GROUP BY r.id
+		 ORDER BY r.created_at DESC LIMIT ?`,
+		VerdictPass, VerdictSuspect, VerdictFail, VerdictError, VerdictInsufficient, VerdictInapplicable,
+		limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var runs []Run
 	for rows.Next() {
-		run, err := scanRunWithSuiteName(rows)
+		run, err := scanRunWithSuiteNameAndTally(rows)
 		if err != nil {
 			return nil, err
 		}

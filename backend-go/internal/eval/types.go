@@ -50,6 +50,13 @@ const (
 	ThinkingOff     = "off"
 	ThinkingEnabled = "enabled"
 
+	// 细粒度思考等级，按协议映射成 budget / reasoning_effort。
+	// enabled 向后兼容等价于 medium；inherit 跟随题目 stimulus.thinking。
+	ThinkingLow    = "low"
+	ThinkingMedium = "medium"
+	ThinkingHigh   = "high"
+	ThinkingMax    = "max"
+
 	ServiceClaude    = "claude"
 	ServiceOpenAI    = "openai"
 	ServiceGemini    = "gemini"
@@ -176,6 +183,21 @@ type Run struct {
 	FinishedAt     int64             `json:"finishedAt"`
 	CreatedAt      int64             `json:"createdAt"`
 	Results        []Result          `json:"results,omitempty"`
+	// Tally 是批次的 verdict 聚合计数。GetRun 里有完整 Results 时由调用方填，
+	// ListRuns 不返回 Results 但会填 Tally，供历史卡片画 mini 统计条而无需逐条拉结果。
+	Tally *RunTally `json:"tally,omitempty"`
+}
+
+// RunTally 批次概览用的 verdict 分布计数。Total 等于已落库 result 数，
+// 不含尚未跑的格子——历史列表只关心已出结论的分布，待跑格子不参与。
+type RunTally struct {
+	Pass         int `json:"pass"`
+	Suspect      int `json:"suspect"`
+	Fail         int `json:"fail"`
+	Error        int `json:"error"`
+	Insufficient int `json:"insufficient"`
+	Inapplicable int `json:"inapplicable"`
+	Total        int `json:"total"`
 }
 
 // ModelForChannel 返回指定渠道本次评测应使用的模型覆盖。
@@ -259,7 +281,9 @@ type StartRunRequest struct {
 	// ChannelModels 按渠道 UUID 指定模型，优先于 Model。前端的"逐渠道选模型"写这里。
 	ChannelModels map[string]string `json:"channelModels,omitempty"`
 	Thinking      string            `json:"thinking,omitempty"`
-	Trigger       string            `json:"trigger,omitempty"`
+	// ProbeIDs 覆盖套件的题：非空时只跑这里列出的探针，空则跑套件全部。
+	ProbeIDs []string `json:"probeIds,omitempty"`
+	Trigger  string   `json:"trigger,omitempty"`
 }
 
 // ValidateReport 配套 skill / 管理题目用的分流结果。

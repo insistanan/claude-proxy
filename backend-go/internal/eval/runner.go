@@ -81,6 +81,24 @@ func (r *Runner) Start(req StartRunRequest) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
+	// 前端可选单题：非空 ProbeIDs 只保留套件里存在的，按套件顺序过滤。
+	// 空数组维持原行为：跑套件全部题。
+	if len(req.ProbeIDs) > 0 {
+		wanted := make(map[string]struct{}, len(req.ProbeIDs))
+		for _, id := range req.ProbeIDs {
+			wanted[id] = struct{}{}
+		}
+		filtered := make([]Probe, 0, len(probes))
+		for _, probe := range probes {
+			if _, ok := wanted[probe.ID]; ok {
+				filtered = append(filtered, probe)
+			}
+		}
+		probes = filtered
+	}
+	if len(probes) == 0 {
+		return Run{}, fmt.Errorf("套件里没有可选题目，请先给套件加题或取消排除")
+	}
 	if req.Trigger == "" {
 		req.Trigger = TriggerManual
 	}

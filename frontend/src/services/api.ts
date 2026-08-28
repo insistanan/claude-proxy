@@ -217,6 +217,7 @@ export interface ContentSafetySettings {
     enabled: boolean
     mode: ContentSafetyMode
     enabledRules: SensitiveInfoRule[]
+    ipMaskScope: SensitiveInfoIPMaskScope
   }
   credential: {
     enabled: boolean
@@ -237,6 +238,7 @@ export interface ContentSafetySettings {
 
 export type ContentSafetyMode = 'audit' | 'block' | 'mask'
 export type SensitiveInfoRule = 'phone' | 'id_card' | 'email' | 'ip_address'
+export type SensitiveInfoIPMaskScope = 'public' | 'all'
 export type CredentialRule = 'api_key' | 'named_secret' | 'private_key' | 'connection_string' | 'high_entropy'
 export type DangerousCommandRule =
   | 'destructive'
@@ -568,6 +570,8 @@ export interface EvalRun {
   /** channelId → 渠道专属模型覆盖，优先于统一 model */
   channelModels?: Record<string, string>
   thinking?: string
+  /** channelId → 渠道专属思考等级覆盖（off/low/medium/high/max），优先于统一 thinking */
+  channelThinking?: Record<string, string>
   estimatedCalls: number
   skipReason?: string
   error?: string
@@ -575,6 +579,19 @@ export interface EvalRun {
   finishedAt: number
   createdAt: number
   results?: EvalResult[]
+  /** 批次 verdict 聚合计数。ListRuns 带它，历史卡片直接画 mini 条不用再逐条拉 results。 */
+  tally?: EvalRunTally
+}
+
+/** 后端 RunTally 对应：7 个 verdict 计数 + total。 */
+export interface EvalRunTally {
+  pass: number
+  suspect: number
+  fail: number
+  error: number
+  insufficient: number
+  inapplicable: number
+  total: number
 }
 
 export interface EvalWatchConfig {
@@ -586,6 +603,8 @@ export interface EvalWatchConfig {
   /** channelId → 渠道专属模型覆盖，优先于统一 model */
   channelModels?: Record<string, string>
   thinking?: string
+  /** channelId → 渠道专属思考等级覆盖，优先于统一 thinking */
+  channelThinking?: Record<string, string>
   lastRunAt: number
   nextRunAt: number
   lastSkipReason?: string
@@ -608,6 +627,10 @@ export interface EvalStartRunRequest {
   /** channelId → 渠道专属模型覆盖，优先于统一 model */
   channelModels?: Record<string, string>
   thinking?: string
+  /** channelId → 渠道专属思考等级覆盖，优先于统一 thinking */
+  channelThinking?: Record<string, string>
+  /** 非空时只跑这里列出的探针，空则跑套件全部 */
+  probeIds?: string[]
   trigger?: string
 }
 
