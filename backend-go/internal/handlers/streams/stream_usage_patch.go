@@ -115,11 +115,8 @@ func patchUsageFieldsWithLog(usage map[string]interface{}, estimatedInput, estim
 		currentInput := int(v)
 		if currentInput <= 1 && estimatedInput > 1 {
 			// Only fill near-zero missing values, never inflate.
-			// Cap estimate so a buggy caller cannot push 200k into the client meter.
-			safeEstimate := estimatedInput
-			if safeEstimate > 8000 {
-				safeEstimate = 0
-			}
+			// Cap estimate so a buggy caller cannot push the whole long context into the client meter.
+			safeEstimate := utils.SafeEstimatedInputTokens(estimatedInput)
 			if safeEstimate > 1 {
 				usage["input_tokens"] = safeEstimate
 				inputPatched = true
@@ -127,8 +124,9 @@ func patchUsageFieldsWithLog(usage map[string]interface{}, estimatedInput, estim
 		}
 	} else if usage["input_tokens"] == nil {
 		// nil: leave unset or use tiny safe fill only
-		if estimatedInput > 1 && estimatedInput <= 8000 {
-			usage["input_tokens"] = estimatedInput
+		safeEstimate := utils.SafeEstimatedInputTokens(estimatedInput)
+		if safeEstimate > 1 {
+			usage["input_tokens"] = safeEstimate
 			inputPatched = true
 		}
 	}
@@ -260,4 +258,68 @@ func StripCacheFieldsFromClaudeSSE(event string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// sanityCheckMessageStreamInputTokens 用 utils.SanityCheckedInputTokens 校验 message_delta /
+// message_stop 事件里的 input_tokens 是否被上游错报，需要时重建。
+//
+// Anthropic 语义：input_tokens 不含缓存，上游声明的总量 = input + cache_read + cache_creation
+// 各档之和；校正值 = 估算总量 - 上游缓存量，保证客户端 input + cache 之和回到真实规模、
+// 不与保留下来的 cache_read 字段重叠（语义对照与双重计数风险见 utils/usage_sanity.go）。
+//
+// 只改返回的事件字符串；ctx.CollectedUsage 与指标路径一律保持上游原值。
+func sanityCheckMessageStreamInputTokens(event string, requestBody []byte, enableLog bool) (string, bool) {
+	if len(requestBody) == 0 {
+		return event, false
+	}
+	if !strings.Contains(event, "input_tokens") {
+		return event, false
+	}
+	rewritten, changed := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
+		var root map[string]interface{}
+		if err := json.Unmarshal([]byte(payload), &root); err != nil {
+			return "", false
+		}
+		usage, ok := root["usage"].(map[string]interface{})
+		if !ok {
+			return "", false
+		}
+		upstreamInput := 0
+		if v, ok := usage["input_tokens"].(float64); ok {
+			upstreamInput = int(v)
+		}
+		upstreamCached := 0
+		for _, key := range []string{
+			"cache_read_input_tokens",
+			"cache_creation_input_tokens",
+			"cache_creation_5m_input_tokens",
+			"cache_creation_1h_input_tokens",
+		} {
+			if v, ok := usage[key].(float64); ok && v > 0 {
+				upstreamCached += int(v)
+			}
+		}
+		corrected, need := utils.SanityCheckedInputTokens(
+			utils.EstimateRequestTokens(requestBody), upstreamInput, upstreamCached)
+		if !need {
+			return "", false
+		}
+		usage["input_tokens"] = corrected
+		// Anthropic usage 无 total_tokens 字段；若上游带了就同步，避免留下与 input 矛盾的值
+		if outputTokens, ok := usage["output_tokens"].(float64); ok {
+			if _, hasTotal := usage["total_tokens"]; hasTotal {
+				usage["total_tokens"] = corrected + int(outputTokens)
+			}
+		}
+		if enableLog {
+			log.Printf("[Messages-Stream-Token] 上游 input_tokens 错报校正: %d -> %d（本地估算，仅改下发值）",
+				upstreamInput, corrected)
+		}
+		encoded, err := json.Marshal(root)
+		if err != nil {
+			return "", false
+		}
+		return string(encoded), true
+	})
+	return rewritten, changed
 }

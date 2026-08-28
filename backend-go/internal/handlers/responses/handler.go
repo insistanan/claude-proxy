@@ -65,8 +65,8 @@ func Handler(
 			if len(body) > 0 {
 				_ = json.Unmarshal(body, &responsesReq)
 			}
-			userID, _ := c.Get(utils.ContextKeyConversationUserID)
-			conversationID, _ := userID.(string)
+			conversationValue, _ := c.Get(utils.ContextKeyConversationUserID)
+			conversationID, _ := conversationValue.(string)
 			return handleSuccess(c, resp, provider, up.ServiceType, envCfg, sessionManager, startTime, &responsesReq, body, channelScheduler, conversationID)
 		},
 	}
@@ -149,16 +149,39 @@ func handleSuccess(
 		return nil, proxycore.NewRetrySameCandidateError(ErrEmptyStreamResponse)
 	}
 
-	// Token 补全逻辑
+	// 先把用于指标的 usage 固化成上游原值快照——后续客户端补全/剥离/校正不应影响
+	// 计费、熔断和性能画像使用的上游统计。
+	metricsUsage := types.Usage{
+		InputTokens:                responsesResp.Usage.InputTokens,
+		OutputTokens:               responsesResp.Usage.OutputTokens,
+		CacheCreationInputTokens:   responsesResp.Usage.CacheCreationInputTokens,
+		CacheReadInputTokens:       responsesResp.Usage.CacheReadInputTokens,
+		CacheCreation5mInputTokens: responsesResp.Usage.CacheCreation5mInputTokens,
+		CacheCreation1hInputTokens: responsesResp.Usage.CacheCreation1hInputTokens,
+		CacheTTL:                   responsesResp.Usage.CacheTTL,
+	}
+	// 会话清理只使用上游原始 total_tokens；如果上游没有提供 total_tokens，
+	// 在客户端副本补全后再采用 input+output 的有限回退。严重错报的校正值只
+	// 服务于客户端压缩判断，不写入本地会话累计，避免启发式估算污染持久化状态。
+	sessionTokens := responsesResp.Usage.TotalTokens
+	// Token 补全逻辑只作用于客户端响应副本。
 	patchResponsesUsage(responsesResp, originalRequestJSON, envCfg)
+	if sessionTokens <= 0 {
+		sessionTokens = responsesResp.Usage.TotalTokens
+		if sessionTokens <= 0 {
+			sessionTokens = responsesResp.Usage.InputTokens + responsesResp.Usage.OutputTokens
+		}
+	}
 	// 透传分支剥离累积式缓存统计（同 stream.go 的 stripAccumulatedCacheFromCompletedEvent）：
 	// grok-4.6 等 OpenAI 兼容上游的 cached_tokens 是跨请求累积命中量，原样下发会让
-	// Cursor 误判上下文一直满、反复触发压缩。Claude 原生缓存不受影响（函数内判断保留）。
+	// Cursor 误判上下文一直满、反复触发压缩。Claude 原生缓存不受影响（函数内判断保留）
 	if upstreamType == converters.ResponsesUpstreamResponses {
 		stripAccumulatedCacheFromResponse(responsesResp)
 		// 剥离缓存字段后 input_tokens 成了客户端判断上下文占用的唯一依据，
-		// 校正上游对长上下文的少报值，否则 Cursor 会误判上下文为空、永不触发压缩。
-		correctUnderreportedInputTokensInResponse(responsesResp, originalRequestJSON, envCfg)
+		// 校正上游对长上下文的错报值，否则 Cursor 会误判上下文为空、永不触发压缩。
+		clientUsage := responsesResp.Usage
+		correctUnderreportedInputTokensInResponse(responsesResp, &clientUsage, originalRequestJSON, envCfg)
+		responsesResp.Usage = clientUsage
 	}
 	responseBody, err := utils.MarshalJSONNoEscape(responsesResp)
 	if err != nil {
@@ -178,7 +201,7 @@ func handleSuccess(
 			turnItems := make([]types.ResponsesItem, 0, len(inputItems)+len(responsesResp.Output))
 			turnItems = append(turnItems, inputItems...)
 			turnItems = append(turnItems, responsesResp.Output...)
-			if err := sessionManager.CommitTurn(sess.ID, turnItems, responsesResp.Usage.TotalTokens, utils.DetectImageContent(originalRequestJSON), responsesResp.ID); err != nil {
+			if err := sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens, utils.DetectImageContent(originalRequestJSON), responsesResp.ID); err != nil {
 				log.Printf("[Session] 持久化 Responses 会话轮次失败: %v", err)
 			}
 
@@ -195,16 +218,8 @@ func handleSuccess(
 	proxycore.MarkRequestLogFirstToken(c)
 	c.JSON(200, responsesResp)
 
-	// 返回 usage 数据用于指标记录
-	return &types.Usage{
-		InputTokens:                responsesResp.Usage.InputTokens,
-		OutputTokens:               responsesResp.Usage.OutputTokens,
-		CacheCreationInputTokens:   responsesResp.Usage.CacheCreationInputTokens,
-		CacheReadInputTokens:       responsesResp.Usage.CacheReadInputTokens,
-		CacheCreation5mInputTokens: responsesResp.Usage.CacheCreation5mInputTokens,
-		CacheCreation1hInputTokens: responsesResp.Usage.CacheCreation1hInputTokens,
-		CacheTTL:                   responsesResp.Usage.CacheTTL,
-	}, nil
+	// 返回 usage 数据用于指标记录（上游原值快照，不受下发侧校正影响）
+	return &metricsUsage, nil
 }
 
 func handleResponsesImagePassthrough(

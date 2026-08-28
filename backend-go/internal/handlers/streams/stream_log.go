@@ -1,5 +1,5 @@
 // 本文件负责流式响应结束时的收尾：logStreamCompletion 输出完成/事件统计日志、
-// 触发隐式缓存推断，并把 Context 累积的 usage 组装成 *types.Usage 返回；
+// 触发隐式缓存推断，并把上游原始 usage 组装成 *types.Usage 返回；
 // logPartialResponse 处理上游中断时的部分内容日志；logSynthesizedContent 打印
 // StreamSynthesizer 的合成文本（合成不可用时回退打印原始 LogBuffer）。
 package streams
@@ -36,23 +36,24 @@ func logStreamCompletion(ctx *Context, envCfg *config.EnvConfig, startTime time.
 	// 推断隐式缓存读取
 	inferImplicitCacheRead(ctx, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"))
 
-	// 将累积的 usage 数据转换为 *types.Usage
+	// 指标使用上游原始快照。CollectedUsage 可能已经包含客户端补全或隐式缓存推断，
+	// 只能用于客户端事件处理，不能污染计费、熔断和性能画像。
 	var usage *types.Usage
-	hasUsageData := ctx.CollectedUsage.InputTokens > 0 ||
-		ctx.CollectedUsage.OutputTokens > 0 ||
-		ctx.CollectedUsage.CacheCreationInputTokens > 0 ||
-		ctx.CollectedUsage.CacheReadInputTokens > 0 ||
-		ctx.CollectedUsage.CacheCreation5mInputTokens > 0 ||
-		ctx.CollectedUsage.CacheCreation1hInputTokens > 0
+	hasUsageData := ctx.UpstreamUsage.InputTokens > 0 ||
+		ctx.UpstreamUsage.OutputTokens > 0 ||
+		ctx.UpstreamUsage.CacheCreationInputTokens > 0 ||
+		ctx.UpstreamUsage.CacheReadInputTokens > 0 ||
+		ctx.UpstreamUsage.CacheCreation5mInputTokens > 0 ||
+		ctx.UpstreamUsage.CacheCreation1hInputTokens > 0
 	if hasUsageData {
 		usage = &types.Usage{
-			InputTokens:                ctx.CollectedUsage.InputTokens,
-			OutputTokens:               ctx.CollectedUsage.OutputTokens,
-			CacheCreationInputTokens:   ctx.CollectedUsage.CacheCreationInputTokens,
-			CacheReadInputTokens:       ctx.CollectedUsage.CacheReadInputTokens,
-			CacheCreation5mInputTokens: ctx.CollectedUsage.CacheCreation5mInputTokens,
-			CacheCreation1hInputTokens: ctx.CollectedUsage.CacheCreation1hInputTokens,
-			CacheTTL:                   ctx.CollectedUsage.CacheTTL,
+			InputTokens:                ctx.UpstreamUsage.InputTokens,
+			OutputTokens:               ctx.UpstreamUsage.OutputTokens,
+			CacheCreationInputTokens:   ctx.UpstreamUsage.CacheCreationInputTokens,
+			CacheReadInputTokens:       ctx.UpstreamUsage.CacheReadInputTokens,
+			CacheCreation5mInputTokens: ctx.UpstreamUsage.CacheCreation5mInputTokens,
+			CacheCreation1hInputTokens: ctx.UpstreamUsage.CacheCreation1hInputTokens,
+			CacheTTL:                   ctx.UpstreamUsage.CacheTTL,
 		}
 	}
 	return usage

@@ -37,8 +37,10 @@ type Context struct {
 	ClientGone       bool
 	HasUsage         bool
 	NeedTokenPatch   bool
-	// 累积的 token 统计
+	// 客户端出口使用的 token 统计，允许做安全补全和缓存字段整理。
 	CollectedUsage CollectedUsageData
+	// 上游原始 token 快照，仅用于指标与调用方统计，不接受客户端出口修补。
+	UpstreamUsage CollectedUsageData
 	// 用于日志的"续写前缀"（不参与真实转发，只影响 Stream-Synth 输出可读性）
 	LogPrefillText string
 	// SSE 事件调试追踪
@@ -330,6 +332,8 @@ func ProcessStreamEvent(
 		if IsMessageStartEvent(event) && usageData.InputTokens > 0 {
 			usageData.InputTokens = 0
 		}
+		// 保留一份未经过客户端补全/缓存推断的上游快照。
+		updateCollectedUsage(&ctx.UpstreamUsage, usageData)
 		// 累积收集 usage 数据
 		updateCollectedUsage(&ctx.CollectedUsage, usageData)
 	}
@@ -454,6 +458,22 @@ func ProcessStreamEvent(
 	// can correctly perceive cached context size and trigger conversation compact.
 	// Admin metrics already collected all cache fields via CheckEventUsageStatus above.
 	eventToSend = StripCacheFieldsFromClaudeSSE(eventToSend)
+
+	// 上游 usage 合理性校验：中转渠道会双向错报（实测 448KB 请求报 26032、压缩后 24KB 请求
+	// 报 209736），而 messages+claude 上游是全代理唯一完全不校验、原样透传的路径。客户端
+	// （Cursor/Codex/OpenCode）全拿这个数字决定何时压缩上下文，假值直接表现为
+	// 「压缩后立刻又要压缩」或「撞满上限也不压缩」。与估算相差 2 倍且量级 ≥20000 时，
+	// 用估算总量重建下发的 input_tokens；cache_read 保持上游值不动（校正值已扣除缓存）。
+	// 只改客户端事件，ctx.CollectedUsage 保持上游原值用于指标/计费。
+	//
+	// 历史约定变更：stream_usage_patch.go 曾约定「绝不用更大的估算覆盖真实正数」，那是防
+	// 「全量估算塞给客户端」的无条件覆盖；本校正只在数量级级错报（≥2 倍）时介入，
+	// 两种风险同时挡住。实测数据与外部佐证见 utils/usage_sanity.go。
+	if IsMessageDeltaEvent(eventToSend) || IsMessageStopEvent(eventToSend) {
+		if corrected, ok := sanityCheckMessageStreamInputTokens(eventToSend, requestBody, envCfg.EnableResponseLogs); ok {
+			eventToSend = corrected
+		}
+	}
 
 	// 转发给客户端
 	if !ctx.ClientGone {

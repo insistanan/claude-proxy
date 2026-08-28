@@ -163,6 +163,7 @@ func handleStreamSuccess(
 	var outputTextBuffer bytes.Buffer
 	const maxOutputBufferSize = 1024 * 1024 // 1MB 上限，防止内存溢出
 	var collectedUsage responsesStreamUsage
+	var upstreamUsage responsesStreamUsage
 	hasUsage := false
 	needTokenPatch := false
 	clientGone := false
@@ -262,6 +263,7 @@ func handleStreamSuccess(
 					}
 				}
 				updateResponsesStreamUsage(&collectedUsage, usageData)
+				updateResponsesStreamUsage(&upstreamUsage, usageData)
 			}
 
 			// 在 response.completed 事件前注入/修补 usage
@@ -289,7 +291,7 @@ func handleStreamSuccess(
 				if upstreamType == converters.ResponsesUpstreamResponses {
 					eventToSend = stripAccumulatedCacheFromCompletedEvent(eventToSend)
 					// 剥离缓存字段后 input_tokens 成了客户端判断上下文占用的唯一依据，
-					// 校正上游对长上下文的少报值，否则 Cursor 会误判上下文为空、永不触发压缩。
+					// 校正上游对长上下文的错报值，否则 Cursor 会误判上下文为空、永不触发压缩。
 					eventToSend = correctUnderreportedInputTokensInCompletedEvent(eventToSend, originalRequestJSON, envCfg)
 				}
 			}
@@ -380,12 +382,16 @@ func handleStreamSuccess(
 		log.Printf("[Responses-Stream] Responses 流式响应完成: %dms", responseTime)
 
 		// 输出 Token 统计
-		if hasUsage || collectedUsage.InputTokens > 0 || collectedUsage.OutputTokens > 0 {
+		loggedUsage := upstreamUsage
+		if !hasUsage {
+			loggedUsage = collectedUsage
+		}
+		if hasUsage || loggedUsage.InputTokens > 0 || loggedUsage.OutputTokens > 0 {
 			log.Printf("[Responses-Stream-Token] InputTokens=%d, OutputTokens=%d, CacheCreation=%d, CacheRead=%d, CacheCreation5m=%d, CacheCreation1h=%d, CacheTTL=%s",
-				collectedUsage.InputTokens, collectedUsage.OutputTokens,
-				collectedUsage.CacheCreationInputTokens, collectedUsage.CacheReadInputTokens,
-				collectedUsage.CacheCreation5mInputTokens, collectedUsage.CacheCreation1hInputTokens,
-				collectedUsage.CacheTTL)
+				loggedUsage.InputTokens, loggedUsage.OutputTokens,
+				loggedUsage.CacheCreationInputTokens, loggedUsage.CacheReadInputTokens,
+				loggedUsage.CacheCreation5mInputTokens, loggedUsage.CacheCreation1hInputTokens,
+				loggedUsage.CacheTTL)
 		}
 
 		if envCfg.IsDevelopment() {
@@ -416,7 +422,15 @@ func handleStreamSuccess(
 					Content: outputText,
 				})
 			}
-			if err := sessionManager.CommitTurn(sess.ID, turnItems, collectedUsage.TotalTokens, utils.DetectImageContent(originalRequestJSON), streamResponseID); err != nil {
+			sessionTokens := upstreamUsage.TotalTokens
+			if sessionTokens <= 0 {
+				if hasUsage {
+					sessionTokens = upstreamUsage.InputTokens + upstreamUsage.OutputTokens
+				} else {
+					sessionTokens = collectedUsage.TotalTokens
+				}
+			}
+			if err := sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens, utils.DetectImageContent(originalRequestJSON), streamResponseID); err != nil {
 				log.Printf("[Session] 持久化 Responses 流式会话轮次失败: %v", err)
 			}
 		} else {
@@ -425,15 +439,20 @@ func handleStreamSuccess(
 	}
 	proxycore.AssociateConversationExternalID(channelScheduler, conversationID, scheduler.ChannelKindResponses, streamResponseID)
 
+	// 返回上游 usage 快照；仅在上游完全没有 usage 时返回受限的本地补全值。
+	metricsUsage := upstreamUsage
+	if !hasUsage {
+		metricsUsage = collectedUsage
+	}
 	// 返回收集到的 usage 数据
 	return &types.Usage{
-		InputTokens:                collectedUsage.InputTokens,
-		OutputTokens:               collectedUsage.OutputTokens,
-		CacheCreationInputTokens:   collectedUsage.CacheCreationInputTokens,
-		CacheReadInputTokens:       collectedUsage.CacheReadInputTokens,
-		CacheCreation5mInputTokens: collectedUsage.CacheCreation5mInputTokens,
-		CacheCreation1hInputTokens: collectedUsage.CacheCreation1hInputTokens,
-		CacheTTL:                   collectedUsage.CacheTTL,
+		InputTokens:                metricsUsage.InputTokens,
+		OutputTokens:               metricsUsage.OutputTokens,
+		CacheCreationInputTokens:   metricsUsage.CacheCreationInputTokens,
+		CacheReadInputTokens:       metricsUsage.CacheReadInputTokens,
+		CacheCreation5mInputTokens: metricsUsage.CacheCreation5mInputTokens,
+		CacheCreation1hInputTokens: metricsUsage.CacheCreation1hInputTokens,
+		CacheTTL:                   metricsUsage.CacheTTL,
 	}, nil
 }
 

@@ -5,15 +5,19 @@ package streams
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
 func TestStripCacheFieldsFromClaudeSSE(t *testing.T) {
@@ -436,4 +440,114 @@ func TestIsClientDisconnectError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// makeLargeMessagesRequestBody 造一个长上下文 messages 请求体，保证本地估算超过校验下限。
+func makeLargeMessagesRequestBody(t *testing.T) []byte {
+	t.Helper()
+	body := []byte(`{"model":"claude-opus-4-6","messages":[{"role":"user","content":"` + strings.Repeat("abcdefgh ", 17500) + `"}]}`)
+	if estimated := utils.EstimateRequestTokens(body); estimated < utils.UsageSanityMinTokensForTest {
+		t.Fatalf("测试请求体估算 %d 未达校验下限 %d", estimated, utils.UsageSanityMinTokensForTest)
+	}
+	return body
+}
+
+// TestSanityCheckMessageStreamInputTokens 锁定 messages 流式出口的 usage 合理性校验契约。
+// 与 utils.SanityCheckedInputTokens 共用同一套判定，这里只验证 SSE 层改写不破坏结构、
+// 缓存字段不被覆盖、客户端可读字段的语义与 responses 侧保持一致。
+func TestSanityCheckMessageStreamInputTokens(t *testing.T) {
+	largeBody := makeLargeMessagesRequestBody(t)
+	estimated := utils.EstimateRequestTokens(largeBody)
+
+	t.Run("少报: 校正后 input 回到估算量级", func(t *testing.T) {
+		event := "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":7723,\"output_tokens\":188,\"cache_read_input_tokens\":0}}\n\n"
+		out, ok := sanityCheckMessageStreamInputTokens(event, largeBody, false)
+		if !ok {
+			t.Fatalf("应触发校正")
+		}
+		usage := extractStreamUsage(t, out)
+		if got, _ := usage["input_tokens"].(float64); int(got) != estimated {
+			t.Errorf("input_tokens 应校正为 %d, got %v", estimated, usage["input_tokens"])
+		}
+		if got, _ := usage["output_tokens"].(float64); int(got) != 188 {
+			t.Errorf("output_tokens 不应被改动: %v", usage["output_tokens"])
+		}
+		if got, _ := usage["cache_read_input_tokens"].(float64); int(got) != 0 {
+			t.Errorf("cache_read_input_tokens 不应被改动: %v", usage["cache_read_input_tokens"])
+		}
+	})
+
+	t.Run("多报: 压缩后假大值应被压回估算量级", func(t *testing.T) {
+		smallBody := []byte(`{"model":"claude-opus-4-6","messages":[{"role":"user","content":"summary + new"}]}`)
+		event := "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":209736,\"output_tokens\":188}}\n\n"
+		out, ok := sanityCheckMessageStreamInputTokens(event, smallBody, false)
+		if !ok {
+			t.Fatalf("多报场景应触发校正")
+		}
+		usage := extractStreamUsage(t, out)
+		if got, _ := usage["input_tokens"].(float64); int(got) > 20000 {
+			t.Errorf("假大值应被压回估算量级, got %v", usage["input_tokens"])
+		}
+	})
+
+	t.Run("上游回报可信: 原样返回", func(t *testing.T) {
+		event := "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":" + strconv.Itoa(estimated) + ",\"output_tokens\":188}}\n\n"
+		if out, ok := sanityCheckMessageStreamInputTokens(event, largeBody, false); ok || out != event {
+			t.Fatalf("可信回报应原样返回 (changed=%v)", ok)
+		}
+	})
+
+	t.Run("Anthropic 语义分开报缓存: 不得误判", func(t *testing.T) {
+		cacheRead := estimated - 1000
+		event := "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":271,\"output_tokens\":188,\"cache_read_input_tokens\":" + strconv.Itoa(cacheRead) + ",\"cache_creation_input_tokens\":500}}\n\n"
+		if out, ok := sanityCheckMessageStreamInputTokens(event, largeBody, false); ok || out != event {
+			t.Fatalf("Claude 语义分开报缓存应原样返回 (changed=%v)", ok)
+		}
+	})
+
+	t.Run("上游确实少报且有缓存: 校正值扣掉缓存", func(t *testing.T) {
+		event := "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":100,\"output_tokens\":188,\"cache_read_input_tokens\":1000,\"cache_creation_input_tokens\":0}}\n\n"
+		out, ok := sanityCheckMessageStreamInputTokens(event, largeBody, false)
+		if !ok {
+			t.Fatalf("应触发校正")
+		}
+		usage := extractStreamUsage(t, out)
+		want := estimated - 1000
+		if got, _ := usage["input_tokens"].(float64); int(got) != want {
+			t.Errorf("校正值应扣掉缓存量: got %d, want %d", int(got), want)
+		}
+		if got, _ := usage["cache_read_input_tokens"].(float64); int(got) != 1000 {
+			t.Errorf("cache_read 字段不应被改动: %v", usage["cache_read_input_tokens"])
+		}
+		// input + cache 之和回到真实上下文规模，不双倍
+		if int(usage["input_tokens"].(float64))+int(usage["cache_read_input_tokens"].(float64)) != estimated {
+			t.Errorf("input+cache 应等于估算总量 %d", estimated)
+		}
+	})
+
+	t.Run("不带 input_tokens: 原样返回", func(t *testing.T) {
+		event := "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":188}}\n\n"
+		if out, ok := sanityCheckMessageStreamInputTokens(event, largeBody, false); ok || out != event {
+			t.Fatalf("无 input_tokens 时不应触发 (changed=%v)", ok)
+		}
+	})
+}
+
+func extractStreamUsage(t *testing.T, event string) map[string]interface{} {
+	t.Helper()
+	for _, line := range strings.Split(event, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimPrefix(strings.TrimPrefix(line, "data: "), "data:")
+		var root map[string]interface{}
+		if err := json.Unmarshal([]byte(payload), &root); err != nil {
+			continue
+		}
+		if u, ok := root["usage"].(map[string]interface{}); ok {
+			return u
+		}
+	}
+	t.Fatalf("未找到 usage 字段: %q", event)
+	return nil
 }

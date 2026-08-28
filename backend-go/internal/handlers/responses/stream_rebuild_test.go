@@ -268,8 +268,8 @@ func makeLargeResponsesRequestBody(t *testing.T) []byte {
 	if err != nil {
 		t.Fatalf("构造请求体失败: %v", err)
 	}
-	if estimated := utils.EstimateResponsesRequestTokens(body); estimated < minInputTokensForCorrection {
-		t.Fatalf("测试请求体估算 %d 未达校正下限 %d，需调大填充", estimated, minInputTokensForCorrection)
+	if estimated := utils.EstimateResponsesRequestTokens(body); estimated < utils.UsageSanityMinTokensForTest {
+		t.Fatalf("测试请求体估算 %d 未达校正下限 %d，需调大填充", estimated, utils.UsageSanityMinTokensForTest)
 	}
 	return body
 }
@@ -303,6 +303,20 @@ func TestCorrectUnderreportedInputTokens(t *testing.T) {
 		assertSameLineStructure(t, event, out)
 	})
 
+	t.Run("流式: 上游多报也校正（压缩后假大值）", func(t *testing.T) {
+		// 实测案例：压缩后 24KB 请求被上游报成 209736，客户端据此再次触发压缩
+		smallBody := []byte(`{"model":"grok-4.6","input":"summary + new question"}`)
+		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":209736,\"output_tokens\":188,\"total_tokens\":209924}}}\n\n"
+		out := correctUnderreportedInputTokensInCompletedEvent(event, smallBody, envCfg)
+		if out == event {
+			t.Fatalf("多报的假大值应被校正")
+		}
+		usage := extractCompletedPayload(t, out)["response"].(map[string]interface{})["usage"].(map[string]interface{})
+		if got, _ := usage["input_tokens"].(float64); int(got) > 20000 {
+			t.Errorf("假大值应被压回估算量级, got %v", usage["input_tokens"])
+		}
+	})
+
 	t.Run("流式: 上游回报可信则原样返回", func(t *testing.T) {
 		// 上游报数与本地估算同量级（未达 2 倍差），不得改动
 		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":" +
@@ -331,19 +345,27 @@ func TestCorrectUnderreportedInputTokens(t *testing.T) {
 		}
 	})
 
-	t.Run("非流式: 上游严重少报则校正并同步 total", func(t *testing.T) {
+	t.Run("非流式: 上游严重少报则校正副本并同步 total", func(t *testing.T) {
 		resp := &types.ResponsesResponse{
 			Usage: types.ResponsesUsage{InputTokens: 7723, OutputTokens: 188, TotalTokens: 7911},
 		}
-		correctUnderreportedInputTokensInResponse(resp, largeBody, envCfg)
-		if resp.Usage.InputTokens != estimated {
-			t.Errorf("InputTokens 应校正为 %d, got %d", estimated, resp.Usage.InputTokens)
+		clientUsage := resp.Usage
+		correctUnderreportedInputTokensInResponse(resp, &clientUsage, largeBody, envCfg)
+		if clientUsage.InputTokens != estimated {
+			t.Errorf("客户端副本 InputTokens 应校正为 %d, got %d", estimated, clientUsage.InputTokens)
 		}
-		if resp.Usage.TotalTokens != estimated+188 {
-			t.Errorf("TotalTokens 应同步为 %d, got %d", estimated+188, resp.Usage.TotalTokens)
+		if clientUsage.TotalTokens != estimated+188 {
+			t.Errorf("TotalTokens 应同步为 %d, got %d", estimated+188, clientUsage.TotalTokens)
 		}
-		if resp.Usage.OutputTokens != 188 {
-			t.Errorf("OutputTokens 不应被改动: %d", resp.Usage.OutputTokens)
+		// 副本隔离契约：原件保持上游原值，指标/计费不受校正影响
+		if resp.Usage.InputTokens != 7723 {
+			t.Errorf("原件 InputTokens 不应被改动: got %d, want 7723", resp.Usage.InputTokens)
+		}
+		if resp.Usage.TotalTokens != 7911 {
+			t.Errorf("原件 TotalTokens 不应被改动: got %d, want 7911", resp.Usage.TotalTokens)
+		}
+		if clientUsage.OutputTokens != 188 {
+			t.Errorf("OutputTokens 不应被改动: %d", clientUsage.OutputTokens)
 		}
 	})
 
@@ -351,12 +373,13 @@ func TestCorrectUnderreportedInputTokens(t *testing.T) {
 		resp := &types.ResponsesResponse{
 			Usage: types.ResponsesUsage{InputTokens: estimated, OutputTokens: 188, TotalTokens: estimated + 188},
 		}
-		correctUnderreportedInputTokensInResponse(resp, largeBody, envCfg)
-		if resp.Usage.InputTokens != estimated {
-			t.Errorf("可信回报不应被改动: got %d, want %d", resp.Usage.InputTokens, estimated)
+		clientUsage := resp.Usage
+		correctUnderreportedInputTokensInResponse(resp, &clientUsage, largeBody, envCfg)
+		if clientUsage.InputTokens != estimated {
+			t.Errorf("可信回报不应被改动: got %d, want %d", clientUsage.InputTokens, estimated)
 		}
-		if resp.Usage.TotalTokens != estimated+188 {
-			t.Errorf("TotalTokens 不应被改动: got %d", resp.Usage.TotalTokens)
+		if clientUsage.TotalTokens != estimated+188 {
+			t.Errorf("TotalTokens 不应被改动: got %d", clientUsage.TotalTokens)
 		}
 	})
 
@@ -383,18 +406,22 @@ func TestCorrectUnderreportedInputTokens(t *testing.T) {
 				CacheReadInputTokens: 1000,
 			},
 		}
-		correctUnderreportedInputTokensInResponse(resp, largeBody, envCfg)
+		clientUsage := resp.Usage
+		correctUnderreportedInputTokensInResponse(resp, &clientUsage, largeBody, envCfg)
 		want := estimated - 1000
-		if resp.Usage.InputTokens != want {
-			t.Errorf("校正值应扣掉缓存量: got %d, want %d", resp.Usage.InputTokens, want)
+		if clientUsage.InputTokens != want {
+			t.Errorf("校正值应扣掉缓存量: got %d, want %d", clientUsage.InputTokens, want)
 		}
-		if resp.Usage.CacheReadInputTokens != 1000 {
-			t.Errorf("缓存字段不应被改动: %d", resp.Usage.CacheReadInputTokens)
+		if clientUsage.CacheReadInputTokens != 1000 {
+			t.Errorf("缓存字段不应被改动: %d", clientUsage.CacheReadInputTokens)
 		}
 		// input + cache 之和回到真实上下文规模，不双倍
-		if resp.Usage.InputTokens+resp.Usage.CacheReadInputTokens != estimated {
+		if clientUsage.InputTokens+clientUsage.CacheReadInputTokens != estimated {
 			t.Errorf("input+cache 应等于估算总量 %d, got %d",
-				estimated, resp.Usage.InputTokens+resp.Usage.CacheReadInputTokens)
+				estimated, clientUsage.InputTokens+clientUsage.CacheReadInputTokens)
+		}
+		if resp.Usage.InputTokens != 100 {
+			t.Errorf("原件 InputTokens 不应被改动: got %d, want 100", resp.Usage.InputTokens)
 		}
 	})
 }
