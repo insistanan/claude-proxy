@@ -108,6 +108,24 @@ export const evalFormatTime = (unixSeconds?: number): string => {
   return new Date(unixSeconds * 1000).toLocaleString()
 }
 
+/**
+ * 距今多久之前，给渠道行这种「一眼看新鲜度」的紧凑位置用。
+ * 超过 30 天退回绝对时间：那时候"137 天前"已经不比日期更好读了。
+ */
+export const evalAgoLabel = (unixSeconds?: number): string => {
+  if (!unixSeconds) return '—'
+  const seconds = Math.floor(Date.now() / 1000) - unixSeconds
+  if (seconds < 0) return '刚刚'
+  if (seconds < 60) return '刚刚'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  if (days <= 30) return `${days} 天前`
+  return evalFormatTime(unixSeconds)
+}
+
 /** 批次耗时：起止秒级时间戳差，返回人读的「12 秒 / 3 分 5 秒 / 1 小时 2 分」。 */
 export const evalDurationLabel = (startedAt?: number, finishedAt?: number): string => {
   if (!startedAt) return '—'

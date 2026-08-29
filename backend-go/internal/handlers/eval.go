@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,8 +195,30 @@ func (a *EvalAPI) StartRun(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"run": run})
 }
 
+// 评测历史列表的取数上限。默认给页面够用的条数；渠道深链要看某个渠道的完整历史，
+// 会显式带上更大的 limit，但仍然封顶，避免一次把整库批次全查出来。
+const (
+	evalRunsDefaultLimit = 30
+	evalRunsMaxLimit     = 200
+)
+
 func (a *EvalAPI) ListRuns(c *gin.Context) {
-	runs, err := a.service.Store.ListRuns(30)
+	limit := evalRunsDefaultLimit
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit 必须是正整数"})
+			return
+		}
+		if parsed > evalRunsMaxLimit {
+			parsed = evalRunsMaxLimit
+		}
+		limit = parsed
+	}
+
+	// channel 为渠道稳定 UUID（评测侧一律用它，不是 channelIndex）。
+	channelID := strings.TrimSpace(c.Query("channel"))
+	runs, err := a.service.Store.ListRuns(channelID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

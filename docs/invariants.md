@@ -33,6 +33,8 @@
 - 渠道 API：总是 走 `services/api.ts` 的 `channelApiByType` 工厂；绝不 在组件里拼接裸 fetch 调后端。
 - 评测 API：走 `services/api.ts` 的 `api.*Eval*` 方法；`/eval` 页用 `channelApiByType` 拉四协议渠道，绝不 用当前 tab 的 `currentChannelsData`。
 - 上游内容渲染：上游返回的 SVG / HTML 总是 当文本插值，或经 `evalSvgPreviewUrl` 走 `<img src="data:...">`；绝不 `v-html`。
+- 渠道行信息位：模型映射、评测结论这类必须一眼看到的信息，总是 放在 `.channel-row-meta` 副行并保持 `flex: 0 0 auto`；绝不 塞回主行的名称列——那是 grid 的 `minmax(140px, 1fr)` 单元格，`v-chip` 默认可收缩，宽度不够时文字被压成 0 宽只剩一圈边框，**既不报错也看不出内容**（曾经三项功能都在、用户却以为没做）。
+- 指标条语义色：`alarm-breathe`（error 色急促呼吸）+ 警示斜纹总是 只给"故障"档用，即成功率低；缓存命中率低只是省得少，总是 走 `fill-glow-breathe`（currentColor 慢呼吸）。缓存条与成功率条共用 `high/medium/low` 档位类名，覆盖规则总是 写在成功率档位之后并带 `.cache-mmb-fill` 三类特异性；绝不 只靠特异性不看顺序（伪元素上的 `display: none` / `animation-duration` 会被同特异性的后来者盖回去）。
 
 ## 完成定义（每个任务，全部满足才算完）
 

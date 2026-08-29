@@ -1623,8 +1623,16 @@ class ApiService {
     return this.request('/eval/runs', { method: 'POST', body: JSON.stringify(payload) })
   }
 
-  async listEvalRuns(): Promise<{ runs: EvalRun[]; busy: boolean; currentRunId: string }> {
-    return this.request('/eval/runs')
+  /**
+   * 评测批次历史。channelId 为渠道稳定 UUID：渠道行深链进来时按渠道过滤，
+   * 否则该渠道的历史会被全局最近 N 条挤掉（后端 limit 默认 30、上限 200）。
+   */
+  async listEvalRuns(options?: { channelId?: string; limit?: number }): Promise<{ runs: EvalRun[]; busy: boolean; currentRunId: string }> {
+    const params = new URLSearchParams()
+    if (options?.channelId) params.set('channel', options.channelId)
+    if (options?.limit) params.set('limit', String(options.limit))
+    const query = params.toString()
+    return this.request(`/eval/runs${query ? `?${query}` : ''}`)
   }
 
   async getEvalRun(id: string): Promise<{ run: EvalRun }> {

@@ -105,21 +105,6 @@
                 @keydown.enter.stop="$emit('edit', element)"
                 @keydown.space.stop="$emit('edit', element)"
               >{{ element.name }}</span>
-              <v-chip
-                v-if="evalChipFor(element)"
-                size="small"
-                :color="evalChipFor(element)!.color"
-                :title="evalChipFor(element)!.tooltip"
-                variant="tonal"
-                class="ml-2 eval-result-chip"
-                :aria-label="`查看 ${element.name} 的历史评测`"
-                @click.stop="openEvalForChannel(element)"
-              >
-                <v-icon start size="14">
-                  {{ evalChipFor(element)!.watching ? 'mdi-clock-outline' : 'mdi-clipboard-check-outline' }}
-                </v-icon>
-                评测 · {{ evalChipFor(element)!.label }}
-              </v-chip>
               <!-- 促销期标识 -->
               <v-chip
                 v-if="isInPromotion(element)"
@@ -178,34 +163,6 @@
                 <v-icon size="14">mdi-open-in-new</v-icon>
               </v-btn>
               <span class="text-caption text-medium-emphasis ml-2">{{ element.serviceType }}</span>
-              <v-tooltip
-                v-if="formatChannelModelPreview(element)"
-                location="top"
-                :open-delay="200"
-                :open-on-focus="false"
-              >
-                <template #activator="{ props: tooltipProps }">
-                  <v-chip
-                    v-bind="tooltipProps"
-                    size="small"
-                    color="secondary"
-                    variant="tonal"
-                    class="ml-2 model-mapping-chip model-mapping-chip--prominent"
-                    :aria-label="`模型映射：${formatChannelModelPreview(element)}`"
-                  >
-                    <v-icon start size="14">mdi-swap-horizontal</v-icon>
-                    <span class="model-mapping-label">映射</span>
-                    <span class="model-mapping-preview">{{ formatChannelModelPreview(element) }}</span>
-                  </v-chip>
-                </template>
-                <div class="model-mapping-tooltip">
-                  <div class="text-caption font-weight-bold mb-1">模型映射</div>
-                  <div v-for="(line, idx) in formatModelMappingFullLines(element)" :key="idx" class="model-mapping-line">
-                    {{ line }}
-                  </div>
-                </div>
-              </v-tooltip>
-              <span v-if="element.description" class="text-caption text-disabled ml-3 channel-description">{{ element.description }}</span>
               <!-- 展开图标 -->
               <v-icon
                 size="x-small"
@@ -223,8 +180,9 @@
                     <div v-bind="tooltipProps" class="metrics-visual">
                       <!-- 15分钟有请求时显示指标条，否则显示 -- -->
                       <template v-if="get15mStats(element.index)?.requestCount">
-                        <!-- 成功率条形图 -->
+                        <!-- 成功率条 -->
                         <div class="mini-metric-bar">
+                          <span class="metric-bar-label">成功</span>
                           <div class="mmb-track">
                             <div
                               class="mmb-fill"
@@ -245,13 +203,13 @@
                             {{ get15mStats(element.index)?.successRate?.toFixed(0) }}%
                           </span>
                         </div>
-                        <!-- 缓存命中率：单独成条，避免被请求数文字淹没 -->
+                        <!-- 缓存命中率条：与成功率同规格，低命中只是省得少，不按故障报警 -->
                         <div
                           class="mini-metric-bar cache-mini-metric-bar"
                           :class="{ 'is-unavailable': !shouldShowCacheHitRate(get15mStats(element.index)) }"
                         >
                           <span class="metric-bar-label">缓存</span>
-                          <div class="mmb-track cache-mmb-track">
+                          <div class="mmb-track">
                             <div
                               v-if="shouldShowCacheHitRate(get15mStats(element.index))"
                               class="mmb-fill cache-mmb-fill"
@@ -398,6 +356,38 @@
               />
             </div>
               </div><!-- .channel-row-content -->
+
+              <!-- 副行：映射 / 评测 / 描述。主行名称列塞不下它们，挤在一起会被压成看不出内容的小方块。
+                   映射未配置也照样占位显示——漏配映射是常见误配，必须一眼看得到 -->
+              <div class="channel-row-meta" @click.stop>
+                <ChannelMappingBlock
+                  :channel="element"
+                  :channel-type="channelType"
+                  @edit="$emit('edit', element)"
+                />
+
+                <button
+                  v-if="evalChipFor(element)"
+                  type="button"
+                  class="meta-block meta-block--eval"
+                  :class="`is-${evalChipFor(element)!.color}`"
+                  :title="`${evalChipFor(element)!.tooltip} — 点击查看该渠道的历史评测`"
+                  :aria-label="`查看 ${element.name} 的历史评测记录`"
+                  @click.stop="openEvalForChannel(element)"
+                >
+                  <v-icon size="14" class="meta-block-icon">
+                    {{ evalChipFor(element)!.watching ? 'mdi-clock-outline' : 'mdi-clipboard-check-outline' }}
+                  </v-icon>
+                  <span class="meta-block-label">评测</span>
+                  <span class="meta-block-value">{{ evalChipFor(element)!.label }}</span>
+                  <span class="meta-block-time">{{ evalChipFor(element)!.ago }}</span>
+                  <v-icon size="13" class="meta-block-go">mdi-chevron-right</v-icon>
+                </button>
+
+                <span v-if="element.description" class="meta-desc" :title="element.description">
+                  {{ element.description }}
+                </span>
+              </div>
           </div><!-- .channel-row -->
 
           <!-- 展开的图表区域 -->
@@ -466,33 +456,6 @@
                 @keydown.space.prevent="$emit('edit', channel)"
               >{{ channel.name }}</span>
               <span class="text-caption text-disabled ml-2">{{ channel.serviceType }}</span>
-              <v-tooltip
-                v-if="formatChannelModelPreview(channel)"
-                location="top"
-                :open-delay="200"
-                :open-on-focus="false"
-              >
-                <template #activator="{ props: tooltipProps }">
-                  <v-chip
-                    v-bind="tooltipProps"
-                    size="small"
-                    color="secondary"
-                    variant="tonal"
-                    class="ml-2 model-mapping-chip model-mapping-chip--prominent"
-                    :aria-label="`模型映射：${formatChannelModelPreview(channel)}`"
-                  >
-                    <v-icon start size="14">mdi-swap-horizontal</v-icon>
-                    <span class="model-mapping-label">映射</span>
-                    <span class="model-mapping-preview">{{ formatChannelModelPreview(channel) }}</span>
-                  </v-chip>
-                </template>
-                <div class="model-mapping-tooltip">
-                  <div class="text-caption font-weight-bold mb-1">模型映射</div>
-                  <div v-for="(line, idx) in formatModelMappingFullLines(channel)" :key="idx" class="model-mapping-line">
-                    {{ line }}
-                  </div>
-                </div>
-              </v-tooltip>
               <v-chip v-if="channel.temporary" size="x-small" color="warning" variant="tonal" class="ml-2">
                 临时 {{ formatDateTime(channel.temporaryUntil) }}
               </v-chip>
@@ -516,6 +479,14 @@
                   </v-chip>
                 </template>
               </v-tooltip>
+            </div>
+            <div class="channel-info-meta">
+              <ChannelMappingBlock
+                :channel="channel"
+                :channel-type="channelType"
+                :preview-limit="26"
+                @edit="$emit('edit', channel)"
+              />
             </div>
             <div v-if="channel.description" class="channel-info-desc text-caption text-disabled">
               {{ channel.description }}
@@ -620,33 +591,14 @@
                 @keydown.space.prevent="$emit('edit', channel)"
               >{{ channel.name }}</span>
               <span class="text-caption text-disabled ml-2">{{ channel.serviceType }}</span>
-              <v-tooltip
-                v-if="formatChannelModelPreview(channel)"
-                location="top"
-                :open-delay="200"
-                :open-on-focus="false"
-              >
-                <template #activator="{ props: tooltipProps }">
-                  <v-chip
-                    v-bind="tooltipProps"
-                    size="small"
-                    color="secondary"
-                    variant="tonal"
-                    class="ml-2 model-mapping-chip model-mapping-chip--prominent"
-                    :aria-label="`模型映射：${formatChannelModelPreview(channel)}`"
-                  >
-                    <v-icon start size="14">mdi-swap-horizontal</v-icon>
-                    <span class="model-mapping-label">映射</span>
-                    <span class="model-mapping-preview">{{ formatChannelModelPreview(channel) }}</span>
-                  </v-chip>
-                </template>
-                <div class="model-mapping-tooltip">
-                  <div class="text-caption font-weight-bold mb-1">模型映射</div>
-                  <div v-for="(line, idx) in formatModelMappingFullLines(channel)" :key="idx" class="model-mapping-line">
-                    {{ line }}
-                  </div>
-                </div>
-              </v-tooltip>
+            </div>
+            <div class="channel-info-meta">
+              <ChannelMappingBlock
+                :channel="channel"
+                :channel-type="channelType"
+                :preview-limit="26"
+                @edit="$emit('edit', channel)"
+              />
             </div>
             <div class="channel-info-desc text-caption text-disabled">
               弃用时间：{{ formatDateTime(channel.deprecatedAt) }}
@@ -841,10 +793,11 @@ import { useRouter } from 'vue-router'
 import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
 import { api, channelApiByType, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry, type EvalChannelLatest } from '../services/api'
-import { evalAggregateColor, evalFormatTime } from '../utils/eval'
+import { evalAggregateColor, evalAgoLabel, evalFormatTime } from '../utils/eval'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
 import ChannelPoolGrid from './ChannelPoolGrid.vue'
 import ChannelQuickMenu from './ChannelQuickMenu.vue'
+import ChannelMappingBlock from './ChannelMappingBlock.vue'
 import KeyTrendChart from './KeyTrendChart.vue'
 import QuickTestModal from './QuickTestModal.vue'
 
@@ -1033,22 +986,43 @@ const handleQuickTest = (channel: Channel) => {
 const evalLatestMap = ref<Record<string, EvalChannelLatest>>({})
 let evalLatestTimer: ReturnType<typeof setInterval> | null = null
 
-const evalChipFor = (channel: Channel) => {
-  if (props.channelType === 'images') return null
+/** 渠道行评测块要显示的内容。 */
+type EvalRowBlock = {
+  label: string
+  color: string
+  watching: boolean
+  ago: string
+  tooltip: string
+}
+
+/**
+ * 按渠道 UUID 预先算好评测块，模板里同一渠道要读四五次（图标、配色、文案、时间），
+ * 每次都重算一遍聚合与时间格式化没有意义。
+ */
+const evalBlockMap = computed<Record<string, EvalRowBlock>>(() => {
+  if (props.channelType === 'images') return {}
+  const blocks: Record<string, EvalRowBlock> = {}
+  for (const [channelId, latest] of Object.entries(evalLatestMap.value)) {
+    if (!latest) continue
+    blocks[channelId] = {
+      label: latest.label,
+      color: evalAggregateColor(latest.aggregate),
+      watching: latest.watching,
+      ago: evalAgoLabel(latest.finishedAt),
+      tooltip: [
+        latest.suiteName || '未知套件',
+        evalFormatTime(latest.finishedAt),
+        latest.watching ? '值班中' : '未值班'
+      ].join(' · ')
+    }
+  }
+  return blocks
+})
+
+const evalChipFor = (channel: Channel): EvalRowBlock | null => {
   if (channel.status === 'disabled' || channel.status === 'deprecated') return null
   if (!channel.id) return null
-  const latest = evalLatestMap.value[channel.id]
-  if (!latest) return null
-  return {
-    label: latest.label,
-    color: evalAggregateColor(latest.aggregate),
-    watching: latest.watching,
-    tooltip: [
-      latest.suiteName || '未知套件',
-      evalFormatTime(latest.finishedAt),
-      latest.watching ? '值班中' : '未值班'
-    ].join(' · ')
-  }
+  return evalBlockMap.value[channel.id] ?? null
 }
 
 const openEvalForChannel = (channel: Channel) => {
@@ -1161,22 +1135,7 @@ const get24hStats = (channelIndex: number) => {
   return getChannelMetrics(channelIndex)?.timeWindows?.['24h']
 }
 
-// 获取成功率颜色
-const getSuccessRateColor = (rate?: number): string => {
-  if (rate === undefined) return 'grey'
-  if (rate >= 90) return 'success'
-  if (rate >= 70) return 'warning'
-  return 'error'
-}
-
-const getCacheHitRateColor = (rate?: number): string => {
-  if (rate === undefined) return 'grey'
-  if (rate >= 50) return 'success'
-  if (rate >= 20) return 'info'
-  if (rate >= 5) return 'warning'
-  return 'orange'
-}
-
+// 指标条档位：驱动 CSS 里的配色与动效强度（成功率与缓存各一套阈值）
 const getCacheRateLevel = (rate?: number): string => {
   if (rate === undefined || rate === null || !Number.isFinite(rate)) return 'unknown'
   if (rate >= 50) return 'high'
@@ -1653,123 +1612,6 @@ const formatDateTime = (value?: string): string => {
   return date.toLocaleString()
 }
 
-const formatChannelModelPreview = (channel: Channel): string => {
-  const defaultModel = String(channel.defaultModel || '').trim()
-  const entries = normalizeModelMappingEntries(channel.modelMapping)
-
-  // 兜底模型 — 单独展示
-  if (defaultModel && entries.length === 0) {
-    return `⇣ ${truncateModel(defaultModel, 20)}`
-  }
-
-  // 无映射
-  if (entries.length === 0) return ''
-
-  // 单条映射 — 完整显示（最多 28 字符）
-  if (entries.length === 1) {
-    const [source, target] = entries[0]
-    if (source === target) {
-      return truncateModel(target, 28)
-    }
-    const mapping = `${source} → ${target}`
-    return truncateModel(mapping, 28)
-  }
-
-  // 多条映射 — 优先显示第一条前 15 字符 + 数量
-  const preferred = pickPreferredModelMapping(entries, channel)
-  if (!preferred) {
-    return `${entries.length} 条映射`
-  }
-
-  const [source, target] = preferred
-  const preview = source === target ? target : `${source} → ${target}`
-  const truncated = truncateModel(preview, 15)
-
-  return `${truncated} +${entries.length - 1}`
-}
-
-// 完整映射列表，用于 hover tooltip 展示全貌（返回数组）
-const formatModelMappingFullLines = (channel: Channel): string[] => {
-  const defaultModel = String(channel.defaultModel || '').trim()
-  const entries = normalizeModelMappingEntries(channel.modelMapping)
-
-  const lines: string[] = []
-
-  // 兜底模型
-  if (defaultModel) {
-    lines.push(`⇣ 兜底 → ${defaultModel}`)
-  }
-
-  // 映射规则
-  for (const [source, target] of entries) {
-    if (source === target) {
-      lines.push(`${source}`)
-    } else {
-      lines.push(`${source} → ${target}`)
-    }
-  }
-
-  if (lines.length === 0) {
-    return ['无模型映射']
-  }
-
-  return lines
-}
-
-// 旧函数保留向后兼容（已不使用）
-const formatModelMappingFull = (channel: Channel): string => {
-  return formatModelMappingFullLines(channel).join('\n')
-}
-
-// 截断模型名称，保留关键部分
-const truncateModel = (text: string, maxLength: number): string => {
-  if (text.length <= maxLength) return text
-
-  // 优先保留后半部分（通常是版本号/变体）
-  if (text.includes('/')) {
-    const parts = text.split('/')
-    const last = parts[parts.length - 1]
-    if (last.length <= maxLength - 3) {
-      return `.../${last}`
-    }
-  }
-
-  // 直接截断
-  return text.slice(0, maxLength - 3) + '...'
-}
-
-const normalizeModelMappingEntries = (
-  mapping?: Record<string, string[]>
-): Array<readonly [string, string]> => {
-  return Object.entries(mapping || {})
-    .flatMap(([source, targets]) => {
-      const cleanSource = source.trim()
-      const targetList = Array.isArray(targets) ? targets : [targets]
-      return targetList
-        .map(target => [cleanSource, String(target || '').trim()] as const)
-        .filter(([cleanSource, target]) => cleanSource && target)
-    })
-}
-
-const pickPreferredModelMapping = (
-  entries: Array<readonly [string, string]>,
-  channel: Channel
-): readonly [string, string] | undefined => {
-  const lowerService = channel.serviceType.toLowerCase()
-  const preferredTerms = props.channelType === 'messages' || lowerService === 'claude'
-    ? ['opus', 'sonnet', 'claude']
-    : props.channelType === 'responses' || props.channelType === 'images' || lowerService === 'responses' || lowerService === 'openai' || lowerService === 'chat'
-      ? ['gpt', 'codex']
-      : ['gemini']
-
-  for (const term of preferredTerms) {
-    const match = entries.find(([source]) => source.toLowerCase().includes(term))
-    if (match) return match
-  }
-
-  return [...entries].sort((a, b) => a[0].localeCompare(b[0]))[0]
-}
-
 const getLogStatusColor = (status: string): string => {
   if (status === 'completed') return 'success'
   if (status === 'cancelled') return 'grey'
@@ -2126,13 +1968,6 @@ defineExpose({
 .channel-name .expand-icon { flex-shrink: 0; margin-left: auto; }
 .channel-name .font-weight-medium { font-size: 0.9rem; flex-shrink: 0; }
 
-.channel-description {
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; text-overflow: ellipsis; line-height: 1.4;
-  max-height: calc(1.4em * 2); word-break: break-word;
-  font-size: 0.78rem; opacity: 0.5;
-}
-
 .channel-name-link { cursor: pointer; transition: color 0.15s ease; }
 .channel-name-link:hover, .channel-name-link:focus { color: rgb(var(--v-theme-primary)); }
 .channel-name-link:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; border-radius: 4px; }
@@ -2143,12 +1978,11 @@ defineExpose({
 .channel-status-toggle:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
 .channel-status-toggle :deep(.badge-content) { cursor: pointer; }
 
-.channel-metrics { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap; min-width: 140px; }
+.channel-metrics { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap; min-width: 186px; }
 
 /* ===== 迷你指标条 — 与渠道卡同一套仪表语言的压缩版 ===== */
-.metrics-visual { min-width: 130px; }
-.mini-metric-bar { display: flex; align-items: center; gap: 7px; margin-bottom: 2px; }
-.mini-metric-bar.cache-mini-metric-bar { gap: 5px; }
+.metrics-visual { min-width: 176px; }
+.mini-metric-bar { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; }
 .metric-bar-label {
   width: 27px;
   flex: 0 0 27px;
@@ -2157,30 +1991,6 @@ defineExpose({
   font-weight: 700;
   letter-spacing: 0.02em;
 }
-.mmb-track.cache-mmb-track { height: 7px; min-width: 46px; }
-.mmb-track.cache-mmb-track::after { left: 50%; }
-.mmb-fill.cache-mmb-fill.high {
-  background: linear-gradient(90deg, rgba(var(--v-theme-success), 0.58), rgb(var(--v-theme-success)));
-  color: rgb(var(--v-theme-success));
-  box-shadow: 0 0 7px rgba(var(--v-theme-success), 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.3);
-}
-.mmb-fill.cache-mmb-fill.medium {
-  background: linear-gradient(90deg, rgba(var(--v-theme-info), 0.58), rgb(var(--v-theme-info)));
-  color: rgb(var(--v-theme-info));
-  box-shadow: 0 0 7px rgba(var(--v-theme-info), 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.28);
-}
-.mmb-fill.cache-mmb-fill.low {
-  background: linear-gradient(90deg, rgba(var(--v-theme-warning), 0.58), rgb(var(--v-theme-warning)));
-  color: rgb(var(--v-theme-warning));
-  box-shadow: 0 0 7px rgba(var(--v-theme-warning), 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.25);
-  animation: alarm-breathe 2.4s ease-in-out infinite;
-}
-.mmb-value.cache-mmb-value { min-width: 27px; text-align: right; font-size: 10px; }
-.mmb-value.cache-mmb-value.high { color: rgb(var(--v-theme-success)); }
-.mmb-value.cache-mmb-value.medium { color: rgb(var(--v-theme-info)); }
-.mmb-value.cache-mmb-value.low { color: rgb(var(--v-theme-warning)); }
-.mmb-value.cache-mmb-value.unknown { color: rgba(var(--v-theme-on-surface), 0.42); }
-.cache-mini-metric-bar.is-unavailable { opacity: 0.72; }
 
 /* 凹槽轨道 + 等距刻度 */
 .mmb-track {
@@ -2291,6 +2101,7 @@ defineExpose({
 
 .mmb-value {
   font-size: 11px; font-weight: 700;
+  min-width: 30px; text-align: right;
   font-family: 'Fira Code', 'JetBrains Mono', monospace;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -2299,6 +2110,38 @@ defineExpose({
 .mmb-value.high { color: rgb(var(--v-theme-success)); }
 .mmb-value.medium { color: rgb(var(--v-theme-warning)); }
 .mmb-value.low { color: rgb(var(--v-theme-error)); }
+
+/* ===== 缓存命中率条 =====
+   与成功率条同规格（同高、同轨、同刻度），只换配色与节奏。
+   必须写在成功率档位样式之后：档位类名 high/medium/low 是共用的，
+   靠更高特异性 + 靠后顺序把红色警报那套急促动效盖掉——缓存命中低只是省得少，不是故障。 */
+.mmb-fill.cache-mmb-fill.high {
+  background: linear-gradient(90deg, rgba(var(--v-theme-success), 0.6), rgb(var(--v-theme-success)));
+  color: rgb(var(--v-theme-success));
+  animation: fill-glow-breathe 3.4s ease-in-out infinite;
+}
+.mmb-fill.cache-mmb-fill.medium {
+  background: linear-gradient(90deg, rgba(var(--v-theme-info), 0.6), rgb(var(--v-theme-info)));
+  color: rgb(var(--v-theme-info));
+  animation: fill-glow-breathe 3.4s ease-in-out infinite;
+}
+.mmb-fill.cache-mmb-fill.low {
+  background: linear-gradient(90deg, rgba(var(--v-theme-warning), 0.6), rgb(var(--v-theme-warning)));
+  color: rgb(var(--v-theme-warning));
+  animation: fill-glow-breathe 4.2s ease-in-out infinite;
+}
+/* 波头放慢；流光要显式恢复——成功率的 low 档把它 display:none 掉了 */
+.mmb-fill.cache-mmb-fill.high::before,
+.mmb-fill.cache-mmb-fill.medium::before,
+.mmb-fill.cache-mmb-fill.low::before { animation-duration: 3s; }
+.mmb-fill.cache-mmb-fill.high::after,
+.mmb-fill.cache-mmb-fill.medium::after,
+.mmb-fill.cache-mmb-fill.low::after { display: block; animation-duration: 3.6s; }
+.mmb-value.cache-mmb-value.high { color: rgb(var(--v-theme-success)); }
+.mmb-value.cache-mmb-value.medium { color: rgb(var(--v-theme-info)); }
+.mmb-value.cache-mmb-value.low { color: rgb(var(--v-theme-warning)); }
+.mmb-value.cache-mmb-value.unknown { color: rgba(var(--v-theme-on-surface), 0.42); }
+.cache-mini-metric-bar.is-unavailable { opacity: 0.72; }
 
 .mini-metric-secondary {
   display: flex; align-items: center; gap: 4px;
@@ -2309,21 +2152,50 @@ defineExpose({
 .mm-sep { opacity: 0.35; }
 .channel-latency { display: flex; align-items: center; min-width: 60px; }
 
-.eval-result-chip {
-  min-height: 26px;
-  border: 1px solid currentColor;
-  cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  transition: transform 0.16s var(--ease-out), box-shadow 0.16s ease, background-color 0.16s ease;
+/* ===== 副行：映射 / 评测 / 描述 =====
+   缩进到与名称列大致对齐，靠一条竖线表明"这是上一行的补充信息" */
+.channel-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 1;
+  margin: 8px 0 0 62px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(var(--v-theme-outline), 0.5);
 }
-.eval-result-chip:hover,
-.eval-result-chip:focus-visible {
-  box-shadow: 0 0 10px rgba(var(--v-theme-primary), 0.22);
+/* 副行内的块一律不参与收缩：被压扁到只剩边框就等于没显示 */
+.channel-row-meta > * { flex: 0 0 auto; max-width: 100%; }
+
+.meta-block--eval {
+  cursor: pointer;
+  border-color: currentColor;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.meta-block--eval:hover,
+.meta-block--eval:focus-visible {
+  background: color-mix(in srgb, currentColor 20%, transparent);
   transform: translateY(-1px);
 }
-.eval-result-chip:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
+.meta-block--eval.is-success { color: rgb(var(--v-theme-success)); }
+.meta-block--eval.is-warning { color: rgb(var(--v-theme-warning)); }
+.meta-block--eval.is-error { color: rgb(var(--v-theme-error)); }
+.meta-block--eval.is-grey { color: rgba(var(--v-theme-on-surface), 0.62); }
+/* 结论文字用正文色，避免整块都是同一种警示色而读不出层次 */
+.meta-block--eval .meta-block-value,
+.meta-block--eval .meta-block-time { color: rgb(var(--v-theme-on-surface)); }
+
+.meta-desc {
+  overflow: hidden;
+  min-width: 0;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 描述是唯一允许被压缩的项：它可以省略号，映射与评测不行 */
+.channel-row-meta > .meta-desc { flex: 1 1 auto; }
 
 .channel-rpm-tpm { display: flex; flex-direction: column; align-items: center; min-width: 60px; }
 .rpm-tpm-values {
@@ -2365,8 +2237,10 @@ defineExpose({
   box-shadow: var(--shadow-1);
   transform: translateX(3px);
 }
-.inactive-channel-row .channel-info { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
+.inactive-channel-row .channel-info { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; gap: 3px; }
 .inactive-channel-row .channel-info-main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 池卡片较窄，映射块单独一行，别再跟名称抢宽度 */
+.inactive-channel-row .channel-info-meta { display: flex; min-width: 0; }
 .inactive-channel-row .channel-info-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3; max-width: 100%; font-size: 0.78rem; opacity: 0.5; }
 .inactive-channel-row .channel-actions { display: flex; align-items: center; gap: 4px; }
 
@@ -2375,61 +2249,6 @@ defineExpose({
 .metrics-tooltip-row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
 .metrics-tooltip-row span:first-child { color: rgba(var(--v-theme-on-surface), 0.55); }
 .metrics-tooltip-row span:last-child { font-weight: 500; color: rgb(var(--v-theme-on-surface)); }
-
-/* 模型映射 Chip — 紧凑显示 + 固定最大宽度 */
-.model-mapping-chip {
-  max-width: 200px;
-  overflow: hidden;
-  cursor: help;
-}
-.model-mapping-chip--prominent {
-  min-height: 26px;
-  border: 1px solid rgba(var(--v-theme-secondary), 0.48);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 8px rgba(var(--v-theme-secondary), 0.08);
-}
-.model-mapping-chip :deep(.v-chip__content) {
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.model-mapping-label {
-  flex: 0 0 auto;
-  color: rgb(var(--v-theme-secondary));
-  font-size: 11px;
-  font-weight: 800;
-}
-.model-mapping-preview {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-}
-
-/* 模型映射 Tooltip — 结构化展示 */
-.model-mapping-tooltip {
-  font-size: 12px;
-  line-height: 1.6;
-  color: rgb(var(--v-theme-on-surface));
-  min-width: 200px;
-  max-width: 420px;
-}
-.model-mapping-line {
-  padding: 3px 0;
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  word-break: break-all;
-}
-.model-mapping-line:not(:last-child) {
-  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.15);
-}
-
-/* 旧 model-preview-chip 兼容样式（如有遗漏） */
-.model-preview-chip { max-width: 360px; overflow: hidden; }
-.model-preview-chip :deep(.v-chip__content) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; }
 
 /* 日志对话框 */
 .channel-logs-dialog-card { max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
@@ -2487,6 +2306,7 @@ defineExpose({
 @media (max-width: 1400px) {
   .channel-row-content { grid-template-columns: 28px 28px 85px minmax(100px, 1fr) auto 50px 50px 50px auto; gap: 6px; }
   .channel-row { padding: 10px 12px; }
+  .channel-row-meta { margin-left: 56px; }
 }
 @media (max-width: 1200px) {
   .channel-row-content { grid-template-columns: 26px 26px 80px minmax(80px, 1fr) auto 45px 45px 45px auto; gap: 5px; }
@@ -2497,12 +2317,16 @@ defineExpose({
 @media (max-width: 960px) {
   .channel-row-content { grid-template-columns: 26px 26px 75px minmax(60px, 1fr) auto 40px 40px 40px auto; gap: 4px; }
   .channel-row { padding: 8px 8px; }
+  .channel-row-meta { margin-left: 44px; }
 }
 @media (max-width: 600px) {
   .channel-row-content { grid-template-columns: 28px 1fr 60px; gap: 8px; }
   .channel-row { padding: 10px 12px; }
   .channel-metrics, .channel-latency, .channel-keys, .channel-rpm-tpm { display: none; }
   .priority-number, .drag-handle { display: none; }
+  /* 小屏没有指标列了，副行不再缩进，靠竖线区分层级 */
+  .channel-row-meta { margin-left: 0; }
+  .channel-row-meta > .meta-desc { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2520,7 +2344,7 @@ defineExpose({
   .mmb-fill::after,
   .mmb-flash,
   .mmb-value,
-  .eval-result-chip,
+  .meta-block,
   .inactive-channel-row { transition: none !important; animation: none !important; }
 }
 </style>

@@ -386,6 +386,13 @@ const deepLinkChannelId = computed(() => {
   return typeof value === 'string' ? value.trim() : ''
 })
 
+/**
+ * 深链进来时按渠道取历史的条数上限（与后端 evalRunsMaxLimit 一致）。
+ * 不能沿用后端默认的全局最近 30 条：该渠道的批次被别的渠道挤出去后，
+ * 抽屉会显示"该渠道还没有评测记录"，而它其实跑过。
+ */
+const EVAL_CHANNEL_HISTORY_LIMIT = 200
+
 const loading = ref(false)
 const starting = ref(false)
 const cancelling = ref(false)
@@ -666,9 +673,12 @@ const reloadAll = async () => {
   loading.value = true
   error.value = ''
   try {
+    const deepLinkChannel = deepLinkChannelId.value
     const [watchResponse, runResponse] = await Promise.all([
       api.getEvalWatch(),
-      api.listEvalRuns(),
+      api.listEvalRuns(
+        deepLinkChannel ? { channelId: deepLinkChannel, limit: EVAL_CHANNEL_HISTORY_LIMIT } : undefined
+      ),
       reloadProbes(),
       loadChannels()
     ])
@@ -687,8 +697,7 @@ const reloadAll = async () => {
 
     // 评测页面的模型、思考和渠道选择同时作为值班配置的编辑入口。
     // 刷新后必须恢复值班实际使用的完整配置，否则用户再次保存时会把旧值覆盖掉。
-    const deepLink = typeof route.query.channel === 'string' ? route.query.channel : ''
-    if (!deepLink && watchConfig.value.channelIds?.length) {
+    if (!deepLinkChannel && watchConfig.value.channelIds?.length) {
       selectedChannelIds.value = [...watchConfig.value.channelIds]
     }
     modelOverride.value = watchConfig.value.model || ''
@@ -800,6 +809,15 @@ watch([selectedChannelIds, selectedSuiteId], () => {
 })
 
 onMounted(() => {
+  void reloadAll()
+})
+
+/**
+ * 在评测页里再次从另一个渠道深链进来时，路由没变、只有 query 变，组件不会重建。
+ * 历史是按渠道取的，不重新取数就会拿上一个渠道的列表去过滤新渠道，看起来像"没有记录"。
+ */
+watch(deepLinkChannelId, (next, previous) => {
+  if (next === previous) return
   void reloadAll()
 })
 

@@ -256,6 +256,79 @@ body::before {
   50%      { opacity: 1; }
 }
 
+/* 指标条柔和呼吸 — 光晕用 currentColor，档位换色时自动跟随，
+   不像 alarm-breathe 那样绑死 error 色（缓存命中低只是省得少，不是故障） */
+@keyframes fill-glow-breathe {
+  0%, 100% { box-shadow: 0 0 3px 0 currentColor, inset 0 1px 0 rgba(255, 255, 255, 0.28); }
+  50%      { box-shadow: 0 0 11px 1px currentColor, inset 0 1px 0 rgba(255, 255, 255, 0.28); }
+}
+
+/* ============================================================
+   元信息块 — 渠道行副行 / 池卡片里"标签 + 值"的统一外形
+   多个组件（ChannelMappingBlock、ChannelOrchestration 的评测块）共用，
+   放全局避免各自 scoped 里再抄一遍基类
+   ============================================================ */
+.meta-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid rgba(var(--v-theme-outline), 0.6);
+  /* 与卡片同向的不对称切角 */
+  border-radius: 5px 2px 5px 2px;
+  background: rgba(var(--v-theme-surface-variant), 0.5);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.16s var(--ease-out);
+}
+.meta-block:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+.meta-block-icon { flex: 0 0 auto; }
+.meta-block-label {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+}
+.meta-block-value {
+  overflow: hidden;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.meta-block-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.meta-block-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+}
+.meta-block-go { flex: 0 0 auto; opacity: 0.6; }
+.meta-block--muted {
+  border-style: dashed;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.meta-block--muted .meta-block-value { font-weight: 500; }
+
+@media (prefers-reduced-motion: reduce) {
+  .meta-block { transition: none !important; }
+}
+
 /* 路由页面过渡 — 轻微上浮淡入，200ms 微交互节奏 */
 .page-enter-active,
 .page-leave-active {

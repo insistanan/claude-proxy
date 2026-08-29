@@ -813,10 +813,21 @@ func tallyFromResults(results []Result) *RunTally {
 	return &tally
 }
 
-func (s *Store) ListRuns(limit int) ([]Run, error) {
+// ListRuns 列出批次。channelID 非空时只返回声明过该渠道的批次——渠道行深链进来要看
+// 「这个渠道跑过哪些批次」，全局最近 N 条会把该渠道的历史挤掉，给出一个空列表比没有列表更误导。
+func (s *Store) ListRuns(channelID string, limit int) ([]Run, error) {
 	if limit <= 0 {
 		limit = 20
 	}
+	args := []any{VerdictPass, VerdictSuspect, VerdictFail, VerdictError, VerdictInsufficient, VerdictInapplicable}
+	// channel_ids_json 是 JSON 数组文本。用 instr 匹配带引号的完整 ID：
+	// LIKE 会让 ID 里的 % / _ 变成通配符，不带引号又会命中 ID 前缀相同的其它渠道。
+	channelWhere := ""
+	if channelID != "" {
+		channelWhere = ` WHERE instr(r.channel_ids_json, ?) > 0`
+		args = append(args, `"`+channelID+`"`)
+	}
+	args = append(args, limit)
 	// 用子查询顺带聚合 verdict 计数，避免对每个批次再发一条 ListResults。
 	// SUM(verdict=? AND 1=1) 这种写法在 SQLite 下把布尔条件转成 0/1 求和。
 	rows, err := s.db.Query(
@@ -830,11 +841,10 @@ func (s *Store) ListRuns(limit int) ([]Run, error) {
 			COALESCE(COUNT(rv.id), 0)
 		 FROM eval_runs r
 		 LEFT JOIN eval_suites s ON s.id = r.suite_id
-		 LEFT JOIN eval_results rv ON rv.run_id = r.id
+		 LEFT JOIN eval_results rv ON rv.run_id = r.id`+channelWhere+`
 		 GROUP BY r.id
 		 ORDER BY r.created_at DESC LIMIT ?`,
-		VerdictPass, VerdictSuspect, VerdictFail, VerdictError, VerdictInsufficient, VerdictInapplicable,
-		limit)
+		args...)
 	if err != nil {
 		return nil, err
 	}

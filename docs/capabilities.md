@@ -18,7 +18,7 @@
 | 上游请求发送 | `proxycore.SendRequest` | 统一超时/代理/认证头 |
 | 加载 `.env` | `config.LoadDotEnv` | 先 exe 同目录再 cwd；不覆盖已有环境变量。`main.go` 唯一入口，禁止再写 `godotenv.Load()` |
 | 按稳定 UUID 跨五类切片查渠道 | `config.FindChannelByID` | 评测/关联状态用；返回深拷贝。HTTP 渠道路由仍用切片下标 |
-| 评测题库 / 运行记录 | `internal/eval`（`.config/eval.db`） | WAL sqlite；探针/套件/批次/值班单行。内置题带 `builtin`，启动走 `Store.SyncBuiltins` 按 `seed.go` 覆盖（保留 ID），改删一律拒绝。取套件的探针一律走 `Store.SuiteWithProbes` / `ProbesForSuite`，别再各处循环 `GetProbe` |
+| 评测题库 / 运行记录 | `internal/eval`（`.config/eval.db`） | WAL sqlite；探针/套件/批次/值班单行。内置题带 `builtin`，启动走 `Store.SyncBuiltins` 按 `seed.go` 覆盖（保留 ID），改删一律拒绝。取套件的探针一律走 `Store.SuiteWithProbes` / `ProbesForSuite`，别再各处循环 `GetProbe`。批次列表走 `Store.ListRuns(channelID, limit)`：channelID 非空时用 `instr(channel_ids_json, '"id"')` 只留声明过该渠道的批次（渠道行深链要看单渠道完整历史，全局最近 N 条会把它挤掉），**不要改用 LIKE**——ID 里的 `%`/`_` 会变通配符、不带引号会命中前缀相同的其它渠道 |
 | 评测原生上游发送 | `eval.Sender` → `proxycore.SendRequest` | 空 `http.Header` 从头组认证/伪装；**禁止** `PrepareUpstreamHeaders`（会泄漏管理端 cookie / `x-proxy-key`）。不走转换器、不写 scheduler.Record* |
 | 评测探针可否直接入库 | `POST /api/eval/probes/validate` + `.claude/skills/eval-probe` | 分流 `can_add_directly` / `invalid_fields` / `unsupported_grader` / `needs_new_grader`。未知 kind 拒绝入库；真伪禁止 rubric；加题先走 skill，不要在 Go 里写死自建题 |
 | 上游用量归一化（评测侧） | `eval.extractUsage` | 返回 `hasThinkingUsage` 区分"没回报思考 token"与"思考为 0"。**故意不做"扣掉思考"的换算**：output 含不含思考各家口径不一（Anthropic/OpenAI 含、xAI 不含、Gemini 文档自相矛盾），中转还会改写，猜错方向只会让数字更假 |
@@ -62,8 +62,10 @@
 | 需求 | 现成实现 | 备注 |
 |---|---|---|
 | 渠道 API 调用 | `services/api.ts`（`channelApiByType` 工厂） | 五协议共用；store 层调用 |
-| 评测工作台 API | `services/api.ts` 的 `listEval*` / `startEvalRun` / `getEvalLatestMap` / `putEvalWatch` / `streamEvalRun` | 评测不是 ChannelKind，不走 `channelApiByType`。`/eval` 页用工厂拉四协议渠道 |
-| 评测结论文案 / 颜色 / 时间 / SVG 预览 | `utils/eval.ts` | 渠道行芯片、矩阵、结果抽屉共用一份映射。上游 SVG 只经 `evalSvgPreviewUrl` 走 `<img src="data:...">` |
+| 评测工作台 API | `services/api.ts` 的 `listEval*` / `startEvalRun` / `getEvalLatestMap` / `putEvalWatch` / `streamEvalRun` | 评测不是 ChannelKind，不走 `channelApiByType`。`/eval` 页用工厂拉四协议渠道。`listEvalRuns({ channelId, limit })` 对应 `GET /api/eval/runs?channel=&limit=`：渠道行深链（`/eval?channel=<uuid>`）必须带 channelId 取数，只靠前端过滤会拿全局最近 30 条去筛，该渠道的老批次会假装"没有记录" |
+| 评测结论文案 / 颜色 / 时间 / SVG 预览 | `utils/eval.ts` | 渠道行块、矩阵、结果抽屉共用一份映射。相对时间走 `evalAgoLabel`（超 30 天退回绝对时间），绝对时间走 `evalFormatTime`。上游 SVG 只经 `evalSvgPreviewUrl` 走 `<img src="data:...">` |
+| 渠道模型映射摘要展示 | `components/ChannelMappingBlock.vue` | 渠道行副行 / 备用资源池 / 弃用池共用；预览截断、代表条挑选、全量 tooltip 全在组件内，`previewLimit` 控制宽窄。禁止再在渠道页各处手写映射 chip |
+| 「标签 + 值」元信息块外形 | `assets/style.css` 的 `.meta-block` 系列 | 渠道行副行的映射块与评测块共用基类（含 `-icon/-label/-value/-badge/-time/-go` 子类）；新增同形块套类名即可，别在各自 scoped 里再抄一份 |
 | 评测页交互块 | `components/EvalChannelPicker` / `EvalMatrix` / `EvalResultDrawer` / `EvalProbeManager` | 分组勾选、协议分组矩阵、格子抽屉、题库逐步表单；`EvalView` 只负责取数与编排 |
 | 客户端配置"从渠道快速选择" | `composables/useChannelQuickPick.ts` | 四客户端配置页（DSH/OpenCode/ClaudeCode/PiAgent）共用；选协议→加载渠道→选渠道→回填 provider。ClaudeCode 用 `useMessagesChannelQuickPick` 固定 messages |
 | 客户端配置"从渠道一键导入模型" | `composables/useChannelModelImport.ts` + `composables/channelDefaults.ts` | 渠道 `modelMapping`/`defaultModel` → 各客户端模型对象，导入即替换；默认值统一（思考 high、识图按渠道 vision 能力开、按协议 contextLimit/outputLimit） |
