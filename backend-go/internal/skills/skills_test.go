@@ -1,4 +1,4 @@
-package handlers
+package skills
 
 import (
 	"os"
@@ -22,7 +22,7 @@ func TestDiscoverClaudePluginSkillLocationsOnlyUsesInstalledPlugins(t *testing.T
 		t.Fatal(err)
 	}
 
-	locations, err := discoverClaudePluginSkillLocations(claudeHome)
+	locations, err := discoverClaudePluginLocations(claudeHome)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestDiscoverClaudePluginSkillLocationsOnlyUsesInstalledPlugins(t *testing.T
 
 func TestWriteSkillFilesPreservingReplacesPackageAndKeepsBackups(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "example-skill")
-	backup := filepath.Join(destination, skillBackupsDirName, "20260801-120000.000000000", "translated.zh-CN.md")
+	backup := filepath.Join(destination, backupsDirName, "20260801-120000.000000000", "translated.zh-CN.md")
 	stale := filepath.Join(destination, "scripts", "obsolete.sh")
 	if err := os.MkdirAll(filepath.Dir(backup), 0700); err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestWriteSkillFilesPreservingReplacesPackageAndKeepsBackups(t *testing.T) {
 		"SKILL.md":              []byte("---\nname: example-skill\ndescription: 示例\n---\n"),
 		"references/current.md": []byte("当前资源"),
 	}
-	if err := writeSkillFilesPreserving(destination, files); err != nil {
+	if err := WriteFilesPreserving(destination, files); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,7 +75,7 @@ func TestWriteSkillFilesPreservingReplacesPackageAndKeepsBackups(t *testing.T) {
 func TestCopySkillDirCopiesFilesAndPreservesBackups(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "archify")
 	destination := filepath.Join(t.TempDir(), "archify")
-	backup := filepath.Join(destination, skillBackupsDirName, "20260801-120000.000000000", "translated.zh-CN.md")
+	backup := filepath.Join(destination, backupsDirName, "20260801-120000.000000000", "translated.zh-CN.md")
 	stale := filepath.Join(destination, "scripts", "obsolete.sh")
 
 	if err := os.MkdirAll(filepath.Dir(backup), 0700); err != nil {
@@ -102,7 +102,7 @@ func TestCopySkillDirCopiesFilesAndPreservesBackups(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := copySkillDir(source, destination, true); err != nil {
+	if err := CopyDir(source, destination, true); err != nil {
 		t.Fatalf("流式拷贝失败: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestCopySkillDirRejectsMissingSkillMD(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("没有 SKILL.md"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := copySkillDir(source, destination, false); err == nil || !strings.Contains(err.Error(), "SKILL.md") {
+	if err := CopyDir(source, destination, false); err == nil || !strings.Contains(err.Error(), "SKILL.md") {
 		t.Fatalf("期望缺少 SKILL.md 报错，得到: %v", err)
 	}
 }
@@ -145,11 +145,11 @@ func TestCopySkillDirRejectsOversizedFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("---\nname: fat\ndescription: 超限\n---\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	oversized := strings.Repeat("B", maxSkillCopyFileBytes+1)
+	oversized := strings.Repeat("B", maxCopyFileBytes+1)
 	if err := os.WriteFile(filepath.Join(source, "blob.bin"), []byte(oversized), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := copySkillDir(source, destination, false); err == nil || !strings.Contains(err.Error(), "Skill 文件过大") {
+	if err := CopyDir(source, destination, false); err == nil || !strings.Contains(err.Error(), "Skill 文件过大") {
 		t.Fatalf("期望超大文件报错，得到: %v", err)
 	}
 }

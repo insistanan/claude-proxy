@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BenedictKing/claude-proxy/internal/skills"
 	"github.com/gin-gonic/gin"
 )
 
@@ -182,16 +183,16 @@ func (s *SkillsAPI) InstallRemote() gin.HandlerFunc {
 
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		locations, err := managedSkillLocations()
+		locations, err := skills.Locations(openCodeSkillsDir())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		locationByKey := make(map[string]skillLocation, len(locations))
+		locationByKey := make(map[string]skills.Location, len(locations))
 		for _, location := range locations {
 			locationByKey[location.Key] = location
 		}
-		targets := ensureProjectSkillTarget(req.Targets)
+		targets := skills.EnsureProjectTarget(req.Targets)
 		for _, target := range targets {
 			location, exists := locationByKey[target]
 			if !exists {
@@ -205,7 +206,7 @@ func (s *SkillsAPI) InstallRemote() gin.HandlerFunc {
 		}
 		for _, target := range targets {
 			location := locationByKey[target]
-			if err := writeSkillFilesForLocation(location, pkg.Name, pkg.Files); err != nil {
+			if err := skills.WriteFilesForLocation(location, pkg.Name, pkg.Files); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("安装到 %s 失败: %v", location.Agent, err)})
 				return
 			}
@@ -310,7 +311,7 @@ func loadRemoteSkill(ctx context.Context, id string) (*remoteSkillPackage, error
 	if !exists {
 		return nil, errors.New("远程 Skill 缺少 SKILL.md")
 	}
-	name, description, err := parseSkillFrontmatter(skillContent)
+	name, description, err := skills.ParseFrontmatter(skillContent)
 	if err != nil {
 		return nil, fmt.Errorf("远程 SKILL.md 校验失败: %w", err)
 	}
