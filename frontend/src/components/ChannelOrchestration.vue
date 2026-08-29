@@ -107,15 +107,18 @@
               >{{ element.name }}</span>
               <v-chip
                 v-if="evalChipFor(element)"
-                size="x-small"
+                size="small"
                 :color="evalChipFor(element)!.color"
                 :title="evalChipFor(element)!.tooltip"
                 variant="tonal"
-                class="ml-2"
+                class="ml-2 eval-result-chip"
+                :aria-label="`查看 ${element.name} 的历史评测`"
                 @click.stop="openEvalForChannel(element)"
               >
-                <v-icon v-if="evalChipFor(element)!.watching" start size="12">mdi-clock-outline</v-icon>
-                {{ evalChipFor(element)!.label }}
+                <v-icon start size="14">
+                  {{ evalChipFor(element)!.watching ? 'mdi-clock-outline' : 'mdi-clipboard-check-outline' }}
+                </v-icon>
+                评测 · {{ evalChipFor(element)!.label }}
               </v-chip>
               <!-- 促销期标识 -->
               <v-chip
@@ -184,12 +187,14 @@
                 <template #activator="{ props: tooltipProps }">
                   <v-chip
                     v-bind="tooltipProps"
-                    size="x-small"
+                    size="small"
                     color="secondary"
                     variant="tonal"
-                    class="ml-2 model-mapping-chip"
+                    class="ml-2 model-mapping-chip model-mapping-chip--prominent"
+                    :aria-label="`模型映射：${formatChannelModelPreview(element)}`"
                   >
-                    <v-icon start size="12">mdi-swap-horizontal</v-icon>
+                    <v-icon start size="14">mdi-swap-horizontal</v-icon>
+                    <span class="model-mapping-label">映射</span>
                     <span class="model-mapping-preview">{{ formatChannelModelPreview(element) }}</span>
                   </v-chip>
                 </template>
@@ -240,13 +245,36 @@
                             {{ get15mStats(element.index)?.successRate?.toFixed(0) }}%
                           </span>
                         </div>
-                        <!-- 请求数 + 缓存命中率 -->
+                        <!-- 缓存命中率：单独成条，避免被请求数文字淹没 -->
+                        <div
+                          class="mini-metric-bar cache-mini-metric-bar"
+                          :class="{ 'is-unavailable': !shouldShowCacheHitRate(get15mStats(element.index)) }"
+                        >
+                          <span class="metric-bar-label">缓存</span>
+                          <div class="mmb-track cache-mmb-track">
+                            <div
+                              v-if="shouldShowCacheHitRate(get15mStats(element.index))"
+                              class="mmb-fill cache-mmb-fill"
+                              :class="getCacheRateLevel(getCacheHitRate(get15mStats(element.index)))"
+                              :style="{ width: `${getCacheHitRate(get15mStats(element.index)) ?? 0}%` }"
+                            ></div>
+                            <span
+                              v-if="shouldShowCacheHitRate(get15mStats(element.index))"
+                              :key="`cf-${getCacheHitRate(get15mStats(element.index))?.toFixed(0)}`"
+                              class="mmb-flash"
+                            ></span>
+                          </div>
+                          <span
+                            class="mmb-value cache-mmb-value"
+                            :class="getCacheRateLevel(getCacheHitRate(get15mStats(element.index)))"
+                            :key="`cmb-${getCacheHitRate(get15mStats(element.index))?.toFixed(0) ?? 'unknown'}`"
+                          >
+                            {{ shouldShowCacheHitRate(get15mStats(element.index)) ? `${getCacheHitRate(get15mStats(element.index))?.toFixed(0)}%` : '—' }}
+                          </span>
+                        </div>
+                        <!-- 请求数 -->
                         <div class="mini-metric-secondary">
                           <span class="mm-requests">{{ get15mStats(element.index)?.requestCount }} 请求</span>
-                          <template v-if="shouldShowCacheHitRate(get15mStats(element.index))">
-                            <span class="mm-sep">|</span>
-                            <span class="mm-cache">缓存 {{ getCacheHitRate(get15mStats(element.index))?.toFixed(0) }}%</span>
-                          </template>
                         </div>
                       </template>
                       <span v-else class="text-caption text-medium-emphasis">--</span>
@@ -447,12 +475,14 @@
                 <template #activator="{ props: tooltipProps }">
                   <v-chip
                     v-bind="tooltipProps"
-                    size="x-small"
+                    size="small"
                     color="secondary"
                     variant="tonal"
-                    class="ml-2 model-mapping-chip"
+                    class="ml-2 model-mapping-chip model-mapping-chip--prominent"
+                    :aria-label="`模型映射：${formatChannelModelPreview(channel)}`"
                   >
-                    <v-icon start size="12">mdi-swap-horizontal</v-icon>
+                    <v-icon start size="14">mdi-swap-horizontal</v-icon>
+                    <span class="model-mapping-label">映射</span>
                     <span class="model-mapping-preview">{{ formatChannelModelPreview(channel) }}</span>
                   </v-chip>
                 </template>
@@ -599,12 +629,14 @@
                 <template #activator="{ props: tooltipProps }">
                   <v-chip
                     v-bind="tooltipProps"
-                    size="x-small"
+                    size="small"
                     color="secondary"
                     variant="tonal"
-                    class="ml-2 model-mapping-chip"
+                    class="ml-2 model-mapping-chip model-mapping-chip--prominent"
+                    :aria-label="`模型映射：${formatChannelModelPreview(channel)}`"
                   >
-                    <v-icon start size="12">mdi-swap-horizontal</v-icon>
+                    <v-icon start size="14">mdi-swap-horizontal</v-icon>
+                    <span class="model-mapping-label">映射</span>
                     <span class="model-mapping-preview">{{ formatChannelModelPreview(channel) }}</span>
                   </v-chip>
                 </template>
@@ -1143,6 +1175,13 @@ const getCacheHitRateColor = (rate?: number): string => {
   if (rate >= 20) return 'info'
   if (rate >= 5) return 'warning'
   return 'orange'
+}
+
+const getCacheRateLevel = (rate?: number): string => {
+  if (rate === undefined || rate === null || !Number.isFinite(rate)) return 'unknown'
+  if (rate >= 50) return 'high'
+  if (rate >= 20) return 'medium'
+  return 'low'
 }
 
 const getRateLevel = (rate?: number): string => {
@@ -2109,6 +2148,39 @@ defineExpose({
 /* ===== 迷你指标条 — 与渠道卡同一套仪表语言的压缩版 ===== */
 .metrics-visual { min-width: 130px; }
 .mini-metric-bar { display: flex; align-items: center; gap: 7px; margin-bottom: 2px; }
+.mini-metric-bar.cache-mini-metric-bar { gap: 5px; }
+.metric-bar-label {
+  width: 27px;
+  flex: 0 0 27px;
+  color: rgba(var(--v-theme-on-surface-variant), 0.82);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.mmb-track.cache-mmb-track { height: 7px; min-width: 46px; }
+.mmb-track.cache-mmb-track::after { left: 50%; }
+.mmb-fill.cache-mmb-fill.high {
+  background: linear-gradient(90deg, rgba(var(--v-theme-success), 0.58), rgb(var(--v-theme-success)));
+  color: rgb(var(--v-theme-success));
+  box-shadow: 0 0 7px rgba(var(--v-theme-success), 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.mmb-fill.cache-mmb-fill.medium {
+  background: linear-gradient(90deg, rgba(var(--v-theme-info), 0.58), rgb(var(--v-theme-info)));
+  color: rgb(var(--v-theme-info));
+  box-shadow: 0 0 7px rgba(var(--v-theme-info), 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+.mmb-fill.cache-mmb-fill.low {
+  background: linear-gradient(90deg, rgba(var(--v-theme-warning), 0.58), rgb(var(--v-theme-warning)));
+  color: rgb(var(--v-theme-warning));
+  box-shadow: 0 0 7px rgba(var(--v-theme-warning), 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  animation: alarm-breathe 2.4s ease-in-out infinite;
+}
+.mmb-value.cache-mmb-value { min-width: 27px; text-align: right; font-size: 10px; }
+.mmb-value.cache-mmb-value.high { color: rgb(var(--v-theme-success)); }
+.mmb-value.cache-mmb-value.medium { color: rgb(var(--v-theme-info)); }
+.mmb-value.cache-mmb-value.low { color: rgb(var(--v-theme-warning)); }
+.mmb-value.cache-mmb-value.unknown { color: rgba(var(--v-theme-on-surface), 0.42); }
+.cache-mini-metric-bar.is-unavailable { opacity: 0.72; }
 
 /* 凹槽轨道 + 等距刻度 */
 .mmb-track {
@@ -2237,6 +2309,22 @@ defineExpose({
 .mm-sep { opacity: 0.35; }
 .channel-latency { display: flex; align-items: center; min-width: 60px; }
 
+.eval-result-chip {
+  min-height: 26px;
+  border: 1px solid currentColor;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  transition: transform 0.16s var(--ease-out), box-shadow 0.16s ease, background-color 0.16s ease;
+}
+.eval-result-chip:hover,
+.eval-result-chip:focus-visible {
+  box-shadow: 0 0 10px rgba(var(--v-theme-primary), 0.22);
+  transform: translateY(-1px);
+}
+.eval-result-chip:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
+
 .channel-rpm-tpm { display: flex; flex-direction: column; align-items: center; min-width: 60px; }
 .rpm-tpm-values {
   display: flex; align-items: baseline; gap: 2px;
@@ -2290,9 +2378,14 @@ defineExpose({
 
 /* 模型映射 Chip — 紧凑显示 + 固定最大宽度 */
 .model-mapping-chip {
-  max-width: 160px;
+  max-width: 200px;
   overflow: hidden;
   cursor: help;
+}
+.model-mapping-chip--prominent {
+  min-height: 26px;
+  border: 1px solid rgba(var(--v-theme-secondary), 0.48);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 8px rgba(var(--v-theme-secondary), 0.08);
 }
 .model-mapping-chip :deep(.v-chip__content) {
   overflow: hidden;
@@ -2300,11 +2393,18 @@ defineExpose({
   align-items: center;
   gap: 4px;
 }
+.model-mapping-label {
+  flex: 0 0 auto;
+  color: rgb(var(--v-theme-secondary));
+  font-size: 11px;
+  font-weight: 800;
+}
 .model-mapping-preview {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
   font-family: 'Fira Code', 'JetBrains Mono', monospace;
 }
 
@@ -2415,10 +2515,12 @@ defineExpose({
   .activity-bar-bad,
   .activity-bar-latest,
   .mmb-fill,
+  .cache-mmb-fill,
   .mmb-fill::before,
   .mmb-fill::after,
   .mmb-flash,
   .mmb-value,
+  .eval-result-chip,
   .inactive-channel-row { transition: none !important; animation: none !important; }
 }
 </style>

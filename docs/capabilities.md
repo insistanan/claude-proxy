@@ -38,6 +38,7 @@
 | 图片检测 / 指纹 | `utils/vision.go` | `DetectImageContent` / `ExtractImageFingerprints` |
 | 图片 data URL 解析 / 默认 mediaType | `utils.ParseImageDataURL` / `utils.DefaultImageMediaType` | 三处独立实现已收敛为单一出处（utils/providers.gemini/converters.responses_gemini）；行为契约由 `utils/vision_test.go:TestParseImageDataURL` 锁定 |
 | Responses 多轮会话 | `session.SessionManager` | `previous_response_id` 链，SQLite 持久化；默认保留 7 天、上限 5000（main.go 注入） |
+| Responses 续接边界判定（链与完整历史互斥） | `converters.trimResponsesPassthroughInput` + `responsesRawItemsCarryOwnHistory` / `looksLikeResponsesFullReplay` | 官方只承认两种续接：完整历史作为 input，或只发新增输入并用 `previous_response_id` 链接；两者同时到达上游，同一段历史会被按两次语义纳入。能比对前缀就裁掉 input 里已在链上的前缀；比不了时（本地 session 因重启 / TTL / LRU 驱逐为空、扩展 item 下标对不齐、前缀不匹配）按 input 自身形态判定——出现 developer/system 会话根，或首项是 user 且后面还有 assistant 侧产出，则删链按完整历史建新边界，否则保留链。绝不同时删链又裁 input。删链后 `providers/responses.go` 置 `ContextKeyResponsesPreviousIDDropped`，session 侧走 `ReplaceSessionAfterBoundary`。契约由 `converters/responses_passthrough_trim_test.go` 锁定 |
 | Trace 亲和（同用户绑同渠道） | `session.TraceAffinityManager` | 经 scheduler 的 `SetTraceAffinityForKind` 入口（messages 专用旧入口与 Update 入口已作死代码删除） |
 | 对话注册 / 路由覆盖 | `conversation.Registry` | scheduler 注入；冲突校验 `ValidateFixedChannel`，调度时优先级最高 |
 | 对话级亲和（粘滞，负载感知） | `scheduler.ChannelScheduler.selectConversationAffinity` / `GetConversationLastResolved` | 同一对话复用最近成功渠道（`Record.LastResolved`，经 `MarkConversationSuccess` 写入）；渠道健康且 in-flight ≤ 3 才沿用，过载/失败/不可用则放行给负载均衡 |

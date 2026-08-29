@@ -247,20 +247,37 @@
           <v-btn icon="mdi-close" size="small" variant="text" @click="historyDrawer = false" />
         </div>
 
-        <div v-if="!runHistory.length" class="text-body-2 text-medium-emphasis py-8 text-center">
-          还没有评测记录
+        <div v-if="deepLinkChannelId" class="history-scope-banner mb-3">
+          <v-icon icon="mdi-filter-variant" size="18" color="primary" />
+          <div class="history-scope-copy">
+            <div class="text-body-2 font-weight-medium">渠道历史评测</div>
+            <div class="text-caption text-medium-emphasis">
+              {{ channelNameOf(deepLinkChannelId) }} · {{ visibleHistoryRuns.length }} 条记录
+            </div>
+          </div>
+          <v-chip size="x-small" color="primary" variant="tonal">已定位</v-chip>
+        </div>
+
+        <div v-if="!visibleHistoryRuns.length" class="text-body-2 text-medium-emphasis py-8 text-center">
+          {{ deepLinkChannelId ? '该渠道还没有评测记录' : '还没有评测记录' }}
         </div>
 
         <div v-else class="history-list">
           <div
-            v-for="item in runHistory"
+            v-for="item in visibleHistoryRuns"
             :key="item.id"
+            :id="`history-run-card-${item.id}`"
             class="history-card"
-            :class="{ 'history-card--active': currentRun?.id === item.id }"
+            :class="{
+              'history-card--active': currentRun?.id === item.id,
+              'history-card--channel-focus': !!deepLinkChannelId
+            }"
             role="button"
             tabindex="0"
+            :aria-label="`${item.suiteName || '未知套件'}，${evalRunStatusLabel(item.status)}，${evalFormatTime(item.startedAt || item.createdAt)}`"
             @click="selectRun(item.id)"
             @keydown.enter.prevent="selectRun(item.id)"
+            @keydown.space.prevent="selectRun(item.id)"
           >
             <div class="history-card-header">
               <div class="text-truncate font-weight-medium">{{ item.suiteName || '未知套件' }}</div>
@@ -363,6 +380,12 @@ const emptyByKind = <T,>(): Record<ApiTab, T[]> => ({
 const route = useRoute()
 const preferences = usePreferencesStore()
 
+/** 从渠道条跳转时，使用稳定 channel.id 筛出该渠道的全部历史批次。 */
+const deepLinkChannelId = computed(() => {
+  const value = route.query.channel
+  return typeof value === 'string' ? value.trim() : ''
+})
+
 const loading = ref(false)
 const starting = ref(false)
 const cancelling = ref(false)
@@ -393,6 +416,12 @@ const cellDrawer = ref(false)
 const cellSelection = ref<EvalCellSelection | null>(null)
 /** 点击历史卡片后短暂高亮当前批次卡片，提示已定位。 */
 const flashRunId = ref('')
+
+const visibleHistoryRuns = computed(() => {
+  const channelId = deepLinkChannelId.value
+  if (!channelId) return runHistory.value
+  return runHistory.value.filter(run => run.channelIds.includes(channelId))
+})
 
 const optionsMenu = ref(false)
 const watchMenu = ref(false)
@@ -533,6 +562,20 @@ const channelNameOf = (channelId: string) => {
   return channelId
 }
 
+/** 深链进入评测页时打开历史抽屉，并把最新一条匹配记录滚入可视区。 */
+const focusDeepLinkedHistory = async () => {
+  const channelId = deepLinkChannelId.value
+  if (!channelId) return
+
+  historyDrawer.value = true
+  await nextTick()
+  const firstMatchedRun = visibleHistoryRuns.value[0]
+  if (!firstMatchedRun) return
+  document
+    .getElementById(`history-run-card-${firstMatchedRun.id}`)
+    ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
 const openCell = (selection: EvalCellSelection) => {
   cellSelection.value = selection
   cellDrawer.value = true
@@ -653,15 +696,19 @@ const reloadAll = async () => {
     channelThinking.value = { ...(watchConfig.value.channelThinking || {}) }
     thinking.value = watchConfig.value.thinking || 'inherit'
 
-    const runId = runResponse.currentRunId || runResponse.runs?.[0]?.id
     runHistory.value = runResponse.runs || []
+    const deepLinkRun = deepLinkChannelId.value
+      ? runHistory.value.find(run => run.channelIds.includes(deepLinkChannelId.value))
+      : undefined
+    const runId = deepLinkRun?.id || runResponse.currentRunId || runHistory.value[0]?.id
     if (runId) {
       const detail = await api.getEvalRun(runId)
       currentRun.value = detail.run
-      if (runResponse.busy) {
-        subscribeRun(runId)
+      if (runResponse.busy && runResponse.currentRunId === runId) {
+        subscribeRun(runResponse.currentRunId)
       }
     }
+    await focusDeepLinkedHistory()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -857,6 +904,20 @@ onUnmounted(() => {
   gap: 8px;
 }
 
+.history-scope-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.38);
+  border-left: 3px solid rgb(var(--v-theme-primary));
+  border-radius: 6px 2px 6px 2px;
+  background: rgba(var(--v-theme-primary), 0.08);
+}
+
+.history-scope-copy { min-width: 0; flex: 1; }
+.history-scope-copy > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .history-card {
   padding: 10px 12px;
   border-radius: 8px;
@@ -873,6 +934,11 @@ onUnmounted(() => {
 .history-card--active {
   border-color: rgb(var(--v-theme-primary));
   background: rgba(var(--v-theme-primary), 0.08);
+}
+
+.history-card--channel-focus {
+  border-left: 3px solid rgba(var(--v-theme-primary), 0.72);
+  padding-left: 10px;
 }
 
 .history-card-header {

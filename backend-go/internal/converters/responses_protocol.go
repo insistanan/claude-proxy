@@ -172,17 +172,21 @@ func trimResponsesPassthroughInput(bodyBytes []byte, req *types.ResponsesRequest
 		return trimmed, nil
 	}
 	if sess == nil || len(sess.Messages) == 0 {
-		return bodyBytes, nil
+		// 本地 session 为空时无从比对前缀：进程重启、TTL 过期、LRU 驱逐或首次代理
+		// 该会话都会走到这里。此时若 input 自带完整历史，继续携带 previous_response_id
+		// 会让同一段历史被上游按两次语义纳入，只能按客户端给出的完整历史建立新边界。
+		return dropPreviousResponseIDIfSelfContained(bodyBytes, rawItems)
 	}
 
 	parsedInput, err := parseResponsesInput(req.Input)
 	if err != nil {
 		return nil, fmt.Errorf("透传模式下解析 input item 失败: %w", err)
 	}
-	// 内部解析器无法完整识别某个扩展 item 时，禁止按错位下标裁剪原始数组。
-	// 保留原请求比误删工具结果更安全，也让上游返回明确的协议错误。
+	// 内部解析器无法完整识别某个扩展 item 时，禁止按错位下标裁剪原始数组——保留原
+	// 请求比误删工具结果更安全，也让上游返回明确的协议错误。但删链只依赖 item 形态、
+	// 不依赖下标对齐，仍然要做，否则重复历史照样被算两次。
 	if len(parsedInput) != len(rawItems) {
-		return bodyBytes, nil
+		return dropPreviousResponseIDIfSelfContained(bodyBytes, rawItems)
 	}
 
 	prefixEnd, ok := utils.ResponsesItemsPrefixMatchRaw(sess.Messages, rawItems)
@@ -198,7 +202,9 @@ func trimResponsesPassthroughInput(bodyBytes []byte, req *types.ResponsesRequest
 			}
 			return trimmed, nil
 		}
-		return bodyBytes, nil
+		// 按历史条数的判断没命中时，再按 input 自身形态兜一次：本地 session 可能只
+		// 保存了会话的一小段（例如刚驱逐后重建），条数比较会漏判自带完整历史的 input。
+		return dropPreviousResponseIDIfSelfContained(bodyBytes, rawItems)
 	}
 
 	suffix := rawItems[prefixEnd:]
@@ -240,6 +246,67 @@ func looksLikeResponsesFullReplay(history []types.ResponsesItem, rawItems []json
 	default:
 		return true
 	}
+}
+
+// dropPreviousResponseIDIfSelfContained 在无法用本地 session 确认前缀关系时，按 input
+// 自身形态决定是否切断服务端链。只有确认 input 自带完整历史才删链；否则原样返回，
+// 行为与该判断引入前一致（保留 previous_response_id，把 input 当增量后缀）。
+func dropPreviousResponseIDIfSelfContained(bodyBytes []byte, rawItems []json.RawMessage) ([]byte, error) {
+	if !responsesRawItemsCarryOwnHistory(rawItems) {
+		return bodyBytes, nil
+	}
+	trimmed, err := sjson.DeleteBytes(bodyBytes, "previous_response_id")
+	if err != nil {
+		return nil, fmt.Errorf("透传模式下删除与完整历史重复的 previous_response_id 失败: %w", err)
+	}
+	return trimmed, nil
+}
+
+// responsesRawItemsCarryOwnHistory 判断一份 input 是否自成一份完整历史。判定只看 item
+// 形态，不依赖本地 session——session 恰好为空（进程重启 / TTL 过期 / LRU 驱逐）正是最
+// 需要这个判断的时刻。
+//
+// Responses 只承认两种合法续接：完整历史作为 input，或只发新增输入并用
+// previous_response_id 链接。两者同时出现时，同一段历史会被上游按两次语义纳入，
+// 上下文规模和计费都会翻倍。
+//
+// 判据故意保守：漏判只是退回原行为（保留链，input 里可能有重复），误判则会删掉链而
+// input 其实只是后缀，把整段上下文丢掉。两个充分条件：
+//   - 出现 developer / system 消息：这是会话根，增量后缀不会重发它。
+//   - 首项是 user 消息，且后面还有 assistant 侧产出：说明客户端从对话开头重放。
+//     只带一条新 user 消息是正常的增量输入，不满足。
+func responsesRawItemsCarryOwnHistory(rawItems []json.RawMessage) bool {
+	if len(rawItems) == 0 {
+		return false
+	}
+	firstIsUser := false
+	hasAssistantOutput := false
+	for index, rawItem := range rawItems {
+		var item struct {
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(rawItem, &item); err != nil {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		if role == "developer" || role == "system" {
+			return true
+		}
+		if index == 0 && role == "user" {
+			firstIsUser = true
+		}
+		if role == "assistant" {
+			hasAssistantOutput = true
+			continue
+		}
+		itemType := strings.ToLower(strings.TrimSpace(item.Type))
+		if itemType == "reasoning" || itemType == "function_call" ||
+			itemType == "custom_tool_call" || itemType == "tool_search_call" || itemType == "tool_use" {
+			hasAssistantOutput = true
+		}
+	}
+	return firstIsUser && hasAssistantOutput
 }
 
 func convertResponsesRequestToOpenAIChat(model string, bodyBytes []byte, stream bool, sess *types.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
