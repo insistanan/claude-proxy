@@ -46,6 +46,7 @@
 | 请求成败/用量记录 | `scheduler.RecordRequest*` / `RecordSuccess*` / `RecordFailure` | 按 kind 分发至对应 MetricsManager；勿直接建 |
 | 取用指标管理器 | `scheduler.ChannelScheduler.MetricsManager(kind)` | 五协议各一份实例的唯一取用入口；按协议命名的 `GetXxxMetricsManager()` 薄壳已删除，调用侧不要按 kind 分支 |
 | 熔断判定 | `metrics.MetricsManager.ShouldSuspendKey(baseURL, apiKey, kind)` | 滑动窗口失败率阈值；注意方法名是 `ShouldSuspendKey` |
+| 新增指标逻辑该写哪个文件 | `metrics` 包按功能分文件：`metrics_types.go`（类型与常量）/ `channel_metrics.go`（构造、持久化加载、key 索引）/ `metrics_record.go`（`Record*` 与窗口/历史追加）/ `metrics_health.go`（健康与失败率、熔断清理自愈、生命周期）/ `metrics_query.go`（聚合读取与 `ToResponse*` 装配）/ `metrics_history.go`（时序分桶、全局统计、近期活跃度）/ `metrics_profile_sync.go`（唯一的 ProfileManager 桥接） | 全部方法同挂 `*MetricsManager`、同一把 `mu sync.RWMutex`，分文件只为可读性，**不代表锁边界**：跨文件方法仍共享一把大锁，加新方法照旧遵守 `xxxLocked` 命名约定 |
 | 多 URL 延迟排序 | `urlhealth.URLManager` | `scheduler.GetSortedURLsForChannel` 入口；默认冷却 30s、连续 3 次失败移末尾 |
 | 模型别名解析 / 上游模型映射 | `config.ResolveUpstreamModel` / `ResolveUpstreamModelList` | DefaultModel 优先，其后 `*` 通配 → 精确 → 双向 Contains 模糊；模型名原样匹配，不剥任何后缀 |
 | 上游 URL 拼接（`#` 后缀跳过版本前缀 / 版本段检测） | `utils.BuildUpstreamURL(baseURL, defaultVersionPrefix, endpoint)` | providers 四处 + handlers chat/images 的唯一出处；`HasVersionSuffix` 供检测 |
@@ -75,6 +76,7 @@
 | 快捷测试输入解析 | `utils/quickInputParser.ts` | 有 vitest 单测 |
 | mdi 图标 | `plugins/vuetify.ts` 的 `iconMap` | 先查表；未注册先注册，`check:icons` 把关 |
 | 版本信息 | `services/version.ts` | UI 展示构建注入的版本 |
+| 前端 API 类型定义该写哪个文件 | `types/` 按领域分文件（`channel` / `client-config` / `conversation` / `eval` / `logs` / `metrics` / `model` / `settings` / `skill`），`types/index.ts` 汇总导出；`services/api.ts` 顶部 `export * from '@/types'` 转发 | 新增类型放对应领域文件，**绝不写回 `services/api.ts`**（那里只留 `ApiError` / `ApiTab` / `ChannelApi` / `TestChannelContext` / `HealthResponse` 这类服务自身的类型）。转发行让既有 `import { Channel } from '@/services/api'` 全部继续可用，新代码优先从 `@/types` 取 |
 
 ## 已知重复与待治理（不新增，治理前先核实再动）
 
@@ -92,6 +94,7 @@
 
 ## 治理记录
 
+- **超大文件拆分（纯搬迁，零行为变更）**：`metrics/channel_metrics.go`（2675 行）拆为 7 文件、`services/api.ts`（1940 行）的 907 行类型区迁到 `src/types/` 9 文件。**两处都是按行区间整段搬移，未改任何签名、未删任何代码、未合并任何逻辑**；守恒已逐项核对：Go 侧顶层符号 85 → 85、原文件每一行都落在某个新文件（2650 行代码 + 53 行新 import 头 + 3 行分隔 = 2706，与原 2675 + 头部 16 + 分隔 9 对齐），前端侧 `export interface|type|class` 101 → types/ 96 + api.ts 保留 5。**沿用 `af0e1ef` 的同包拆分做法**（该轮已处理 `channel_scheduler.go` / `responses/handler.go` / `chat/handler.go`，metrics 是当时的遗漏）。三处执行细节值得记住：① **Git Bash 的 `sed` 在本机以文本模式读写，会把 CRLF 吞成 LF**——切 `.ts`/`.vue` 这类按 `.gitattributes` 必须 CRLF 的文件时不能用 sed 搬运，改用 Node 读 utf8 + `split(/\r?\n/)` + `join("\r\n")`，行尾守卫 `scripts/eol.mjs` 否则直接拦；`.go` 是 LF 所以 sed 无碍。② **`node -e '...'` 里的双反斜杠会被吞掉一层**（`"\\b"` 到 JS 手上变成退格符，正则静默永不命中，且不报错），跨文件引用检测因此第一版给出"无跨文件引用"的假结论——改用无反斜杠的 `split(/[^A-Za-z0-9_]+/)` 分词比对才查出真实的 4 处依赖（`channel←metrics.ChannelRecentActivity`、`conversation←channel.Channel`、`logs←conversation.ConversationKind`、`model←channel.Channel`）。③ **`export * from` 不建立本地绑定**：api.ts 主体（`ApiService`）仍引用 47 个已迁出的类型，只加转发行会全部变成未定义标识符，必须同时 `import type { ... } from '@/types'` 具名导入。**刻意没做的事**：`class ApiService`（730 行 / 83 方法）一行未动——TS 无法把一个 class 的方法散到多文件，拆它属于结构改动而非搬迁；`metrics` 的"一把大锁保护全部字段"也原样保留，拆文件不解决这个问题，别把它当成已治理。
 - **ENV 默认 production / 日志与 development 解耦**：原先 `ENV`/`NODE_ENV` 都未设置时落到 `development`，打包 exe 便携目录不写 ENV 就会开 `/admin/dev/info` 且 Gin DebugMode；同时请求/响应体、合成流内容又绑死 `IsDevelopment()`，正式模式反而看不到排查日志。现改为未设置默认 production；`.env` 由 `config.LoadDotEnv` 先读 exe 同目录再读 cwd；详细日志只跟 `ENABLE_REQUEST_LOGS` / `ENABLE_RESPONSE_LOGS` / `RAW_LOG_OUTPUT` / `SSE_DEBUG_LEVEL` 走。契约由 `config/env_test.go` 锁定。
 - **Messages 出口 thinking 下发**：原先 Messages→Chat / Messages→Responses 故意吞掉上游推理（只缓存不下发），Claude Code 看不到思考区，部分上游把思考混进 `content` 时还会当正文显示。现改为把 `reasoning_content`、`<think>`/`<thinking>` 标签、Responses reasoning summary 转成 Claude `thinking` content block 下发（thinking 在 text 之前）；content 与 reasoning 重复时剥离正文前缀。缓存保留，供下一轮 Chat 回传补齐。
 - **v3.0.0**：canonical JSON 两份实现合并为 `utils.CanonicalJSON`（`providers/responses_messages.go`、`providers/openai.go`、`converters/responses_protocol.go` 改调用）。
