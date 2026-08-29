@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/converters"
@@ -14,6 +15,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // ResponsesProvider Responses API 提供商
@@ -27,6 +29,9 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 	upstream *config.UpstreamConfig,
 	apiKey string,
 ) (*http.Request, []byte, error) {
+	// 同一请求可能在多个渠道/Key 间 failover；不能让前一个候选设置的
+	// “已移除 previous_response_id”状态污染后续候选。
+	c.Set(utils.ContextKeyResponsesPreviousIDDropped, false)
 	// 1. 读取原始请求体
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -47,9 +52,23 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 		model := config.ResolveUpstreamModel(responsesReq.Model, upstream)
 		targetModel = model
 		isStream = converters.ResponsesRequestStream(bodyBytes)
-		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, model, bodyBytes, isStream, nil, nil, upstream)
+		conversationValue, _ := c.Get(utils.ContextKeyConversationUserID)
+		conversationID, _ := conversationValue.(string)
+		var sess *session.Session
+		if p.SessionManager != nil && strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
+			sess, err = p.SessionManager.GetOrCreateSessionForConversation(responsesReq.PreviousResponseID, conversationID)
+			if err != nil {
+				return nil, bodyBytes, fmt.Errorf("获取 Responses 透传会话失败: %w", err)
+			}
+		}
+		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, model, bodyBytes, isStream, sess, &responsesReq, upstream)
 		if err != nil {
 			return nil, bodyBytes, err
+		}
+		if upstream.ServiceType == converters.ResponsesUpstreamResponses &&
+			strings.TrimSpace(responsesReq.PreviousResponseID) != "" &&
+			gjson.GetBytes(reqBody, "previous_response_id").String() == "" {
+			c.Set(utils.ContextKeyResponsesPreviousIDDropped, true)
 		}
 	} else {
 		var responsesReq types.ResponsesRequest
@@ -59,8 +78,10 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 
 		isStream = responsesReq.Stream
 
+		conversationValue, _ := c.Get(utils.ContextKeyConversationUserID)
+		conversationID, _ := conversationValue.(string)
 		// 获取或创建会话
-		sess, err := p.SessionManager.GetOrCreateSession(responsesReq.PreviousResponseID)
+		sess, err := p.SessionManager.GetOrCreateSessionForConversation(responsesReq.PreviousResponseID, conversationID)
 		if err != nil {
 			return nil, bodyBytes, fmt.Errorf("获取会话失败: %w", err)
 		}

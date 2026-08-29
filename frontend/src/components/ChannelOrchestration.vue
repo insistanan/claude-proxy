@@ -28,280 +28,235 @@
       @toggle-vision-status="toggleChannelPrimaryStatus"
     >
       <template #channel="{ channel: element, index, pool, move_to_top, move_to_bottom }">
-        <div class="channel-item-wrapper">
-          <div
-            class="channel-card"
-            :class="[
-              `service-${element.serviceType}`,
-              { 'is-suspended': element.status === 'suspended' },
-              { 'is-expanded': expandedChannelIndex === element.index }
-            ]"
-          >
-            <!-- 顶层主行：身份、状态与控制操作 -->
-            <div class="channel-card-top" @click="toggleChannelChart(element.index)">
-              <!-- 拖拽手柄 -->
-              <div class="drag-handle" title="按住拖拽调整故障转移优先级" @click.stop>
-                <v-icon size="small" color="grey">mdi-drag-vertical</v-icon>
-              </div>
-
-              <!-- 优先级序号 -->
-              <div class="priority-badge" :title="`优先级 #${index + 1}`" @click.stop>
-                <span>{{ index + 1 }}</span>
-              </div>
-
-              <!-- 状态指示器（可点击切换活跃/熔断） -->
-              <div
-                class="channel-status-toggle"
-                role="button"
-                tabindex="0"
-                :title="element.status === 'suspended' ? '点击恢复为活跃' : '点击切换为熔断'"
-                @click.stop="toggleChannelPrimaryStatus(element)"
-                @keydown.enter.stop="toggleChannelPrimaryStatus(element)"
-                @keydown.space.prevent.stop="toggleChannelPrimaryStatus(element)"
-              >
-                <ChannelStatusBadge
-                  :status="element.status || 'active'"
-                  :metrics="getChannelMetrics(element.index)"
-                  size="small"
-                />
-              </div>
-
-              <!-- 渠道身份与业务特性信号 -->
-              <div class="channel-identity">
-                <span
-                  class="channel-name-link"
-                  tabindex="0"
-                  role="button"
-                  :title="element.description ? `${element.name} — ${element.description}` : element.name"
-                  @click.stop="$emit('edit', element)"
-                  @keydown.enter.stop="$emit('edit', element)"
-                  @keydown.space.stop="$emit('edit', element)"
-                >
-                  {{ element.name }}
-                </span>
-
-                <!-- 协议 Badge -->
-                <span class="service-pill" :class="`pill-${element.serviceType}`">
-                  {{ element.serviceType }}
-                </span>
-
-                <!-- 官网跳转按钮 -->
-                <a
-                  v-if="getWebsiteUrl(element)"
-                  :href="getWebsiteUrl(element)"
-                  target="_blank"
-                  rel="noopener"
-                  class="channel-website-link"
-                  title="打开官网"
-                  aria-label="打开官网"
-                  @click.stop
-                >
-                  <v-icon size="13">mdi-open-in-new</v-icon>
-                </a>
-
-                <!-- 概念与能力信号 -->
-                <div v-if="hasChannelMeta(element)" class="channel-signals">
-                  <button
-                    v-if="evalChipFor(element)"
-                    type="button"
-                    class="channel-signal is-clickable"
-                    :class="`tone-${evalChipFor(element)!.color}`"
-                    :title="evalChipFor(element)!.tooltip"
-                    :aria-label="`评测 ${evalChipFor(element)!.label}`"
-                    @click.stop="openEvalForChannel(element)"
+          <div class="channel-item-wrapper">
+            <div
+              class="channel-row"
+              :class="{ 'is-suspended': element.status === 'suspended' }"
+              @click="toggleChannelChart(element.index)"
+            >
+              <!-- SVG 活跃度波形柱状图背景 -->
+              <svg class="activity-chart-bg" preserveAspectRatio="none" viewBox="0 0 150 100">
+                <!-- 渐变定义（为每个柱子单独定义渐变） -->
+                <defs>
+                  <linearGradient
+                    v-for="(bar, i) in getActivityBars(element.index)"
+                    :id="`gradient-${element.index}-${i}`"
+                    :key="`gradient-${element.index}-${i}`"
+                    x1="0%"
+                    y1="0%"
+                    x2="0%"
+                    y2="100%"
                   >
-                    <v-icon v-if="evalChipFor(element)!.watching" size="11">mdi-clock-outline</v-icon>
-                    {{ evalChipFor(element)!.label }}
-                  </button>
+                    <stop offset="0%" :stop-color="bar.color" stop-opacity="0.9" />
+                    <stop offset="100%" :stop-color="bar.color" stop-opacity="0.4" />
+                  </linearGradient>
+                </defs>
+                <!-- 波形柱状图 -->
+                <g v-for="(bar, i) in getActivityBars(element.index)" :key="i">
+                  <rect
+                    :x="bar.x"
+                    :y="bar.y"
+                    :width="bar.width"
+                    :height="bar.height"
+                    :fill="`url(#gradient-${element.index}-${i})`"
+                    :rx="bar.radius"
+                    :ry="bar.radius"
+                    class="activity-bar"
+                    :class="[
+                      `activity-bar-${bar.level}`,
+                      { 'activity-bar-latest': i === getActivityBars(element.index).length - 1 }
+                    ]"
+                  />
+                </g>
+              </svg>
 
-                  <span
-                    v-if="isInPromotion(element)"
-                    class="channel-signal tone-info"
-                    :title="`促销 ${formatPromotionRemaining(element.promotionUntil, element.promotionCount)}`"
-                  >
-                    <v-icon size="11">mdi-rocket-launch</v-icon>
-                    {{ formatPromotionRemaining(element.promotionUntil, element.promotionCount) }}
-                  </span>
-
-                  <span
-                    v-if="element.temporary"
-                    class="channel-signal tone-warning"
-                    :title="`临时渠道 ${formatDateTime(element.temporaryUntil)}`"
-                  >
-                    <v-icon size="11">mdi-timer-sand</v-icon>
-                    临时
-                  </span>
-
-                  <v-tooltip
-                    v-if="shouldShowVisionCapability(element)"
-                    text="支持图片理解"
-                    location="top"
-                    :open-delay="150"
-                  >
-                    <template #activator="{ props: tooltipProps }">
-                      <span
-                        v-bind="tooltipProps"
-                        class="channel-signal channel-signal-icon tone-primary"
-                        title="支持图片理解"
-                        aria-label="支持图片理解"
-                        tabindex="0"
-                        @click.stop
-                      >
-                        <v-icon size="11">mdi-image-search-outline</v-icon>
-                      </span>
-                    </template>
-                  </v-tooltip>
+              <!-- Grid 内容容器 -->
+              <div class="channel-row-content">
+                <!-- 拖拽手柄 -->
+                <div class="drag-handle" @click.stop>
+                  <v-icon size="small" color="grey">mdi-drag-vertical</v-icon>
                 </div>
-              </div>
 
-              <!-- 右侧顶栏操作区 -->
-              <div class="channel-top-actions" @click.stop>
-                <!-- 熔断状态快捷恢复按钮 -->
-                <v-btn
-                  v-if="element.status === 'suspended'"
-                  icon
-                  size="x-small"
-                  variant="tonal"
-                  color="warning"
-                  class="action-btn-resume"
-                  title="恢复为活跃"
-                  @click="resumeChannel(element.index)"
-                >
-                  <v-icon size="14">mdi-refresh</v-icon>
-                </v-btn>
-
-                <!-- 图表展开/收起按钮 -->
-                <v-btn
-                  icon
-                  size="x-small"
-                  variant="text"
-                  class="action-btn-toggle"
-                  :color="expandedChannelIndex === element.index ? 'primary' : 'medium-emphasis'"
-                  :title="expandedChannelIndex === element.index ? '收起用量图表' : '展开用量图表'"
-                  @click="toggleChannelChart(element.index)"
-                >
-                  <v-icon size="15">
-                    {{ expandedChannelIndex === element.index ? 'mdi-chevron-up' : 'mdi-chart-timeline-variant' }}
-                  </v-icon>
-                </v-btn>
-
-                <ChannelQuickMenu
-                  :channel="element"
-                  :position="index"
-                  :total="pool.channels.length"
-                  :copied="copiedChannelIndex === element.index"
-                  :supports-vision-capability="supportsVisionCapability"
-                  :can-delete="canDeleteChannel(element)"
-                  :show-eval="channelType !== 'images'"
-                  @edit="$emit('edit', element)"
-                  @duplicate="duplicateChannel(element.index)"
-                  @toggle-vision="toggleVisionCapability(element)"
-                  @copy-config="copyChannelConfig(element)"
-                  @quick-test="handleQuickTest(element)"
-                  @eval="openEvalForChannel(element)"
-                  @ping="$emit('ping', element.index)"
-                  @logs="openLogsDialog(element)"
-                  @promotion="openPromotionDialog(element)"
-                  @move-top="move_to_top()"
-                  @move-bottom="move_to_bottom()"
-                  @resume="resumeChannel(element.index)"
-                  @suspend="setChannelStatus(element.index, 'suspended')"
-                  @disable="setChannelStatus(element.index, 'disabled')"
-                  @deprecate="setChannelStatus(element.index, 'deprecated')"
-                  @delete="handleDeleteChannel(element)"
-                />
-              </div>
+            <!-- 优先级序号 -->
+            <div class="priority-number" @click.stop>
+              <span class="text-caption font-weight-bold">{{ index + 1 }}</span>
             </div>
 
-            <!-- 第二层：模型重定向、上游Host与可观测指标仪表带 -->
-            <div class="channel-card-bottom" @click="toggleChannelChart(element.index)">
-              <!-- 左侧路由集群 -->
-              <div class="routing-cluster">
-                <!-- 模型映射 -->
-                <v-tooltip
-                  v-if="formatChannelModelPreview(element)"
-                  location="top"
-                  :open-delay="150"
-                >
-                  <template #activator="{ props: tooltipProps }">
-                    <div v-bind="tooltipProps" class="route-pill model-mapping-badge" @click.stop>
-                      <v-icon size="11" class="route-icon">mdi-swap-horizontal</v-icon>
-                      <span class="route-text">{{ formatChannelModelPreview(element) }}</span>
-                    </div>
-                  </template>
-                  <div class="model-mapping-tooltip">
-                    <div class="text-caption font-weight-bold mb-1 d-flex align-center ga-1">
-                      <v-icon size="14" color="primary">mdi-swap-horizontal</v-icon>
-                      <span>模型重定向映射</span>
-                    </div>
-                    <div v-for="(line, idx) in formatModelMappingFullLines(element)" :key="idx" class="model-mapping-line">
-                      {{ line }}
-                    </div>
+            <!-- 状态指示器 -->
+            <div
+              class="channel-status-toggle"
+              role="button"
+              tabindex="0"
+              title="点击切换活跃或熔断"
+              @click.stop="toggleChannelPrimaryStatus(element)"
+              @keydown.enter.stop="toggleChannelPrimaryStatus(element)"
+              @keydown.space.prevent.stop="toggleChannelPrimaryStatus(element)"
+            >
+              <ChannelStatusBadge :status="element.status || 'active'" :metrics="getChannelMetrics(element.index)" />
+            </div>
+
+            <!-- 渠道名称和描述 -->
+            <div class="channel-name">
+              <span
+                class="font-weight-medium channel-name-link"
+                tabindex="0"
+                role="button"
+                @click.stop="$emit('edit', element)"
+                @keydown.enter.stop="$emit('edit', element)"
+                @keydown.space.stop="$emit('edit', element)"
+              >{{ element.name }}</span>
+              <v-chip
+                v-if="evalChipFor(element)"
+                size="x-small"
+                :color="evalChipFor(element)!.color"
+                :title="evalChipFor(element)!.tooltip"
+                variant="tonal"
+                class="ml-2"
+                @click.stop="openEvalForChannel(element)"
+              >
+                <v-icon v-if="evalChipFor(element)!.watching" start size="12">mdi-clock-outline</v-icon>
+                {{ evalChipFor(element)!.label }}
+              </v-chip>
+              <!-- 促销期标识 -->
+              <v-chip
+                v-if="isInPromotion(element)"
+                size="x-small"
+                color="info"
+                variant="flat"
+                class="ml-2"
+              >
+                <v-icon start size="12">mdi-rocket-launch</v-icon>
+                {{ formatPromotionRemaining(element.promotionUntil, element.promotionCount) }}
+              </v-chip>
+              <v-chip
+                v-if="element.temporary"
+                size="x-small"
+                color="warning"
+                variant="tonal"
+                class="ml-2"
+              >
+                <v-icon start size="12">mdi-timer-sand</v-icon>
+                临时 {{ formatDateTime(element.temporaryUntil) }}
+              </v-chip>
+              <v-tooltip
+                v-if="shouldShowVisionCapability(element)"
+                text="支持图片理解"
+                location="top"
+                :open-delay="150"
+                :open-on-focus="false"
+              >
+                <template #activator="{ props: tooltipProps }">
+                  <v-chip
+                    v-bind="tooltipProps"
+                    size="x-small"
+                    color="primary"
+                    variant="flat"
+                    class="ml-2 vision-default-chip"
+                    @click.stop
+                  >
+                    <v-icon start size="12">mdi-image-search-outline</v-icon>
+                    图片
+                  </v-chip>
+                </template>
+              </v-tooltip>
+              <!-- 官网链接按钮 -->
+              <v-btn
+                :href="getWebsiteUrl(element)"
+                target="_blank"
+                rel="noopener"
+                icon
+                size="x-small"
+                variant="text"
+                color="primary"
+                class="ml-1"
+                title="打开官网"
+                @click.stop
+              >
+                <v-icon size="14">mdi-open-in-new</v-icon>
+              </v-btn>
+              <span class="text-caption text-medium-emphasis ml-2">{{ element.serviceType }}</span>
+              <v-tooltip
+                v-if="formatChannelModelPreview(element)"
+                location="top"
+                :open-delay="200"
+                :open-on-focus="false"
+              >
+                <template #activator="{ props: tooltipProps }">
+                  <v-chip
+                    v-bind="tooltipProps"
+                    size="x-small"
+                    color="secondary"
+                    variant="tonal"
+                    class="ml-2 model-mapping-chip"
+                  >
+                    <v-icon start size="12">mdi-swap-horizontal</v-icon>
+                    <span class="model-mapping-preview">{{ formatChannelModelPreview(element) }}</span>
+                  </v-chip>
+                </template>
+                <div class="model-mapping-tooltip">
+                  <div class="text-caption font-weight-bold mb-1">模型映射</div>
+                  <div v-for="(line, idx) in formatModelMappingFullLines(element)" :key="idx" class="model-mapping-line">
+                    {{ line }}
                   </div>
-                </v-tooltip>
-
-                <!-- 上游 Host -->
-                <div
-                  v-if="getChannelHost(element)"
-                  class="route-pill upstream-badge"
-                  :title="`上游端点：${element.baseUrl}`"
-                  @click.stop
-                >
-                  <v-icon size="11" class="route-icon">mdi-server-network</v-icon>
-                  <span class="route-text">{{ getChannelHost(element) }}</span>
                 </div>
+              </v-tooltip>
+              <span v-if="element.description" class="text-caption text-disabled ml-3 channel-description">{{ element.description }}</span>
+              <!-- 展开图标 -->
+              <v-icon
+                size="x-small"
+                class="ml-auto expand-icon"
+                :color="expandedChannelIndex === element.index ? 'primary' : 'grey-lighten-1'"
+                @click.stop="toggleChannelChart(element.index)"
+              >{{ expandedChannelIndex === element.index ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
+            </div>
 
-                <!-- 描述 -->
-                <span
-                  v-if="element.description"
-                  class="channel-desc-text"
-                  :title="element.description"
-                >
-                  {{ element.description }}
-                </span>
-              </div>
-
-              <!-- 右侧指标集群 -->
-              <div class="metrics-cluster" @click.stop>
-                <!-- 15分钟成功率与请求数 -->
-                <v-tooltip location="top" :open-delay="150">
+            <!-- 指标显示 — 视觉条 -->
+            <div class="channel-metrics" @click.stop>
+              <template v-if="getChannelMetrics(element.index)">
+                <v-tooltip location="top" :open-delay="200" :open-on-focus="false">
                   <template #activator="{ props: tooltipProps }">
-                    <div v-bind="tooltipProps" class="metric-block metric-success-block">
+                    <div v-bind="tooltipProps" class="metrics-visual">
+                      <!-- 15分钟有请求时显示指标条，否则显示 -- -->
                       <template v-if="get15mStats(element.index)?.requestCount">
-                        <div class="metric-rate-bar">
-                          <div class="rate-track">
+                        <!-- 成功率条形图 -->
+                        <div class="mini-metric-bar">
+                          <div class="mmb-track">
                             <div
-                              class="rate-fill"
+                              class="mmb-fill"
                               :class="getRateLevel(get15mStats(element.index)?.successRate)"
                               :style="{ width: `${get15mStats(element.index)?.successRate ?? 0}%` }"
-                            />
+                            ></div>
+                            <!-- 指标刷新时重放一次扫光 -->
+                            <span
+                              :key="`mf-${get15mStats(element.index)?.successRate?.toFixed(0)}`"
+                              class="mmb-flash"
+                            ></span>
                           </div>
                           <span
-                            class="rate-num"
+                            class="mmb-value"
+                            :key="`mmb-${get15mStats(element.index)?.successRate?.toFixed(0)}`"
                             :class="getRateLevel(get15mStats(element.index)?.successRate)"
                           >
                             {{ get15mStats(element.index)?.successRate?.toFixed(0) }}%
                           </span>
                         </div>
-                        <span class="metric-sub-label">
-                          {{ formatRequestCount(get15mStats(element.index)?.requestCount) }} req
-                        </span>
+                        <!-- 请求数 + 缓存命中率 -->
+                        <div class="mini-metric-secondary">
+                          <span class="mm-requests">{{ get15mStats(element.index)?.requestCount }} 请求</span>
+                          <template v-if="shouldShowCacheHitRate(get15mStats(element.index))">
+                            <span class="mm-sep">|</span>
+                            <span class="mm-cache">缓存 {{ getCacheHitRate(get15mStats(element.index))?.toFixed(0) }}%</span>
+                          </template>
+                        </div>
                       </template>
-                      <span v-else class="metric-idle-text">空闲</span>
+                      <span v-else class="text-caption text-medium-emphasis">--</span>
                     </div>
                   </template>
                   <div class="metrics-tooltip">
-                    <div class="text-caption font-weight-bold mb-1">请求统计与成功率</div>
+                    <div class="text-caption font-weight-bold mb-1">请求统计</div>
                     <div class="metrics-tooltip-row">
                       <span>15分钟:</span>
                       <span>{{ formatStats(get15mStats(element.index)) }}</span>
-                    </div>
-                    <div
-                      v-if="shouldShowCacheHitRate(get15mStats(element.index))"
-                      class="metrics-tooltip-row"
-                    >
-                      <span>缓存命中:</span>
-                      <span>{{ getCacheHitRate(get15mStats(element.index))?.toFixed(0) }}%</span>
                     </div>
                     <div class="metrics-tooltip-row">
                       <span>1小时:</span>
@@ -335,52 +290,87 @@
                     </div>
                   </div>
                 </v-tooltip>
+              </template>
+              <span v-else class="text-caption text-medium-emphasis">--</span>
+            </div>
 
-                <!-- 缓存命中率 Badge -->
-                <div
-                  v-if="shouldShowCacheHitRate(get15mStats(element.index))"
-                  class="metric-chip cache-chip"
-                  :title="`15分钟缓存命中率: ${getCacheHitRate(get15mStats(element.index))?.toFixed(1)}%`"
-                >
-                  <v-icon size="11">mdi-lightning-bolt</v-icon>
-                  <span class="cache-num">{{ getCacheHitRate(get15mStats(element.index))?.toFixed(0) }}%</span>
-                </div>
-
-                <!-- RPM / TPM 吞吐量 -->
-                <div
-                  class="metric-rpm-tpm"
-                  :class="{ 'has-activity': hasActivityData(element.index) }"
-                  :title="`实时吞吐：RPM ${formatRPM(element.index)} / TPM ${formatTPM(element.index)}`"
-                >
-                  <span class="rpm-val">{{ formatRPM(element.index) }}</span>
-                  <span class="slash">/</span>
-                  <span class="tpm-val">{{ formatTPM(element.index) }}</span>
-                </div>
-
-                <!-- 延迟测速 -->
-                <div
-                  v-if="isLatencyValid(element)"
-                  class="metric-latency"
-                  :title="`测速延迟: ${element.latency}ms`"
-                >
-                  <span class="latency-dot" :class="`lat-${getLatencyColor(element.latency!)}`" />
-                  <span class="latency-val" :class="`lat-text-${getLatencyColor(element.latency!)}`">
-                    {{ element.latency }}ms
-                  </span>
-                </div>
-
-                <!-- API 密钥数量 -->
-                <div
-                  class="metric-keys-badge"
-                  :title="`配置了 ${element.apiKeys?.length || 0} 个 API 密钥，点击编辑`"
-                  @click="$emit('edit', element)"
-                >
-                  <v-icon size="11">mdi-key</v-icon>
-                  <span>{{ element.apiKeys?.length || 0 }}</span>
-                </div>
+            <!-- RPM/TPM 显示 -->
+            <div class="channel-rpm-tpm" @click.stop>
+              <div class="rpm-tpm-values">
+                <span class="rpm-value" :class="{ 'has-data': hasActivityData(element.index) }">{{ formatRPM(element.index) }}</span>
+                <span class="rpm-tpm-separator">/</span>
+                <span class="tpm-value" :class="{ 'has-data': hasActivityData(element.index) }">{{ formatTPM(element.index) }}</span>
+              </div>
+              <div class="rpm-tpm-labels">
+                <span>RPM</span>
+                <span>/</span>
+                <span>TPM</span>
               </div>
             </div>
-          </div>
+
+            <!-- 延迟显示 -->
+            <div class="channel-latency" @click.stop>
+              <v-chip
+                v-if="isLatencyValid(element)"
+                size="x-small"
+                :color="getLatencyColor(element.latency!)"
+                variant="tonal"
+              >
+                {{ element.latency }}ms
+              </v-chip>
+            </div>
+
+            <!-- API密钥数量 -->
+            <div class="channel-keys" @click.stop>
+              <v-chip size="x-small" variant="outlined" class="keys-chip" @click="$emit('edit', element)">
+                <v-icon start size="x-small">mdi-key</v-icon>
+                {{ element.apiKeys?.length || 0 }}
+              </v-chip>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div class="channel-actions" @click.stop>
+              <!-- suspended 状态显示恢复按钮 -->
+              <v-btn
+                v-if="element.status === 'suspended'"
+                icon
+                size="x-small"
+                variant="text"
+                color="warning"
+                title="恢复"
+                @click="resumeChannel(element.index)"
+              >
+                <v-icon size="small">mdi-refresh</v-icon>
+              </v-btn>
+
+              <ChannelQuickMenu
+                :channel="element"
+                :position="index"
+                :total="pool.channels.length"
+                :copied="copiedChannelIndex === element.index"
+                :supports-vision-capability="supportsVisionCapability"
+                :can-delete="canDeleteChannel(element)"
+                :show-eval="channelType !== 'images'"
+                @edit="$emit('edit', element)"
+                @duplicate="duplicateChannel(element.index)"
+                @toggle-vision="toggleVisionCapability(element)"
+                @copy-config="copyChannelConfig(element)"
+                @quick-test="handleQuickTest(element)"
+                @eval="openEvalForChannel(element)"
+                @ping="$emit('ping', element.index)"
+                @logs="openLogsDialog(element)"
+                @promotion="openPromotionDialog(element)"
+                @move-top="move_to_top()"
+                @move-bottom="move_to_bottom()"
+                @resume="resumeChannel(element.index)"
+                @suspend="setChannelStatus(element.index, 'suspended')"
+                @disable="setChannelStatus(element.index, 'disabled')"
+                @deprecate="setChannelStatus(element.index, 'deprecated')"
+                @delete="handleDeleteChannel(element)"
+              />
+            </div>
+              </div><!-- .channel-row-content -->
+          </div><!-- .channel-row -->
 
           <!-- 展开的图表区域 -->
           <v-expand-transition>
@@ -393,7 +383,7 @@
               />
             </div>
           </v-expand-transition>
-        </div>
+          </div>
       </template>
 
       <template #vision-actions="{ channel }">
@@ -1029,14 +1019,6 @@ const evalChipFor = (channel: Channel) => {
   }
 }
 
-/** 概念信号是否存在：评测 / 促销 / 临时 / 图片 / 模型映射，任一命中才渲染信号组。 */
-const hasChannelMeta = (channel: Channel) =>
-  !!evalChipFor(channel) ||
-  isInPromotion(channel) ||
-  !!channel.temporary ||
-  shouldShowVisionCapability(channel) ||
-  !!formatChannelModelPreview(channel)
-
 const openEvalForChannel = (channel: Channel) => {
   if (!channel.id) return
   void router.push({ path: '/eval', query: { channel: channel.id } })
@@ -1260,26 +1242,6 @@ const getWebsiteUrl = (channel: Channel): string => {
   } catch {
     return channel.baseUrl
   }
-}
-
-// 提取上游端点 Host（用于第二层直观展示流量目的地）
-const getChannelHost = (channel: Channel): string => {
-  const raw = String(channel.baseUrl || '').trim()
-  if (!raw) return ''
-  try {
-    const url = new URL(raw)
-    return url.host
-  } catch {
-    return raw.replace(/^https?:\/\//, '').split('/')[0] || raw
-  }
-}
-
-// 紧凑格式化请求数（如 1.2k、42）
-const formatRequestCount = (count?: number): string => {
-  if (!count) return '0'
-  if (count >= 10000) return `${(count / 1000).toFixed(1)}k`
-  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`
-  return String(count)
 }
 
 const toggleVisionCapability = async (channel: Channel) => {
@@ -1940,8 +1902,8 @@ defineExpose({
 
 <style scoped>
 /* ============================================================
-   API Proxy — 渠道双层微仪表板卡片 (Compact Dual-Tier Card)
-   兼顾超高信息密度与极致工业质感
+   API Proxy — 调度轨道
+   编号、状态边线、数据波形组成统一的设备语言
    ============================================================ */
 
 .channel-orchestration { overflow: visible; background: transparent; border: none; }
@@ -1952,7 +1914,7 @@ defineExpose({
   position: relative;
   overflow: visible;
 }
-/* 标题下的主色标尺 — 带刻度 */
+/* 标题下的主色标尺 — 带刻度，像面板上的量程条 */
 .orchestration-header::after {
   content: '';
   position: absolute;
@@ -1973,537 +1935,325 @@ defineExpose({
   text-transform: uppercase;
 }
 .channel-list { display: flex; flex-direction: column; gap: 8px; }
-.channel-item-wrapper { display: flex; flex-direction: column; margin-bottom: 4px; }
+.channel-item-wrapper { display: flex; flex-direction: column; }
 
-/* 渠道主卡片容器 */
-.channel-card {
+.channel-row {
   position: relative;
+  padding: 12px 16px;
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-outline), 0.5);
+  border: 1px solid rgba(var(--v-theme-outline), 0.6);
+  /* 对角不对称切角 — 全站统一的形状签名 */
   border-radius: var(--cut-md) var(--cut-xs) var(--cut-md) var(--cut-xs);
   box-shadow: var(--shadow-1);
+  min-height: 52px;
   transition: transform 0.16s var(--ease-out), box-shadow 0.16s ease, border-color 0.16s ease;
+  cursor: pointer;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
 }
 
-/* 左侧状态光轨 */
-.channel-card::before {
+/* 左侧刻度状态轨 */
+.channel-row::before {
   content: '';
   position: absolute;
   top: 0;
   left: 0;
   bottom: 0;
-  width: 3.5px;
+  width: var(--rail);
   background:
     repeating-linear-gradient(180deg,
       rgba(255, 255, 255, 0.5) 0 1px,
       transparent 1px 8px),
     linear-gradient(180deg,
       rgb(var(--v-theme-primary)) 0%,
-      rgba(var(--v-theme-primary), 0.4) 50%,
+      rgba(var(--v-theme-primary), 0.42) 50%,
       rgb(var(--v-theme-primary)) 100%);
+  background-size: 100% 100%, 100% 200%;
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.14);
   z-index: 2;
 }
 
-.channel-card:hover {
-  border-color: rgba(var(--v-theme-primary), 0.7);
-  box-shadow: var(--shadow-2);
-  transform: translateY(-1px);
+/* 横向扫描线 — 仅 hover 时扫过，避免整屏几十行同时闪动 */
+.channel-row::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(var(--v-theme-primary), 0.1), transparent);
+  pointer-events: none;
+  opacity: 0;
+  animation: scan-sweep 2.6s ease-in-out infinite;
+  animation-play-state: paused;
+  z-index: 3;
+}
+.channel-row:hover::after { opacity: 1; animation-play-state: running; }
+.channel-row:hover::before { animation: rail-flow 3s linear infinite; }
+
+.channel-row-content {
+  display: grid;
+  grid-template-columns: 28px 28px 90px minmax(140px, 1fr) auto 60px 60px 60px auto;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  z-index: 1;
 }
 
-/* suspended 熔断状态 */
-.channel-card.is-suspended {
-  background: color-mix(in srgb, rgb(var(--v-theme-warning)) 8%, rgb(var(--v-theme-surface)));
+.channel-row:hover {
+  border-color: rgba(var(--v-theme-primary), 0.7);
+  box-shadow: var(--shadow-2);
+  transform: translateX(2px);
+}
+
+.channel-row:active { transform: translateY(0); box-shadow: var(--shadow-1); }
+
+/* suspended 状态 — 琥珀底 + 琥珀轨，与活跃行拉开明显反差 */
+.channel-row.is-suspended {
+  background: color-mix(in srgb, rgb(var(--v-theme-warning)) 9%, rgb(var(--v-theme-surface)));
   border-color: rgba(var(--v-theme-warning), 0.6);
 }
-.channel-card.is-suspended::before {
+.channel-row.is-suspended:hover { border-color: rgba(var(--v-theme-warning), 0.85); }
+.channel-row.is-suspended::before {
   background:
     repeating-linear-gradient(180deg,
       rgba(255, 255, 255, 0.5) 0 1px,
       transparent 1px 8px),
     rgb(var(--v-theme-warning));
 }
-.channel-card.is-suspended:hover {
-  border-color: rgba(var(--v-theme-warning), 0.85);
+
+.channel-row.ghost {
+  opacity: 0.5;
+  background: rgba(var(--v-theme-primary), 0.06);
+  border: 2px dashed rgba(var(--v-theme-primary), 0.45);
 }
 
-/* 展开状态 */
-.channel-card.is-expanded {
-  border-color: rgb(var(--v-theme-primary));
-  box-shadow: var(--shadow-2);
+/* SVG 活跃度波形背景 */
+.activity-chart-bg {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 0; opacity: 0.2; overflow: hidden;
+  border-radius: inherit;
+  transition: opacity 0.2s ease;
+}
+.channel-row:hover .activity-chart-bg { opacity: 0.34; }
+
+/* 柱子生长 — 从底部竖起（首次渲染播放一次） */
+.activity-bar {
+  transition: none;
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: bar-rise 0.5s var(--ease-out) both;
 }
 
-/* ===== 顶层主行：身份与操作 ===== */
-.channel-card-top {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 10px 4px 10px;
-  min-height: 32px;
-  cursor: pointer;
+/* 分档动效：健康档静止，越差抖得越急 —— 余光扫过就能发现故障段 */
+.activity-bar-warn {
+  animation: bar-rise 0.5s var(--ease-out) both, spark-blink 2.4s ease-in-out infinite;
 }
+.activity-bar-bad {
+  animation: bar-rise 0.5s var(--ease-out) both, spark-blink 1.05s ease-in-out infinite;
+}
+
+/* 最新柱保持高亮，标记当前窗口 */
+.activity-bar-latest {
+  filter: brightness(1.45) saturate(1.2);
+  animation: bar-rise 0.5s var(--ease-out) both;
+}
+
+.channel-chart-wrapper { margin: 4px 0 8px 0; }
 
 .drag-handle {
-  cursor: grab;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 3px;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-  transition: all 0.12s ease;
-  flex-shrink: 0;
+  cursor: grab; display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 5px;
+  transition: all 0.1s ease;
 }
-.drag-handle:hover {
-  background: rgba(var(--v-theme-on-surface), 0.08);
-  color: rgb(var(--v-theme-on-surface));
-}
-.drag-handle:active {
-  cursor: grabbing;
-  background: rgba(var(--v-theme-primary), 0.15);
+.drag-handle:hover { background: rgba(var(--v-theme-on-surface), 0.06); }
+.drag-handle:active { cursor: grabbing; background: rgba(var(--v-theme-primary), 0.1); }
+
+.priority-number {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
+  background: rgb(var(--v-theme-primary));
+  color: rgb(var(--v-theme-on-primary));
+  font-size: 11px; font-weight: 800;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  border: none;
+  /* 与卡片同向的不对称切角 */
+  border-radius: 6px 2px 6px 2px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
-.priority-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  background: rgba(var(--v-theme-primary), 0.12);
-  color: rgb(var(--v-theme-primary));
-  font-size: 11px;
-  font-weight: 800;
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  border-radius: 4px 1px 4px 1px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.25);
-  flex-shrink: 0;
+.channel-name {
+  display: flex; align-items: center; overflow: hidden; gap: 4px;
 }
+.channel-name .expand-icon { flex-shrink: 0; margin-left: auto; }
+.channel-name .font-weight-medium { font-size: 0.9rem; flex-shrink: 0; }
+
+.channel-description {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis; line-height: 1.4;
+  max-height: calc(1.4em * 2); word-break: break-word;
+  font-size: 0.78rem; opacity: 0.5;
+}
+
+.channel-name-link { cursor: pointer; transition: color 0.15s ease; }
+.channel-name-link:hover, .channel-name-link:focus { color: rgb(var(--v-theme-primary)); }
+.channel-name-link:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; border-radius: 4px; }
 
 .channel-status-toggle {
-  display: inline-flex;
-  align-items: center;
-  cursor: pointer;
-  flex-shrink: 0;
+  display: inline-flex; align-items: center; border-radius: 3px; cursor: pointer;
 }
-.channel-status-toggle:focus-visible {
-  outline: 2px solid rgb(var(--v-theme-primary));
-  outline-offset: 2px;
-}
-.channel-status-toggle :deep(.badge-content) {
-  cursor: pointer;
-  height: 20px;
-  padding: 0 6px 0 18px;
-  font-size: 10.5px;
-}
-.channel-status-toggle :deep(.status-label) { font-size: 10px; }
-.channel-status-toggle :deep(.status-active .badge-content::before),
-.channel-status-toggle :deep(.status-suspended .badge-content::before) {
-  left: 6px;
-  width: 5px;
-  height: 5px;
-}
+.channel-status-toggle:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
+.channel-status-toggle :deep(.badge-content) { cursor: pointer; }
 
-.channel-identity {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+.channel-metrics { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap; min-width: 140px; }
+
+/* ===== 迷你指标条 — 与渠道卡同一套仪表语言的压缩版 ===== */
+.metrics-visual { min-width: 130px; }
+.mini-metric-bar { display: flex; align-items: center; gap: 7px; margin-bottom: 2px; }
+
+/* 凹槽轨道 + 等距刻度 */
+.mmb-track {
   flex: 1;
-  overflow: hidden;
-}
-
-.channel-name-link {
-  font-size: 13px;
-  font-weight: 700;
-  color: rgb(var(--v-theme-on-surface));
-  line-height: 1.2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 45%;
-  flex-shrink: 0;
-  cursor: pointer;
-  transition: color 0.14s ease;
-}
-.channel-name-link:hover, .channel-name-link:focus {
-  color: rgb(var(--v-theme-primary));
-}
-.channel-name-link:focus-visible {
-  outline: 2px solid rgb(var(--v-theme-primary));
-  outline-offset: 2px;
-  border-radius: 3px;
-}
-
-/* 协议微彩色胶囊 */
-.service-pill {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  padding: 1px 5px;
-  border-radius: 3px;
-  line-height: 1.1;
-  flex-shrink: 0;
-  background: rgba(var(--v-theme-on-surface), 0.07);
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  border: 1px solid rgba(var(--v-theme-outline), 0.3);
-}
-.pill-openai {
-  background: rgba(16, 185, 129, 0.12);
-  color: #059669;
-  border-color: rgba(16, 185, 129, 0.3);
-}
-.v-theme--dark .pill-openai {
-  color: #34d399;
-  background: rgba(16, 185, 129, 0.18);
-}
-.pill-claude {
-  background: rgba(217, 119, 6, 0.12);
-  color: #b45309;
-  border-color: rgba(217, 119, 6, 0.3);
-}
-.v-theme--dark .pill-claude {
-  color: #fbbf24;
-  background: rgba(217, 119, 6, 0.18);
-}
-.pill-gemini {
-  background: rgba(99, 102, 241, 0.12);
-  color: #4f46e5;
-  border-color: rgba(99, 102, 241, 0.3);
-}
-.v-theme--dark .pill-gemini {
-  color: #818cf8;
-  background: rgba(99, 102, 241, 0.18);
-}
-.pill-responses {
-  background: rgba(14, 165, 233, 0.12);
-  color: #0284c7;
-  border-color: rgba(14, 165, 233, 0.3);
-}
-.v-theme--dark .pill-responses {
-  color: #38bdf8;
-  background: rgba(14, 165, 233, 0.18);
-}
-
-.channel-website-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  color: rgba(var(--v-theme-on-surface), 0.4);
-  border-radius: 3px;
-  transition: color 0.12s ease, background 0.12s ease;
-  flex-shrink: 0;
-}
-.channel-website-link:hover {
-  color: rgb(var(--v-theme-primary));
-  background: rgba(var(--v-theme-primary), 0.1);
-}
-
-.channel-signals {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  flex-shrink: 1;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.channel-signal {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 3px;
-  border: 1px solid transparent;
-  font-size: 10px;
-  font-weight: 650;
-  line-height: 1;
-  white-space: nowrap;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  color: rgba(var(--v-theme-on-surface), 0.78);
-  flex-shrink: 0;
-}
-.channel-signal :deep(.v-icon) { margin: 0; }
-.channel-signal.is-clickable { cursor: pointer; }
-.channel-signal.is-clickable:hover,
-.channel-signal.is-clickable:focus-visible {
-  border-color: currentColor;
-}
-.channel-signal-icon { padding: 0; width: 18px; justify-content: center; }
-.channel-signal.tone-success {
-  color: rgb(var(--v-theme-success));
-  background: rgba(var(--v-theme-success), 0.12);
-  border-color: rgba(var(--v-theme-success), 0.32);
-}
-.channel-signal.tone-warning {
-  color: rgb(var(--v-theme-warning));
-  background: rgba(var(--v-theme-warning), 0.12);
-  border-color: rgba(var(--v-theme-warning), 0.32);
-}
-.channel-signal.tone-error {
-  color: rgb(var(--v-theme-error));
-  background: rgba(var(--v-theme-error), 0.12);
-  border-color: rgba(var(--v-theme-error), 0.32);
-}
-.channel-signal.tone-info {
-  color: rgb(var(--v-theme-info));
-  background: rgba(var(--v-theme-info), 0.14);
-  border-color: rgba(var(--v-theme-info), 0.34);
-}
-.channel-signal.tone-primary {
-  color: rgb(var(--v-theme-primary));
-  background: rgba(var(--v-theme-primary), 0.12);
-  border-color: rgba(var(--v-theme-primary), 0.3);
-}
-
-.channel-top-actions {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-  margin-left: auto;
-}
-.action-btn-resume { width: 22px; height: 22px; }
-.action-btn-toggle { width: 22px; height: 22px; }
-
-/* ===== 第二层：路由、端点与指标仪表带 ===== */
-.channel-card-bottom {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 10px 6px 12px;
-  border-top: 1px solid rgba(var(--v-theme-outline), 0.12);
-  background: rgba(var(--v-theme-surface-variant), 0.18);
-  font-size: 11px;
-}
-.v-theme--dark .channel-card-bottom {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-/* 左侧路由与端点信息 */
-.routing-cluster {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-}
-
-.route-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 6px;
-  height: 20px;
-  border-radius: 4px;
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  font-size: 11px;
-  line-height: 1;
-  white-space: nowrap;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex-shrink: 0;
-  border: 1px solid transparent;
-}
-.route-pill .route-icon { flex-shrink: 0; }
-.route-pill .route-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-mapping-badge {
-  background: rgba(var(--v-theme-secondary), 0.12);
-  color: rgb(var(--v-theme-secondary));
-  border-color: rgba(var(--v-theme-secondary), 0.28);
-  font-weight: 600;
-  cursor: help;
-}
-.v-theme--dark .model-mapping-badge {
-  background: rgba(160, 168, 182, 0.15);
-  color: #c9cfda;
-  border-color: rgba(160, 168, 182, 0.35);
-}
-
-.upstream-badge {
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  color: rgba(var(--v-theme-on-surface), 0.65);
-  border-color: rgba(var(--v-theme-outline), 0.25);
-}
-
-.channel-desc-text {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  flex: 1;
-}
-
-/* 右侧指标仪表带 */
-.metrics-cluster {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-/* 成功率微型进度条 */
-.metric-block {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  cursor: pointer;
-}
-.metric-rate-bar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.rate-track {
-  width: 36px;
-  height: 5px;
-  background: rgba(var(--v-theme-outline), 0.3);
+  height: 9px;
+  min-width: 60px;
   border-radius: 2px;
+  position: relative;
   overflow: hidden;
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(var(--v-theme-on-surface), 0.13) 0 1px,
+      transparent 1px var(--tick)),
+    rgba(var(--v-theme-outline), 0.24);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.14);
 }
-.v-theme--dark .rate-track {
-  background: rgba(255, 255, 255, 0.12);
+/* 90% 健康阈值刻线 */
+.mmb-track::after {
+  content: '';
+  position: absolute;
+  left: 90%; top: 0; bottom: 0;
+  width: 1px;
+  background: rgba(var(--v-theme-on-surface), 0.4);
+  z-index: 3;
 }
-.rate-fill {
+.v-theme--dark .mmb-track {
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(255, 255, 255, 0.09) 0 1px,
+      transparent 1px var(--tick)),
+    rgba(0, 0, 0, 0.4);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+.v-theme--dark .mmb-track::after { background: rgba(255, 255, 255, 0.3); }
+
+.mmb-fill {
   height: 100%;
   border-radius: 2px;
-  transition: width 0.4s ease;
-}
-.rate-fill.high { background: rgb(var(--v-theme-success)); }
-.rate-fill.medium { background: rgb(var(--v-theme-warning)); }
-.rate-fill.low { background: rgb(var(--v-theme-error)); }
-
-.rate-num {
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-.rate-num.high { color: rgb(var(--v-theme-success)); }
-.rate-num.medium { color: rgb(var(--v-theme-warning)); }
-.rate-num.low { color: rgb(var(--v-theme-error)); }
-
-.metric-sub-label {
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-}
-.metric-idle-text {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.38);
+  transition: width 0.85s var(--ease-spring);
+  min-width: 3px;
+  position: relative;
+  z-index: 1;
 }
 
-/* 缓存命中率芯片 */
-.metric-chip.cache-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: rgba(6, 182, 212, 0.12);
-  border: 1px solid rgba(6, 182, 212, 0.3);
-  color: #0891b2;
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  font-size: 10.5px;
-  font-weight: 700;
-  line-height: 1;
-}
-.v-theme--dark .metric-chip.cache-chip {
-  color: #22d3ee;
-  background: rgba(6, 182, 212, 0.18);
-}
-
-/* 吞吐量 RPM / TPM */
-.metric-rpm-tpm {
-  display: flex;
-  align-items: baseline;
-  gap: 2px;
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-  line-height: 1;
-}
-.metric-rpm-tpm.has-activity .rpm-val,
-.metric-rpm-tpm.has-activity .tpm-val {
-  color: rgb(var(--v-theme-primary));
-}
-.metric-rpm-tpm .slash {
-  font-weight: 400;
-  opacity: 0.3;
-}
-
-/* 测速延迟 */
-.metric-latency {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  font-size: 10.5px;
-  font-weight: 650;
-  line-height: 1;
-}
-.latency-dot {
-  width: 5px;
-  height: 5px;
+/* 波头 — 末端示波器亮点 */
+.mmb-fill::before {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 8px 2px currentColor;
+  animation: wave-head 2.6s ease-in-out infinite;
 }
-.latency-dot.lat-success { background: rgb(var(--v-theme-success)); }
-.latency-dot.lat-warning { background: rgb(var(--v-theme-warning)); }
-.latency-dot.lat-error { background: rgb(var(--v-theme-error)); }
 
-.lat-text-success { color: rgb(var(--v-theme-success)); }
-.lat-text-warning { color: rgb(var(--v-theme-warning)); }
-.lat-text-error { color: rgb(var(--v-theme-error)); }
+/* 流光 — 数据在流动 */
+.mmb-fill::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 55%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.36), transparent);
+  animation: shimmer-slide 3.2s ease-in-out infinite both;
+}
 
-/* API Key 徽章 */
-.metric-keys-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  border: 1px solid rgba(var(--v-theme-outline), 0.4);
+/* 指标刷新扫光 */
+.mmb-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  animation: shimmer-slide 0.62s var(--ease-out) 1 both;
+}
+.v-theme--dark .mmb-flash { background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent); }
+
+/* 健康（绿）— 平稳 */
+.mmb-fill.high {
+  background: linear-gradient(90deg, rgba(var(--v-theme-success), 0.72), rgb(var(--v-theme-success)));
+  color: rgb(var(--v-theme-success));
+  box-shadow: 0 0 8px rgba(var(--v-theme-success), 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+/* 亚健康（黄）— 节奏加快 */
+.mmb-fill.medium {
+  background: linear-gradient(90deg, rgba(var(--v-theme-warning), 0.72), rgb(var(--v-theme-warning)));
+  color: rgb(var(--v-theme-warning));
+  box-shadow: 0 0 8px rgba(var(--v-theme-warning), 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+.mmb-fill.medium::before { animation-duration: 1.8s; }
+.mmb-fill.medium::after { animation-duration: 2.2s; }
+/* 故障（红）— 滚动警示斜纹 + 急促红光呼吸 */
+.mmb-fill.low {
+  background:
+    repeating-linear-gradient(135deg,
+      rgba(0, 0, 0, 0.26) 0 5px,
+      transparent 5px 10px),
+    linear-gradient(90deg, rgba(var(--v-theme-error), 0.75), rgb(var(--v-theme-error)));
+  background-size: 20px 100%, 100% 100%;
+  color: rgb(var(--v-theme-error));
+  animation: stripe-drift 0.85s linear infinite, alarm-breathe 1.5s ease-in-out infinite;
+}
+.mmb-fill.low::before { animation-duration: 1.05s; }
+.mmb-fill.low::after { display: none; }
+
+.mmb-value {
+  font-size: 11px; font-weight: 700;
   font-family: 'Fira Code', 'JetBrains Mono', monospace;
-  font-size: 10.5px;
-  font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.65);
-  cursor: pointer;
-  transition: all 0.12s ease;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  animation: value-pop 0.45s var(--ease-spring);
 }
-.metric-keys-badge:hover {
-  background: rgba(var(--v-theme-primary), 0.1);
-  border-color: rgba(var(--v-theme-primary), 0.4);
-  color: rgb(var(--v-theme-primary));
-}
+.mmb-value.high { color: rgb(var(--v-theme-success)); }
+.mmb-value.medium { color: rgb(var(--v-theme-warning)); }
+.mmb-value.low { color: rgb(var(--v-theme-error)); }
 
-.channel-chart-wrapper {
-  margin: 4px 0 8px 0;
-  border-top: 1px dashed rgba(var(--v-theme-outline), 0.3);
-  padding-top: 6px;
+.mini-metric-secondary {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 10px;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  color: rgba(var(--v-theme-on-surface-variant), 0.8);
 }
+.mm-sep { opacity: 0.35; }
+.channel-latency { display: flex; align-items: center; min-width: 60px; }
+
+.channel-rpm-tpm { display: flex; flex-direction: column; align-items: center; min-width: 60px; }
+.rpm-tpm-values {
+  display: flex; align-items: baseline; gap: 2px;
+  font-size: 13px; font-weight: 700;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.rpm-tpm-values .rpm-value.has-data, .rpm-tpm-values .tpm-value.has-data { color: rgb(var(--v-theme-primary)); }
+.rpm-tpm-separator { color: rgba(var(--v-theme-on-surface), 0.2); font-weight: 400; }
+.rpm-tpm-labels { display: flex; align-items: center; gap: 2px; font-size: 9px; color: rgba(var(--v-theme-on-surface), 0.4); text-transform: uppercase; letter-spacing: 0.06em; }
+
+.channel-keys { display: flex; align-items: center; }
+.channel-keys .keys-chip { cursor: pointer; transition: all 0.15s ease; }
+.channel-keys .keys-chip:hover { background: rgba(var(--v-theme-primary), 0.06); border-color: rgba(var(--v-theme-primary), 0.3); color: rgb(var(--v-theme-primary)); }
+
+.channel-actions { display: flex; align-items: center; gap: 2px; justify-content: flex-end; min-width: 50px; }
 
 /* 备用资源池 */
 .inactive-pool-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
@@ -2533,10 +2283,30 @@ defineExpose({
 .inactive-channel-row .channel-actions { display: flex; align-items: center; gap: 4px; }
 
 /* tooltip */
-.metrics-tooltip { font-size: 12px; line-height: 1.5; color: rgb(var(--v-theme-on-surface)); min-width: 180px; }
+.metrics-tooltip { font-size: 12px; line-height: 1.5; color: rgb(var(--v-theme-on-surface)); }
 .metrics-tooltip-row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
 .metrics-tooltip-row span:first-child { color: rgba(var(--v-theme-on-surface), 0.55); }
 .metrics-tooltip-row span:last-child { font-weight: 500; color: rgb(var(--v-theme-on-surface)); }
+
+/* 模型映射 Chip — 紧凑显示 + 固定最大宽度 */
+.model-mapping-chip {
+  max-width: 160px;
+  overflow: hidden;
+  cursor: help;
+}
+.model-mapping-chip :deep(.v-chip__content) {
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.model-mapping-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+}
 
 /* 模型映射 Tooltip — 结构化展示 */
 .model-mapping-tooltip {
@@ -2615,28 +2385,40 @@ defineExpose({
 
 /* 响应式 */
 @media (max-width: 1400px) {
-  .channel-name-link { max-width: 40%; }
+  .channel-row-content { grid-template-columns: 28px 28px 85px minmax(100px, 1fr) auto 50px 50px 50px auto; gap: 6px; }
+  .channel-row { padding: 10px 12px; }
 }
-@media (max-width: 1100px) {
-  .channel-desc-text { display: none; }
-  .channel-name-link { max-width: 35%; }
+@media (max-width: 1200px) {
+  .channel-row-content { grid-template-columns: 26px 26px 80px minmax(80px, 1fr) auto 45px 45px 45px auto; gap: 5px; }
+  .channel-row { padding: 8px 10px; }
+  .rpm-tpm-values { font-size: 11px; }
+  .rpm-tpm-labels { font-size: 8px; }
 }
-@media (max-width: 768px) {
-  .channel-card-bottom { flex-wrap: wrap; gap: 6px; }
-  .routing-cluster { min-width: 100%; }
-  .metrics-cluster { width: 100%; justify-content: flex-end; }
+@media (max-width: 960px) {
+  .channel-row-content { grid-template-columns: 26px 26px 75px minmax(60px, 1fr) auto 40px 40px 40px auto; gap: 4px; }
+  .channel-row { padding: 8px 8px; }
 }
 @media (max-width: 600px) {
-  .channel-signals { display: none; }
-  .priority-badge, .drag-handle { display: none; }
-  .metric-rpm-tpm { display: none; }
+  .channel-row-content { grid-template-columns: 28px 1fr 60px; gap: 8px; }
+  .channel-row { padding: 10px 12px; }
+  .channel-metrics, .channel-latency, .channel-keys, .channel-rpm-tpm { display: none; }
+  .priority-number, .drag-handle { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .channel-card,
-  .channel-card::before,
+  .channel-row,
+  .channel-row::before,
+  .channel-row::after,
   .drag-handle,
-  .rate-fill,
+  .activity-bar,
+  .activity-bar-warn,
+  .activity-bar-bad,
+  .activity-bar-latest,
+  .mmb-fill,
+  .mmb-fill::before,
+  .mmb-fill::after,
+  .mmb-flash,
+  .mmb-value,
   .inactive-channel-row { transition: none !important; animation: none !important; }
 }
 </style>

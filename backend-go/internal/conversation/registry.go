@@ -371,11 +371,16 @@ func (r *Registry) ResolveExistingRecordID(apiKind string, identity Identity) st
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	recordID, ok := r.identityIndex[key]
-	if !ok || r.records[recordID] == nil {
-		return ""
+	if recordID, ok := r.identityIndex[key]; ok && r.records[recordID] != nil {
+		return recordID
 	}
-	return recordID
+	if isPreviousResponseIdentity(identity) {
+		baseKey := explicitIdentityKey(apiKind, identity.ExplicitID)
+		if recordID, ok := r.identityIndex[baseKey]; ok && r.records[recordID] != nil {
+			return recordID
+		}
+	}
+	return ""
 }
 
 func (r *Registry) SetRouteOverride(recordID string, kind string, channelIndex int, channelName string) (*Record, error) {
@@ -630,6 +635,10 @@ func buildExplicitIdentityKey(obs Observation) string {
 		return ""
 	}
 	return explicitIdentityKey(obs.APIKind, value)
+}
+
+func isPreviousResponseIdentity(identity Identity) bool {
+	return strings.EqualFold(strings.TrimSpace(identity.Source), "previous_response")
 }
 
 func buildAnonymousIdentityKey(apiKind string) string {

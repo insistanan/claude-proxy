@@ -27,7 +27,7 @@ const (
 func ConvertResponsesRequestToUpstream(serviceType string, model string, bodyBytes []byte, stream bool, sess *types.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
 	switch serviceType {
 	case ResponsesUpstreamResponses:
-		return convertResponsesPassthroughRequest(model, bodyBytes, upstream)
+		return convertResponsesPassthroughRequestWithSession(model, bodyBytes, upstream, sess, req)
 	case ResponsesUpstreamOpenAI:
 		return convertResponsesRequestToOpenAIChat(model, bodyBytes, stream, sess, req, upstream)
 	case ResponsesUpstreamClaude:
@@ -90,6 +90,20 @@ func ConvertUpstreamStreamLineToResponses(ctx context.Context, serviceType strin
 }
 
 func convertResponsesPassthroughRequest(model string, bodyBytes []byte, upstream *config.UpstreamConfig) ([]byte, error) {
+	return convertResponsesPassthroughRequestWithSession(model, bodyBytes, upstream, nil, nil)
+}
+
+// convertResponsesPassthroughRequestWithSession 保留 Responses 原始 item 的全部扩展
+// 字段，只在 previous_response_id 对应的本地 session 能确认客户端重放了完整历史时，
+// 从 input 数组裁掉已经存在于服务端链上的前缀。这样不会把客户端的工具结果、图片
+// 或 encrypted_content 重新编码成代理内部结构，也不会误删只发送新增后缀的正常请求。
+func convertResponsesPassthroughRequestWithSession(
+	model string,
+	bodyBytes []byte,
+	upstream *config.UpstreamConfig,
+	sess *types.Session,
+	req *types.ResponsesRequest,
+) ([]byte, error) {
 	if !gjson.ValidBytes(bodyBytes) {
 		return nil, fmt.Errorf("透传模式下解析请求失败: 请求体不是有效 JSON")
 	}
@@ -120,33 +134,156 @@ func convertResponsesPassthroughRequest(model string, bodyBytes []byte, upstream
 		}
 	}
 
+	if req != nil && strings.TrimSpace(req.PreviousResponseID) != "" {
+		result, err = trimResponsesPassthroughInput(result, req, sess)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return result, nil
+}
+
+func trimResponsesPassthroughInput(bodyBytes []byte, req *types.ResponsesRequest, sess *types.Session) ([]byte, error) {
+	if req == nil || req.Input == nil {
+		return bodyBytes, nil
+	}
+
+	input := gjson.GetBytes(bodyBytes, "input")
+	if !input.Exists() || !input.IsArray() {
+		return bodyBytes, nil
+	}
+
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal([]byte(input.Raw), &rawItems); err != nil {
+		return nil, fmt.Errorf("透传模式下解析 input 数组失败: %w", err)
+	}
+	if len(rawItems) == 0 {
+		return bodyBytes, nil
+	}
+	if utils.ResponsesRawItemsContainCompaction(rawItems) {
+		// compaction item 已经是新的上下文根。继续携带旧的
+		// previous_response_id 会把压缩前的服务端链和压缩 item 叠加发送，
+		// 这是压缩后上下文迅速恢复到旧长度的直接原因。
+		trimmed, err := sjson.DeleteBytes(bodyBytes, "previous_response_id")
+		if err != nil {
+			return nil, fmt.Errorf("透传模式下删除压缩后的 previous_response_id 失败: %w", err)
+		}
+		return trimmed, nil
+	}
+	if sess == nil || len(sess.Messages) == 0 {
+		return bodyBytes, nil
+	}
+
+	parsedInput, err := parseResponsesInput(req.Input)
+	if err != nil {
+		return nil, fmt.Errorf("透传模式下解析 input item 失败: %w", err)
+	}
+	// 内部解析器无法完整识别某个扩展 item 时，禁止按错位下标裁剪原始数组。
+	// 保留原请求比误删工具结果更安全，也让上游返回明确的协议错误。
+	if len(parsedInput) != len(rawItems) {
+		return bodyBytes, nil
+	}
+
+	prefixEnd, ok := utils.ResponsesItemsPrefixMatchRaw(sess.Messages, rawItems)
+	if !ok || prefixEnd <= 0 || prefixEnd > len(rawItems) {
+		// 前缀无法确认时，不能把“看起来像完整历史”的 input 与旧服务端
+		// 链同时发送。那会让同一轮历史被计费两次，并把 Cursor 的上下文
+		// 迅速推满。只有明显是新增工具结果后缀时才保留 previous_response_id；
+		// 其余长 input 去掉旧链，按客户端给出的完整历史建立新边界。
+		if looksLikeResponsesFullReplay(sess.Messages, rawItems) {
+			trimmed, err := sjson.DeleteBytes(bodyBytes, "previous_response_id")
+			if err != nil {
+				return nil, fmt.Errorf("透传模式下删除无法确认历史的 previous_response_id 失败: %w", err)
+			}
+			return trimmed, nil
+		}
+		return bodyBytes, nil
+	}
+
+	suffix := rawItems[prefixEnd:]
+	if suffix == nil {
+		suffix = []json.RawMessage{}
+	}
+	suffixJSON, err := json.Marshal(suffix)
+	if err != nil {
+		return nil, fmt.Errorf("透传模式下序列化 input 后缀失败: %w", err)
+	}
+	trimmed, err := sjson.SetRawBytes(bodyBytes, "input", suffixJSON)
+	if err != nil {
+		return nil, fmt.Errorf("透传模式下裁剪重复 input 失败: %w", err)
+	}
+	return trimmed, nil
+}
+
+func looksLikeResponsesFullReplay(history []types.ResponsesItem, rawItems []json.RawMessage) bool {
+	visibleHistoryCount := 0
+	for _, item := range history {
+		if strings.EqualFold(strings.TrimSpace(item.Type), "reasoning") {
+			continue
+		}
+		visibleHistoryCount++
+	}
+	if visibleHistoryCount == 0 || len(rawItems) < visibleHistoryCount || len(rawItems) == 0 {
+		return false
+	}
+	var first map[string]interface{}
+	if err := json.Unmarshal(rawItems[0], &first); err != nil {
+		return false
+	}
+	itemType, _ := first["type"].(string)
+	// Responses 的增量工具回合通常从 function_call_output 开始；这类
+	// 后缀不能因为 item 数量刚好较多而被误判成完整历史。
+	switch strings.ToLower(strings.TrimSpace(itemType)) {
+	case "function_call_output", "custom_tool_call_output", "tool_result":
+		return false
+	default:
+		return true
+	}
 }
 
 func convertResponsesRequestToOpenAIChat(model string, bodyBytes []byte, stream bool, sess *types.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
 	if err := ValidateResponsesToOpenAIChatRequest(bodyBytes); err != nil {
 		return nil, err
 	}
+	if req != nil && utils.ResponsesItemsContainCompactionFromInput(req.Input) {
+		return nil, fmt.Errorf("Responses compaction item 只能由 Responses 原生上游处理，无法转换为 OpenAI Chat")
+	}
 
 	// IncludeHistoryThinking controls whether type=reasoning items become visible assistant text.
 	// Default false: skip history reasoning (Chat has no native reasoning field for history).
 	includeHistoryThinking := upstream != nil && upstream.IncludeHistoryThinking
-	base := ConvertResponsesToOpenAIChatRequestWithOptions(model, bodyBytes, stream, includeHistoryThinking)
+	conversionBody := bodyBytes
+	var mergedItems []types.ResponsesItem
+	if sess != nil && req != nil && len(sess.Messages) > 0 {
+		currentItems, err := parseResponsesInput(req.Input)
+		if err != nil {
+			return nil, fmt.Errorf("解析 Responses input 失败: %w", err)
+		}
+		mergedItems = utils.MergeResponsesItemsDedup(sess.Messages, currentItems)
+		if utils.ResponsesItemsContainCompaction(mergedItems) {
+			return nil, fmt.Errorf("Responses compaction item 只能由 Responses 原生上游处理，无法转换为 OpenAI Chat")
+		}
+		conversionBody, err = sjson.SetBytes(bodyBytes, "input", mergedItems)
+		if err != nil {
+			return nil, fmt.Errorf("构建 OpenAI Chat 合并 input 失败: %w", err)
+		}
+	}
+	base := ConvertResponsesToOpenAIChatRequestWithOptions(model, conversionBody, stream, includeHistoryThinking)
 
 	var chatReq map[string]interface{}
 	if err := json.Unmarshal(base, &chatReq); err != nil {
 		return nil, fmt.Errorf("解析 OpenAI Chat 转换结果失败: %w", err)
 	}
 
-	currentMessages, ok := chatReq["messages"].([]interface{})
-	if !ok {
+	if _, ok := chatReq["messages"].([]interface{}); !ok {
 		return nil, fmt.Errorf("OpenAI Chat 转换结果缺少 messages")
 	}
 
-	// Session merge: when previous_response_id session has history, prefer session + avoid simple double-append
-	// if client input already replays full history.
-	if sess != nil && req != nil && len(sess.Messages) > 0 {
-		if toolDefinitions, err := collectResponsesToolDefinitions(req.Tools, req.Input, sessionResponseItems(sess)); err != nil {
+	// session input 已在 Responses item 层合并；这里仅补齐从历史 tool_search_output
+	// 恢复出来的工具定义，避免工具转换因协议字段缺失而静默退化。
+	if len(mergedItems) > 0 && req != nil {
+		if toolDefinitions, err := collectResponsesToolDefinitions(req.Tools, mergedItems); err != nil {
 			return nil, fmt.Errorf("构建 OpenAI Chat tools 失败: %w", err)
 		} else if chatTools, err := responsesToolDefinitionsToOpenAIChatTools(toolDefinitions); err != nil {
 			return nil, fmt.Errorf("转换 OpenAI Chat tools 失败: %w", err)
@@ -160,11 +297,6 @@ func convertResponsesRequestToOpenAIChat(model string, bodyBytes []byte, stream 
 			if req.ParallelToolCalls != nil {
 				chatReq["parallel_tool_calls"] = *req.ParallelToolCalls
 			}
-		}
-
-		historyMessages := buildOpenAIHistoryMessages(sess, includeHistoryThinking)
-		if len(historyMessages) > 0 {
-			chatReq["messages"] = mergeOpenAIHistoryMessagesDedup(historyMessages, currentMessages)
 		}
 	}
 
@@ -211,52 +343,75 @@ func mergeOpenAIHistoryMessagesDedup(historyMessages []interface{}, currentMessa
 	merged := make([]interface{}, 0, len(historyMessages)+len(currentMessages))
 
 	// Keep a single leading system message from current input when present.
+	hasCurrentSystem := false
 	if len(currentMessages) > 0 {
 		if first, ok := currentMessages[0].(map[string]interface{}); ok && first["role"] == "system" {
 			merged = append(merged, first)
 			currentMessages = currentMessages[1:]
+			hasCurrentSystem = true
 		}
 	}
 
-	// Strip system from history for overlap comparison (system already handled).
-	historyNonSystem := make([]interface{}, 0, len(historyMessages))
-	for _, msg := range historyMessages {
-		if m, ok := msg.(map[string]interface{}); ok && m["role"] == "system" {
-			continue
+	// instructions 是当前请求独立携带的 system message，通常不在 session 历史中；
+	// 只有当前确实有该字段时才从历史比较序列移除 system。没有当前 instructions
+	// 时必须保留历史 system，不能为了去重静默丢掉用户显式发送的系统消息。
+	historyComparable := historyMessages
+	if hasCurrentSystem {
+		historyComparable = make([]interface{}, 0, len(historyMessages))
+		for _, msg := range historyMessages {
+			if m, ok := msg.(map[string]interface{}); ok && m["role"] == "system" {
+				continue
+			}
+			historyComparable = append(historyComparable, msg)
 		}
-		historyNonSystem = append(historyNonSystem, msg)
 	}
 
-	// Detect overlap: if current starts with the same sequence as history, only append the suffix.
+	// 优先寻找最长连续前缀。完整前缀可以确定是客户端重放；部分前缀只有
+	// 跨过至少一轮 assistant/user 或工具调用边界时才裁剪，避免吞掉一条
+	// 恰好与历史首条相同的新输入。
 	overlap := 0
-	maxCheck := len(historyNonSystem)
+	maxCheck := len(historyComparable)
 	if len(currentMessages) < maxCheck {
 		maxCheck = len(currentMessages)
 	}
-	// Prefer longest prefix match of history against start of current.
 	for candidate := maxCheck; candidate > 0; candidate-- {
-		if openAIChatMessagePrefixEqual(historyNonSystem[:candidate], currentMessages[:candidate]) {
+		if openAIChatMessagePrefixEqual(historyComparable[:candidate], currentMessages[:candidate]) {
 			overlap = candidate
 			break
 		}
 	}
-
-	if overlap > 0 && overlap == len(historyNonSystem) {
+	if overlap == len(historyComparable) {
 		// Current fully includes history (or more): use current only (already has history).
 		merged = append(merged, currentMessages...)
 		return merged
 	}
-	if overlap > 0 {
-		// Partial prefix overlap: keep full history then non-overlapping current suffix.
-		merged = append(merged, historyNonSystem...)
+	if overlap >= 2 && overlap < len(currentMessages) &&
+		openAIChatReplayBoundary(historyComparable[overlap-1], currentMessages[overlap]) {
+		merged = append(merged, historyComparable...)
 		merged = append(merged, currentMessages[overlap:]...)
 		return merged
 	}
 
 	// No overlap: session + current (classic previous_response_id incremental input).
-	merged = append(merged, historyNonSystem...)
+	merged = append(merged, historyComparable...)
 	merged = append(merged, currentMessages...)
 	return merged
+}
+
+func openAIChatReplayBoundary(previous, next interface{}) bool {
+	previousMessage, previousOK := previous.(map[string]interface{})
+	nextMessage, nextOK := next.(map[string]interface{})
+	if !previousOK || !nextOK {
+		return false
+	}
+	previousRole, _ := previousMessage["role"].(string)
+	nextRole, _ := nextMessage["role"].(string)
+	previousRole = strings.ToLower(strings.TrimSpace(previousRole))
+	nextRole = strings.ToLower(strings.TrimSpace(nextRole))
+	if nextRole == "tool" {
+		return true
+	}
+	return nextRole == "user" && previousRole == "assistant"
 }
 
 func openAIChatMessagePrefixEqual(left []interface{}, right []interface{}) bool {
@@ -269,37 +424,8 @@ func openAIChatMessagePrefixEqual(left []interface{}, right []interface{}) bool 
 		if !leftOK || !rightOK {
 			return false
 		}
-		if leftMsg["role"] != rightMsg["role"] {
+		if semanticJSON(canonicalOpenAIChatMessage(leftMsg)) != semanticJSON(canonicalOpenAIChatMessage(rightMsg)) {
 			return false
-		}
-		// Compare tool_call_id for tool messages (stable id).
-		if leftMsg["role"] == "tool" {
-			if leftMsg["tool_call_id"] != rightMsg["tool_call_id"] {
-				return false
-			}
-			continue
-		}
-		// Compare content string when both are strings; otherwise compare JSON fingerprint.
-		leftContent, leftIsString := leftMsg["content"].(string)
-		rightContent, rightIsString := rightMsg["content"].(string)
-		if leftIsString && rightIsString {
-			if leftContent != rightContent {
-				return false
-			}
-			continue
-		}
-		leftRaw, _ := json.Marshal(leftMsg["content"])
-		rightRaw, _ := json.Marshal(rightMsg["content"])
-		if string(leftRaw) != string(rightRaw) {
-			return false
-		}
-		// Also compare tool_calls if present.
-		if leftMsg["tool_calls"] != nil || rightMsg["tool_calls"] != nil {
-			leftTools, _ := json.Marshal(leftMsg["tool_calls"])
-			rightTools, _ := json.Marshal(rightMsg["tool_calls"])
-			if string(leftTools) != string(rightTools) {
-				return false
-			}
 		}
 	}
 	return true

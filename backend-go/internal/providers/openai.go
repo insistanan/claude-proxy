@@ -421,18 +421,13 @@ func (p *OpenAIProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 		}
 
 		// 缓存 reasoning_content，供客户端回传历史时补回（Chat 推理模型要求）。
+		// Chat 推理模型会要求下一轮回传 reasoning_content。只在代理内部缓存，
+		// 不向 Messages 客户端发送 thinking：Cursor 会把它写入本地历史并在每轮重发，
+		// 既泄漏思考过程，也会快速占满上下文。
 		if thinkingContent != "" {
 			cacheMessage := msg
 			cacheMessage.Content = visibleContent
 			storeReasoningForAssistantMessage(cacheMessage, thinkingContent)
-		}
-
-		// 添加 thinking content block（在 text block 之前）
-		if thinkingContent != "" {
-			claudeResp.Content = append(claudeResp.Content, types.ClaudeContent{
-				Type:     "thinking",
-				Thinking: thinkingContent,
-			})
 		}
 
 		// 添加文本内容
@@ -518,15 +513,6 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		// reasoning_content / 文本累积器：用于缓存 (assistant 文本 → reasoning)，
 		// 供客户端回传历史丢失明文 thinking 时自动补回（Chat 推理模型要求回传）。
 		// 注意：assistantTextBuffer 刻意不复用 textDeltaBuffer（后者在 closeTextBlock 时会 Reset）。
-		//
-		// thinking block 状态：reasoning_content 不仅缓存，也作为 thinking content
-		// block 发给 Messages 客户端，让 Claude Code 等原生支持 thinking 的客户端能
-		// 在思考区渲染。回传时代理的 reasoning_content_cache 机制会自动补齐。
-		var (
-			thinkingBlockStarted bool
-			thinkingBlockIndex   int = -1
-			thinkingDeltaBuffer  strings.Builder
-		)
 		var reasoningDeltaBuffer strings.Builder
 		var assistantTextBuffer strings.Builder
 		embeddedReasoningMode := false
@@ -593,64 +579,6 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
 			textBlockStarted = false
 			textBlockIndex = -1
-		}
-		// ===== thinking block 辅助函数 =====
-		// reasoning_content 转成 Claude thinking content block 发给客户端，
-		// 让 Claude Code 等原生支持 thinking 的客户端在思考区渲染。
-		emitThinkingDelta := func(text string) {
-			if text == "" {
-				return
-			}
-			deltaEvent := map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": thinkingBlockIndex,
-				"delta": map[string]string{
-					"type":     "thinking_delta",
-					"thinking": text,
-				},
-			}
-			deltaJSON, _ := json.Marshal(deltaEvent)
-			send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
-		}
-		flushThinkingDelta := func() {
-			if !thinkingBlockStarted || thinkingDeltaBuffer.Len() == 0 {
-				return
-			}
-			emitThinkingDelta(thinkingDeltaBuffer.String())
-			thinkingDeltaBuffer.Reset()
-		}
-		closeThinkingBlock := func() {
-			if !thinkingBlockStarted {
-				return
-			}
-			flushThinkingDelta()
-			stopEvent := map[string]interface{}{
-				"type":  "content_block_stop",
-				"index": thinkingBlockIndex,
-			}
-			stopJSON, _ := json.Marshal(stopEvent)
-			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
-			thinkingBlockStarted = false
-			thinkingBlockIndex = -1
-		}
-		// 确保 thinking block 已开启：首次收到 reasoning_content 时创建。
-		ensureThinkingBlockStarted := func() {
-			if thinkingBlockStarted {
-				return
-			}
-			thinkingBlockIndex = nextBlockIndex
-			nextBlockIndex++
-			startEvent := map[string]interface{}{
-				"type":  "content_block_start",
-				"index": thinkingBlockIndex,
-				"content_block": map[string]string{
-					"type":     "thinking",
-					"thinking": "",
-				},
-			}
-			startJSON, _ := json.Marshal(startEvent)
-			send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
-			thinkingBlockStarted = true
 		}
 		emitToolCallStart := func(acc *ToolCallAccumulator) {
 			startEvent := map[string]interface{}{
@@ -765,7 +693,6 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 					ToolCalls: snapshotAssistantToolCalls(),
 				}, reasoningDeltaBuffer.String())
 			}
-			closeThinkingBlock()
 			closeTextBlock()
 			closeAllToolCalls()
 			if pendingStopReason == "" && messageStartEmitted {
@@ -847,16 +774,11 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				continue
 			}
 
-			// reasoning_content 缓存 + 下发为 thinking content block。
+			// reasoning_content 只在代理内部缓存，不作为 thinking 发送给客户端。
 			// 下一轮若上游要求原样回传，finishStream 会按最终正文/工具调用指纹从
-			// 代理缓存中补齐；同时 Claude Code 等客户端能在思考区渲染思考过程。
+			// 代理缓存中补齐。
 			if reasoningContent := extractOpenAIReasoningContent(delta); reasoningContent != "" {
 				reasoningDeltaBuffer.WriteString(reasoningContent)
-				ensureThinkingBlockStarted()
-				thinkingDeltaBuffer.WriteString(reasoningContent)
-				if shouldFlushOpenAITextDelta(thinkingDeltaBuffer.String(), reasoningContent) {
-					flushThinkingDelta()
-				}
 			}
 
 			// 处理文本内容
@@ -864,15 +786,8 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				visibleContent, embeddedReasoning := splitEmbeddedReasoningDelta(content, &embeddedReasoningMode)
 				if embeddedReasoning != "" {
 					reasoningDeltaBuffer.WriteString(embeddedReasoning)
-					ensureThinkingBlockStarted()
-					thinkingDeltaBuffer.WriteString(embeddedReasoning)
-					if shouldFlushOpenAITextDelta(thinkingDeltaBuffer.String(), embeddedReasoning) {
-						flushThinkingDelta()
-					}
 				}
 				if visibleContent != "" {
-					// 可见正文到达意味着推理阶段结束，先关闭 thinking block。
-					closeThinkingBlock()
 					assistantTextBuffer.WriteString(visibleContent)
 					// 如果是第一个文本块,发送 content_block_start
 					if !textBlockStarted {
@@ -901,7 +816,6 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			// 处理工具调用。部分 OpenAI 兼容上游会在普通文本 delta 中携带空 tool_calls: []，
 			// 不能因此关闭文本块，否则 Claude Code 会把连续文本拆成多个 content block 显示。
 			if toolCalls, ok := delta["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
-				closeThinkingBlock()
 				closeTextBlock()
 
 				for _, tc := range toolCalls {
@@ -952,7 +866,6 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			// 处理结束原因
 			if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" && finishReason != "none" && finishReason != "null" {
 				// 关闭所有未关闭的块
-				closeThinkingBlock()
 				closeTextBlock()
 				closeAllToolCalls()
 

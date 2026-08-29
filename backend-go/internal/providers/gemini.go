@@ -704,6 +704,16 @@ func synthesizeGeminiToolCallID() string {
 	return fmt.Sprintf("%s%s", geminiSynthesizedIDPrefix, uuid.NewString())
 }
 
+// geminiFunctionCallKey 只用于同一条流内的去重。Gemini 原生流通常只发送一次
+// 完整 functionCall，但兼容网关可能在后续 chunk 重复发送相同对象；没有稳定 id
+// 时用名称和参数的规范表示识别它。不同参数仍视为不同调用，避免吞掉真实调用。
+func geminiFunctionCallKey(functionCall map[string]interface{}, name string, args interface{}) string {
+	if id, _ := functionCall["id"].(string); strings.TrimSpace(id) != "" {
+		return "id:" + strings.TrimSpace(id)
+	}
+	return "value:" + strings.TrimSpace(name) + ":" + utils.CanonicalJSON(args)
+}
+
 func rectifyGeminiFunctionCallIDs(parts []interface{}) {
 	for _, rawPart := range parts {
 		part, ok := rawPart.(map[string]interface{})
@@ -1249,7 +1259,6 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 			})
 		}
 	}
-	claudeResp.Content = append(claudeResp.Content, thinkingParts...)
 	if len(textParts) > 0 {
 		claudeResp.Content = append(claudeResp.Content, types.ClaudeContent{
 			Type: "text",
@@ -1257,6 +1266,15 @@ func (p *GeminiProvider) ConvertToClaudeResponse(providerResp *types.ProviderRes
 		})
 	}
 	claudeResp.Content = append(claudeResp.Content, toolUseParts...)
+	// Gemini 的 thought 是上游内部推理，不应转换成 Claude thinking 下发。
+	// Cursor 会把客户端收到的 thinking 原样写回下一轮 input；下发它会让
+	// reasoning 变成可重放的普通上下文。只在代理内部登记，供切换到严格
+	// reasoning_content 的 Chat 渠道时恢复。
+	if len(thinkingParts) > 0 {
+		cacheResp := *claudeResp
+		cacheResp.Content = append(append([]types.ClaudeContent{}, thinkingParts...), claudeResp.Content...)
+		CacheClaudeResponseReasoning(&cacheResp)
+	}
 
 	// 设置停止原因
 	finishReason, _ := candidate["finishReason"].(string)
@@ -1347,10 +1365,6 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		textBlockStarted := false
 		textBlockIndex := -1
 
-		// thinking 块状态跟踪
-		thinkingBlockStarted := false
-		thinkingBlockIndex := -1
-
 		// message_start 事件状态
 		messageStartEmitted := false
 		var streamModel string
@@ -1360,36 +1374,14 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		shadowParts := make([]interface{}, 0)
 		shadowToolCalls := make([]GeminiShadowToolCall, 0)
 		shadowTextParts := map[string]int{}
+		seenStreamToolCalls := map[string]struct{}{}
+		var reasoningText strings.Builder
+		var assistantText strings.Builder
+		toolUseParts := make([]types.ClaudeContent, 0)
 
 		// 发送 message_stop 的辅助函数
 		emitMessageStop := func() {
 			send("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-		}
-
-		// 关闭 thinking 块
-		closeThinkingBlock := func() {
-			if !thinkingBlockStarted {
-				return
-			}
-			sigEvent := map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": thinkingBlockIndex,
-				"delta": map[string]string{
-					"type":      "signature_delta",
-					"signature": "",
-				},
-			}
-			sigJSON, _ := json.Marshal(sigEvent)
-			send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", sigJSON))
-
-			stopEvent := map[string]interface{}{
-				"type":  "content_block_stop",
-				"index": thinkingBlockIndex,
-			}
-			stopJSON, _ := json.Marshal(stopEvent)
-			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
-			thinkingBlockStarted = false
-			thinkingBlockIndex = -1
 		}
 
 		// 关闭文本块
@@ -1543,7 +1535,6 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			if !ok {
 				// 可能只有 finishReason 没有 content
 				if finishReason, ok := candidate["finishReason"].(string); ok {
-					closeThinkingBlock()
 					closeTextBlock()
 
 					stopReason := "end_turn"
@@ -1578,45 +1569,19 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 					continue
 				}
 
-				// 处理 thinking/thought 内容（Gemini 2.5 thinking 模型）
+				// 处理 thinking/thought 内容（Gemini 2.5 thinking 模型）。
+				// 思考只登记到代理内部缓存，绝不转换为客户端可重放的
+				// Claude thinking block。
 				if isGeminiThoughtPart(part) {
-					closeTextBlock()
 					thought, _ := part["text"].(string)
-
-					if !thinkingBlockStarted {
-						thinkingBlockIndex = nextBlockIndex
-						nextBlockIndex++
-						startEvent := map[string]interface{}{
-							"type":  "content_block_start",
-							"index": thinkingBlockIndex,
-							"content_block": map[string]string{
-								"type":      "thinking",
-								"thinking":  "",
-								"signature": "",
-							},
-						}
-						startJSON, _ := json.Marshal(startEvent)
-						send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
-						thinkingBlockStarted = true
+					if thought != "" {
+						reasoningText.WriteString(thought)
 					}
-
-					deltaEvent := map[string]interface{}{
-						"type":  "content_block_delta",
-						"index": thinkingBlockIndex,
-						"delta": map[string]string{
-							"type":     "thinking_delta",
-							"thinking": thought,
-						},
-					}
-					deltaJSON, _ := json.Marshal(deltaEvent)
-					send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
 					continue
 				}
 
 				// 处理文本
 				if text, ok := part["text"].(string); ok {
-					closeThinkingBlock()
-
 					if !textBlockStarted {
 						textBlockIndex = nextBlockIndex
 						nextBlockIndex++
@@ -1633,6 +1598,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 						textBlockStarted = true
 					}
 					if text != "" {
+						assistantText.WriteString(text)
 						key := fmt.Sprintf("text:%d", textBlockIndex)
 						if idx, exists := shadowTextParts[key]; exists {
 							if existing, ok := shadowParts[idx].(map[string]interface{}); ok {
@@ -1659,11 +1625,18 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 
 				// 处理函数调用
 				if fc, ok := part["functionCall"].(map[string]interface{}); ok {
-					closeThinkingBlock()
-					closeTextBlock()
-
 					name, _ := fc["name"].(string)
 					args := fc["args"]
+					streamToolCallKey := geminiFunctionCallKey(fc, name, args)
+					if _, exists := seenStreamToolCalls[streamToolCallKey]; exists {
+						// Gemini 兼容网关可能在多个 chunk 重复发送同一个完整
+						// functionCall。它不是参数 delta，不能重复转成多个
+						// Claude tool_use 或 shadow tool call。
+						continue
+					}
+					seenStreamToolCalls[streamToolCallKey] = struct{}{}
+					closeTextBlock()
+
 					toolUseBlockIndex := nextBlockIndex
 					nextBlockIndex++
 					id, _ := fc["id"].(string)
@@ -1683,6 +1656,12 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 						Args:             args,
 						ThoughtSignature: extractGeminiThoughtSignature(part),
 					})
+					toolUseParts = append(toolUseParts, types.ClaudeContent{
+						Type:  "tool_use",
+						ID:    id,
+						Name:  name,
+						Input: args,
+					})
 
 					events := processToolUsePart(id, name, args, toolUseBlockIndex)
 					for _, event := range events {
@@ -1693,7 +1672,6 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 
 			// 处理结束原因
 			if finishReason, ok := candidate["finishReason"].(string); ok {
-				closeThinkingBlock()
 				closeTextBlock()
 
 				stopReason := "end_turn"
@@ -1716,8 +1694,7 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 			}
 		}
 
-		// 确保流结束时关闭任何未关闭的块
-		closeThinkingBlock()
+		// 确保流结束时关闭任何未关闭的文本块
 		closeTextBlock()
 
 		// usage 失配留痕：两种情况都会让客户端与指标看到 0，必须能从日志查出来，
@@ -1743,6 +1720,25 @@ func (p *GeminiProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 				return
 			}
 			fail(err)
+		} else if reasoningText.Len() > 0 {
+			// 流式响应只有正常读完后才登记 reasoning，避免把断流产生的
+			// 不完整思考绑定到下一轮 assistant 消息。
+			cacheContent := make([]types.ClaudeContent, 0, len(toolUseParts)+2)
+			cacheContent = append(cacheContent, types.ClaudeContent{
+				Type:     "thinking",
+				Thinking: reasoningText.String(),
+			})
+			if assistantText.Len() > 0 {
+				cacheContent = append(cacheContent, types.ClaudeContent{
+					Type: "text",
+					Text: assistantText.String(),
+				})
+			}
+			cacheContent = append(cacheContent, toolUseParts...)
+			CacheClaudeResponseReasoning(&types.ClaudeResponse{
+				Role:    "assistant",
+				Content: cacheContent,
+			})
 		}
 
 		emitMessageStop()

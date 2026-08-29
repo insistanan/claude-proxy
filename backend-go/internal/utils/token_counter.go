@@ -193,25 +193,7 @@ func estimateResponsesInputTokens(input interface{}) int {
 			if m, ok := item.(map[string]interface{}); ok {
 				// 每条消息额外开销约 4 tokens
 				total += 4
-
-				// Responses item 的有效内容不只在 content：Codex 会把工具执行结果
-				// 放在 custom_tool_call_output.output 中，函数调用结果也使用 output。
-				// 同时覆盖 custom_tool_call.input、function_call.arguments 和 reasoning.summary。
-				for _, key := range []string{"content", "input", "output", "arguments", "summary"} {
-					if value, exists := m[key]; exists && value != nil {
-						total += estimateResponsesValueTokens(value)
-					}
-				}
-
-				if name, ok := m["name"].(string); ok {
-					total += EstimateTokens(name) + 2
-				}
-
-				// 处理 tool_use
-				if toolUse, ok := m["tool_use"].(map[string]interface{}); ok {
-					data, _ := json.Marshal(toolUse)
-					total += EstimateTokens(string(data))
-				}
+				total += estimateResponsesInputItemTokens(m)
 			}
 		}
 		return total
@@ -223,6 +205,68 @@ func estimateResponsesInputTokens(input interface{}) int {
 		}
 		return EstimateTokens(string(data))
 	}
+}
+
+// estimateResponsesInputItemTokens 按 Responses item 的实际字段估算 token。
+// 同一语义在不同兼容实现中可能叫 content/input/output；不能把这些别名
+// 无条件相加，否则一个同时带 input 与 content 的 custom_tool_call，或同时带
+// output 与 content 的 function_call_output，会把同一份工具数据重复计入。
+// 对未知类型保守地估算整个 item，避免静默漏掉新协议字段。
+func estimateResponsesInputItemTokens(item map[string]interface{}) int {
+	if item == nil {
+		return 0
+	}
+
+	itemType, _ := item["type"].(string)
+	switch itemType {
+	case "", "message", "text":
+		return estimateResponsesValueTokens(item["content"])
+	case "function_call":
+		return estimateResponsesCallFields(item["name"], item["arguments"])
+	case "custom_tool_call":
+		value, exists := item["input"]
+		if !exists || value == nil {
+			value = item["content"]
+		}
+		return estimateResponsesCallFields(item["name"], value)
+	case "tool_call":
+		if toolUse, ok := item["tool_use"].(map[string]interface{}); ok {
+			return estimateResponsesCallFields(toolUse["name"], toolUse["input"])
+		}
+		return estimateResponsesCallFields(item["name"], item["arguments"])
+	case "tool_search_call":
+		return estimateResponsesCallFields(item["name"], item["arguments"])
+	case "function_call_output", "custom_tool_call_output", "tool_result":
+		return estimateResponsesOutputFieldTokens(item)
+	case "tool_search_output":
+		total := estimateResponsesOutputFieldTokens(item)
+		total += estimateResponsesValueTokens(item["tools"])
+		return total
+	case "reasoning":
+		// summary 与 encrypted/content 是不同字段：summary 是可读摘要，
+		// encrypted_content 是上游要求回传的 opaque 上下文，不能因为不可读而丢弃。
+		return estimateResponsesValueTokens(item["summary"]) +
+			estimateResponsesValueTokens(item["content"]) +
+			estimateResponsesValueTokens(item["encrypted_content"])
+	default:
+		data, err := json.Marshal(item)
+		if err != nil {
+			return 0
+		}
+		return EstimateTokens(string(data))
+	}
+}
+
+func estimateResponsesCallFields(name, arguments interface{}) int {
+	total := estimateResponsesValueTokens(name)
+	return total + estimateResponsesValueTokens(arguments)
+}
+
+func estimateResponsesOutputFieldTokens(item map[string]interface{}) int {
+	if output, exists := item["output"]; exists && output != nil {
+		return estimateResponsesValueTokens(output)
+	}
+	return estimateResponsesValueTokens(item["content"])
 }
 
 // estimateContentTokens 估算 content 字段的 token
@@ -348,6 +392,13 @@ func estimateResponsesItemTokens(item types.ResponsesItem) int {
 	if item.Summary != nil {
 		data, _ := json.Marshal(item.Summary)
 		total += EstimateTokens(string(data))
+	}
+	if item.EncryptedContent != nil {
+		data, _ := json.Marshal(item.EncryptedContent)
+		total += EstimateTokens(string(data))
+	}
+	if item.Signature != "" {
+		total += EstimateTokens(item.Signature)
 	}
 
 	// 如果是特殊类型且 content/tool_use 都为空，序列化整个结构估算

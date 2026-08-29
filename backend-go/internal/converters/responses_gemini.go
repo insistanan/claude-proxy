@@ -15,7 +15,10 @@ func ConvertResponsesToGeminiRequest(model string, sess *types.Session, req *typ
 		return nil, err
 	}
 	if sess != nil && len(sess.Messages) > 0 {
-		items = append(append([]types.ResponsesItem{}, sess.Messages...), items...)
+		items = utils.MergeResponsesItemsDedup(sess.Messages, items)
+	}
+	if utils.ResponsesItemsContainCompaction(items) {
+		return nil, fmt.Errorf("Responses compaction item 只能由 Responses 原生上游处理，无法转换为 Gemini")
 	}
 	callNames := buildFunctionCallNameMap(items)
 

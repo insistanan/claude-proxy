@@ -3,6 +3,7 @@ package session
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -96,6 +97,7 @@ func (sm *SessionManager) GetOrCreateSession(previousResponseID string) (*Sessio
 func (sm *SessionManager) GetOrCreateSessionForConversation(previousResponseID string, conversationID string) (*Session, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	previousResponseID = strings.TrimSpace(previousResponseID)
 	conversationID = strings.TrimSpace(conversationID)
 
 	// 如果提供了 previousResponseID，尝试查找对应的会话
@@ -113,7 +115,7 @@ func (sm *SessionManager) GetOrCreateSessionForConversation(previousResponseID s
 						return nil, err
 					}
 				}
-				return session, nil
+				return cloneSession(session), nil
 			}
 		}
 		if sm.store != nil {
@@ -132,14 +134,54 @@ func (sm *SessionManager) GetOrCreateSessionForConversation(previousResponseID s
 				if err := sm.store.touchSession(session, previousConversationID != session.ConversationID); err != nil {
 					return nil, err
 				}
-				return session, nil
+				return cloneSession(session), nil
 			}
 		}
+		if conversationID != "" {
+			// 主请求已经绑定到明确的代理 conversation。此时无法确认外部
+			// response ID 是否属于该会话，创建空 session 会让原生上游把
+			// 完整 input 与旧服务端链叠加，也会让非原生转换静默丢历史。
+			// 必须显式失败，让客户端重新建立可恢复的会话边界。
+			return nil, fmt.Errorf("previous_response_id %s 未找到可恢复的本地会话", previousResponseID)
+		}
+		// 仅保留无 conversation 绑定的旧内部调用兼容路径；这类调用无法
+		// 做跨会话归属校验，生产请求不应走到这里。
 		log.Printf("[Session-Recovery] previous_response_id %s 未找到持久化会话，将从当前输入恢复为空会话", previousResponseID)
-		return sm.createSessionLocked(previousResponseID, conversationID)
+		session, err := sm.createSessionLocked(previousResponseID, conversationID)
+		return cloneSession(session), err
 	}
 
-	return sm.createSessionLocked("", conversationID)
+	if conversationID != "" {
+		var latest *Session
+		for _, candidate := range sm.sessions {
+			if candidate != nil && candidate.ConversationID == conversationID &&
+				(latest == nil || candidate.LastAccessAt.After(latest.LastAccessAt)) {
+				latest = candidate
+			}
+		}
+		if latest == nil && sm.store != nil {
+			loaded, found, err := sm.store.loadLatestByConversation(conversationID, sm.maxAge)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				sm.cacheLoadedSessionLocked(loaded, loaded.LastResponseID)
+				latest = loaded
+			}
+		}
+		if latest != nil {
+			latest.LastAccessAt = time.Now()
+			if sm.store != nil {
+				if err := sm.store.touchSession(latest, false); err != nil {
+					return nil, err
+				}
+			}
+			return cloneSession(latest), nil
+		}
+	}
+
+	session, err := sm.createSessionLocked("", conversationID)
+	return cloneSession(session), err
 }
 
 func (sm *SessionManager) createSessionLocked(previousResponseID string, conversationID string) (*Session, error) {
@@ -252,6 +294,11 @@ func (sm *SessionManager) removeCachedSessionLocked(sessionID string) {
 
 // RecordResponseMapping 记录 responseID 到 sessionID 的映射
 func (sm *SessionManager) RecordResponseMapping(responseID, sessionID string) error {
+	responseID = strings.TrimSpace(responseID)
+	sessionID = strings.TrimSpace(sessionID)
+	if responseID == "" || sessionID == "" {
+		return fmt.Errorf("response ID 和 session ID 不能为空")
+	}
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -270,6 +317,7 @@ func (sm *SessionManager) RecordResponseMapping(responseID, sessionID string) er
 func (sm *SessionManager) GetSessionByResponseID(responseID string) (*Session, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	responseID = strings.TrimSpace(responseID)
 
 	if responseID == "" {
 		return nil, fmt.Errorf("response_id 不能为空")
@@ -288,7 +336,7 @@ func (sm *SessionManager) GetSessionByResponseID(responseID string) (*Session, e
 				if err := sm.store.touchSession(session, false); err != nil {
 					return nil, err
 				}
-				return session, nil
+				return cloneSession(session), nil
 			}
 		}
 		return nil, fmt.Errorf("无效的 previous_response_id: %s", responseID)
@@ -305,7 +353,54 @@ func (sm *SessionManager) GetSessionByResponseID(responseID string) (*Session, e
 			return nil, err
 		}
 	}
-	return session, nil
+	return cloneSession(session), nil
+}
+
+// cloneSession 返回只读快照。会话转换通常在 manager 锁外读取 Messages；
+// 如果直接暴露内存中的指针，另一个请求 CommitTurn 替换 slice 时就会形成
+// 竞态，并且转换器可能看到半轮历史。
+func cloneSession(session *Session) *Session {
+	if session == nil {
+		return nil
+	}
+	cloned := *session
+	cloned.Messages = cloneResponsesItems(session.Messages)
+	return &cloned
+}
+
+func cloneResponsesItems(items []types.ResponsesItem) []types.ResponsesItem {
+	if items == nil {
+		return nil
+	}
+	cloned := make([]types.ResponsesItem, len(items))
+	for index, item := range items {
+		cloned[index] = item
+		cloned[index].Content = cloneJSONValue(item.Content)
+		cloned[index].Summary = cloneJSONValue(item.Summary)
+		cloned[index].Tools = cloneJSONValue(item.Tools)
+		cloned[index].EncryptedContent = cloneJSONValue(item.EncryptedContent)
+		if item.ToolUse != nil {
+			toolUse := *item.ToolUse
+			toolUse.Input = cloneJSONValue(item.ToolUse.Input)
+			cloned[index].ToolUse = &toolUse
+		}
+	}
+	return cloned
+}
+
+func cloneJSONValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var cloned interface{}
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		return value
+	}
+	return cloned
 }
 
 // AppendMessage 追加消息到会话
@@ -339,44 +434,231 @@ func (sm *SessionManager) CommitTurn(sessionID string, items []types.ResponsesIt
 	if !exists {
 		return fmt.Errorf("会话不存在: %s", sessionID)
 	}
-	previousMessageCount := len(session.Messages)
+	previousMessages := session.Messages
 	previousTokens := session.TotalTokens
 	previousResponseID := session.LastResponseID
 	previousLastAccess := session.LastAccessAt
 	previousVision := session.HasVisionContent
+	compactionRoot := utils.ResponsesItemsContainCompaction(items)
+	if compactionRoot {
+		items = utils.ResponsesItemsFromCompactionRoot(items)
+	}
 	if len(items) > 0 {
-		session.Messages = append(session.Messages, items...)
-		for _, item := range items {
-			if utils.ResponsesItemHasVisionContent(item) {
-				session.HasVisionContent = true
+		if compactionRoot {
+			// compaction item 是新的历史根。不能再把它追加到旧 session，
+			// 否则压缩后的下一轮转换仍会携带完整旧 transcript。
+			session.Messages = append([]types.ResponsesItem(nil), items...)
+			// tokensUsed 通常是包含压缩前完整 input 的本轮 usage，不能
+			// 作为新根的累计历史 token，否则清理阈值会把已压缩会话立即
+			// 当成旧长会话；后续轮次再重新累计。
+			session.TotalTokens = 0
+			session.HasVisionContent = false
+			for _, item := range session.Messages {
+				if utils.ResponsesItemHasVisionContent(item) {
+					session.HasVisionContent = true
+					break
+				}
+			}
+		} else {
+			session.Messages = utils.MergeResponsesItemsDedup(session.Messages, items)
+			for _, item := range items {
+				if utils.ResponsesItemHasVisionContent(item) {
+					session.HasVisionContent = true
+				}
 			}
 		}
 	}
-	session.TotalTokens += tokensUsed
-	if responseID != "" {
+	if !compactionRoot {
+		session.TotalTokens += tokensUsed
+	}
+	if compactionRoot {
+		session.LastResponseID = responseID
+	} else if responseID != "" {
 		session.LastResponseID = responseID
 	}
 	session.LastAccessAt = time.Now()
-	if hasVision {
+	if hasVision && !compactionRoot {
 		session.HasVisionContent = true
 	}
 	if sm.store == nil {
+		if compactionRoot {
+			for mappedResponseID, mappedSessionID := range sm.responseMapping {
+				if mappedSessionID == session.ID && mappedResponseID != responseID {
+					delete(sm.responseMapping, mappedResponseID)
+				}
+			}
+		}
 		if responseID != "" {
 			sm.responseMapping[responseID] = sessionID
 		}
 		return nil
 	}
-	if err := sm.store.upsertSessionAndMapping(session, responseID); err != nil {
-		session.Messages = session.Messages[:previousMessageCount]
+	var persistErr error
+	if compactionRoot {
+		persistErr = sm.store.replaceSessionAndMapping(session, previousResponseID, responseID)
+	} else {
+		persistErr = sm.store.upsertSessionAndMapping(session, responseID)
+	}
+	if persistErr != nil {
+		session.Messages = previousMessages
 		session.TotalTokens = previousTokens
 		session.LastResponseID = previousResponseID
 		session.LastAccessAt = previousLastAccess
 		session.HasVisionContent = previousVision
-		return err
+		return persistErr
+	}
+	if compactionRoot {
+		for mappedResponseID, mappedSessionID := range sm.responseMapping {
+			if mappedSessionID == session.ID && mappedResponseID != responseID {
+				delete(sm.responseMapping, mappedResponseID)
+			}
+		}
 	}
 	if responseID != "" {
 		sm.responseMapping[responseID] = sessionID
 	}
+	return nil
+}
+
+// ReplaceSessionAfterBoundary 在无法确认客户端 input 是旧会话后缀时，
+// 把当前客户端历史视为新的本地边界。它与 compaction 使用同一套原子映射
+// 清理，避免“上游已去掉 previous_response_id，但本地仍把完整历史追加到
+// 旧 session”造成下一轮代理再次发送重复上下文。
+func (sm *SessionManager) ReplaceSessionAfterBoundary(sessionID string, items []types.ResponsesItem, hasVision bool, responseID string) error {
+	if sm == nil {
+		return nil
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	session, exists := sm.sessions[sessionID]
+	if !exists {
+		return fmt.Errorf("会话不存在: %s", sessionID)
+	}
+	previousMessages := session.Messages
+	previousTokens := session.TotalTokens
+	previousResponseID := session.LastResponseID
+	previousLastAccess := session.LastAccessAt
+	previousVision := session.HasVisionContent
+	session.Messages = append([]types.ResponsesItem(nil), items...)
+	session.TotalTokens = 0
+	session.LastResponseID = responseID
+	session.LastAccessAt = time.Now()
+	session.HasVisionContent = hasVision
+	if !hasVision {
+		for _, item := range session.Messages {
+			if utils.ResponsesItemHasVisionContent(item) {
+				session.HasVisionContent = true
+				break
+			}
+		}
+	}
+	if sm.store != nil {
+		if err := sm.store.replaceSessionAndMapping(session, previousResponseID, responseID); err != nil {
+			session.Messages = previousMessages
+			session.TotalTokens = previousTokens
+			session.LastResponseID = previousResponseID
+			session.LastAccessAt = previousLastAccess
+			session.HasVisionContent = previousVision
+			return err
+		}
+	}
+	for mappedResponseID, mappedSessionID := range sm.responseMapping {
+		if mappedSessionID == session.ID && mappedResponseID != responseID {
+			delete(sm.responseMapping, mappedResponseID)
+		}
+	}
+	if responseID != "" {
+		sm.responseMapping[responseID] = session.ID
+	}
+	return nil
+}
+
+// ReplaceSessionAfterCompact 用 compact 产生的摘要/控制 item 替换旧历史。
+// compact 请求携带的 input 往往是完整 transcript，不能通过 CommitTurn 追加；
+// 否则上游虽然压缩成功，代理在下一次协议转换时仍会发送压缩前的全部消息。
+// 找不到旧 response_id 时返回错误：compact 成功后必须建立新的本地历史边界，
+// 否则下一轮可能以新 response_id 创建空 session，静默丢失压缩后的上下文。
+func (sm *SessionManager) ReplaceSessionAfterCompact(previousResponseID, responseID string, items []types.ResponsesItem) error {
+	if sm == nil {
+		return nil
+	}
+	previousResponseID = strings.TrimSpace(previousResponseID)
+	responseID = strings.TrimSpace(responseID)
+	if previousResponseID == "" || responseID == "" {
+		return nil
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	var current *Session
+	if sessionID, ok := sm.responseMapping[previousResponseID]; ok {
+		current = sm.sessions[sessionID]
+	}
+	if current == nil && sm.store != nil {
+		loaded, found, err := sm.store.loadByResponseID(previousResponseID, sm.maxAge)
+		if err != nil {
+			return err
+		}
+		if found {
+			sm.cacheLoadedSessionLocked(loaded, previousResponseID)
+			current = loaded
+		}
+	}
+	if current == nil {
+		return fmt.Errorf("未找到 compact 前的本地会话: %s", previousResponseID)
+	}
+
+	previousMessages := current.Messages
+	previousTokens := current.TotalTokens
+	previousResponse := current.LastResponseID
+	previousLastAccess := current.LastAccessAt
+	previousVision := current.HasVisionContent
+	previousMappings := make(map[string]string)
+	for mappedResponseID, mappedSessionID := range sm.responseMapping {
+		if mappedSessionID == current.ID {
+			previousMappings[mappedResponseID] = mappedSessionID
+		}
+	}
+
+	current.Messages = append([]types.ResponsesItem(nil), items...)
+	current.TotalTokens = 0
+	current.LastResponseID = responseID
+	current.LastAccessAt = time.Now()
+	current.HasVisionContent = false
+	for _, item := range current.Messages {
+		if utils.ResponsesItemHasVisionContent(item) {
+			current.HasVisionContent = true
+			break
+		}
+	}
+
+	if sm.store != nil {
+		if err := sm.store.replaceSessionAndMapping(current, previousResponseID, responseID); err != nil {
+			current.Messages = previousMessages
+			current.TotalTokens = previousTokens
+			current.LastResponseID = previousResponse
+			current.LastAccessAt = previousLastAccess
+			current.HasVisionContent = previousVision
+			for mappedResponseID, mappedSessionID := range sm.responseMapping {
+				if mappedSessionID == current.ID {
+					delete(sm.responseMapping, mappedResponseID)
+				}
+			}
+			for mappedResponseID, mappedSessionID := range previousMappings {
+				sm.responseMapping[mappedResponseID] = mappedSessionID
+			}
+			return err
+		}
+	}
+	for mappedResponseID, mappedSessionID := range sm.responseMapping {
+		if mappedSessionID == current.ID && mappedResponseID != responseID {
+			delete(sm.responseMapping, mappedResponseID)
+		}
+	}
+	sm.responseMapping[responseID] = current.ID
+	log.Printf("[Session-Compact] 会话 %s 已由 %s 压缩为 %s（保留 %d 个 item）",
+		current.ID, previousResponseID, responseID, len(current.Messages))
 	return nil
 }
 
@@ -426,7 +708,7 @@ func (sm *SessionManager) GetSession(sessionID string) (*Session, error) {
 		return nil, fmt.Errorf("会话不存在: %s", sessionID)
 	}
 
-	return session, nil
+	return cloneSession(session), nil
 }
 
 // DeleteConversation 删除一个持久化对话下的全部 Responses 会话、消息和 response ID 映射。

@@ -444,7 +444,7 @@ const deletePool = async () => {
 }
 .pool-card.is-default .pool-rule::before { content: '兜底  /  '; color: rgb(var(--v-theme-primary)); font-weight: 700; }
 .pool-channel-list {
-  padding: 8px; display: flex; flex-direction: column; gap: 4px; min-height: 48px;
+  padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 72px;
 }
 .pool-drag-item { min-width: 0; }
 .ghost { opacity: .45; background: rgba(var(--v-theme-primary), .12); border-radius: 5px; }

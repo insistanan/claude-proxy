@@ -15,8 +15,12 @@ const (
 	// ContextKeyConversationUserID 由 RunProxyRequest 在会话观测后写入，
 	// 供协议回调（如 HandleSuccess）取用注册表生成的会话记录 ID。
 	ContextKeyConversationUserID = "conversation-user-id"
-	claudeCodeDisguiseVersion    = "2.1.161"
-	codexDisguiseVersion         = "0.144.0"
+	// ContextKeyResponsesPreviousIDDropped 表示转换器为避免服务端链与
+	// 完整历史叠加而主动移除了 previous_response_id。响应出口不能再伪造
+	// 旧 PreviousID 元数据。
+	ContextKeyResponsesPreviousIDDropped = "responses-previous-id-dropped"
+	claudeCodeDisguiseVersion            = "2.1.161"
+	codexDisguiseVersion                 = "0.144.0"
 )
 
 // PrepareUpstreamHeaders 准备上游请求头（统一头部处理逻辑）

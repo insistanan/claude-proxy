@@ -115,6 +115,45 @@ func (s *sqliteStore) loadByResponseID(responseID string, maxAge time.Duration) 
 	return &session, true, nil
 }
 
+// loadLatestByConversation 按内部 conversation ID 恢复最近使用的会话。
+// 当代理为避免旧链污染而清掉 previous_response_id 后，客户端下一轮
+// 可能不再携带 response ID；此时仍必须回到同一个本地 session，而不是
+// 每轮创建空 session。
+func (s *sqliteStore) loadLatestByConversation(conversationID string, maxAge time.Duration) (*Session, bool, error) {
+	row := s.db.QueryRow(`SELECT rs.id, rs.conversation_id, rs.messages_json, rs.last_response_id,
+		rs.created_at, COALESCE(rsa.last_access_at, rs.last_access_at), rs.total_tokens, rs.has_vision_content
+		FROM response_sessions AS rs
+		LEFT JOIN response_session_access AS rsa ON rsa.session_id = rs.id
+		WHERE rs.conversation_id = ?
+		ORDER BY COALESCE(rsa.last_access_at, rs.last_access_at) DESC, rs.id DESC
+		LIMIT 1`, conversationID)
+
+	var session Session
+	var messagesJSON string
+	var createdAt, lastAccessAt int64
+	var hasVision int
+	if err := row.Scan(&session.ID, &session.ConversationID, &messagesJSON, &session.LastResponseID,
+		&createdAt, &lastAccessAt, &session.TotalTokens, &hasVision); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	session.CreatedAt = time.Unix(createdAt, 0)
+	session.LastAccessAt = time.Unix(lastAccessAt, 0)
+	if maxAge > 0 && time.Since(session.LastAccessAt) > maxAge {
+		if err := s.deleteSession(session.ID); err != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+	if err := json.Unmarshal([]byte(messagesJSON), &session.Messages); err != nil {
+		return nil, false, fmt.Errorf("解析 Responses 会话 %s 失败: %w", session.ID, err)
+	}
+	session.HasVisionContent = hasVision != 0
+	return &session, true, nil
+}
+
 func (s *sqliteStore) upsertSession(session *Session) error {
 	return s.upsertSessionAndMapping(session, "")
 }
@@ -141,6 +180,55 @@ func (s *sqliteStore) upsertSessionAndMapping(session *Session, responseID strin
 		has_vision_content = excluded.has_vision_content`,
 		session.ID, session.ConversationID, string(messages), session.LastResponseID, session.CreatedAt.Unix(), session.LastAccessAt.Unix(),
 		session.TotalTokens, boolToInt(session.HasVisionContent)); err != nil {
+		return err
+	}
+	if responseID != "" {
+		if _, err = tx.Exec(`INSERT INTO response_session_mappings (response_id, session_id) VALUES (?, ?)
+			ON CONFLICT(response_id) DO UPDATE SET session_id = excluded.session_id`, responseID, session.ID); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(`INSERT INTO response_session_access (session_id, last_access_at) VALUES (?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET last_access_at = excluded.last_access_at`, session.ID, session.LastAccessAt.Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// replaceSessionAndMapping 原子替换 compact 前后的 response ID 映射。
+// 如果旧映射继续存在，客户端重放旧 response ID 时可能重新进入压缩前的
+// 服务端链，破坏 compact 后的上下文边界。
+func (s *sqliteStore) replaceSessionAndMapping(session *Session, previousResponseID, responseID string) error {
+	if session == nil {
+		return fmt.Errorf("会话不能为空")
+	}
+	messages, err := json.Marshal(session.Messages)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err = tx.Exec(`INSERT INTO response_sessions (
+		id, conversation_id, messages_json, last_response_id, created_at, last_access_at, total_tokens, has_vision_content
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		conversation_id = excluded.conversation_id,
+		messages_json = excluded.messages_json,
+		last_response_id = excluded.last_response_id,
+		last_access_at = excluded.last_access_at,
+		total_tokens = excluded.total_tokens,
+		has_vision_content = excluded.has_vision_content`,
+		session.ID, session.ConversationID, string(messages), session.LastResponseID, session.CreatedAt.Unix(), session.LastAccessAt.Unix(),
+		session.TotalTokens, boolToInt(session.HasVisionContent)); err != nil {
+		return err
+	}
+	// 这是 compaction 的原子替换操作，不论调用方是否能提供旧 response ID，
+	// 都必须删除该 session 的全部旧映射。否则旧 ID 仍可恢复压缩前的边界。
+	if _, err = tx.Exec(`DELETE FROM response_session_mappings WHERE session_id = ? AND response_id != ?`, session.ID, responseID); err != nil {
 		return err
 	}
 	if responseID != "" {

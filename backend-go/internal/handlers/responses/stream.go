@@ -160,8 +160,7 @@ func handleStreamSuccess(
 	reader := bufio.NewReaderSize(resp.Body, 64*1024)
 
 	// Token 统计状态
-	var outputTextBuffer bytes.Buffer
-	const maxOutputBufferSize = 1024 * 1024 // 1MB 上限，防止内存溢出
+	sessionCollector := newResponsesStreamSessionCollector()
 	var collectedUsage responsesStreamUsage
 	var upstreamUsage responsesStreamUsage
 	hasUsage := false
@@ -247,10 +246,9 @@ func handleStreamSuccess(
 			if eventErr := responsesStreamEventError(event); eventErr != nil {
 				return nil, eventErr
 			}
-			// 提取文本内容用于估算（限制缓冲区大小）
-			if outputTextBuffer.Len() < maxOutputBufferSize {
-				extractResponsesTextFromEvent(event, &outputTextBuffer)
-			}
+			// session 持久化使用结构化 collector；不能把正文、工具参数和
+			// reasoning summary 混进同一个 assistant 文本。
+			sessionCollector.consumeEvent(event)
 
 			// 检测并收集 usage
 			detected, needPatch, usageData := checkResponsesEventUsage(event, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"))
@@ -269,10 +267,15 @@ func handleStreamSuccess(
 			// 在 response.completed 事件前注入/修补 usage
 			eventToSend := event
 			if isResponsesCompletedEvent(event) {
+				// 仅按 Responses output item 的语义字段估算 output_tokens。
+				// 不能把 reasoning/function-call/audio 的 SSE delta 与完整
+				// response.completed JSON envelope 混成普通文本，否则无 usage
+				// 的上游会把 envelope 字段也算进输出，且大响应会额外占用内存。
+				estimatedOutputTokens := estimateResponsesOutputFromItems(sessionCollector.Items())
 				if !hasUsage {
 					// 上游完全没有 usage，注入本地估算
 					var injectedInput, injectedOutput int
-					eventToSend, injectedInput, injectedOutput = injectResponsesUsageToCompletedEvent(event, originalRequestJSON, outputTextBuffer.String(), envCfg)
+					eventToSend, injectedInput, injectedOutput = injectResponsesUsageToCompletedEventWithTokens(event, originalRequestJSON, estimatedOutputTokens, envCfg)
 					// 更新 collectedUsage 以便最终日志输出
 					collectedUsage.InputTokens = injectedInput
 					collectedUsage.OutputTokens = injectedOutput
@@ -282,13 +285,13 @@ func handleStreamSuccess(
 					}
 				} else if needTokenPatch {
 					// 需要修补虚假值
-					eventToSend = patchResponsesCompletedEventUsage(event, originalRequestJSON, outputTextBuffer.String(), &collectedUsage, envCfg)
+					eventToSend = patchResponsesCompletedEventUsageWithTokens(event, originalRequestJSON, estimatedOutputTokens, &collectedUsage, envCfg)
 				}
 				// 透传分支（上游本身就是 responses 协议）剥离累积式缓存统计：
 				// grok-4.6 等 OpenAI 兼容上游的 input_tokens_details.cached_tokens 是跨请求
 				// 单调递增的累积命中量，原样下发会让 Cursor 误判上下文一直满、反复触发压缩。
 				// 真正 Claude 上游的 cache_read_input_tokens 与携带 previous_response_id 的
-				// 链式增量请求不受影响（函数内判断保留）。
+				// 链式增量请求不受影响（函数内按字段语义判断保留）。
 				if upstreamType == converters.ResponsesUpstreamResponses {
 					eventToSend = stripAccumulatedCacheFromCompletedEvent(eventToSend, originalRequestJSON)
 					// 剥离缓存字段后 input_tokens 成了客户端判断上下文占用的唯一依据，
@@ -298,7 +301,12 @@ func handleStreamSuccess(
 				}
 			}
 			if streamResponseID == "" {
-				streamResponseID = extractResponsesCompletedID(eventToSend)
+				streamResponseID = extractResponsesStreamResponseID(eventToSend)
+			}
+			if isResponsesCompletedEvent(eventToSend) && originalReq != nil &&
+				(utils.ResponsesItemsContainCompactionFromInput(originalReq.Input) ||
+					c.GetBool(utils.ContextKeyResponsesPreviousIDDropped)) {
+				eventToSend = clearResponsesPreviousIDsFromCompletedEvent(eventToSend)
 			}
 			text, toolArguments := extractResponsesStreamSafetyFragments(eventToSend)
 			if err := hooks.FeedAttachedStreamText(c, text); err != nil {
@@ -412,26 +420,54 @@ func handleStreamSuccess(
 	// 即使客户端向上游声明 store=false，本代理仍需保存会话链，保证重启后可继续。
 	if originalReq != nil {
 		if sess, err := sessionManager.GetOrCreateSessionForConversation(originalReq.PreviousResponseID, conversationID); err == nil {
-			inputItems, _ := parseInputToItems(originalReq.Input)
-			turnItems := make([]types.ResponsesItem, 0, len(inputItems)+1)
-			turnItems = append(turnItems, inputItems...)
-			if outputText := strings.TrimSpace(outputTextBuffer.String()); outputText != "" {
-				turnItems = append(turnItems, types.ResponsesItem{
-					Type:    "text",
-					Role:    "assistant",
-					Content: outputText,
-				})
-			}
-			sessionTokens := upstreamUsage.TotalTokens
-			if sessionTokens <= 0 {
-				if hasUsage {
-					sessionTokens = upstreamUsage.InputTokens + upstreamUsage.OutputTokens
+			if collectorErr := sessionCollector.Err(); collectorErr != nil {
+				log.Printf("[Session] Responses 流式 output 不完整，跳过本轮会话持久化: %v", collectorErr)
+			} else if !sessionCollector.Completed() &&
+				!(toolCallDelivered && sessionCollector.CompletedToolCall()) {
+				// 正常文本流必须以 response.completed 收尾。客户端在收到
+				// response.output_item.done 后为执行工具而主动断开是唯一
+				// 可接受的例外；其余 EOF/取消都可能只是半截响应，不能写入
+				// session，否则下一轮会把不完整正文或参数当成真实历史。
+				log.Printf("[Session] Responses 流未收到完整完成事件，跳过本轮会话持久化")
+			} else {
+				inputItems, parseErr := parseInputToItems(originalReq.Input)
+				if parseErr != nil {
+					log.Printf("[Session] 保存 Responses 流式输入历史失败: %v", parseErr)
 				} else {
-					sessionTokens = collectedUsage.TotalTokens
+					outputItems := sessionCollector.Items()
+					turnItems := make([]types.ResponsesItem, 0, len(inputItems)+len(outputItems))
+					turnItems = append(turnItems, inputItems...)
+					turnItems = append(turnItems, outputItems...)
+					sessionTokens := upstreamUsage.TotalTokens
+					if sessionTokens <= 0 {
+						if hasUsage {
+							sessionTokens = upstreamUsage.InputTokens + upstreamUsage.OutputTokens
+						} else {
+							sessionTokens = collectedUsage.TotalTokens
+						}
+					}
+					var commitErr error
+					if utils.ResponsesItemsContainCompactionFromInput(originalReq.Input) {
+						// compaction 必须优先走 CommitTurn 的根截断逻辑；即使
+						// 上游请求同时移除了 previous_response_id，也不能把压缩前
+						// 的完整 input 通过 ReplaceSessionAfterBoundary 原样保存。
+						commitErr = sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens,
+							utils.DetectImageContent(originalRequestJSON), streamResponseID)
+					} else if c.GetBool(utils.ContextKeyResponsesPreviousIDDropped) {
+						commitErr = sessionManager.ReplaceSessionAfterBoundary(sess.ID, turnItems,
+							utils.DetectImageContent(originalRequestJSON), streamResponseID)
+					} else {
+						commitErr = sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens,
+							utils.DetectImageContent(originalRequestJSON), streamResponseID)
+					}
+					if err := commitErr; err != nil {
+						log.Printf("[Session] 持久化 Responses 流式会话轮次失败: %v", err)
+					} else if utils.ResponsesItemsContainCompactionFromInput(originalReq.Input) {
+						// 流式 compaction 已建立新的本地历史根后，清理旧的
+						// Messages→Responses 链，避免下一轮复用旧服务端上下文。
+						session.DefaultResponseChainManager().Clear(conversationID)
+					}
 				}
-			}
-			if err := sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens, utils.DetectImageContent(originalRequestJSON), streamResponseID); err != nil {
-				log.Printf("[Session] 持久化 Responses 流式会话轮次失败: %v", err)
 			}
 		} else {
 			log.Printf("[Session] 保存 Responses 流式会话失败: %v", err)
@@ -576,6 +612,18 @@ func isResponsesCompletedEvent(event string) bool {
 }
 
 func extractResponsesCompletedID(event string) string {
+	return extractResponsesStreamResponseIDForTypes(event, map[string]bool{"response.completed": true})
+}
+
+func extractResponsesStreamResponseID(event string) string {
+	return extractResponsesStreamResponseIDForTypes(event, map[string]bool{
+		"response.created":     true,
+		"response.in_progress": true,
+		"response.completed":   true,
+	})
+}
+
+func extractResponsesStreamResponseIDForTypes(event string, allowedTypes map[string]bool) string {
 	for _, line := range strings.Split(event, "\n") {
 		jsonStr, isData := utils.SSEDataJSON(line)
 		if !isData {
@@ -588,22 +636,62 @@ func extractResponsesCompletedID(event string) string {
 		}
 
 		eventType, _ := data["type"].(string)
-		if eventType != "response.completed" {
+		if !allowedTypes[eventType] {
 			continue
 		}
 
 		response, ok := data["response"].(map[string]interface{})
-		if !ok {
-			continue
+		if ok {
+			if responseID, _ := response["id"].(string); strings.TrimSpace(responseID) != "" {
+				return strings.TrimSpace(responseID)
+			}
 		}
-
-		responseID, _ := response["id"].(string)
-		if responseID != "" {
-			return responseID
+		// 少数兼容上游把 response id 放在生命周期事件顶层。只对
+		// response.created/in_progress/completed 读取，绝不把 output item
+		// 的 id 误当成 response id。
+		if responseID, _ := data["id"].(string); strings.TrimSpace(responseID) != "" {
+			return strings.TrimSpace(responseID)
 		}
 	}
 
 	return ""
+}
+
+func clearResponsesPreviousIDsFromCompletedEvent(event string) string {
+	rewritten, _ := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(payload), &data); err != nil {
+			return "", false
+		}
+		if data["type"] != "response.completed" {
+			return "", false
+		}
+		changed := false
+		for _, key := range []string{"previous_id", "previous_response_id"} {
+			if _, exists := data[key]; exists {
+				delete(data, key)
+				changed = true
+			}
+		}
+		response, ok := data["response"].(map[string]interface{})
+		if ok {
+			for _, key := range []string{"previous_id", "previous_response_id"} {
+				if _, exists := response[key]; exists {
+					delete(response, key)
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			return "", false
+		}
+		patched, err := json.Marshal(data)
+		if err != nil {
+			return "", false
+		}
+		return string(patched), true
+	})
+	return rewritten
 }
 
 // isClientDisconnectError 判断是否为客户端断开连接错误

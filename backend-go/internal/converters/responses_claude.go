@@ -305,7 +305,13 @@ func responsesItemToClaudeToolMessage(item types.ResponsesItem) (*types.ClaudeMe
 		}
 		var input interface{} = map[string]interface{}{}
 		if item.Type == "custom_tool_call" {
-			input = map[string]interface{}{"input": extractTextFromContent(item.Content)}
+			if text := extractTextFromContent(item.Content); text != "" {
+				input = map[string]interface{}{"input": text}
+			} else if item.Content != nil {
+				input = map[string]interface{}{"input": item.Content}
+			} else {
+				input = map[string]interface{}{"input": strings.TrimSpace(item.Arguments)}
+			}
 		} else if item.Type == "tool_search_call" {
 			name := item.Name
 			if strings.TrimSpace(name) == "" {
@@ -338,7 +344,11 @@ func responsesItemToClaudeToolMessage(item types.ResponsesItem) (*types.ClaudeMe
 		return &types.ClaudeMessage{Role: "user", Content: []map[string]interface{}{{"type": "tool_result", "tool_use_id": item.CallID, "content": item.Content}}}, nil
 	default:
 		if isResponsesToolOutputType(item.Type) {
-			return &types.ClaudeMessage{Role: "user", Content: []map[string]interface{}{{"type": "tool_result", "tool_use_id": item.CallID, "content": item.Content}}}, nil
+			content := item.Content
+			if content == nil && item.Type == "tool_search_output" {
+				content = item.Tools
+			}
+			return &types.ClaudeMessage{Role: "user", Content: []map[string]interface{}{{"type": "tool_result", "tool_use_id": item.CallID, "content": content}}}, nil
 		}
 		return nil, nil
 	}

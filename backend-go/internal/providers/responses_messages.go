@@ -59,7 +59,17 @@ func (p *MessagesResponsesProvider) ConvertToProviderRequest(c *gin.Context, ups
 		return nil, originalBodyBytes, fmt.Errorf("解析Claude请求体失败: %w", err)
 	}
 
-	conversationID := extractMessagesConversationID(c, &claudeReq)
+	// 主流程已经把经过 registry 解析的内部 conversation ID 写入 context。
+	// Responses 链必须使用这个稳定 ID：compact 清理、渠道路由和链状态才能
+	// 指向同一条会话。只有直接调用 provider 的旧测试/内部调用没有该值时，
+	// 才回退到请求里的外部会话标识。
+	conversationID := ""
+	if value, exists := c.Get(utils.ContextKeyConversationUserID); exists {
+		conversationID, _ = value.(string)
+	}
+	if strings.TrimSpace(conversationID) == "" {
+		conversationID = extractMessagesConversationID(c, &claudeReq)
+	}
 	p.conversationID = conversationID
 	p.claudeReq = &claudeReq
 	p.upstream = upstream
@@ -138,14 +148,20 @@ func (p *MessagesResponsesProvider) HandleStreamResponseCtx(ctx context.Context,
 		for _, event := range state.finish() {
 			send(event)
 		}
-		if enableChain && claudeReq != nil && state.upstreamResponseID != "" {
-			rememberResponsesChain(conversationID, claudeReq, upstream, resolvedModel, state.upstreamResponseID)
-		}
 		if err := scanner.Err(); err != nil {
 			if isDisconnectLikeError(err) {
 				return
 			}
 			fail(err)
+			return
+		}
+		// 思考内容按 Claude Messages 契约下发；下一轮转换默认跳过历史
+		// thinking，因此不会把它再次送入 Responses 上游。成功完成的本轮
+		// 仍登记到代理内部缓存，供故障转移到严格 Chat 渠道时补回。
+		state.cacheReasoning()
+		if enableChain && state.completed && claudeReq != nil && state.upstreamResponseID != "" {
+			rememberResponsesChain(conversationID, claudeReq, upstream, resolvedModel,
+				state.upstreamResponseID, state.outputFingerprint())
 		}
 	}()
 
@@ -601,9 +617,12 @@ func responsesResponseToClaude(resp *types.ResponsesResponse) *types.ClaudeRespo
 	}
 	flushClaudeText(claudeResp, &textParts)
 	if len(thinkingParts) > 0 {
-		claudeResp.Content = append(thinkingParts, claudeResp.Content...)
+		// Claude thinking 必须位于正文和 tool_use 之前。Responses→Messages
+		// 的历史回灌默认会跳过 thinking，因此下发它不会把思考重复塞回
+		// Responses 上游上下文；内部缓存仍保留给严格 Chat 渠道补回。
+		claudeResp.Content = append(append([]types.ClaudeContent{}, thinkingParts...), claudeResp.Content...)
+		CacheClaudeResponseReasoning(claudeResp)
 	}
-
 	claudeResp.StopReason = "end_turn"
 	for _, content := range claudeResp.Content {
 		if content.Type == "tool_use" {
@@ -642,18 +661,25 @@ func flushClaudeText(resp *types.ClaudeResponse, parts *[]string) {
 }
 
 type responsesToClaudeStreamState struct {
-	responseID         string
-	upstreamResponseID string
-	messageStarted     bool
-	nextBlockIndex     int
-	textBlockIndex     int
-	textBlockOpen      bool
-	reasonBlockIndex   int
-	reasonBlockOpen    bool
-	stopReason         string
-	model              string
-	toolCalls          map[string]*responsesStreamToolCall
-	emittedToolCalls   map[string]bool
+	responseID          string
+	upstreamResponseID  string
+	messageStarted      bool
+	nextBlockIndex      int
+	textBlockIndex      int
+	textBlockOpen       bool
+	stopReason          string
+	model               string
+	toolCalls           map[string]*responsesStreamToolCall
+	toolCallOrder       []string
+	emittedToolCalls    map[string]bool
+	reasoning           strings.Builder
+	reasoningDeltaSeen  bool
+	reasoningBlockIndex int
+	reasoningBlockOpen  bool
+	reasoningEmittedLen int
+	assistantText       strings.Builder
+	completedOutput     []types.ResponsesItem
+	completed           bool
 	// Upstream Responses usage fields captured from response.completed / usage events.
 	// Without these, request logs always show cacheReadTokens=0 for Claude entry.
 	inputTokens              int
@@ -701,10 +727,22 @@ func (s *responsesToClaudeStreamState) processLine(line string) []string {
 	case strings.Contains(eventType, "output_text.delta"):
 		out = append(out, s.emitTextDelta(root.Get("delta").String())...)
 	case strings.Contains(eventType, "reasoning") && strings.Contains(eventType, "delta"):
-		// 把 reasoning delta 转成 Claude thinking content block 发给客户端。
-		// 让 Claude Code 等原生支持 thinking 的客户端在思考区渲染。回传时代理
-		// 的 reasoning_content_cache 机制会自动补齐，无需客户端存储明文。
-		out = append(out, s.emitReasoningDelta(root.Get("delta").String())...)
+		if delta := root.Get("delta").String(); delta != "" {
+			s.reasoningDeltaSeen = true
+			s.reasoning.WriteString(delta)
+			out = append(out, s.emitReasoningDelta(delta)...)
+		}
+	case strings.Contains(eventType, "reasoning") && strings.Contains(eventType, "done"):
+		// reasoning_summary_text.done 常带完整 summary；已有 delta 时不能再拼一次。
+		if !s.reasoningDeltaSeen && s.reasoning.Len() == 0 {
+			if text := root.Get("text").String(); text != "" {
+				s.reasoning.WriteString(text)
+				out = append(out, s.emitReasoningDelta(text)...)
+			}
+		}
+		out = append(out, s.closeReasoningBlock()...)
+	case strings.Contains(eventType, "function_call_arguments.delta") || strings.Contains(eventType, "custom_tool_call_input.delta"):
+		s.captureToolArgumentDelta(root)
 	case strings.Contains(eventType, "response.output_item.added"):
 		s.captureToolCall(root)
 	case strings.Contains(eventType, "response.output_item.done"):
@@ -717,6 +755,8 @@ func (s *responsesToClaudeStreamState) processLine(line string) []string {
 		s.captureToolCall(root)
 		out = append(out, s.emitToolUse(root)...)
 	case strings.Contains(eventType, "response.completed"):
+		s.completed = true
+		out = append(out, s.emitCompletedOutput(root)...)
 		if s.stopReason == "" {
 			s.stopReason = "end_turn"
 		}
@@ -730,6 +770,69 @@ func (s *responsesToClaudeStreamState) processLine(line string) []string {
 		if text := root.Get("delta").String(); text != "" && strings.Contains(eventType, "text") {
 			out = append(out, s.emitTextDelta(text)...)
 		}
+	}
+	return out
+}
+
+// emitCompletedOutput 兼容只在 response.completed.response.output 返回完整结果的
+// 上游。标准增量流已经交付的正文不再重复发送，但未交付的工具调用仍会补发。
+func (s *responsesToClaudeStreamState) emitCompletedOutput(root gjson.Result) []string {
+	output := root.Get("response.output")
+	if !output.Exists() || !output.IsArray() {
+		return nil
+	}
+
+	var out []string
+	completedItems := make([]types.ResponsesItem, 0, len(output.Array()))
+	output.ForEach(func(_, item gjson.Result) bool {
+		itemType := item.Get("type").String()
+		if parsed, ok := responsesStreamOutputItem(item); ok {
+			completedItems = append(completedItems, parsed)
+		}
+		switch itemType {
+		case "message":
+			if s.assistantText.Len() > 0 {
+				return true
+			}
+			content := item.Get("content")
+			if content.Type == gjson.String {
+				out = append(out, s.emitTextDelta(content.String())...)
+				return true
+			}
+			if content.Exists() && content.IsArray() {
+				content.ForEach(func(_, block gjson.Result) bool {
+					blockType := block.Get("type").String()
+					if blockType == "text" || blockType == "input_text" || blockType == "output_text" {
+						out = append(out, s.emitTextDelta(block.Get("text").String())...)
+					}
+					return true
+				})
+			}
+		case "reasoning":
+			if s.reasoning.Len() == 0 {
+				item.Get("summary").ForEach(func(_, summary gjson.Result) bool {
+					s.reasoning.WriteString(summary.Get("text").String())
+					return true
+				})
+			}
+			if s.reasoningEmittedLen < s.reasoning.Len() {
+				pending := s.reasoning.String()[s.reasoningEmittedLen:]
+				out = append(out, s.emitReasoningDelta(pending)...)
+			}
+		case "function_call", "custom_tool_call":
+			payload := map[string]interface{}{"item": item.Value()}
+			payloadJSON, err := json.Marshal(payload)
+			if err != nil {
+				return true
+			}
+			itemRoot := gjson.ParseBytes(payloadJSON)
+			s.captureToolCall(itemRoot)
+			out = append(out, s.emitToolUse(itemRoot)...)
+		}
+		return true
+	})
+	if len(completedItems) > 0 {
+		s.completedOutput = completedItems
 	}
 	return out
 }
@@ -811,6 +914,7 @@ func (s *responsesToClaudeStreamState) emitTextDelta(text string) []string {
 	if text == "" {
 		return nil
 	}
+	s.assistantText.WriteString(text)
 	out := s.closeReasoningBlock()
 	if !s.textBlockOpen {
 		s.textBlockIndex = s.nextBlockIndex
@@ -829,33 +933,6 @@ func (s *responsesToClaudeStreamState) emitTextDelta(text string) []string {
 		"type":  "content_block_delta",
 		"index": s.textBlockIndex,
 		"delta": map[string]interface{}{"type": "text_delta", "text": text},
-	}))
-	return out
-}
-
-func (s *responsesToClaudeStreamState) emitReasoningDelta(text string) []string {
-	if text == "" {
-		return nil
-	}
-	out := s.closeTextBlock()
-	if !s.reasonBlockOpen {
-		s.reasonBlockIndex = s.nextBlockIndex
-		s.nextBlockIndex++
-		s.reasonBlockOpen = true
-		out = append(out, buildClaudeSSE("content_block_start", map[string]interface{}{
-			"type":  "content_block_start",
-			"index": s.reasonBlockIndex,
-			"content_block": map[string]interface{}{
-				"type":      "thinking",
-				"thinking":  "",
-				"signature": "",
-			},
-		}))
-	}
-	out = append(out, buildClaudeSSE("content_block_delta", map[string]interface{}{
-		"type":  "content_block_delta",
-		"index": s.reasonBlockIndex,
-		"delta": map[string]interface{}{"type": "thinking_delta", "thinking": text},
 	}))
 	return out
 }
@@ -887,9 +964,14 @@ func (s *responsesToClaudeStreamState) emitToolUse(root gjson.Result) []string {
 		arguments = root.Get("item.arguments").String()
 	}
 	if arguments == "" {
-		if input := root.Get("item.input").String(); input != "" {
-			inputJSON, _ := json.Marshal(map[string]string{"input": input})
-			arguments = string(inputJSON)
+		input := root.Get("item.input")
+		if input.Exists() {
+			if input.Type == gjson.String {
+				inputJSON, _ := json.Marshal(map[string]string{"input": input.String()})
+				arguments = string(inputJSON)
+			} else if strings.TrimSpace(input.Raw) != "" {
+				arguments = input.Raw
+			}
 		}
 	}
 	if arguments == "" && stored != nil {
@@ -900,7 +982,14 @@ func (s *responsesToClaudeStreamState) emitToolUse(root gjson.Result) []string {
 	}
 	var input interface{} = map[string]interface{}{}
 	if arguments != "" {
-		_ = json.Unmarshal([]byte(arguments), &input)
+		if err := json.Unmarshal([]byte(arguments), &input); err != nil && root.Get("item.type").String() == "custom_tool_call" {
+			input = map[string]interface{}{"input": arguments}
+		}
+	}
+	if stored != nil {
+		stored.CallID = callID
+		stored.Name = name
+		stored.Arguments = arguments
 	}
 	index := s.nextBlockIndex
 	s.nextBlockIndex++
@@ -924,6 +1013,7 @@ func (s *responsesToClaudeStreamState) captureToolCall(root gjson.Result) {
 	if call == nil {
 		call = &responsesStreamToolCall{}
 		s.toolCalls[key] = call
+		s.toolCallOrder = append(s.toolCallOrder, key)
 	}
 	if callID := root.Get("item.call_id").String(); callID != "" {
 		call.CallID = callID
@@ -939,10 +1029,101 @@ func (s *responsesToClaudeStreamState) captureToolCall(root gjson.Result) {
 		call.Arguments = arguments
 	} else if arguments := root.Get("arguments").String(); arguments != "" {
 		call.Arguments = arguments
-	} else if input := root.Get("item.input").String(); input != "" {
-		inputJSON, _ := json.Marshal(map[string]string{"input": input})
-		call.Arguments = string(inputJSON)
+	} else if input := root.Get("item.input"); input.Exists() {
+		if input.Type == gjson.String {
+			inputJSON, _ := json.Marshal(map[string]string{"input": input.String()})
+			call.Arguments = string(inputJSON)
+		} else if strings.TrimSpace(input.Raw) != "" {
+			call.Arguments = input.Raw
+		}
 	}
+}
+
+func (s *responsesToClaudeStreamState) captureToolArgumentDelta(root gjson.Result) {
+	key := responsesToolCallKey(root)
+	if key == "" {
+		return
+	}
+	call := s.toolCalls[key]
+	if call == nil {
+		call = &responsesStreamToolCall{}
+		s.toolCalls[key] = call
+		s.toolCallOrder = append(s.toolCallOrder, key)
+	}
+	if callID := root.Get("call_id").String(); callID != "" {
+		call.CallID = callID
+	}
+	if name := root.Get("name").String(); name != "" {
+		call.Name = name
+	}
+	if delta := root.Get("delta").String(); delta != "" {
+		call.Arguments += delta
+	}
+}
+
+// cacheReasoning 保存成功完成的 Responses 流式推理，供后续切换到严格 Chat
+// 渠道时补回 reasoning_content。下一轮 Messages→Responses 转换默认跳过历史
+// thinking，因此它不会进入上游上下文。
+func (s *responsesToClaudeStreamState) cacheReasoning() {
+	if s == nil || !s.completed || s.reasoning.Len() == 0 {
+		return
+	}
+
+	content := make([]types.ClaudeContent, 0, len(s.toolCallOrder)+1)
+	if s.assistantText.Len() > 0 {
+		content = append(content, types.ClaudeContent{
+			Type: "text",
+			Text: s.assistantText.String(),
+		})
+	}
+	for _, key := range s.toolCallOrder {
+		call := s.toolCalls[key]
+		if call == nil {
+			continue
+		}
+		var input interface{} = map[string]interface{}{}
+		if call.Arguments != "" {
+			_ = json.Unmarshal([]byte(call.Arguments), &input)
+		}
+		content = append(content, types.ClaudeContent{
+			Type:  "tool_use",
+			ID:    call.CallID,
+			Name:  call.Name,
+			Input: input,
+		})
+	}
+	CacheClaudeResponseReasoning(&types.ClaudeResponse{
+		Role:    "assistant",
+		Content: append([]types.ClaudeContent{{Type: "thinking", Thinking: s.reasoning.String()}}, content...),
+	})
+}
+
+func (s *responsesToClaudeStreamState) outputFingerprint() string {
+	if s == nil || !s.completed {
+		return ""
+	}
+	if len(s.completedOutput) > 0 {
+		return responsesAssistantOutputFingerprint(s.completedOutput)
+	}
+	items := make([]types.ResponsesItem, 0, len(s.toolCallOrder)+1)
+	if s.assistantText.Len() > 0 {
+		items = append(items, types.ResponsesItem{
+			Type: "message", Role: "assistant",
+			Content: []interface{}{map[string]interface{}{
+				"type": "output_text", "text": s.assistantText.String(),
+			}},
+		})
+	}
+	for _, key := range s.toolCallOrder {
+		call := s.toolCalls[key]
+		if call == nil {
+			continue
+		}
+		items = append(items, types.ResponsesItem{
+			Type: "function_call", CallID: call.CallID, Name: call.Name, Arguments: call.Arguments,
+		})
+	}
+	return responsesAssistantOutputFingerprint(items)
 }
 
 func responsesToolCallKey(root gjson.Result) string {
@@ -975,22 +1156,63 @@ func (s *responsesToClaudeStreamState) closeTextBlock() []string {
 	})}
 }
 
-func (s *responsesToClaudeStreamState) closeReasoningBlock() []string {
-	if !s.reasonBlockOpen {
+func (s *responsesToClaudeStreamState) emitReasoningDelta(text string) []string {
+	if text == "" {
 		return nil
 	}
-	s.reasonBlockOpen = false
-	return []string{
-		buildClaudeSSE("content_block_delta", map[string]interface{}{
-			"type":  "content_block_delta",
-			"index": s.reasonBlockIndex,
-			"delta": map[string]interface{}{"type": "signature_delta", "signature": ""},
-		}),
-		buildClaudeSSE("content_block_stop", map[string]interface{}{
-			"type":  "content_block_stop",
-			"index": s.reasonBlockIndex,
-		}),
+	out := []string{}
+	if !s.reasoningBlockOpen {
+		s.reasoningBlockIndex = s.nextBlockIndex
+		s.nextBlockIndex++
+		s.reasoningBlockOpen = true
+		out = append(out, buildClaudeSSE("content_block_start", map[string]interface{}{
+			"type":  "content_block_start",
+			"index": s.reasoningBlockIndex,
+			"content_block": map[string]interface{}{
+				"type":     "thinking",
+				"thinking": "",
+			},
+		}))
 	}
+	s.reasoningEmittedLen += len(text)
+	return append(out, buildClaudeSSE("content_block_delta", map[string]interface{}{
+		"type":  "content_block_delta",
+		"index": s.reasoningBlockIndex,
+		"delta": map[string]interface{}{"type": "thinking_delta", "thinking": text},
+	}))
+}
+
+func (s *responsesToClaudeStreamState) closeReasoningBlock() []string {
+	if !s.reasoningBlockOpen {
+		return nil
+	}
+	s.reasoningBlockOpen = false
+	return []string{buildClaudeSSE("content_block_stop", map[string]interface{}{
+		"type":  "content_block_stop",
+		"index": s.reasoningBlockIndex,
+	})}
+}
+
+func responsesStreamOutputItem(item gjson.Result) (types.ResponsesItem, bool) {
+	if !item.Exists() || !item.IsObject() {
+		return types.ResponsesItem{}, false
+	}
+	payload, err := json.Marshal(item.Value())
+	if err != nil {
+		return types.ResponsesItem{}, false
+	}
+	var parsed types.ResponsesItem
+	if err := json.Unmarshal(payload, &parsed); err != nil || parsed.Type == "" {
+		return types.ResponsesItem{}, false
+	}
+	if parsed.Content == nil {
+		if parsed.Type == "custom_tool_call" {
+			parsed.Content = item.Get("input").Value()
+		} else {
+			parsed.Content = item.Get("output").Value()
+		}
+	}
+	return parsed, true
 }
 
 func (s *responsesToClaudeStreamState) emitMessageDelta() []string {
@@ -1169,6 +1391,15 @@ func applyPreviousResponseIDChain(
 			session.DefaultResponseChainManager().Clear(conversationID)
 			return
 		}
+		if state.MessageFingerprint != "" {
+			currentPrefix := claudeReq.Messages[:state.MessageCount]
+			if utils.CanonicalJSON(currentPrefix) != state.MessageFingerprint {
+				// 消息正文发生变化（包括客户端压缩/分支重写），旧的
+				// Responses 链已经不能代表当前前缀，必须回退全量请求。
+				session.DefaultResponseChainManager().Clear(conversationID)
+				return
+			}
+		}
 		// Cursor always resends full body; any non-trivial growth should full-send.
 		if suffixLen > 2 || len(claudeReq.Messages) > 8 {
 			session.DefaultResponseChainManager().Clear(conversationID)
@@ -1187,6 +1418,14 @@ func applyPreviousResponseIDChain(
 		session.DefaultResponseChainManager().Clear(conversationID)
 		return
 	}
+	if state.BaseURL != "" && responseChainBaseURL(upstream) != "" &&
+		state.BaseURL != responseChainBaseURL(upstream) {
+		// response ID 只在生成它的 Responses 上游及其兼容链路中有效。
+		// 渠道切换后继续携带旧 ID 会把请求送进错误的服务端会话，或触发
+		// 上游用旧链补回压缩前上下文。
+		session.DefaultResponseChainManager().Clear(conversationID)
+		return
+	}
 
 	// Chain stores server-side history that was never re-compacted. Cap hard.
 	const maxChainMessagesBeforeFullResend = 4
@@ -1195,6 +1434,13 @@ func applyPreviousResponseIDChain(
 		return
 	}
 	if state.MessageCount <= 0 {
+		return
+	}
+	if state.OutputFingerprint == "" {
+		// 旧版本链状态没有记录上一条 server output，无法证明客户端
+		// 重放的 assistant 消息已经存在于 previous_response_id 链中。
+		// 不冒险叠加，清链并发送当前完整历史。
+		session.DefaultResponseChainManager().Clear(conversationID)
 		return
 	}
 	if len(claudeReq.Messages) <= state.MessageCount {
@@ -1209,7 +1455,24 @@ func applyPreviousResponseIDChain(
 		return
 	}
 	includeThinking := upstream != nil && upstream.IncludeHistoryThinking
+	if suffix[0].Role == "assistant" {
+		// Claude Messages 客户端会把上一轮 assistant response 放回完整
+		// history。previous_response_id 已经包含同一 output，必须只跳过
+		// 这一条 assistant 消息；否则每轮都会把上一轮正文/工具调用再注入
+		// 服务端链，造成上下文和费用线性额外增长。
+		if claudeAssistantOutputFingerprint(suffix[0]) != state.OutputFingerprint {
+			session.DefaultResponseChainManager().Clear(conversationID)
+			return
+		}
+		suffix = suffix[1:]
+	}
+	if len(suffix) == 0 {
+		return
+	}
 	req.Input = claudeMessagesToResponsesInput(suffix, includeThinking)
+	if len(req.Input) == 0 {
+		return
+	}
 	req.PreviousResponseID = state.ResponseID
 }
 
@@ -1227,15 +1490,25 @@ func rememberResponsesChainFromBody(conversationID string, claudeReq *types.Clau
 	if responseID == "" {
 		return
 	}
-	rememberResponsesChain(conversationID, claudeReq, upstream, model, responseID)
+	var response struct {
+		Output []types.ResponsesItem `json:"output"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return
+	}
+	rememberResponsesChain(conversationID, claudeReq, upstream, model, responseID,
+		responsesAssistantOutputFingerprint(response.Output))
 }
 
 // rememberResponsesChain 将上游 response id 与当前 messages 指纹写入会话链。
-func rememberResponsesChain(conversationID string, claudeReq *types.ClaudeRequest, upstream *config.UpstreamConfig, model string, responseID string) {
+func rememberResponsesChain(conversationID string, claudeReq *types.ClaudeRequest, upstream *config.UpstreamConfig, model string, responseID, outputFingerprint string) {
 	if conversationID == "" || responseID == "" || claudeReq == nil {
 		return
 	}
-	if upstream == nil || !upstream.EnablePreviousResponseID {
+	if upstream == nil || !upstream.EnablePreviousResponseID || outputFingerprint == "" {
+		if outputFingerprint == "" {
+			session.DefaultResponseChainManager().Clear(conversationID)
+		}
 		return
 	}
 	// Full-history clients grow MessageCount without bound; remembering long histories
@@ -1246,11 +1519,146 @@ func rememberResponsesChain(conversationID string, claudeReq *types.ClaudeReques
 		return
 	}
 	session.DefaultResponseChainManager().Set(conversationID, session.ResponseChainState{
-		ResponseID:        responseID,
-		MessageCount:      len(claudeReq.Messages),
-		SystemFingerprint: extractSystemText(claudeReq.System),
-		ToolsFingerprint:  utils.CanonicalJSON(normalizeToolsForPromptCacheKey(claudeReq.Tools)),
-		BaseURL:           "",
-		Model:             model,
+		ResponseID:         responseID,
+		MessageCount:       len(claudeReq.Messages),
+		OutputFingerprint:  outputFingerprint,
+		MessageFingerprint: utils.CanonicalJSON(claudeReq.Messages),
+		SystemFingerprint:  extractSystemText(claudeReq.System),
+		ToolsFingerprint:   utils.CanonicalJSON(normalizeToolsForPromptCacheKey(claudeReq.Tools)),
+		BaseURL:            responseChainBaseURL(upstream),
+		Model:              model,
 	})
+}
+
+func claudeAssistantOutputFingerprint(message types.ClaudeMessage) string {
+	rawItems := claudeAssistantMessageToResponsesItems(message, false)
+	if len(rawItems) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(rawItems)
+	if err != nil {
+		return ""
+	}
+	var items []types.ResponsesItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		return ""
+	}
+	return responsesAssistantOutputFingerprint(items)
+}
+
+// responsesAssistantOutputFingerprint 只比较会被 Claude 客户端重放的正文和
+// 工具调用，忽略 Responses 服务端专有的 reasoning、item id 和 status。
+func responsesAssistantOutputFingerprint(items []types.ResponsesItem) string {
+	visibleItems := make([]types.ResponsesItem, 0, len(items))
+	var textParts []string
+	flushText := func() {
+		if len(textParts) == 0 {
+			return
+		}
+		visibleItems = append(visibleItems, types.ResponsesItem{
+			Type: "message", Role: "assistant",
+			Content: []interface{}{map[string]interface{}{
+				"type": "output_text", "text": strings.Join(textParts, ""),
+			}},
+		})
+		textParts = nil
+	}
+	for _, item := range items {
+		switch item.Type {
+		case "message", "text":
+			if text := responsesAssistantText(item.Content); text != "" {
+				textParts = append(textParts, text)
+			}
+		case "function_call":
+			flushText()
+			callID := item.CallID
+			if callID == "" {
+				callID = strings.TrimPrefix(item.ID, "fc_")
+				if callID == item.ID {
+					callID = strings.TrimPrefix(item.ID, "ctc_")
+				}
+			}
+			visibleItems = append(visibleItems, types.ResponsesItem{
+				Type: "function_call", CallID: callID,
+				Name: item.Name, Arguments: item.Arguments,
+			})
+		case "custom_tool_call":
+			flushText()
+			callID := item.CallID
+			if callID == "" {
+				callID = strings.TrimPrefix(item.ID, "ctc_")
+			}
+			args, _ := json.Marshal(map[string]interface{}{"input": responsesToolOutput(item.Content)})
+			visibleItems = append(visibleItems, types.ResponsesItem{
+				Type: "function_call", CallID: callID,
+				Name: item.Name, Arguments: string(args),
+			})
+		}
+	}
+	flushText()
+	if len(visibleItems) == 0 {
+		return ""
+	}
+	normalized := make([]interface{}, 0, len(visibleItems))
+	for _, item := range visibleItems {
+		normalized = append(normalized, map[string]interface{}{
+			"type": item.Type, "call_id": item.CallID,
+			"name": item.Name, "arguments": normalizeResponseArguments(item.Arguments),
+			"content": normalizeResponsesAssistantContent(item.Content),
+		})
+	}
+	sum := sha256.Sum256([]byte(utils.CanonicalJSON(normalized)))
+	return hex.EncodeToString(sum[:])
+}
+
+func responsesAssistantText(content interface{}) string {
+	if text, ok := content.(string); ok {
+		return text
+	}
+	var parts []string
+	for _, block := range utils.NormalizeContentBlocks(content) {
+		if text, ok := utils.ExtractTextFromBlock(block); ok {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+func normalizeResponseArguments(arguments string) interface{} {
+	if arguments == "" {
+		return ""
+	}
+	var value interface{}
+	if err := json.Unmarshal([]byte(arguments), &value); err == nil {
+		return value
+	}
+	return arguments
+}
+
+func normalizeResponsesAssistantContent(content interface{}) interface{} {
+	if text, ok := content.(string); ok {
+		return []interface{}{map[string]interface{}{"type": "output_text", "text": text}}
+	}
+	blocks := utils.NormalizeContentBlocks(content)
+	if len(blocks) == 0 {
+		return content
+	}
+	normalized := make([]interface{}, 0, len(blocks))
+	for _, block := range blocks {
+		if text, ok := utils.ExtractTextFromBlock(block); ok {
+			normalized = append(normalized, map[string]interface{}{
+				"type": "output_text", "text": text,
+			})
+			continue
+		}
+		normalized = append(normalized, block)
+	}
+	return normalized
+}
+
+func responseChainBaseURL(upstream *config.UpstreamConfig) string {
+	if upstream == nil {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(upstream.GetEffectiveBaseURL()), "/#")
 }

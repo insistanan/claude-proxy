@@ -109,6 +109,21 @@ func (r *Registry) resolveObservationLocked(obs Observation) (*Record, string, s
 			}
 			return rec, explicitKey, parentID, explicitResolution
 		}
+		// AssociateExternalID 保存的是不带 AgentID 的基础 alias，而主请求
+		// 解析时会把 AgentID 纳入显式 key。previous_response 只允许在这里
+		// 回退到基础 alias，避免普通 conversation ID 的不同 Cursor lane 被
+		// 错误合并。
+		if isPreviousResponseIdentity(obs.Identity) {
+			baseValue := strings.TrimSpace(obs.Identity.ExplicitID)
+			if baseValue == "" {
+				baseValue = strings.TrimSpace(obs.ConversationID)
+			}
+			if recordID, ok := r.identityIndex[explicitIdentityKey(obs.APIKind, baseValue)]; ok {
+				if rec := r.records[recordID]; rec != nil {
+					return rec, explicitIdentityKey(obs.APIKind, baseValue), parentID, explicitResolution
+				}
+			}
+		}
 		return nil, explicitKey, parentID, explicitResolution
 	}
 

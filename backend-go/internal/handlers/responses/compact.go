@@ -4,6 +4,7 @@ package responses
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +19,8 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // compactError 封装 compact 请求错误
@@ -33,7 +36,7 @@ type compactError struct {
 func CompactHandler(
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
-	_ *session.SessionManager,
+	sessionManager *session.SessionManager,
 	channelScheduler *scheduler.ChannelScheduler,
 	contentSafetyPipelines ...*hooks.Pipeline,
 ) gin.HandlerFunc {
@@ -69,9 +72,9 @@ func CompactHandler(
 		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindResponses, model)
 
 		if isMultiChannel {
-			handleMultiChannelCompact(c, envCfg, cfgManager, channelScheduler, bodyBytes, conversationID, model)
+			handleMultiChannelCompact(c, envCfg, cfgManager, sessionManager, channelScheduler, bodyBytes, conversationID, model)
 		} else {
-			handleSingleChannelCompact(c, envCfg, cfgManager, bodyBytes, model)
+			handleSingleChannelCompact(c, envCfg, cfgManager, sessionManager, channelScheduler, bodyBytes, conversationID, model)
 		}
 	})
 }
@@ -81,7 +84,10 @@ func handleSingleChannelCompact(
 	c *gin.Context,
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
+	sessionManager *session.SessionManager,
+	channelScheduler *scheduler.ChannelScheduler,
 	bodyBytes []byte,
+	conversationID string,
 	model string,
 ) {
 	upstream, _, err := cfgManager.GetCurrentResponsesUpstreamWithIndexForModel(model)
@@ -105,7 +111,7 @@ func handleSingleChannelCompact(
 			break
 		}
 
-		success, compactErr := tryCompactWithKey(c, upstream, apiKey, bodyBytes, envCfg, cfgManager)
+		success, compactErr := tryCompactWithKey(c, upstream, apiKey, bodyBytes, envCfg, cfgManager, sessionManager, channelScheduler, conversationID)
 		if success {
 			return
 		}
@@ -150,6 +156,7 @@ func handleMultiChannelCompact(
 	c *gin.Context,
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
+	sessionManager *session.SessionManager,
 	channelScheduler *scheduler.ChannelScheduler,
 	bodyBytes []byte,
 	conversationID string,
@@ -175,7 +182,7 @@ func handleMultiChannelCompact(
 		}
 
 		// 每个渠道尝试所有 key
-		success, successKey, compactErr := tryCompactChannelWithAllKeys(c, upstream, channelIndex, cfgManager, channelScheduler, bodyBytes, envCfg)
+		success, successKey, compactErr := tryCompactChannelWithAllKeys(c, upstream, channelIndex, cfgManager, sessionManager, channelScheduler, bodyBytes, conversationID, envCfg)
 
 		if success {
 			releaseReservation()
@@ -236,8 +243,10 @@ func tryCompactChannelWithAllKeys(
 	upstream *config.UpstreamConfig,
 	channelIndex int,
 	cfgManager *config.ConfigManager,
+	sessionManager *session.SessionManager,
 	channelScheduler *scheduler.ChannelScheduler,
 	bodyBytes []byte,
+	conversationID string,
 	envCfg *config.EnvConfig,
 ) (bool, string, *compactError) {
 	if len(upstream.APIKeys) == 0 {
@@ -268,7 +277,7 @@ func tryCompactChannelWithAllKeys(
 			continue
 		}
 
-		success, compactErr := tryCompactWithKey(c, upstream, apiKey, bodyBytes, envCfg, cfgManager)
+		success, compactErr := tryCompactWithKey(c, upstream, apiKey, bodyBytes, envCfg, cfgManager, sessionManager, channelScheduler, conversationID)
 		if success {
 			return true, apiKey, nil
 		}
@@ -301,6 +310,9 @@ func tryCompactWithKey(
 	bodyBytes []byte,
 	envCfg *config.EnvConfig,
 	cfgManager *config.ConfigManager,
+	sessionManager *session.SessionManager,
+	channelScheduler *scheduler.ChannelScheduler,
+	conversationID string,
 ) (bool, *compactError) {
 	if upstream != nil && upstream.DisablePromptCacheKey {
 		var payload map[string]interface{}
@@ -360,9 +372,95 @@ func tryCompactWithKey(
 		writeCompactContentSafetyError(c, err)
 		return false, &compactError{responseWritten: true}
 	}
+	compactResponseID := extractCompactResponseID(respBody)
+	if err := commitCompactSession(sessionManager, bodyBytes, respBody); err != nil {
+		// 上游 compact 已成功，但代理本地的历史边界没有落盘时，不能
+		// 继续返回成功并清理旧链；否则下一轮可能拿着新 response ID
+		// 进入一个空 session，静默丢失压缩后的上下文。
+		log.Printf("[Compact-Session] 压缩后的 Responses 会话替换失败: %v", err)
+		return false, &compactError{
+			status:         http.StatusInternalServerError,
+			body:           []byte(`{"error":"本地会话压缩状态保存失败"}`),
+			shouldFailover: false,
+		}
+	}
+	if compactResponseID != "" {
+		proxycore.AssociateConversationExternalID(channelScheduler, conversationID, scheduler.ChannelKindResponses, compactResponseID)
+	}
+	// compact 已经建立新的响应边界，不能把上游返回的旧 previous ID
+	// 原样交给客户端；Cursor 下一轮若重放它，会重新命中压缩前的链。
+	respBody, err = clearCompactPreviousResponseIDs(respBody)
+	if err != nil {
+		return false, &compactError{status: http.StatusInternalServerError,
+			body: []byte(`{"error":"清理 compact 旧会话 ID 失败"}`), shouldFailover: false}
+	}
+	// compact 成功后，旧的 Messages→Responses 链不能继续引用压缩前
+	// 的 response_id；否则下一轮仍会把服务端旧上下文带回来。
+	session.DefaultResponseChainManager().Clear(conversationID)
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 	c.Data(resp.StatusCode, "application/json", respBody)
 	return true, nil
+}
+
+func clearCompactPreviousResponseIDs(body []byte) ([]byte, error) {
+	result := body
+	for _, path := range []string{
+		"previous_id", "previous_response_id",
+		"response.previous_id", "response.previous_response_id",
+	} {
+		if !gjson.GetBytes(result, path).Exists() {
+			continue
+		}
+		var err error
+		result, err = sjson.DeleteBytes(result, path)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func extractCompactResponseID(body []byte) string {
+	for _, path := range []string{"id", "response.id"} {
+		if id := strings.TrimSpace(gjson.GetBytes(body, path).String()); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// commitCompactSession 用 compact 结果替换代理本地旧历史。compact 请求的
+// input 通常是客户端重放的完整 transcript，绝不能再把它当作普通一轮追加，
+// 否则压缩成功后本地 session 仍会保留完整旧上下文。
+func commitCompactSession(sessionManager *session.SessionManager, requestBody, responseBody []byte) error {
+	if sessionManager == nil {
+		return nil
+	}
+	previousResponseID := strings.TrimSpace(gjson.GetBytes(requestBody, "previous_response_id").String())
+	responseID := extractCompactResponseID(responseBody)
+	if previousResponseID == "" {
+		return nil
+	}
+	if responseID == "" {
+		return fmt.Errorf("compact 响应缺少新 response id，无法建立压缩后的会话边界")
+	}
+
+	output := gjson.GetBytes(responseBody, "output")
+	if !output.Exists() {
+		output = gjson.GetBytes(responseBody, "response.output")
+	}
+	if !output.Exists() || !output.IsArray() || len(output.Array()) == 0 {
+		return fmt.Errorf("compact 响应缺少非空 output，保留压缩前会话")
+	}
+	var rawItems []interface{}
+	if err := json.Unmarshal([]byte(output.Raw), &rawItems); err != nil {
+		return fmt.Errorf("解析 compact output 失败: %w", err)
+	}
+	items, err := parseInputToItems(rawItems)
+	if err != nil {
+		return fmt.Errorf("解析 compact session item 失败: %w", err)
+	}
+	return sessionManager.ReplaceSessionAfterCompact(previousResponseID, responseID, items)
 }
 
 func writeCompactContentSafetyError(c *gin.Context, err error) {

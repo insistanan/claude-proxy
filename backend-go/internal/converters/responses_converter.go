@@ -16,41 +16,32 @@ import (
 // includeHistoryThinking materializes type=reasoning as assistant text; default false skips it.
 // When session history exists and client input already replays the same prefix, avoid double-append.
 func ResponsesToClaudeMessagesWithOptions(sess *types.Session, newInput interface{}, instructions string, includeHistoryThinking bool) ([]types.ClaudeMessage, string, error) {
-	messages := []types.ClaudeMessage{}
-
 	newItems, err := parseResponsesInput(newInput)
 	if err != nil {
 		return nil, "", err
 	}
 
-	// Session history first (previous_response_id chain).
-	historyMessages := make([]types.ClaudeMessage, 0)
-	if sess != nil {
-		for _, item := range sess.Messages {
-			msg, err := responsesItemToClaudeMessageWithOptions(item, includeHistoryThinking)
-			if err != nil {
-				return nil, "", fmt.Errorf("转换历史消息失败: %w", err)
-			}
-			if msg != nil {
-				historyMessages = append(historyMessages, *msg)
-			}
-		}
+	// 在 Responses item 层统一合并，再转换为目标协议。不能先转换成 Claude
+	// message 再去重，因为转换会丢失 item id/call_id/encrypted_content 等
+	// 能证明“这是历史重放”的身份信息。
+	mergedItems := newItems
+	if sess != nil && len(sess.Messages) > 0 {
+		mergedItems = utils.MergeResponsesItemsDedup(sess.Messages, newItems)
+	}
+	if utils.ResponsesItemsContainCompaction(mergedItems) {
+		return nil, "", fmt.Errorf("Responses compaction item 只能由 Responses 原生上游处理，无法转换为 Claude Messages")
 	}
 
-	// Current input items.
-	currentMessages := make([]types.ClaudeMessage, 0, len(newItems))
-	for _, item := range newItems {
+	messages := make([]types.ClaudeMessage, 0, len(mergedItems))
+	for _, item := range mergedItems {
 		msg, err := responsesItemToClaudeMessageWithOptions(item, includeHistoryThinking)
 		if err != nil {
-			return nil, "", fmt.Errorf("转换新消息失败: %w", err)
+			return nil, "", fmt.Errorf("转换 Responses item 失败: %w", err)
 		}
 		if msg != nil {
-			currentMessages = append(currentMessages, *msg)
+			messages = append(messages, *msg)
 		}
 	}
-
-	// Dedup when client replays full history while also sending previous_response_id.
-	messages = mergeClaudeHistoryMessagesDedup(historyMessages, currentMessages)
 
 	return messages, instructions, nil
 }
@@ -167,39 +158,31 @@ func ClaudeResponseToResponses(claudeResp map[string]interface{}, sessionID stri
 
 // ResponsesToOpenAIChatMessages 将 Responses 格式转换为 OpenAI Chat 格式
 func ResponsesToOpenAIChatMessages(sess *types.Session, newInput interface{}, instructions string) ([]map[string]interface{}, error) {
-	messages := []map[string]interface{}{}
+	newItems, err := parseResponsesInput(newInput)
+	if err != nil {
+		return nil, err
+	}
 
-	// 1. 处理 instructions（如果存在）
+	mergedItems := newItems
+	if sess != nil && len(sess.Messages) > 0 {
+		mergedItems = utils.MergeResponsesItemsDedup(sess.Messages, newItems)
+	}
+	if utils.ResponsesItemsContainCompaction(mergedItems) {
+		return nil, fmt.Errorf("Responses compaction item 只能由 Responses 原生上游处理，无法转换为 OpenAI Chat")
+	}
+
+	messages := make([]map[string]interface{}, 0, len(mergedItems)+1)
 	if instructions != "" {
 		messages = append(messages, map[string]interface{}{
 			"role":    "system",
 			"content": instructions,
 		})
 	}
-
-	// 2. 处理历史消息
-	if sess != nil {
-		for _, item := range sess.Messages {
-			msg := responsesItemToOpenAIMessage(item)
-			if msg != nil {
-				messages = append(messages, msg)
-			}
-		}
-	}
-
-	// 3. 处理新输入
-	newItems, err := parseResponsesInput(newInput)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, item := range newItems {
-		msg := responsesItemToOpenAIMessage(item)
-		if msg != nil {
+	for _, item := range mergedItems {
+		if msg := responsesItemToOpenAIMessage(item); msg != nil {
 			messages = append(messages, msg)
 		}
 	}
-
 	return collapseSystemMessagesToHead(messages), nil
 }
 
@@ -230,6 +213,26 @@ func responsesItemToOpenAIMessage(item types.ResponsesItem) map[string]interface
 		return map[string]interface{}{
 			"role":    role,
 			"content": content,
+		}
+
+	case "tool_call":
+		if item.ToolUse == nil {
+			return nil
+		}
+		arguments, err := json.Marshal(item.ToolUse.Input)
+		if err != nil {
+			return nil
+		}
+		return map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []map[string]interface{}{{
+				"id":   item.ToolUse.ID,
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      item.ToolUse.Name,
+					"arguments": string(arguments),
+				},
+			}},
 		}
 
 	case "function_call", "custom_tool_call", "tool_search_call":
@@ -791,11 +794,17 @@ func extractCustomToolInput(arguments string) string {
 }
 
 func customToolArgumentsJSON(item types.ResponsesItem) string {
-	input := extractTextFromContent(item.Content)
-	if input == "" {
+	var input interface{}
+	if text := extractTextFromContent(item.Content); text != "" {
+		input = text
+	} else if item.Content != nil {
+		// custom_tool_call 的 input 也可能是结构化值；不能只取文本，
+		// 否则回灌到 Chat/Claude 时会把整个工具输入变成空字符串。
+		input = item.Content
+	} else {
 		input = strings.TrimSpace(item.Arguments)
 	}
-	payload, err := json.Marshal(map[string]string{"input": input})
+	payload, err := json.Marshal(map[string]interface{}{"input": input})
 	if err != nil {
 		return "{}"
 	}
@@ -848,10 +857,10 @@ func parseResponsesInput(input interface{}) ([]types.ResponsesItem, error) {
 	case []interface{}:
 		// 数组输入
 		items := []types.ResponsesItem{}
-		for _, item := range v {
+		for index, item := range v {
 			itemMap, ok := item.(map[string]interface{})
 			if !ok {
-				continue
+				return nil, fmt.Errorf("input 第 %d 项必须是对象", index)
 			}
 
 			itemType, _ := itemMap["type"].(string)
@@ -876,6 +885,9 @@ func parseResponsesInput(input interface{}) ([]types.ResponsesItem, error) {
 			if itemType == "" && role != "" {
 				itemType = "message"
 			}
+			if itemType == "" {
+				return nil, fmt.Errorf("input 第 %d 项缺少 type", index)
+			}
 			if itemType == "custom_tool_call" {
 				if input, ok := itemMap["input"]; ok && content == nil {
 					content = input
@@ -885,20 +897,30 @@ func parseResponsesInput(input interface{}) ([]types.ResponsesItem, error) {
 				content = output
 			}
 
-			items = append(items, types.ResponsesItem{
-				ID:        id,
-				Type:      itemType,
-				Status:    status,
-				Role:      role,
-				Content:   content,
-				Summary:   summary,
-				CallID:    callID,
-				Name:      name,
-				Arguments: arguments,
-				Tools:     tools,
-				Namespace: namespace,
-				Execution: execution,
-			})
+			parsed := types.ResponsesItem{
+				ID:               id,
+				Type:             itemType,
+				Status:           status,
+				Role:             role,
+				Content:          content,
+				Summary:          summary,
+				CallID:           callID,
+				Name:             name,
+				Arguments:        arguments,
+				Tools:            tools,
+				Namespace:        namespace,
+				Execution:        execution,
+				EncryptedContent: itemMap["encrypted_content"],
+				Signature:        stringValueFromMap(itemMap, "signature"),
+			}
+			if rawToolUse, ok := itemMap["tool_use"].(map[string]interface{}); ok {
+				parsed.ToolUse = &types.ToolUse{
+					ID:    stringValueFromMap(rawToolUse, "id"),
+					Name:  stringValueFromMap(rawToolUse, "name"),
+					Input: rawToolUse["input"],
+				}
+			}
+			items = append(items, parsed)
 		}
 		return items, nil
 
@@ -909,6 +931,11 @@ func parseResponsesInput(input interface{}) ([]types.ResponsesItem, error) {
 	default:
 		return nil, fmt.Errorf("不支持的 input 类型: %T", input)
 	}
+}
+
+func stringValueFromMap(values map[string]interface{}, key string) string {
+	value, _ := values[key].(string)
+	return value
 }
 
 // generateResponseID 生成响应ID
@@ -1063,12 +1090,19 @@ func parseResponsesUsage(usageRaw interface{}) types.ResponsesUsage {
 	if detailsMap, ok := inputDetailsRaw.(map[string]interface{}); ok {
 		usage.InputTokensDetails = &types.InputTokensDetails{}
 		if v, ok := getIntFromMap(detailsMap, "cached_tokens"); ok {
+			if v < 0 {
+				v = 0
+			}
 			usage.InputTokensDetails.CachedTokens = v
 			usage.CacheReadInputTokens = v
-			if usage.InputTokens > v {
-				usage.InputTokens -= v
-				usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+			// OpenAI 的 cached_tokens 是 input_tokens 的子集。
+			// 必须覆盖相等和 cached_tokens 超过 input_tokens 的异常回包，
+			// 否则客户端会继续看到一份虚高的上下文计数。
+			usage.InputTokens -= v
+			if usage.InputTokens < 0 {
+				usage.InputTokens = 0
 			}
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
 	}
 

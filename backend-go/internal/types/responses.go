@@ -1,6 +1,9 @@
 package types
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ============== Responses API 类型定义 ==============
 
@@ -50,6 +53,74 @@ type ResponsesItem struct {
 	Tools     interface{} `json:"tools,omitempty"`
 	Namespace string      `json:"namespace,omitempty"`
 	Execution string      `json:"execution,omitempty"`
+	// Responses reasoning/tool item 可能携带不透明的完整性材料，必须在会话持久化
+	// 和客户端重放匹配过程中保留。
+	EncryptedContent interface{} `json:"encrypted_content,omitempty"`
+	Signature        string      `json:"signature,omitempty"`
+}
+
+// UnmarshalJSON 保留 Responses 扩展 item 的真实字段形态。
+// 尤其是 custom_tool_call 的 input 与 function_call_output 的 output，不能
+// 只依赖 content；否则响应转 Claude/Chat 及 previous_response 指纹都会把
+// 工具参数或工具结果变成空值。
+func (i *ResponsesItem) UnmarshalJSON(data []byte) error {
+	if i == nil {
+		return fmt.Errorf("ResponsesItem 不能为空")
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*i = ResponsesItem{}
+	decodeString := func(key string, target *string) {
+		if value, ok := raw[key]; ok {
+			_ = json.Unmarshal(value, target)
+		}
+	}
+	decodeValue := func(key string) interface{} {
+		value, ok := raw[key]
+		if !ok || string(value) == "null" {
+			return nil
+		}
+		var decoded interface{}
+		if json.Unmarshal(value, &decoded) != nil {
+			return nil
+		}
+		return decoded
+	}
+	decodeString("id", &i.ID)
+	decodeString("type", &i.Type)
+	decodeString("status", &i.Status)
+	decodeString("role", &i.Role)
+	decodeString("call_id", &i.CallID)
+	decodeString("name", &i.Name)
+	decodeString("namespace", &i.Namespace)
+	decodeString("execution", &i.Execution)
+	decodeString("signature", &i.Signature)
+	i.Content = decodeValue("content")
+	i.Summary = decodeValue("summary")
+	i.Tools = decodeValue("tools")
+	i.EncryptedContent = decodeValue("encrypted_content")
+	if i.Content == nil {
+		if i.Type == "custom_tool_call" {
+			i.Content = decodeValue("input")
+		} else {
+			i.Content = decodeValue("output")
+		}
+	}
+	if value, ok := raw["arguments"]; ok && string(value) != "null" {
+		if err := json.Unmarshal(value, &i.Arguments); err != nil {
+			i.Arguments = string(value)
+		}
+	}
+	if value, ok := raw["tool_use"]; ok && string(value) != "null" {
+		var toolUse ToolUse
+		if err := json.Unmarshal(value, &toolUse); err != nil {
+			return err
+		}
+		i.ToolUse = &toolUse
+	}
+	return nil
 }
 
 func (i ResponsesItem) MarshalJSON() ([]byte, error) {
@@ -65,7 +136,7 @@ func (i ResponsesItem) MarshalJSON() ([]byte, error) {
 	if i.Role != "" {
 		out["role"] = i.Role
 	}
-	if i.Content != nil && i.Type != "custom_tool_call" {
+	if i.Content != nil && i.Type != "custom_tool_call" && !responsesItemUsesOutputField(i.Type) {
 		out["content"] = i.Content
 	}
 	if i.Summary != nil {
@@ -89,11 +160,21 @@ func (i ResponsesItem) MarshalJSON() ([]byte, error) {
 	if i.Execution != "" {
 		out["execution"] = i.Execution
 	}
+	if i.EncryptedContent != nil {
+		out["encrypted_content"] = i.EncryptedContent
+	}
+	if i.Signature != "" {
+		out["signature"] = i.Signature
+	}
 
 	switch i.Type {
 	case "custom_tool_call":
 		if i.Content != nil {
 			out["input"] = i.Content
+		}
+	case "function_call_output", "custom_tool_call_output", "tool_search_output", "tool_result":
+		if i.Content != nil {
+			out["output"] = i.Content
 		}
 	case "tool_search_call":
 		if i.Arguments != "" {
@@ -111,6 +192,15 @@ func (i ResponsesItem) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(out)
+}
+
+func responsesItemUsesOutputField(itemType string) bool {
+	switch itemType {
+	case "function_call_output", "custom_tool_call_output", "tool_search_output", "tool_result":
+		return true
+	default:
+		return false
+	}
 }
 
 // ContentBlock 内容块（用于嵌套 content 数组）
@@ -139,6 +229,7 @@ type ResponsesResponse struct {
 	Created            int64                  `json:"created,omitempty"`
 	CreatedAt          int64                  `json:"created_at,omitempty"`
 	Extra              map[string]interface{} `json:"-"`
+	UsagePresent       bool                   `json:"-"`
 }
 
 func (r ResponsesResponse) MarshalJSON() ([]byte, error) {
@@ -185,7 +276,7 @@ func (r ResponsesResponse) MarshalJSON() ([]byte, error) {
 	if r.PreviousResponseID != "" {
 		out["previous_response_id"] = r.PreviousResponseID
 	}
-	if !responsesUsageEmpty(r.Usage) {
+	if r.UsagePresent || !responsesUsageEmpty(r.Usage) {
 		out["usage"] = r.Usage
 	}
 	if r.Created > 0 {

@@ -51,6 +51,20 @@ func isCodexResponsesRequest(requestBody []byte) bool {
 	return false
 }
 
+// estimateResponsesInputForClient 仅在请求体代表本次完整上下文时提供安全估算。
+// previous_response_id 的 input 只是一轮增量，Codex 请求还可能由服务端注入工具
+// 定义和内部历史；这两类都不能拿本地 request body 冒充全量 input_tokens。
+func estimateResponsesInputForClient(requestBody []byte) (int, bool) {
+	if hasPreviousResponseID(requestBody) || isCodexResponsesRequest(requestBody) {
+		return 0, false
+	}
+	estimated := utils.SafeEstimatedInputTokens(utils.EstimateResponsesRequestTokens(requestBody))
+	if estimated <= 0 {
+		return 0, false
+	}
+	return estimated, true
+}
+
 // patchResponsesUsage 补全 Responses 响应的 Token 统计
 func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envCfg *config.EnvConfig) {
 	// 检查是否有 Claude 原生缓存 token（有时才跳过 input_tokens 修补）
@@ -66,11 +80,10 @@ func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envC
 	needInputPatch := resp.Usage.InputTokens <= 1 && !hasClaudeCache
 	needOutputPatch := resp.Usage.OutputTokens <= 1
 
-	// 如果 usage 完全为空，进行完整估算
+	// 如果 usage 完全为空，只对可由请求体代表的完整上下文估算 input；链式/Codex
+	// 请求的 input 由服务端掌握，不能用单轮 body 覆盖。output 仍可按已返回内容估算。
 	if resp.Usage.InputTokens == 0 && resp.Usage.OutputTokens == 0 && resp.Usage.TotalTokens == 0 {
-		// input 用带 8000 上限的保护值：Cursor 全量重发历史的请求体可达 100k-300k，
-		// 直接塞全量估算会让客户端误判压缩后上下文依然是满的（compact thrash）。
-		estimatedInput := utils.SafeEstimatedInputTokens(utils.EstimateResponsesRequestTokens(requestBody))
+		estimatedInput, _ := estimateResponsesInputForClient(requestBody)
 		estimatedOutput := estimateResponsesOutputFromItems(resp.Output)
 		resp.Usage.InputTokens = estimatedInput
 		resp.Usage.OutputTokens = estimatedOutput
@@ -86,10 +99,13 @@ func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envC
 	originalOutput := resp.Usage.OutputTokens
 	patched := false
 
+	inputPatched := false
 	if needInputPatch {
-		// 同样的 8000 上限保护，避免全量估算覆盖 input_tokens。
-		resp.Usage.InputTokens = utils.SafeEstimatedInputTokens(utils.EstimateResponsesRequestTokens(requestBody))
-		patched = true
+		if estimatedInput, ok := estimateResponsesInputForClient(requestBody); ok {
+			resp.Usage.InputTokens = estimatedInput
+			inputPatched = true
+			patched = true
+		}
 	}
 	if needOutputPatch {
 		resp.Usage.OutputTokens = estimateResponsesOutputFromItems(resp.Output)
@@ -97,7 +113,7 @@ func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envC
 	}
 
 	// 重新计算 TotalTokens（修补时或 total_tokens 为 0 但 input/output 有效时）
-	if patched || (resp.Usage.TotalTokens == 0 && (resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0)) {
+	if inputPatched || (resp.Usage.TotalTokens == 0 && (resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0)) {
 		resp.Usage.TotalTokens = resp.Usage.InputTokens + resp.Usage.OutputTokens
 	}
 
@@ -114,67 +130,81 @@ func patchResponsesUsage(resp *types.ResponsesResponse, requestBody []byte, envC
 	}
 }
 
-// estimateResponsesOutputFromItems 从 ResponsesItem 数组估算输出 token
+// estimateResponsesOutputFromItems 从 ResponsesItem 的语义字段估算输出 token。
+// 该函数只用于上游漏报/错报时给客户端做有限补全，不是计费数据源。尤其不能
+// 把完整 response.completed JSON envelope 当作正文估算，否则 envelope 的 id、
+// status、usage 等控制字段会被误算成模型输出。
 func estimateResponsesOutputFromItems(output []types.ResponsesItem) int {
-	if len(output) == 0 {
-		return 0
-	}
-
 	total := 0
 	for _, item := range output {
-		// 处理 content
-		if item.Content != nil {
-			switch v := item.Content.(type) {
-			case string:
-				total += utils.EstimateTokens(v)
-			case []interface{}:
-				for _, block := range v {
-					if b, ok := block.(map[string]interface{}); ok {
-						if text, ok := b["text"].(string); ok {
-							total += utils.EstimateTokens(text)
-						}
-					}
-				}
-			case []types.ContentBlock:
-				// 处理结构化 ContentBlock 数组
-				for _, block := range v {
-					if block.Text != "" {
-						total += utils.EstimateTokens(block.Text)
-					}
-				}
-			default:
-				// 回退：序列化后估算
-				data, _ := json.Marshal(v)
-				total += utils.EstimateTokens(string(data))
+		switch item.Type {
+		case "message", "text":
+			total += estimateResponsesContentTokens(item.Content)
+		case "reasoning":
+			total += estimateResponsesContentTokens(item.Summary)
+			total += estimateResponsesContentTokens(item.Content)
+		case "function_call", "custom_tool_call", "tool_search_call":
+			total += estimateResponsesStringTokens(item.Name)
+			total += estimateResponsesStringTokens(item.Arguments)
+			if item.Type == "custom_tool_call" {
+				total += estimateResponsesContentTokens(item.Content)
 			}
+		case "function_call_output", "custom_tool_call_output", "tool_search_output", "tool_result":
+			total += estimateResponsesContentTokens(item.Content)
+			if item.Type == "tool_search_output" {
+				total += estimateResponsesContentTokens(item.Tools)
+			}
+		default:
+			total += estimateResponsesContentTokens(item.Content)
+			total += estimateResponsesContentTokens(item.Summary)
+			total += estimateResponsesStringTokens(item.Arguments)
+			total += estimateResponsesContentTokens(item.Tools)
 		}
 
-		// 处理 tool_use
 		if item.ToolUse != nil {
-			if item.ToolUse.Name != "" {
-				total += utils.EstimateTokens(item.ToolUse.Name) + 2
-			}
-			if item.ToolUse.Input != nil {
-				data, _ := json.Marshal(item.ToolUse.Input)
-				total += utils.EstimateTokens(string(data))
-			}
-		}
-
-		// 处理 function_call 类型（item.Type == "function_call"）
-		if item.Type == "function_call" {
-			// 在转换后的响应中，function_call 的参数可能在 Content 中
-			if contentStr, ok := item.Content.(string); ok {
-				total += utils.EstimateTokens(contentStr)
-			}
-		}
-
-		if item.Summary != nil {
-			data, _ := json.Marshal(item.Summary)
-			total += utils.EstimateTokens(string(data))
+			total += estimateResponsesStringTokens(item.ToolUse.Name)
+			total += estimateResponsesContentTokens(item.ToolUse.Input)
 		}
 	}
-
 	return total
+}
+
+func estimateResponsesStringTokens(value string) int {
+	if strings.TrimSpace(value) == "" {
+		return 0
+	}
+	return utils.EstimateTokens(value)
+}
+
+func estimateResponsesContentTokens(content interface{}) int {
+	if content == nil {
+		return 0
+	}
+	if text, ok := content.(string); ok {
+		return estimateResponsesStringTokens(text)
+	}
+
+	blocks := utils.NormalizeContentBlocks(content)
+	if len(blocks) > 0 {
+		total := 0
+		for _, block := range blocks {
+			if text, ok := utils.ExtractTextFromBlock(block); ok {
+				total += estimateResponsesStringTokens(text)
+				continue
+			}
+			data, err := json.Marshal(block)
+			if err == nil {
+				total += utils.EstimateTokens(string(data))
+			}
+		}
+		return total
+	}
+
+	data, err := json.Marshal(content)
+	if err != nil || string(data) == "null" {
+		return 0
+	}
+	return utils.EstimateTokens(string(data))
 }
 
 // checkResponsesEventUsage 检测 Responses 事件是否包含 usage
@@ -246,9 +276,10 @@ func extractResponsesUsageFromMap(usage map[string]interface{}) responsesStreamU
 			data.HasClaudeCache = true
 		}
 	}
-	_, hasExplicitCacheRead := usage["cache_read_input_tokens"]
+	hasExplicitCacheRead := false
 	if v, ok := usage["cache_read_input_tokens"].(float64); ok {
 		data.CacheReadInputTokens = int(v)
+		hasExplicitCacheRead = v > 0
 		if v > 0 {
 			data.HasClaudeCache = true
 		}
@@ -285,8 +316,17 @@ func extractResponsesUsageFromMap(usage map[string]interface{}) responsesStreamU
 		if data.CacheReadInputTokens == 0 {
 			data.CacheReadInputTokens = openAICachedTokens
 		}
-		if !hasExplicitCacheRead && data.InputTokens > openAICachedTokens {
+		// cache_read_input_tokens=0 只是零值占位，不能阻止 OpenAI
+		// cached_tokens 的子集拆分；只有明确的非零 Anthropic cache-read
+		// 才表示 input_tokens 已经按“未缓存部分”上报。
+		if !hasExplicitCacheRead {
 			data.InputTokens -= openAICachedTokens
+			if data.InputTokens < 0 {
+				data.InputTokens = 0
+			}
+			// cached_tokens 已从 input_tokens 中拆出；total_tokens 也必须
+			// 使用同一口径，不能保留包含缓存子集的原始总量。
+			data.TotalTokens = data.InputTokens + data.OutputTokens
 		}
 		// 注意：不设置 HasClaudeCache，因为这是 OpenAI 格式
 	}
@@ -345,11 +385,13 @@ func updateResponsesStreamUsage(collected *responsesStreamUsage, usageData respo
 // injectResponsesUsageToCompletedEvent 向 response.completed 事件注入 usage
 // 返回: 修改后的事件字符串, 估算的 inputTokens, 估算的 outputTokens
 func injectResponsesUsageToCompletedEvent(event string, requestBody []byte, outputText string, envCfg *config.EnvConfig) (string, int, int) {
-	// input 用带 8000 上限的保护值，理由同 SafeEstimatedInputTokens：
-	// Cursor 全量重发历史的请求体极大，直接注入全量估算会让客户端误判上下文已满，
-	// 触发 compact thrash。超过上限则返回 0（放弃填补），让客户端用真实 usage 或自己的估算。
-	inputTokens := utils.SafeEstimatedInputTokens(utils.EstimateResponsesRequestTokens(requestBody))
-	outputTokens := utils.EstimateTokens(outputText)
+	return injectResponsesUsageToCompletedEventWithTokens(event, requestBody, utils.EstimateTokens(outputText), envCfg)
+}
+
+func injectResponsesUsageToCompletedEventWithTokens(event string, requestBody []byte, outputTokens int, envCfg *config.EnvConfig) (string, int, int) {
+	// 仅对非链式、非 Codex 请求使用请求体估算；链式请求的 body 只是增量，Codex
+	// 还可能包含服务端注入内容，写入估算值会把客户端的上下文占用提示改错。
+	inputTokens, _ := estimateResponsesInputForClient(requestBody)
 	totalTokens := inputTokens + outputTokens
 
 	debugLog := envCfg.EnableResponseLogs && envCfg.ShouldLog("debug")
@@ -502,6 +544,10 @@ func injectUsageIntoMultiLineDataEvent(event string, inputTokens, outputTokens, 
 
 // patchResponsesCompletedEventUsage 修补 response.completed 事件中的 usage
 func patchResponsesCompletedEventUsage(event string, requestBody []byte, outputText string, collected *responsesStreamUsage, envCfg *config.EnvConfig) string {
+	return patchResponsesCompletedEventUsageWithTokens(event, requestBody, utils.EstimateTokens(outputText), collected, envCfg)
+}
+
+func patchResponsesCompletedEventUsageWithTokens(event string, requestBody []byte, outputTokens int, collected *responsesStreamUsage, envCfg *config.EnvConfig) string {
 	rewritten, _ := utils.RewriteSSEDataLines(event, func(payload string) (string, bool) {
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(payload), &data); err != nil {
@@ -516,19 +562,23 @@ func patchResponsesCompletedEventUsage(event string, requestBody []byte, outputT
 				originalInput := collected.InputTokens
 				originalOutput := collected.OutputTokens
 				patched := false
+				inputPatched := false
 
-				// 修补 input_tokens（仅当没有 Claude 原生缓存时）
-				// OpenAI 的 cached_tokens 不应阻止 input_tokens 补全
+				// 修补 input_tokens（仅当没有 Claude 原生缓存且请求体可代表完整上下文时）。
+				// OpenAI 的 cached_tokens 不应阻止 input_tokens 补全，但链式/Codex 请求
+				// 仍不能用本地 request body 估算全量上下文。
 				if collected.InputTokens <= 1 && !collected.HasClaudeCache {
-					estimatedInput := utils.SafeEstimatedInputTokens(utils.EstimateResponsesRequestTokens(requestBody))
-					usage["input_tokens"] = estimatedInput
-					collected.InputTokens = estimatedInput
-					patched = true
+					if estimatedInput, ok := estimateResponsesInputForClient(requestBody); ok {
+						usage["input_tokens"] = estimatedInput
+						collected.InputTokens = estimatedInput
+						inputPatched = true
+						patched = true
+					}
 				}
 
 				// 修补 output_tokens
 				if collected.OutputTokens <= 1 {
-					estimatedOutput := utils.EstimateTokens(outputText)
+					estimatedOutput := outputTokens
 					usage["output_tokens"] = estimatedOutput
 					collected.OutputTokens = estimatedOutput
 					patched = true
@@ -539,7 +589,7 @@ func patchResponsesCompletedEventUsage(event string, requestBody []byte, outputT
 				if t, ok := usage["total_tokens"].(float64); ok {
 					currentTotal = int(t)
 				}
-				if patched || (currentTotal == 0 && (collected.InputTokens > 0 || collected.OutputTokens > 0)) {
+				if inputPatched || (currentTotal == 0 && (collected.InputTokens > 0 || collected.OutputTokens > 0)) {
 					collected.TotalTokens = collected.InputTokens + collected.OutputTokens
 					usage["total_tokens"] = collected.TotalTokens
 				}
@@ -572,9 +622,9 @@ func patchResponsesCompletedEventUsage(event string, requestBody []byte, outputT
 // 派生的 cache_read_input_tokens：把这两类字段从下发给客户端的 usage 里删掉，让客户端
 // 用 input_tokens（已扣除缓存的 uncached 真实值）判断上下文大小。
 //
-// 注意：如果请求携带 previous_response_id，说明客户端（如 Codex）正在进行链式增量会话，
-// 上游返回的 cached_tokens 是服务端在 previous_response_id 链上的真实缓存，且客户端原生识别
-// input_tokens_details，此时严禁剥离。
+// 注意：如果请求携带 previous_response_id，usage 可能包含服务端链上历史，
+// 此时严禁剥离。client_metadata 只代表客户端身份，不能用来推断上游缓存字段
+// 是当前请求子集还是跨请求累积值，因此不参与这里的缓存语义判断。
 func stripAccumulatedCacheFromCompletedEvent(event string, requestBody []byte) string {
 	if hasPreviousResponseID(requestBody) {
 		return event

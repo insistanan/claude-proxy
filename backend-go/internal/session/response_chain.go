@@ -9,13 +9,20 @@ import (
 // 注意：OpenAI 官方文档明确 previous_response_id 链上的历史 input 仍会计费；
 // 本能力主要用于减少重复传输与提升上游缓存亲和，不是“免费上下文”。
 type ResponseChainState struct {
-	ResponseID        string
-	MessageCount      int
-	SystemFingerprint string
-	ToolsFingerprint  string
-	BaseURL           string
-	Model             string
-	UpdatedAt         time.Time
+	ResponseID   string
+	MessageCount int
+	// OutputFingerprint 是上一条 Responses response 的可见 assistant output
+	// 指纹。Messages 客户端下一轮通常会重放该 assistant 消息；携带
+	// previous_response_id 时必须把这段已存在于服务端链中的消息从后缀中移除。
+	OutputFingerprint string
+	// MessageFingerprint 是建立链时客户端已发送消息序列的规范指纹。
+	// 仅比较数量不足以识别 Cursor 压缩后“同数量但内容已替换”的历史。
+	MessageFingerprint string
+	SystemFingerprint  string
+	ToolsFingerprint   string
+	BaseURL            string
+	Model              string
+	UpdatedAt          time.Time
 }
 
 // ResponseChainManager 按 conversationID 保存最近一次成功的 Responses 链状态。

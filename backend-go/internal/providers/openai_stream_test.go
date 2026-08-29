@@ -48,7 +48,7 @@ func TestOpenAIProviderHandleStreamResponse_EmptyToolCallsKeepsSingleTextBlock(t
 	}
 }
 
-func TestOpenAIProviderHandleStreamResponse_EmitsReasoningAsThinking(t *testing.T) {
+func TestOpenAIProviderHandleStreamResponse_HidesReasoningFromClientStream(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"id":"chatcmpl_test","model":"reasoning-model","choices":[{"index":0,"delta":{"reasoning_content":"need inspect"},"finish_reason":null}]}`,
 		``,
@@ -79,18 +79,15 @@ func TestOpenAIProviderHandleStreamResponse_EmitsReasoningAsThinking(t *testing.
 	}
 
 	got := events.String()
-	if !strings.Contains(got, `"type":"thinking"`) || !strings.Contains(got, `"type":"thinking_delta"`) {
-		t.Fatalf("missing thinking events:\n%s", got)
-	}
-	if !strings.Contains(got, `"thinking":"need inspect"`) {
-		t.Fatalf("missing reasoning delta:\n%s", got)
+	if strings.Contains(got, `"type":"thinking"`) || strings.Contains(got, `"type":"thinking_delta"`) {
+		t.Fatalf("reasoning 不应进入客户端事件:\n%s", got)
 	}
 	if !strings.Contains(got, `"text":"I will inspect."`) {
 		t.Fatalf("missing text events:\n%s", got)
 	}
 }
 
-func TestOpenAIProviderHandleStreamResponse_EmitsEmbeddedThinkingAsThinking(t *testing.T) {
+func TestOpenAIProviderHandleStreamResponse_HidesEmbeddedThinkingFromClientStream(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"model":"reasoning-model","choices":[{"delta":{"content":"<think>private"}}]}`,
 		`data: {"model":"reasoning-model","choices":[{"delta":{"content":" reasoning</think>Final answer."}}]}`,
@@ -108,8 +105,8 @@ func TestOpenAIProviderHandleStreamResponse_EmitsEmbeddedThinkingAsThinking(t *t
 		events.WriteString(event)
 	}
 	got := events.String()
-	if !strings.Contains(got, `"type":"thinking_delta"`) || !strings.Contains(got, "private reasoning") {
-		t.Fatalf("missing thinking events:\n%s", got)
+	if strings.Contains(got, `"type":"thinking_delta"`) || strings.Contains(got, "private reasoning") {
+		t.Fatalf("嵌入式 reasoning 不应进入客户端事件:\n%s", got)
 	}
 	if !strings.Contains(got, `"text":"Final answer."`) || strings.Contains(got, `"text":"<think>`) {
 		t.Fatalf("text events leaked thinking tags:\n%s", got)

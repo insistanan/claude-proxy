@@ -52,7 +52,17 @@ func Handler(
 
 			var responsesReq types.ResponsesRequest
 			if len(body) > 0 {
-				_ = json.Unmarshal(body, &responsesReq)
+				if err := json.Unmarshal(body, &responsesReq); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("解析 Responses 请求失败: %v", err)})
+					return "", false, nil, false
+				}
+				if _, err := parseInputToItems(responsesReq.Input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("解析 Responses input 失败: %v", err)})
+					return responsesReq.Model, false, nil, false
+				}
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Responses 请求体不能为空"})
+				return "", false, nil, false
 			}
 			return responsesReq.Model, responsesReq.Stream, proxycore.ExtractPromptsFromResponsesInput(responsesReq.Input), true
 		},
@@ -173,7 +183,7 @@ func handleSuccess(
 	// 透传分支剥离累积式缓存统计（同 stream.go 的 stripAccumulatedCacheFromCompletedEvent）：
 	// grok-4.6 等 OpenAI 兼容上游的 cached_tokens 是跨请求累积命中量，原样下发会让
 	// Cursor 误判上下文一直满、反复触发压缩。Claude 原生缓存与携带 previous_response_id 的
-	// 链式增量请求不受影响（函数内判断保留）
+	// 链式增量请求不受影响（函数内按字段语义判断保留）
 	if upstreamType == converters.ResponsesUpstreamResponses {
 		stripAccumulatedCacheFromResponse(responsesResp, originalRequestJSON)
 		// 剥离缓存字段后 input_tokens 成了客户端判断上下文占用的唯一依据，
@@ -197,21 +207,54 @@ func handleSuccess(
 		sess, err := sessionManager.GetOrCreateSessionForConversation(originalReq.PreviousResponseID, conversationID)
 		if err == nil {
 			previousResponseID := sess.LastResponseID
-			inputItems, _ := parseInputToItems(originalReq.Input)
+			compactionRoot := utils.ResponsesItemsContainCompactionFromInput(originalReq.Input)
+			inputItems, parseErr := parseInputToItems(originalReq.Input)
+			if parseErr != nil {
+				return nil, fmt.Errorf("保存 Responses 输入历史失败: %w", parseErr)
+			}
 			turnItems := make([]types.ResponsesItem, 0, len(inputItems)+len(responsesResp.Output))
 			turnItems = append(turnItems, inputItems...)
 			turnItems = append(turnItems, responsesResp.Output...)
-			if err := sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens, utils.DetectImageContent(originalRequestJSON), responsesResp.ID); err != nil {
-				log.Printf("[Session] 持久化 Responses 会话轮次失败: %v", err)
+			var commitErr error
+			if compactionRoot {
+				// compaction 优先于“previous_response_id 被移除”边界：
+				// CommitTurn 会从 compaction item 截断旧 transcript。若先走
+				// ReplaceSessionAfterBoundary，压缩前的完整历史会被再次写回本地
+				// session，下一轮转换仍会迅速恢复到旧上下文长度。
+				commitErr = sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens,
+					utils.DetectImageContent(originalRequestJSON), responsesResp.ID)
+			} else if c.GetBool(utils.ContextKeyResponsesPreviousIDDropped) {
+				commitErr = sessionManager.ReplaceSessionAfterBoundary(sess.ID, turnItems,
+					utils.DetectImageContent(originalRequestJSON), responsesResp.ID)
+			} else {
+				commitErr = sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens,
+					utils.DetectImageContent(originalRequestJSON), responsesResp.ID)
+			}
+			if err := commitErr; err != nil {
+				return nil, fmt.Errorf("持久化 Responses 会话轮次失败: %w", err)
+			}
+			if compactionRoot {
+				// compaction 成功后，Messages→Responses 的旧链也必须失效；
+				// 否则下一轮仍可能携带压缩前的 previous_response_id。
+				session.DefaultResponseChainManager().Clear(conversationID)
 			}
 
-			if previousResponseID != "" {
+			if previousResponseID != "" && !compactionRoot &&
+				!c.GetBool(utils.ContextKeyResponsesPreviousIDDropped) {
 				responsesResp.PreviousID = previousResponseID
 				responsesResp.PreviousResponseID = previousResponseID
 			}
 		} else {
-			log.Printf("[Session] 保存 Responses 会话失败: %v", err)
+			return nil, fmt.Errorf("保存 Responses 会话失败: %w", err)
 		}
+	}
+	if originalReq != nil && utils.ResponsesItemsContainCompactionFromInput(originalReq.Input) {
+		clearResponsesPreviousIDs(responsesResp)
+	}
+	if c.GetBool(utils.ContextKeyResponsesPreviousIDDropped) {
+		// 上游请求已被切换到新边界；不能把它原样返回的旧 previous ID
+		// 继续交给 Cursor，否则客户端下一轮会重新走旧服务端会话。
+		clearResponsesPreviousIDs(responsesResp)
 	}
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
@@ -220,6 +263,18 @@ func handleSuccess(
 
 	// 返回 usage 数据用于指标记录（上游原值快照，不受下发侧校正影响）
 	return &metricsUsage, nil
+}
+
+func clearResponsesPreviousIDs(resp *types.ResponsesResponse) {
+	if resp == nil {
+		return
+	}
+	resp.PreviousID = ""
+	resp.PreviousResponseID = ""
+	if resp.Extra != nil {
+		delete(resp.Extra, "previous_id")
+		delete(resp.Extra, "previous_response_id")
+	}
 }
 
 func handleResponsesImagePassthrough(
@@ -271,59 +326,80 @@ func parseInputToItems(input interface{}) ([]types.ResponsesItem, error) {
 	case string:
 		return []types.ResponsesItem{{Type: "text", Content: v}}, nil
 	case []interface{}:
-		items := []types.ResponsesItem{}
-		for _, item := range v {
+		items := make([]types.ResponsesItem, 0, len(v))
+		for index, item := range v {
 			itemMap, ok := item.(map[string]interface{})
 			if !ok {
-				continue
+				return nil, fmt.Errorf("input 第 %d 项必须是对象", index)
 			}
-			itemType, _ := itemMap["type"].(string)
-			role, _ := itemMap["role"].(string)
-			content := itemMap["content"]
-			summary := itemMap["summary"]
-			id, _ := itemMap["id"].(string)
-			status, _ := itemMap["status"].(string)
-			callID, _ := itemMap["call_id"].(string)
-			name, _ := itemMap["name"].(string)
-			tools := itemMap["tools"]
-			namespace, _ := itemMap["namespace"].(string)
-			execution, _ := itemMap["execution"].(string)
-			arguments, _ := itemMap["arguments"].(string)
-			if arguments == "" {
-				if rawArguments, ok := itemMap["arguments"]; ok && rawArguments != nil {
-					if encoded, err := utils.MarshalJSONNoEscape(rawArguments); err == nil {
-						arguments = string(encoded)
-					}
-				}
+			parsed := parseResponsesItemMap(itemMap)
+			if parsed.Type == "" {
+				return nil, fmt.Errorf("input 第 %d 项缺少 type", index)
 			}
-			if itemType == "" && role != "" {
-				itemType = "message"
-			}
-			if itemType == "custom_tool_call" {
-				if inputValue, ok := itemMap["input"]; ok && content == nil {
-					content = inputValue
-				}
-			}
-			if output, ok := itemMap["output"]; ok && content == nil {
-				content = output
-			}
-			items = append(items, types.ResponsesItem{
-				ID:        id,
-				Type:      itemType,
-				Status:    status,
-				Role:      role,
-				Content:   content,
-				Summary:   summary,
-				CallID:    callID,
-				Name:      name,
-				Arguments: arguments,
-				Tools:     tools,
-				Namespace: namespace,
-				Execution: execution,
-			})
+			items = append(items, parsed)
 		}
 		return items, nil
 	default:
 		return nil, fmt.Errorf("unsupported input type")
 	}
+}
+
+// parseResponsesItemMap 把请求输入和 response.completed.output 中的 item
+// 统一解析为内部表示。Responses 的 function_call_output 使用 output 字段，
+// custom_tool_call 使用 input 字段；如果只读取 content，会在 session 重放时
+// 丢失工具结果或把后续工具调用错误地当成空消息。
+func parseResponsesItemMap(itemMap map[string]interface{}) types.ResponsesItem {
+	itemType, _ := itemMap["type"].(string)
+	role, _ := itemMap["role"].(string)
+	content := itemMap["content"]
+	if content == nil {
+		if itemType == "custom_tool_call" {
+			content = itemMap["input"]
+		}
+		if content == nil {
+			content = itemMap["output"]
+		}
+	}
+	if itemType == "" && role != "" {
+		itemType = "message"
+	}
+
+	arguments, _ := itemMap["arguments"].(string)
+	if arguments == "" {
+		if rawArguments, ok := itemMap["arguments"]; ok && rawArguments != nil {
+			if encoded, err := utils.MarshalJSONNoEscape(rawArguments); err == nil {
+				arguments = string(encoded)
+			}
+		}
+	}
+
+	item := types.ResponsesItem{}
+	item.ID, _ = itemMap["id"].(string)
+	item.Type = itemType
+	item.Status, _ = itemMap["status"].(string)
+	item.Role = role
+	item.Content = content
+	item.Summary = itemMap["summary"]
+	item.CallID, _ = itemMap["call_id"].(string)
+	item.Name, _ = itemMap["name"].(string)
+	item.Arguments = arguments
+	item.Tools = itemMap["tools"]
+	item.Namespace, _ = itemMap["namespace"].(string)
+	item.Execution, _ = itemMap["execution"].(string)
+	item.EncryptedContent = itemMap["encrypted_content"]
+	item.Signature, _ = itemMap["signature"].(string)
+
+	if rawToolUse, ok := itemMap["tool_use"].(map[string]interface{}); ok {
+		item.ToolUse = &types.ToolUse{
+			ID:    stringValue(rawToolUse["id"]),
+			Name:  stringValue(rawToolUse["name"]),
+			Input: rawToolUse["input"],
+		}
+	}
+	return item
+}
+
+func stringValue(value interface{}) string {
+	valueString, _ := value.(string)
+	return valueString
 }

@@ -21,6 +21,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const messagesProviderContextKey = "messages.provider"
+
 // Handler Messages API 代理处理器
 // 支持多渠道调度：当配置多个渠道时自动启用
 // Handler Messages API 代理处理器。
@@ -52,20 +54,29 @@ func Handler(
 			if provider == nil {
 				return nil, fmt.Errorf("unsupported service type: %s", up.ServiceType)
 			}
+			// Messages->Responses 的 Provider 在构造请求时会保存本次请求的
+			// conversation、模型和 previous_response_id 链状态。成功处理阶段
+			// 必须复用同一个实例；重新 GetProvider 会丢失这些字段，导致链
+			// 无法登记，后续请求只能重复发送完整历史。
+			c.Set(messagesProviderContextKey, provider)
 			req, _, err := provider.ConvertToProviderRequest(c, up, apiKey)
 			return req, err
 		},
 		HandleSuccess: func(c *gin.Context, resp *http.Response, up *config.UpstreamConfig, apiKey string, body []byte, startTime time.Time) (*types.Usage, error) {
-			provider := providers.GetProvider(up.ServiceType)
-			if provider == nil {
-				return nil, fmt.Errorf("unsupported service type: %s", up.ServiceType)
+			provider, exists := c.Get(messagesProviderContextKey)
+			if !exists {
+				provider = providers.GetProvider(up.ServiceType)
+			}
+			resolvedProvider, ok := provider.(providers.Provider)
+			if !ok {
+				return nil, fmt.Errorf("invalid Messages provider state for service type: %s", up.ServiceType)
 			}
 			var claudeReq types.ClaudeRequest
 			_ = json.Unmarshal(body, &claudeReq)
 			if claudeReq.Stream {
-				return streams.HandleStreamResponse(c, resp, provider, envCfg, startTime, up, body, claudeReq.Model)
+				return streams.HandleStreamResponse(c, resp, resolvedProvider, envCfg, startTime, up, body, claudeReq.Model)
 			}
-			return handleNormalResponse(c, resp, provider, envCfg, startTime, body, up, apiKey)
+			return handleNormalResponse(c, resp, resolvedProvider, envCfg, startTime, body, up, apiKey)
 		},
 	}
 	return func(c *gin.Context) {
