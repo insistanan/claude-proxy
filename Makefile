@@ -10,7 +10,7 @@ help:
 	@echo "$(GREEN)API Proxy - 可用命令:$(NC)"
 	@echo ""
 	@echo "$(YELLOW)开发:$(NC)"
-	@echo "  make dev            - Go 后端热重载开发(不含前端)"
+	@echo "  make dev            - Go 后端热重载开发（不含前端）"
 	@echo "  make run            - 构建前端并运行 Go 后端"
 	@echo "  make frontend-dev   - 前端开发服务器"
 	@echo ""
@@ -33,13 +33,13 @@ run: embed-frontend
 build: embed-frontend
 	@cd backend-go && $(MAKE) build
 
+# 前端构建并复制到 backend-go/frontend/dist。
+# 复制统一走 scripts/copy-frontend.mjs，对 cwd 免疫，避免嵌套 dist 历史 bug。
 embed-frontend:
 	@echo "$(GREEN)📦 构建前端...$(NC)"
 	@cd frontend && npm run build
 	@echo "$(GREEN)📋 嵌入前端到 Go 后端...$(NC)"
-	@rm -rf backend-go/frontend/dist
-	@mkdir -p backend-go/frontend/dist
-	@cp -r frontend/dist/* backend-go/frontend/dist/
+	@node scripts/copy-frontend.mjs
 
 clean:
 	@cd backend-go && $(MAKE) clean

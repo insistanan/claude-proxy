@@ -46,7 +46,15 @@ npm run test                 # vitest 单测（现有 quickInputParser 等）
 目标产物：`dist/claude-proxy-windows-amd64.exe`。
 
 1. 先构建前端：`cd frontend && npm run build`。
-2. 将 `frontend/dist/*` 复制到 `backend-go/frontend/dist/`，确保 Go embed 打包到最新 UI。
+2. 把前端产物复制到 `backend-go/frontend/dist/`，供 Go embed 打包到最新 UI。
+   **必须**调用统一脚本（对 cwd 免疫，避免产生 `backend-go/backend-go/...` 或 `frontend/backend-go/...` 等嵌套 dist 历史 bug）：
+
+   ```powershell
+   node scripts/copy-frontend.mjs
+   ```
+
+   > 禁止手工 `cp -r frontend/dist/* backend-go/frontend/dist/` 之类直接拷贝——在不同 cwd 下会静默产生嵌套 dist，且 CI 门禁 `node scripts/copy-frontend.mjs --check` 会拦截。
+
 3. 回到 `backend-go/`，读取根目录 `VERSION`，生成 `BuildTime`，读取 `git rev-parse --short HEAD`，并设置 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64`。
 4. 使用版本注入编译，**禁止裸 `go build`**：
 
@@ -62,6 +70,18 @@ npm run test                 # vitest 单测（现有 quickInputParser 等）
    ```
 
 5. 构建后用 `Get-Item dist\claude-proxy-windows-amd64.exe` 确认产物存在；运行时 UI 版本不应显示 `v0.0.0-dev`。
+
+### 前端嵌入产物的所有入口（统一脚本）
+
+| 入口 | 平台 | 调用方式 |
+|---|---|---|
+| `make embed-frontend` / `make build` | 根 Makefile | `node scripts/copy-frontend.mjs` |
+| `make copy-frontend` / `make build` | backend-go/Makefile | `node ../scripts/copy-frontend.mjs` |
+| `backend-go/build.sh`（多平台本地构建） | bash | `node ../scripts/copy-frontend.mjs` |
+| `.github/workflows/release-{linux,macos,windows}.yml` | GitHub Actions | `node scripts/copy-frontend.mjs` |
+| `npm run check`（CI 门禁） | 全平台 | `node scripts/copy-frontend.mjs --check`（仅体检嵌套 dist，不复制） |
+
+脚本按 `import.meta.url` 解析仓库根路径，与执行 cwd 无关；任何一处复制点漏改都会让 `--check` 体检失败。
 
 ## 热重载
 

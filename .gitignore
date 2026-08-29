@@ -1,7 +1,10 @@
 # Logs
 
 logs
-skills/
+# 只忽略仓库根的运行时 Skills 目录（skills.projectRoot() 落点）。
+# 必须带前导斜杠：裸 skills/ 会连 backend-go/internal/skills/ 这个 Go 包一起吞掉，
+# 表现为新包文件本地能编译、却永远进不了仓库、CI 直接构建失败。
+/skills/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -250,3 +253,8 @@ docs/claude-code-investigation-*.md
 /.codex/
 /.claude/
 /.idea/
+
+# 前端产物复制嵌套目录兜底（历史 bug：手工 cp 在错误 cwd 下产生）
+# 不允许 backend-go/backend-go/... 或 frontend/backend-go/... 任何子树入仓
+**/backend-go/backend-go/
+**/frontend/backend-go/

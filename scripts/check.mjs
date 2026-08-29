@@ -49,6 +49,14 @@ runValidated(
 );
 
 runValidated(
+  "前端产物复制脚本嵌套体检",
+  "node",
+  ["scripts/copy-frontend.mjs", "--check"],
+  ".",
+  (out) => null,
+);
+
+runValidated(
   "后端 gofmt 校验",
   "gofmt",
   ["-l", "."],

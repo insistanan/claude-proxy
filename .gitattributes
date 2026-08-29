@@ -25,6 +25,7 @@ bun.lock text diff
 # 行尾守卫与门禁脚本本身保持 LF，避免 node 在极端环境下误解析
 /scripts/eol.mjs text eol=lf
 /scripts/check.mjs text eol=lf
+/scripts/copy-frontend.mjs text eol=lf
 
 # 明确标记二进制文件
 *.png binary

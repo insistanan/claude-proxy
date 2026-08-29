@@ -25,11 +25,9 @@ if [ ! -d "../frontend/dist" ]; then
     exit 1
 fi
 
-# 创建 frontend/dist 目录并复制前端资源
+# 复制前端资源（统一走 scripts/copy-frontend.mjs，对 cwd 免疫，避免嵌套 dist 历史 bug）
 echo "📦 复制前端资源..."
-rm -rf frontend/dist
-mkdir -p frontend/dist
-cp -r ../frontend/dist/* frontend/dist/
+node ../scripts/copy-frontend.mjs
 
 # 下载依赖
 echo "📥 下载 Go 依赖..."

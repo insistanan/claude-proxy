@@ -33,10 +33,7 @@ jobs:
         working-directory: ./frontend
 
       - name: Copy Frontend to Backend
-        run: |
-          rm -rf backend-go/frontend/dist
-          mkdir -p backend-go/frontend/dist
-          cp -r frontend/dist/* backend-go/frontend/dist/
+        run: node scripts/copy-frontend.mjs
 
       - name: Setup Go
         uses: actions/setup-go@v5

@@ -108,17 +108,10 @@ clean:
 	@rm -f build-errors.log
 	@echo "$(GREEN)✅ 清理完成$(NC)"
 
-# 复制前端资源
+# 复制前端资源（统一走 scripts/copy-frontend.mjs，对 cwd 免疫，避免嵌套 dist 历史 bug）
 copy-frontend:
 	@echo "$(GREEN)📦 复制前端资源...$(NC)"
-	@rm -rf frontend/dist
-	@mkdir -p frontend/dist
-	@if [ -d "../frontend/dist" ]; then \
-		cp -r ../frontend/dist/* frontend/dist/; \
-		echo "$(GREEN)✅ 前端资源复制完成$(NC)"; \
-	else \
-		echo "$(YELLOW)⚠️  前端构建产物不存在，请先构建前端: cd ../frontend && bun run build$(NC)"; \
-	fi
+	@node ../scripts/copy-frontend.mjs
 
 # 代码格式化
 fmt:
@@ -144,7 +137,7 @@ deps:
 
 # 查看依赖树
 deps-tree:
-	@echo "$(GREEN)🌳 依赖树:$(NC)"
+	@echo "$(GREEN)🌳 依赖树...$(NC)"
 	@go mod graph
 
 # 安装开发工具

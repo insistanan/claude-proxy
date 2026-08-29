@@ -9,8 +9,8 @@ Claude / Codex / Gemini 多上游协议转换代理：五协议统一入口（Me
 ## 项目结构
 
 - `backend-go/`：主 Go 服务（Gin），Go 代码在 `backend-go/internal/`
-- `frontend/`：Vue 3 + Vite + Vuetify 管理界面；产物复制到 `backend-go/frontend/dist/` 由后端 embed
-- `dist/`：发布产物（勿手动编辑）；`.config/`：运行时配置（热重载）；`refs/`：外部参考（只读）
+- `frontend/`：Vue 3 + Vite + Vuetify 管理界面；产物通过 `scripts/copy-frontend.mjs` 复制到 `backend-go/frontend/dist/` 由后端 embed
+- `dist/`：发布产物（勿手动编辑）；`.config/`：运行时配置（热重载）；`refs/`：外部参考（只读）；`scripts/`：构建与门禁脚本（`copy-frontend.mjs` 是前端嵌入复制的唯一权威入口，对 cwd 免疫）
 - 技术文档一律放 `docs/`
 
 ## 常用命令
