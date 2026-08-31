@@ -19,8 +19,8 @@ const (
 	// 完整历史叠加而主动移除了 previous_response_id。响应出口不能再伪造
 	// 旧 PreviousID 元数据。
 	ContextKeyResponsesPreviousIDDropped = "responses-previous-id-dropped"
-	claudeCodeDisguiseVersion            = "2.1.161"
-	codexDisguiseVersion                 = "0.144.0"
+	claudeCodeDisguiseVersion            = "2.1.238"
+	codexDisguiseVersion                 = "0.150.1"
 )
 
 // PrepareUpstreamHeaders 准备上游请求头（统一头部处理逻辑）
