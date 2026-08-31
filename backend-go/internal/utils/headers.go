@@ -116,15 +116,11 @@ func ForwardResponseHeaders(upstreamHeaders http.Header, clientWriter http.Respo
 	}
 }
 
-// ApplyCodexDisguise 为非 Codex 客户端规范化身份头，并保留已有会话与追踪字段。
+// ApplyCodexDisguise 规范化发往上游的 Codex 身份头，并保留已有会话与追踪字段。
+// 开启伪装时无条件用统一 User-Agent 覆盖，避免 Cursor 等客户端自带的旧版本
+// UA（如 codex_cli_rs/0.133.0）被透传，导致上游按 UA 版本号误判"需要更新客户端"。
 func ApplyCodexDisguise(headers http.Header, stream bool) {
-	userAgent := strings.ToLower(headers.Get("User-Agent"))
-	isCodexClient := strings.Contains(userAgent, "codex_cli_rs") ||
-		strings.Contains(userAgent, "codex-tui") ||
-		strings.Contains(userAgent, "codex-cli")
-	if !isCodexClient {
-		headers.Set("User-Agent", codexUserAgent())
-	}
+	headers.Set("User-Agent", codexUserAgent())
 	if headers.Get("originator") == "" {
 		headers.Set("originator", "codex_cli_rs")
 	}
