@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"log"
 	"math"
 	"sort"
 	"strings"
@@ -187,7 +186,6 @@ func (pm *ProfileManager) GetOrCreateProfile(baseURL string, apiKeys []string, m
 	}
 
 	pm.profiles[key] = profile
-	log.Printf("[Profile-Create] 创建渠道 [%d] 模型 %s 性能画像: %s", channelIdx, normalizedModel, baseURL)
 	return profile
 }
 
@@ -696,10 +694,6 @@ func (pm *ProfileManager) calculateHealthScore(profile *PerformanceProfile) {
 
 	// 自动分级
 	profile.PerformanceTier = pm.calculateTier(score)
-
-	log.Printf("[Profile-Score] 渠道 [%d] 模型 %s 健康评分: %.1f (等级: %s, TPS: %.2f, TTFB: %.0fms, Token速度: %.1f/s, 成功率: %.1f%%)",
-		profile.ChannelIdx, profile.Model, score, profile.PerformanceTier, profile.RecentTPS,
-		profile.AvgTTFB, profile.AvgTokenSpeed, profile.RecentSuccessRate)
 }
 
 // calculateTier 根据评分计算性能等级

@@ -88,7 +88,6 @@ func (m *MetricsManager) loadFromStore() error {
 	}
 
 	if len(records) == 0 {
-		log.Printf("[Metrics-Load] [%s] 无历史指标数据需要加载", m.apiType)
 		return nil
 	}
 
@@ -150,8 +149,6 @@ func (m *MetricsManager) loadFromStore() error {
 		}
 	}
 
-	log.Printf("[Metrics-Load] [%s] 已从持久化存储加载 %d 条历史记录，重建 %d 个 Key 指标",
-		m.apiType, len(records), len(m.keyMetrics))
 	return nil
 }
 

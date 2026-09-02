@@ -15,7 +15,7 @@
 | `LOG_LEVEL` | info | 日志级别：`error` / `warn` / `info` / `debug` |
 | `ENABLE_REQUEST_LOGS` | true | 记录请求日志（含请求体/头；`false` 才关闭）。不跟 `ENV` 走 |
 | `ENABLE_RESPONSE_LOGS` | true | 记录响应日志（含响应体与流式合成内容）。不跟 `ENV` 走 |
-| `QUIET_POLLING_LOGS` | true | 静默前端轮询日志 |
+| `QUIET_POLLING_LOGS` | true | 静默前端轮询 / 健康检查 / OPTIONS 预检日志；其余请求以请求块打印（`┌` 进入 / `└` 结束，含状态码与耗时）。设为 false 恢复 gin 标准单行访问日志 |
 | `RAW_LOG_OUTPUT` | false | 原始日志输出（不缩进、不截断） |
 | `SSE_DEBUG_LEVEL` | off | SSE 调试级别：`off` / `summary` / `full` |
 | `REWRITE_RESPONSE_MODEL` | false | 改写响应 model 字段为请求 model（仅 Messages 流式响应） |
@@ -36,7 +36,13 @@
 | `LOG_MAX_BACKUPS` | 10 | 保留旧日志文件数 |
 | `LOG_MAX_AGE` | 7 | 保留旧日志文件天数 |
 | `LOG_COMPRESS` | true | 压缩旧日志文件 |
-| `LOG_TO_CONSOLE` | false | 同时输出到控制台 |
+| `LOG_TO_CONSOLE` | false | 同时输出到控制台（终端黑框框） |
+| `CORRECT_RESPONSES_INPUT_TOKENS` | true | 校正 Responses 透传分支中明显错报的 input_tokens（仅作用于客户端下发 usage） |
+| `AFFINITY_DEBUG` | false | 开启 Trace / BaseURL 会话亲和性调度的调试日志 |
+| `CLAUDE_CONFIG_DIR` | 自动推导 | 自定义 Claude Code 配置与技能目录 |
+| `CODEX_HOME` | 自动推导 | 自定义 Codex 配置与技能目录 |
+| `OPENCODE_CONFIG_DIR` | 自动推导 | 自定义 OpenCode 配置与技能目录 |
+| `PI_AGENT_CONFIG_DIR` | 自动推导 | 自定义 Pi Agent 配置目录 |
 
 ## 前端（Vite）
 

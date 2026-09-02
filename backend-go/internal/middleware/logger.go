@@ -1,8 +1,10 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/gin-gonic/gin"
@@ -18,11 +20,17 @@ var defaultSkipPrefixes = []string{
 	"/api/gemini/global/stats",
 }
 
-// FilteredLogger 创建一个可过滤路径的 Logger 中间件
-// 仅对 GET 请求且匹配 skipPrefixes 前缀的路径跳过日志输出
-// POST/PUT/DELETE 等管理操作始终记录日志以保留审计跟踪
+// FilteredLogger 创建一个可过滤路径的 Logger 中间件。
+// 静默模式（QUIET_POLLING_LOGS=true）下按"请求块"打印：
+//
+//	┌──────── POST /v1/messages
+//	[Auth-Success] ... / [Messages-Scheduler] ... 等业务日志
+//	└──────── POST /v1/messages · 状态 200 · 耗时 5.23s
+//
+// 其中轮询端点、健康检查、OPTIONS 预检完全静默，避免刷屏。
+// 非静默模式保持 gin.Logger() 标准访问日志。
+// POST/PUT/DELETE 等管理操作始终记录日志以保留审计跟踪。
 func FilteredLogger(envCfg *config.EnvConfig, skipPrefixes ...string) gin.HandlerFunc {
-	// 如果 QuietPollingLogs 为 false，使用标准 Logger
 	if !envCfg.QuietPollingLogs {
 		return gin.Logger()
 	}
@@ -31,20 +39,36 @@ func FilteredLogger(envCfg *config.EnvConfig, skipPrefixes ...string) gin.Handle
 		skipPrefixes = defaultSkipPrefixes
 	}
 
-	return gin.LoggerWithConfig(gin.LoggerConfig{
-		Skip: func(c *gin.Context) bool {
-			// 只跳过 GET 请求，保留其他方法的审计日志
-			if c.Request.Method != http.MethodGet {
-				return false
-			}
+	return func(c *gin.Context) {
+		if isSilentRequest(c, skipPrefixes) {
+			c.Next()
+			return
+		}
 
-			path := c.Request.URL.Path
-			for _, prefix := range skipPrefixes {
-				if strings.HasPrefix(path, prefix) {
-					return true
-				}
-			}
-			return false
-		},
-	})
+		start := time.Now()
+		log.Printf("┌──────── %s %s", c.Request.Method, c.Request.URL.Path)
+		c.Next()
+		log.Printf("└──────── %s %s · 状态 %d · 耗时 %s",
+			c.Request.Method, c.Request.URL.Path, c.Writer.Status(), time.Since(start).Round(time.Millisecond))
+	}
+}
+
+// isSilentRequest 判断静默模式下该请求是否完全不打印日志
+func isSilentRequest(c *gin.Context, skipPrefixes []string) bool {
+	// OPTIONS 预检与健康检查是纯噪音，始终静默
+	if c.Request.Method == http.MethodOptions || c.Request.URL.Path == "/health" {
+		return true
+	}
+
+	if c.Request.Method != http.MethodGet {
+		return false
+	}
+
+	path := c.Request.URL.Path
+	for _, prefix := range skipPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }

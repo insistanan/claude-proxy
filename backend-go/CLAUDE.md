@@ -36,6 +36,8 @@ log.Printf("[Component-Action] 消息内容: %v", value)
 log.Printf("[Component] 警告: 消息内容")
 ```
 
+**请求块分隔符**: `FilteredLogger`（`internal/middleware/logger.go`）在静默模式下为每个请求打印 `┌` 进入行与 `└` 结束行（含状态码与耗时），属于访问日志分隔符，不使用 `[Component-Action]` 标签。渠道画像/指标加载的 `[Profile-*]`、`[Metrics-Load]` 信息日志已移除（评分与加载结果以 Web 界面为准），加载失败警告仍保留。
+
 **标签命名示例**:
 
 | 组件 | 标签 | 用途 |
