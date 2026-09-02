@@ -38,14 +38,9 @@ type EnvConfig struct {
 	// HTTP 客户端配置
 	ResponseHeaderTimeout int // 等待响应头超时时间（秒）
 	StreamIdleTimeout     int // 流式响应空闲超时（秒），0 表示不启用；检测"上游挂起但 TCP 通"
-	// 日志文件相关配置
-	LogDir        string
-	LogFile       string
-	LogMaxSize    int  // 单个日志文件最大大小 (MB)
-	LogMaxBackups int  // 保留的旧日志文件最大数量
-	LogMaxAge     int  // 保留的旧日志文件最大天数
-	LogCompress   bool // 是否压缩旧日志文件
-	LogToConsole  bool // 是否同时输出到控制台
+	// 日志 sqlite 配置。正文与运行日志进 .config/logs.db，不再写 logs/ 文件。
+	LogDBPath    string
+	LogToConsole bool
 }
 
 // NewEnvConfig 创建环境配置
@@ -85,14 +80,8 @@ func NewEnvConfig() *EnvConfig {
 		// HTTP 客户端配置
 		ResponseHeaderTimeout: clampInt(getEnvAsInt("RESPONSE_HEADER_TIMEOUT", 120), 30, 300), // 30-300 秒，默认 120
 		StreamIdleTimeout:     clampInt(getEnvAsInt("STREAM_IDLE_TIMEOUT", 300), 30, 3600),    // 30-3600 秒，默认 300（5 分钟）
-		// 日志文件配置
-		LogDir:        getEnv("LOG_DIR", "logs"),
-		LogFile:       getEnv("LOG_FILE", "app.log"),
-		LogMaxSize:    getEnvAsInt("LOG_MAX_SIZE", 100),   // 默认 100MB
-		LogMaxBackups: getEnvAsInt("LOG_MAX_BACKUPS", 10), // 默认保留 10 个
-		LogMaxAge:     getEnvAsInt("LOG_MAX_AGE", 7),      // 默认保留 7 天
-		LogCompress:   getEnv("LOG_COMPRESS", "true") != "false",
-		LogToConsole:  getEnv("LOG_TO_CONSOLE", "false") == "true",
+		LogDBPath:             getEnv("LOG_DB_PATH", ".config/logs.db"),
+		LogToConsole:          getEnv("LOG_TO_CONSOLE", "false") == "true",
 	}
 }
 

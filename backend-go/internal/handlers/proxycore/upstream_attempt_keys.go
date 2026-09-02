@@ -75,7 +75,7 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 	urlResults = preferConversationBaseURL(channelScheduler, envCfg, apiType, logCtx, urlResults)
 
 	failoverState := newUpstreamFailoverState()
-	requestLogID := nextAttemptLogID("req")
+	requestLogID := BindRequestLogID(c)
 	capabilities := newUpstreamCapabilityState(upstream)
 
 	// 强制探测模式：基于本次优先尝试的 BaseURL 判断（避免 BaseURL/BaseURLs 不一致导致误判）
@@ -159,6 +159,7 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, attemptStatus, status, false, attemptStart, "content_safety", preparationErr.Error(), false, isStream, nil)
 			}
 
+			req = AttachRequestLogID(c, req)
 			resp, err := SendRequest(req, upstream, envCfg, isStream, apiType, proxyURL)
 			if err != nil {
 				failoverState.lastError = err
@@ -507,6 +508,7 @@ func (a UpstreamAttempt) retrySameCandidateRequest(
 		}
 	}
 
+	req = AttachRequestLogID(a.Context, req)
 	resp, err := SendRequest(req, upstreamCopy, a.EnvConfig, a.IsStream, a.APIType, proxyURL)
 	if err != nil {
 		return compatibilityRetryResult{PreparationStage: "send_request", Err: err}

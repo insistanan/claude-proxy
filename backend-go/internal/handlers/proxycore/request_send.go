@@ -11,6 +11,7 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/httpclient"
+	"github.com/BenedictKing/claude-proxy/internal/logger"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
@@ -55,6 +56,25 @@ func SendRequest(req *http.Request, upstream *config.UpstreamConfig, envCfg *con
 	if isStream && resp != nil && resp.Body != nil {
 		resp.Body = httpclient.NewIdleTimeoutReader(resp.Body, time.Duration(envCfg.StreamIdleTimeout)*time.Second, apiType)
 	}
+	if envCfg.EnableResponseLogs && resp != nil && resp.Body != nil {
+		requestID := logger.RequestIDFromContext(req.Context())
+		if requestID == "" {
+			requestID = logger.NewRequestID()
+		}
+		urlText := ""
+		if req.URL != nil {
+			urlText = req.URL.String()
+		}
+		resp.Body = logger.CaptureResponseBody(resp.Body, logger.TrafficLog{
+			RequestID:   requestID,
+			APIType:     apiType,
+			Method:      req.Method,
+			URL:         urlText,
+			StatusCode:  resp.StatusCode,
+			Stream:      isStream,
+			HeadersJSON: logger.MaskedHeaderJSON(resp.Header),
+		})
+	}
 
 	return resp, nil
 }
@@ -89,6 +109,20 @@ func logRequestDetails(req *http.Request, envCfg *config.EnvConfig, apiType stri
 				formattedBody = utils.FormatJSONBytesForLog(bodyBytes, 500)
 			}
 			log.Printf("[%s-Request-Body] 实际请求体:\n%s", apiType, formattedBody)
+			requestID := logger.RequestIDFromContext(req.Context())
+			urlText := ""
+			if req.URL != nil {
+				urlText = req.URL.String()
+			}
+			logger.RecordTraffic(logger.TrafficLog{
+				RequestID:   requestID,
+				Phase:       logger.PhaseUpstreamRequest,
+				APIType:     apiType,
+				Method:      req.Method,
+				URL:         urlText,
+				HeadersJSON: string(reqHeadersJSON),
+				Body:        string(bodyBytes),
+			})
 		}
 	}
 }

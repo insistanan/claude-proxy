@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BenedictKing/claude-proxy/internal/cli"
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/eval"
@@ -40,6 +41,7 @@ var frontendFS embed.FS
 type app struct {
 	envCfg                *config.EnvConfig
 	cfgManager            *config.ConfigManager
+	logStore              *logger.Store
 	requestLogStore       *metrics.RequestLogStore
 	blockedStore          *sensitive.BlockedStore
 	contentSafetyPipeline *hooks.Pipeline
@@ -65,19 +67,14 @@ func newApp() (*app, error) {
 	a.envCfg = config.NewEnvConfig()
 
 	// 初始化日志系统（必须在其他初始化之前）
-	logCfg := &logger.Config{
-		LogDir:     a.envCfg.LogDir,
-		LogFile:    a.envCfg.LogFile,
-		MaxSize:    a.envCfg.LogMaxSize,
-		MaxBackups: a.envCfg.LogMaxBackups,
-		MaxAge:     a.envCfg.LogMaxAge,
-		Compress:   a.envCfg.LogCompress,
-		Console:    a.envCfg.LogToConsole,
-	}
-	if err := logger.Setup(logCfg); err != nil {
+	a.logStore, err = logger.Setup(&logger.Config{
+		DBPath:  a.envCfg.LogDBPath,
+		Console: a.envCfg.LogToConsole,
+	})
+	if err != nil {
 		return nil, fmt.Errorf("初始化日志系统失败: %w", err)
 	}
-	a.requestLogStore = metrics.NewRequestLogStore(a.envCfg.LogDir, 7)
+	a.requestLogStore = metrics.NewRequestLogStore(a.logStore)
 
 	a.cfgManager, err = config.NewConfigManager(".config/config.json")
 	if err != nil {
@@ -462,6 +459,9 @@ func (a *app) shutdown() {
 	}
 	a.cfgManager.Close()
 	a.requestLogStore.Close()
+	if err := a.logStore.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "[Logger-Shutdown] 关闭日志存储失败: %v\n", err)
+	}
 }
 
 func main() {
@@ -470,6 +470,14 @@ func main() {
 		log.Println("没有找到 .env 文件，使用环境变量或默认值")
 	} else {
 		log.Printf("[Env-Load] 已加载: %s", strings.Join(loadedEnvFiles, ", "))
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "logs" {
+		if err := cli.RunLogs(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// 设置版本信息到 handlers 包

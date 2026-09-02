@@ -1,23 +1,15 @@
 package metrics
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/BenedictKing/claude-proxy/internal/logger"
 )
 
-const (
-	defaultRequestLogLimit     = 50
-	defaultRequestLogRetention = 7
-	requestLogQueueSize        = 4096
-	requestLogFilePrefix       = "request-logs-"
-	requestLogFileSuffix       = ".jsonl"
-)
+const defaultRequestLogLimit = 50
 
 type RequestLogEntry struct {
 	RequestID             string  `json:"requestId"`
@@ -58,42 +50,15 @@ type RequestLogListOptions struct {
 }
 
 type RequestLogStore struct {
-	dir           string
-	retentionDays int
-	queue         chan RequestLogEntry
-	done          chan struct{}
-	closeOnce     sync.Once
-	wg            sync.WaitGroup
+	logStore *logger.Store
 }
 
-func NewRequestLogStore(logDir string, retentionDays int) *RequestLogStore {
-	if strings.TrimSpace(logDir) == "" {
-		logDir = "logs"
-	}
-	if !filepath.IsAbs(logDir) {
-		if abs, err := filepath.Abs(logDir); err == nil {
-			logDir = abs
-		}
-	}
-	if retentionDays <= 0 {
-		retentionDays = defaultRequestLogRetention
-	}
-	_ = os.MkdirAll(logDir, 0755)
-
-	store := &RequestLogStore{
-		dir:           logDir,
-		retentionDays: retentionDays,
-		queue:         make(chan RequestLogEntry, requestLogQueueSize),
-		done:          make(chan struct{}),
-	}
-	store.cleanupOldFiles()
-	store.wg.Add(1)
-	go store.run()
-	return store
+func NewRequestLogStore(logStore *logger.Store) *RequestLogStore {
+	return &RequestLogStore{logStore: logStore}
 }
 
 func (s *RequestLogStore) Record(entry RequestLogEntry) {
-	if s == nil {
+	if s == nil || s.logStore == nil {
 		return
 	}
 	if entry.Timestamp == "" {
@@ -104,180 +69,47 @@ func (s *RequestLogStore) Record(entry RequestLogEntry) {
 	if entry.TPM == 0 {
 		entry.TPM = calculateRequestLogTPM(entry)
 	}
-
-	select {
-	case s.queue <- entry:
-	default:
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return
 	}
+	s.logStore.RecordRequest(logger.RequestLogRecord{
+		Timestamp: entry.Timestamp,
+		RequestID: entry.RequestID,
+		APIType:   entry.APIType,
+		Payload:   payload,
+	})
 }
 
 func (s *RequestLogStore) List(opts RequestLogListOptions) ([]RequestLogEntry, error) {
-	if s == nil {
+	if s == nil || s.logStore == nil {
 		return nil, nil
 	}
 	limit := opts.Limit
 	if limit <= 0 || limit > defaultRequestLogLimit {
 		limit = defaultRequestLogLimit
 	}
-	filter := normalizeRequestLogAPIType(opts.APIType)
-
-	var entries []RequestLogEntry
-	now := time.Now()
-	for dayOffset := 0; dayOffset < s.retentionDays; dayOffset++ {
-		date := now.AddDate(0, 0, -dayOffset).Format("2006-01-02")
-		path := filepath.Join(s.dir, requestLogFilePrefix+date+requestLogFileSuffix)
-		dayEntries, err := readRequestLogFile(path, filter)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, err
+	payloads, err := s.logStore.QueryRequestLogs(context.Background(), logger.QueryOptions{
+		APIType: normalizeRequestLogAPIType(opts.APIType),
+		Limit:   limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]RequestLogEntry, 0, len(payloads))
+	for _, payload := range payloads {
+		var entry RequestLogEntry
+		if err := json.Unmarshal(payload, &entry); err != nil {
+			continue
 		}
-		for i := len(dayEntries) - 1; i >= 0; i-- {
-			entries = append(entries, dayEntries[i])
-			if len(entries) >= limit {
-				return entries, nil
-			}
-		}
+		entry.APIType = normalizeRequestLogAPIType(entry.APIType)
+		entry.Entry = normalizeRequestLogEntry(entry.Entry, entry.APIType)
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }
 
 func (s *RequestLogStore) Close() {
-	if s == nil {
-		return
-	}
-	s.closeOnce.Do(func() {
-		close(s.done)
-		s.wg.Wait()
-	})
-}
-
-func (s *RequestLogStore) run() {
-	defer s.wg.Done()
-
-	var currentDate string
-	var file *os.File
-	var encoder *json.Encoder
-	cleanupTicker := time.NewTicker(24 * time.Hour)
-	defer cleanupTicker.Stop()
-	defer func() {
-		if file != nil {
-			_ = file.Close()
-		}
-	}()
-	writeEntry := func(entry RequestLogEntry) {
-		date := requestLogDate(entry.Timestamp)
-		if date == "" {
-			date = time.Now().Format("2006-01-02")
-		}
-		if date != currentDate {
-			if file != nil {
-				_ = file.Close()
-			}
-			path := filepath.Join(s.dir, requestLogFilePrefix+date+requestLogFileSuffix)
-			_ = os.MkdirAll(s.dir, 0755)
-			nextFile, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				file = nil
-				encoder = nil
-				currentDate = ""
-				return
-			}
-			file = nextFile
-			encoder = json.NewEncoder(file)
-			currentDate = date
-		}
-		if encoder != nil {
-			_ = encoder.Encode(entry)
-		}
-	}
-
-	for {
-		select {
-		case entry := <-s.queue:
-			writeEntry(entry)
-		case <-cleanupTicker.C:
-			s.cleanupOldFiles()
-		case <-s.done:
-			for {
-				select {
-				case entry := <-s.queue:
-					writeEntry(entry)
-				default:
-					return
-				}
-			}
-		}
-	}
-}
-
-func (s *RequestLogStore) cleanupOldFiles() {
-	if s == nil {
-		return
-	}
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().AddDate(0, 0, -(s.retentionDays - 1)).Format("2006-01-02")
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, requestLogFilePrefix) || !strings.HasSuffix(name, requestLogFileSuffix) {
-			continue
-		}
-		date := strings.TrimSuffix(strings.TrimPrefix(name, requestLogFilePrefix), requestLogFileSuffix)
-		if date < cutoff {
-			_ = os.Remove(filepath.Join(s.dir, name))
-		}
-	}
-}
-
-func readRequestLogFile(path string, filter string) ([]RequestLogEntry, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var entries []RequestLogEntry
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		var entry RequestLogEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			continue
-		}
-		entry.APIType = normalizeRequestLogAPIType(entry.APIType)
-		entry.Entry = normalizeRequestLogEntry(entry.Entry, entry.APIType)
-		if filter != "" && entry.APIType != filter {
-			continue
-		}
-		entries = append(entries, entry)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].Timestamp < entries[j].Timestamp
-	})
-	return entries, nil
-}
-
-func requestLogDate(timestamp string) string {
-	if timestamp == "" {
-		return ""
-	}
-	if t, err := time.Parse(time.RFC3339Nano, timestamp); err == nil {
-		return t.Format("2006-01-02")
-	}
-	if len(timestamp) >= len("2006-01-02") {
-		return timestamp[:len("2006-01-02")]
-	}
-	return ""
 }
 
 func normalizeRequestLogAPIType(value string) string {

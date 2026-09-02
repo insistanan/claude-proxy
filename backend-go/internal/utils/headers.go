@@ -15,6 +15,9 @@ const (
 	// ContextKeyConversationUserID 由 RunProxyRequest 在会话观测后写入，
 	// 供协议回调（如 HandleSuccess）取用注册表生成的会话记录 ID。
 	ContextKeyConversationUserID = "conversation-user-id"
+	// ContextKeyRequestLogID 由 RunProxyRequest 写入，把同一请求的
+	// client/upstream/response 流量日志串到同一 requestId。
+	ContextKeyRequestLogID = "logger-request-id"
 	// ContextKeyResponsesPreviousIDDropped 表示转换器为避免服务端链与
 	// 完整历史叠加而主动移除了 previous_response_id。响应出口不能再伪造
 	// 旧 PreviousID 元数据。

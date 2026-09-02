@@ -91,6 +91,7 @@ func RunProxyRequest(
 	if err != nil {
 		return
 	}
+	BindRequestLogID(c)
 
 	// 3. 解析请求
 	model, stream, prompts, ok := spec.ParseRequest(c, bodyBytes)

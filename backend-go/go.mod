@@ -11,7 +11,6 @@ require (
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	golang.org/x/sys v0.22.0
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	modernc.org/sqlite v1.34.4
 )
 

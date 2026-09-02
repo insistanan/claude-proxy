@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/logger"
 	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/gin-gonic/gin"
 )
 
 // logStreamCompletion 记录流完成日志
-func logStreamCompletion(ctx *Context, envCfg *config.EnvConfig, startTime time.Time) *types.Usage {
+func logStreamCompletion(c *gin.Context, ctx *Context, envCfg *config.EnvConfig, startTime time.Time) *types.Usage {
 	if envCfg.EnableResponseLogs {
 		log.Printf("[Messages-Stream] 流式响应完成: %dms", time.Since(startTime).Milliseconds())
 	}
@@ -30,7 +32,7 @@ func logStreamCompletion(ctx *Context, envCfg *config.EnvConfig, startTime time.
 	}
 
 	if envCfg.EnableResponseLogs {
-		logSynthesizedContent(ctx)
+		logSynthesizedContent(c, ctx)
 	}
 
 	// 推断隐式缓存读取
@@ -60,14 +62,14 @@ func logStreamCompletion(ctx *Context, envCfg *config.EnvConfig, startTime time.
 }
 
 // logPartialResponse 记录部分响应日志
-func logPartialResponse(ctx *Context, envCfg *config.EnvConfig) {
+func logPartialResponse(c *gin.Context, ctx *Context, envCfg *config.EnvConfig) {
 	if envCfg.EnableResponseLogs {
-		logSynthesizedContent(ctx)
+		logSynthesizedContent(c, ctx)
 	}
 }
 
 // logSynthesizedContent 记录合成内容
-func logSynthesizedContent(ctx *Context) {
+func logSynthesizedContent(c *gin.Context, ctx *Context) {
 	if ctx.Synthesizer != nil {
 		content := ctx.Synthesizer.GetSynthesizedContent()
 		if content != "" && !ctx.Synthesizer.IsParseFailed() {
@@ -82,10 +84,17 @@ func logSynthesizedContent(ctx *Context) {
 			}
 
 			log.Printf("[Messages-Stream] 上游流式响应合成内容:\n%s", strings.TrimSpace(trimmed))
+			if c != nil {
+				logger.RecordStreamSynth(c.Request.Context(), "Messages", strings.TrimSpace(trimmed))
+			}
 			return
 		}
 	}
 	if ctx.LogBuffer.Len() > 0 {
-		log.Printf("[Messages-Stream] 上游流式响应原始内容:\n%s", ctx.LogBuffer.String())
+		raw := ctx.LogBuffer.String()
+		log.Printf("[Messages-Stream] 上游流式响应原始内容:\n%s", raw)
+		if c != nil {
+			logger.RecordStreamSynth(c.Request.Context(), "Messages", raw)
+		}
 	}
 }

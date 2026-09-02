@@ -8,6 +8,7 @@ import (
 	"log"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/logger"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
@@ -46,6 +47,7 @@ func LogOriginalRequest(c *gin.Context, bodyBytes []byte, envCfg *config.EnvConf
 		return
 	}
 
+	requestID := BindRequestLogID(c)
 	log.Printf("[Request-Receive] 收到%s请求: %s %s", apiType, c.Request.Method, c.Request.URL.Path)
 
 	var formattedBody string
@@ -70,4 +72,14 @@ func LogOriginalRequest(c *gin.Context, bodyBytes []byte, envCfg *config.EnvConf
 		headersJSON, _ = json.MarshalIndent(maskedHeaders, "", "  ")
 	}
 	log.Printf("[Request-OriginalHeaders] 原始请求头:\n%s", string(headersJSON))
+
+	logger.RecordTraffic(logger.TrafficLog{
+		RequestID:   requestID,
+		Phase:       logger.PhaseClientRequest,
+		APIType:     apiType,
+		Method:      c.Request.Method,
+		URL:         c.Request.URL.Path,
+		HeadersJSON: string(headersJSON),
+		Body:        string(bodyBytes),
+	})
 }

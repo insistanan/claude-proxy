@@ -24,7 +24,7 @@
 - 流式：上游流总是 经 `HandleStreamResponseCtx`（断连中止）+ `IdleTimeoutReader`（空闲超时）转发；绝不 裸 `io.Copy`。
 - Messages 出口 thinking：Chat 上游的 `reasoning_content` / `<think>` `<thinking>` 标签包裹思考、Responses 上游的 reasoning summary，总是 转成 Claude `thinking` content block 下发（thinking 在 text 之前）。绝不 吞掉思考。content 与 reasoning 重复时剥离正文前缀。缓存仍保留供下一轮 Chat 回传补齐。裸 content 无标签的思考无法可靠拆分，不猜测。
 - 视觉：图片请求总是 经 `visionlayer.PrepareRequest` 就地处理；绝不 绕过 `prepareRequestForUpstream` 把原始 base64 直接透传上游。
-- 日志：总是 `[Component-Action]` 标签、绝不 使用 emoji；上游 key 绝不 完整输出，一律 `utils.MaskAPIKey` 脱敏（标签表见 `backend-go/CLAUDE.md`）。请求/响应体、合成流内容总是 跟 `ENABLE_REQUEST_LOGS` / `ENABLE_RESPONSE_LOGS` / `RAW_LOG_OUTPUT` / `SSE_DEBUG_LEVEL` 走；绝不 再绑 `IsDevelopment()`。`ENV`/`NODE_ENV` 未设置时默认 production，只控制 Gin 模式、`/admin/dev/info`、CORS localhost。
+- 日志：总是 `[Component-Action]` 标签、绝不 使用 emoji；上游 key 绝不 完整输出，一律 `utils.MaskAPIKey` 脱敏（标签表见 `backend-go/CLAUDE.md`）。运行日志与请求/响应正文总是 写入 `.config/logs.db`，绝不 再写 `logs/` 文件。请求/响应体、合成流内容总是 跟 `ENABLE_REQUEST_LOGS` / `ENABLE_RESPONSE_LOGS` / `RAW_LOG_OUTPUT` / `SSE_DEBUG_LEVEL` 走；绝不 再绑 `IsDevelopment()`。流量正文存完整 JSON，单条硬顶 1MB，图片 data URL / 内嵌 base64 换成占位符。保留今天与昨天（本地日历）。`ENV`/`NODE_ENV` 未设置时默认 production，只控制 Gin 模式、`/admin/dev/info`、CORS localhost。
 - 评测：管理端诊断例外，**只观察不改调度**。发送走 `eval.Sender` + `proxycore.SendRequest`，绝不 走 `RunProxyRequest` / `ConvertToProviderRequest` / `PrepareUpstreamHeaders` / `scheduler.Record*`。未知 extract/judge kind 拒绝入库。真伪套件禁止 rubric。值班只能挂便宜套件。Images / 备用池 / 弃用 / 熔断记 `inapplicable`，不是 fail。`/v1/*` 铁律不变。
 
 ## 前端（frontend）

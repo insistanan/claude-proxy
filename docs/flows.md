@@ -99,5 +99,6 @@ FindChannelByID（稳定 UUID，跨五类切片）
 
 - 同 JVM：包间直接调用；跨层依赖在 main.go 组装注入，不在业务包内 new 全局单例。
 - 持久化：metrics / session / blocked 各自带 sqlite_store，路径由 main.go 注入。
+- 日志库：`.config/logs.db`，由 `logger.Setup` 在 main.go 注入；运行日志 / 流量正文 / 请求元数据三表，保留今天与昨天。
 - 评测库：`.config/eval.db`，由 `eval.NewService` 在 main.go 注入；关闭顺序在调度器 Stop 之后。
 - 路由总表：main.go 是路由唯一真相；文档不复制路由清单。

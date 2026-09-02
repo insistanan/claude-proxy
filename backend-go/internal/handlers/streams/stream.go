@@ -216,7 +216,7 @@ func ProcessStreamEvents(
 			if envCfg.ShouldLog("info") {
 				log.Printf("[Messages-Stream] 客户端上下文已取消: %v", c.Request.Context().Err())
 			}
-			logPartialResponse(ctx, envCfg)
+			logPartialResponse(c, ctx, envCfg)
 			return nil, c.Request.Context().Err()
 
 		case event, ok := <-eventChan:
@@ -224,7 +224,7 @@ func ProcessStreamEvents(
 				if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 					return nil, err
 				}
-				usage := logStreamCompletion(ctx, envCfg, startTime)
+				usage := logStreamCompletion(c, ctx, envCfg, startTime)
 				return usage, nil
 			}
 			if err := ProcessStreamEvent(c, w, flusher, event, ctx, envCfg, requestBody); err != nil {
@@ -244,7 +244,7 @@ func ProcessStreamEvents(
 			}
 			if err != nil {
 				log.Printf("[Messages-Stream] 错误: 流式传输错误: %v", err)
-				logPartialResponse(ctx, envCfg)
+				logPartialResponse(c, ctx, envCfg)
 				if !ctx.ClientGone && hooks.ContentSafetyErrorFrom(err) == nil {
 					w.Write([]byte(BuildStreamErrorEvent(err)))
 					flusher.Flush()

@@ -17,6 +17,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/converters"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
+	"github.com/BenedictKing/claude-proxy/internal/logger"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/session"
 	"github.com/BenedictKing/claude-proxy/internal/types"
@@ -408,12 +409,18 @@ func handleStreamSuccess(
 			synthesizedContent := synthesizer.GetSynthesizedContent()
 			parseFailed := synthesizer.IsParseFailed()
 			if synthesizedContent != "" && !parseFailed {
-				log.Printf("[Responses-Stream] 上游流式响应合成内容:\n%s", strings.TrimSpace(synthesizedContent))
+				synth := strings.TrimSpace(synthesizedContent)
+				log.Printf("[Responses-Stream] 上游流式响应合成内容:\n%s", synth)
+				logger.RecordStreamSynth(c.Request.Context(), "Responses", synth)
 			} else if logBuffer.Len() > 0 {
-				log.Printf("[Responses-Stream] 上游流式响应原始内容:\n%s", logBuffer.String())
+				raw := logBuffer.String()
+				log.Printf("[Responses-Stream] 上游流式响应原始内容:\n%s", raw)
+				logger.RecordStreamSynth(c.Request.Context(), "Responses", raw)
 			}
 		} else if logBuffer.Len() > 0 {
-			log.Printf("[Responses-Stream] 上游流式响应原始内容:\n%s", logBuffer.String())
+			raw := logBuffer.String()
+			log.Printf("[Responses-Stream] 上游流式响应原始内容:\n%s", raw)
+			logger.RecordStreamSynth(c.Request.Context(), "Responses", raw)
 		}
 	}
 

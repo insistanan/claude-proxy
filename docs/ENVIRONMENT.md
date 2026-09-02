@@ -30,13 +30,8 @@
 | `RESPONSE_HEADER_TIMEOUT` | 120 | 等待响应头超时（秒，30-300；默认 120，非流式请求） |
 | `STREAM_IDLE_TIMEOUT` | 300 | 流式响应空闲超时（秒，30-3600；默认 300，即 5 分钟） |
 | `FORCE_HTTP1` | -（已废弃） | 上游请求已固定使用 HTTP/1.1；该环境变量不再读取，保留仅为兼容说明。原因：HTTP/2 在部分代理/上游下会触发 `http2: timeout awaiting response headers` |
-| `LOG_DIR` | logs | 日志目录 |
-| `LOG_FILE` | app.log | 日志文件名 |
-| `LOG_MAX_SIZE` | 100 | 单个日志文件最大大小（MB） |
-| `LOG_MAX_BACKUPS` | 10 | 保留旧日志文件数 |
-| `LOG_MAX_AGE` | 7 | 保留旧日志文件天数 |
-| `LOG_COMPRESS` | true | 压缩旧日志文件 |
-| `LOG_TO_CONSOLE` | false | 同时输出到控制台（终端黑框框） |
+| `LOG_DB_PATH` | `.config/logs.db` | 运行日志 / 流量正文 / 请求元数据的 sqlite 路径。保留今天与昨天（本地日历），更早的记录启动时与每小时清理。查询：`claude-proxy logs query --from ... --to ...` / `logs show <request-id>` |
+| `LOG_TO_CONSOLE` | false | 同时输出到控制台。正文与运行日志只进 sqlite，不再写 `logs/` 文件 |
 | `CORRECT_RESPONSES_INPUT_TOKENS` | true | 校正 Responses 透传分支中明显错报的 input_tokens（仅作用于客户端下发 usage） |
 | `AFFINITY_DEBUG` | false | 开启 Trace / BaseURL 会话亲和性调度的调试日志 |
 | `CLAUDE_CONFIG_DIR` | 自动推导 | 自定义 Claude Code 配置与技能目录 |
