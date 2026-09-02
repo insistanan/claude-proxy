@@ -1,10 +1,10 @@
 <template>
-  <v-navigation-drawer :model-value="modelValue" location="end" temporary width="560" @update:model-value="emit('update:modelValue', $event)">
+  <v-navigation-drawer :model-value="modelValue" location="end" temporary width="620" @update:model-value="emit('update:modelValue', $event)">
     <div class="pa-4">
       <div class="d-flex align-center ga-2 mb-4">
-        <div class="text-h6">题目</div>
+        <div class="text-h6 font-weight-bold">题目管理</div>
         <v-spacer />
-        <v-btn v-if="mode === 'list'" size="small" variant="tonal" prepend-icon="mdi-plus" @click="startCreate">新增</v-btn>
+        <v-btn v-if="mode === 'list'" size="small" color="primary" variant="elevated" prepend-icon="mdi-plus" @click="startCreate">新增题目</v-btn>
         <v-btn v-else size="small" variant="text" @click="mode = 'list'">返回列表</v-btn>
         <v-btn icon="mdi-close" size="small" variant="text" @click="emit('update:modelValue', false)" />
       </div>
@@ -13,39 +13,88 @@
         {{ error }}
       </v-alert>
 
-      <!-- 列表 -->
+      <!-- 列表模式 -->
       <template v-if="mode === 'list'">
-        <v-list density="compact" bg-color="transparent">
-          <v-list-item v-for="probe in probes" :key="probe.id" class="px-2">
-            <v-list-item-title class="text-body-2">
-              {{ probe.name }}
-              <v-chip v-if="probe.builtin" size="x-small" variant="tonal" class="ml-1">内置</v-chip>
-            </v-list-item-title>
-            <v-list-item-subtitle v-if="probe.description" class="text-caption mb-1">
-              {{ probe.description }}
-            </v-list-item-subtitle>
-            <v-list-item-subtitle class="text-caption">
-              {{ probe.category === 'authenticity' ? '真伪' : '智商' }} · 抽取 {{ probe.extract.kind }} ·
-              判定 {{ probe.judge.kind }} · {{ probe.sampleCount }} 次 · {{ probe.cheap ? '便宜' : '费' }}
-            </v-list-item-subtitle>
-            <template #append>
-              <v-btn
-                v-if="probe.builtin"
-                icon="mdi-content-copy"
-                size="x-small"
-                variant="text"
-                title="复制成自建题再改"
-                @click="startCopy(probe)"
-              />
-              <template v-else>
-                <v-btn icon="mdi-pencil" size="x-small" variant="text" @click="startEdit(probe)" />
-                <v-btn icon="mdi-delete" size="x-small" variant="text" color="error" @click="askDelete(probe)" />
-              </template>
-            </template>
-          </v-list-item>
+        <div class="d-flex flex-wrap align-center ga-2 mb-3">
+          <v-chip
+            v-for="filter in FILTER_TABS"
+            :key="filter.value"
+            size="small"
+            :color="activeFilter === filter.value ? 'primary' : undefined"
+            :variant="activeFilter === filter.value ? 'flat' : 'outlined'"
+            @click="activeFilter = filter.value"
+          >
+            {{ filter.title }}
+          </v-chip>
+
+          <v-spacer />
+
+          <v-text-field
+            v-model="searchKeyword"
+            density="compact"
+            variant="outlined"
+            prepend-inner-icon="mdi-magnify"
+            label="搜索题目"
+            hide-details
+            clearable
+            style="max-width: 180px"
+          />
+        </div>
+
+        <div v-if="!filteredProbes.length" class="text-body-2 text-medium-emphasis py-8 text-center">
+          暂无匹配的评测题目
+        </div>
+
+        <v-list v-else density="compact" bg-color="transparent" class="probe-list">
+          <v-card
+            v-for="probe in filteredProbes"
+            :key="probe.id"
+            variant="outlined"
+            class="mb-2 probe-card"
+          >
+            <v-card-text class="pa-3">
+              <div class="d-flex align-center ga-2 mb-1">
+                <span class="text-body-2 font-weight-bold">{{ probe.name }}</span>
+                <v-chip v-if="probe.builtin" size="x-small" variant="tonal" color="info">内置</v-chip>
+                <v-chip v-else size="x-small" variant="tonal" color="success">自建</v-chip>
+                <v-chip size="x-small" variant="outlined" :color="probe.category === 'authenticity' ? 'primary' : 'purple'">
+                  {{ probe.category === 'authenticity' ? '真伪' : '智商' }}
+                </v-chip>
+                <v-chip size="x-small" variant="outlined" color="grey">
+                  {{ probe.cheap ? '便宜' : '费' }}
+                </v-chip>
+
+                <v-spacer />
+
+                <v-btn
+                  v-if="probe.builtin"
+                  icon="mdi-content-copy"
+                  size="x-small"
+                  variant="text"
+                  title="复制成自建题再修改"
+                  @click="startCopy(probe)"
+                />
+                <template v-else>
+                  <v-btn icon="mdi-pencil" size="x-small" variant="text" title="编辑" @click="startEdit(probe)" />
+                  <v-btn icon="mdi-delete" size="x-small" variant="text" color="error" title="删除" @click="askDelete(probe)" />
+                </template>
+              </div>
+
+              <div v-if="probe.description" class="text-caption text-medium-emphasis mb-2">
+                {{ probe.description }}
+              </div>
+
+              <div class="text-caption text-disabled d-flex flex-wrap ga-3">
+                <span>标识: <code>{{ probe.slug }}</code></span>
+                <span>抽取: {{ probe.extract.kind }}</span>
+                <span>判定: {{ probe.judge.kind }}</span>
+                <span>采样: {{ probe.sampleCount }} 次</span>
+              </div>
+            </v-card-text>
+          </v-card>
         </v-list>
-        <div class="text-caption text-medium-emphasis mt-4">
-          内置题只能复制后改。
+        <div class="text-caption text-medium-emphasis mt-3">
+          提示：系统内置题为基准题库，若需定制请点击复制图标生成自建题后调整。
         </div>
       </template>
 
@@ -66,7 +115,7 @@
         <v-window v-model="step">
           <!-- 第一步：题面 -->
           <v-window-item :value="0">
-            <v-text-field v-model.trim="form.name" label="名称" density="compact" variant="outlined" class="mb-3" hide-details />
+            <v-text-field v-model.trim="form.name" label="题目名称" placeholder="例如：某特性识别" density="compact" variant="outlined" class="mb-3" hide-details />
             <v-text-field
               v-model.trim="form.slug"
               label="slug（英文唯一标识）"
@@ -81,7 +130,7 @@
               :items="CATEGORY_ITEMS"
               item-title="title"
               item-value="value"
-              label="分类"
+              label="题目分类"
               density="compact"
               variant="outlined"
               class="mb-3"
@@ -90,7 +139,8 @@
             <v-textarea
               v-model="form.prompt"
               label="题面 prompt"
-              rows="5"
+              placeholder="发给被测上游模型的提示词"
+              rows="4"
               density="compact"
               variant="outlined"
               class="mb-3"
@@ -98,7 +148,7 @@
             />
             <v-textarea
               v-model="form.system"
-              label="system（可空）"
+              label="system prompt（可留空）"
               rows="2"
               density="compact"
               variant="outlined"
@@ -115,7 +165,7 @@
               :items="THINKING_ITEMS"
               item-title="title"
               item-value="value"
-              label="思考"
+              label="题目思考配置"
               density="compact"
               variant="outlined"
               class="mb-3"
@@ -124,7 +174,7 @@
             <v-select
               v-model="form.applicableServiceTypes"
               :items="SERVICE_TYPE_ITEMS"
-              label="适用 serviceType"
+              label="适用协议服务类型"
               multiple
               chips
               density="compact"
@@ -155,12 +205,12 @@
             />
 
             <template v-if="form.judgeKind === 'exact'">
-              <v-text-field v-model="form.expected" label="期望文本（命中即通过）" density="compact" variant="outlined" class="mb-3" hide-details />
+              <v-text-field v-model="form.expected" label="期望文本（完全一致即通过）" density="compact" variant="outlined" class="mb-3" hide-details />
               <v-switch v-model="form.caseInsensitive" label="忽略大小写" color="primary" density="compact" hide-details />
             </template>
 
             <template v-else-if="form.judgeKind === 'regex'">
-              <v-text-field v-model="form.pattern" label="正则" density="compact" variant="outlined" hide-details />
+              <v-text-field v-model="form.pattern" label="正则表达式" density="compact" variant="outlined" hide-details />
             </template>
 
             <template v-else-if="form.judgeKind === 'numeric'">
@@ -169,7 +219,7 @@
 
             <template v-else-if="form.judgeKind === 'protocol'">
               <v-switch v-model="form.expectModelEcho" label="要求回显请求模型" color="primary" density="compact" hide-details />
-              <v-switch v-model="form.expectUsage" label="要求带 usage" color="primary" density="compact" hide-details />
+              <v-switch v-model="form.expectUsage" label="要求带 usage 统计" color="primary" density="compact" hide-details />
               <v-text-field
                 v-model.trim="form.expectContentTypes"
                 label="必须出现的内容类型（逗号分隔，如 text,thinking）"
@@ -199,7 +249,7 @@
 
             <template v-else-if="form.judgeKind === 'distribution'">
               <div class="text-caption text-medium-emphasis mb-3">
-                指纹类必须搭配抽取 numbers 且采样 ≥ 2；采样超过 3 次就不再算便宜套件，不能挂值班。
+                指纹类必须搭配抽取 numbers 且采样 ≥ 2；采样超过 3 次不计为便宜模式，不能挂值班。
               </div>
               <v-text-field v-model.number="form.minSamples" type="number" label="最少样本数" density="compact" variant="outlined" class="mb-3" hide-details />
               <v-text-field
@@ -213,25 +263,23 @@
                 hide-details
               />
               <v-switch v-model="form.failIfIdentical" label="全部相同直接判失败" color="primary" density="compact" hide-details />
-              <v-switch v-model="form.compareHistogram" label="跨渠道比对直方图（只提示不改结论）" color="primary" density="compact" hide-details />
+              <v-switch v-model="form.compareHistogram" label="跨渠道比对直方图（仅提示不改结论）" color="primary" density="compact" hide-details />
             </template>
 
             <template v-else-if="form.judgeKind === 'rubric'">
               <div class="text-caption text-medium-emphasis mb-3">
-                裁判是被测渠道自己的第二次请求，因此真伪类禁止 rubric，且 rubric 不能进值班套件。
+                裁判由被测渠道进行二次自评，因此真伪类禁止 rubric，且 rubric 题目不能进值班模式。
               </div>
-              <v-textarea v-model="form.analysisPrompt" label="分析说明（判定标准）" rows="6" density="compact" variant="outlined" hide-details />
+              <v-textarea v-model="form.analysisPrompt" label="分析说明（判定标准 Prompt）" rows="6" density="compact" variant="outlined" hide-details />
             </template>
 
             <template v-else-if="form.judgeKind === 'observe'">
               <div class="text-caption text-medium-emphasis mb-3">
-                只判「有没有思考 token」。不判占比——上游的 output 是否已经把思考算进去，各家口径不一
-                （Anthropic / OpenAI 含、xAI 不含、Gemini 文档自相矛盾），中转还会改写 usage，按占比设阈值等于给自己造误报。
-                占比会照样算出来写进结果详情，只是不参与判定。
+                观测是否有思考 token 用量（拿不到字段记 insufficient，回报 0 记存疑）。
               </div>
               <v-switch
                 v-model="form.expectThinkingUsage"
-                label="要求观测到思考用量（拿不到字段记 insufficient，回报 0 才记存疑）"
+                label="要求观测到思考用量"
                 color="primary"
                 density="compact"
                 hide-details
@@ -243,21 +291,21 @@
 
           <!-- 第三步：校验入库 -->
           <v-window-item :value="2">
-            <div class="text-body-2 mb-3">校验会先问后端：这条题能不能被现有引擎跑起来。</div>
+            <div class="text-body-2 mb-3">校验引擎会确认此题目格式是否能被现有评测引擎正常执行。</div>
 
             <v-alert v-if="report && report.ok" type="success" variant="tonal" density="compact" class="mb-3">
-              可以入库。{{ report.cheap ? '属于便宜题，可进值班套件。' : '不便宜，只能手动跑。' }}
+              校验通过，可以入库。{{ report.cheap ? '属于便宜题，可进入值班模式。' : '非便宜题，适合手动评测。' }}
             </v-alert>
             <v-alert v-else-if="report && report.mode === 'needs_new_grader'" type="warning" variant="tonal" density="compact" class="mb-3">
-              需要新的 grader，不要硬塞：引擎不认识
+              需要新的 grader 支持：引擎不认识
               <template v-if="report.extractKind">抽取 <code>{{ report.extractKind }}</code></template>
               <template v-if="report.judgeKind"> 判定 <code>{{ report.judgeKind }}</code></template>
-              。先在 <code>internal/eval</code> 里实现对应 kind，再回来加题。
+              。请先在后端实现对应 kind。
             </v-alert>
             <v-alert v-else-if="report && report.mode === 'unsupported_grader'" type="warning" variant="tonal" density="compact" class="mb-3">
-              这种判定组合引擎明确不做（例如真伪题用 rubric 自评）。换一种判定方式，不要写新 grader 绕过去。
+              当前判定组合不受支持（如真伪题不支持 rubric 自评）。
             </v-alert>
-            <v-alert v-else-if="report" type="error" variant="tonal" density="compact" class="mb-3">题面还不合格。</v-alert>
+            <v-alert v-else-if="report" type="error" variant="tonal" density="compact" class="mb-3">题面配置存在问题。</v-alert>
 
             <ul v-if="report?.errors?.length" class="text-body-2 mb-3 pl-5">
               <li v-for="item in report.errors" :key="item">{{ item }}</li>
@@ -270,9 +318,9 @@
           <v-spacer />
           <v-btn v-if="step < 2" color="primary" variant="tonal" @click="goNext">下一步</v-btn>
           <template v-else>
-            <v-btn variant="tonal" :loading="validating" @click="runValidate">校验</v-btn>
+            <v-btn variant="tonal" :loading="validating" @click="runValidate">重新校验</v-btn>
             <v-btn color="primary" :disabled="!report?.ok" :loading="saving" @click="save">
-              {{ editingId ? '保存' : '入库' }}
+              {{ editingId ? '保存修改' : '确认入库' }}
             </v-btn>
           </template>
         </div>
@@ -283,7 +331,7 @@
       <v-card>
         <v-card-title class="text-body-1">删除题目</v-card-title>
         <v-card-text class="text-body-2">
-          删除「{{ pendingDelete?.name }}」后，引用它的套件会在下次运行时报错，需要先把它从套件里摘掉。
+          确定要删除「{{ pendingDelete?.name }}」吗？
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -296,10 +344,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api, type EvalProbe, type EvalValidateReport } from '@/services/api'
 
-defineProps<{
+const props = defineProps<{
   modelValue: boolean
   probes: EvalProbe[]
 }>()
@@ -310,6 +358,14 @@ const emit = defineEmits<{
 }>()
 
 const STEP_LABELS = ['题面', '判定方式', '校验入库']
+const FILTER_TABS = [
+  { title: '全部', value: 'all' },
+  { title: '真伪', value: 'authenticity' },
+  { title: '智商', value: 'iq' },
+  { title: '自建题', value: 'custom' },
+  { title: '内置题', value: 'builtin' }
+]
+
 const CATEGORY_ITEMS = [
   { title: '真伪（authenticity）', value: 'authenticity' },
   { title: '智商（iq）', value: 'iq' }
@@ -356,6 +412,8 @@ const emptyForm = () => ({
 
 const mode = ref<'list' | 'form'>('list')
 const step = ref(0)
+const activeFilter = ref('all')
+const searchKeyword = ref('')
 const form = ref(emptyForm())
 const editingId = ref('')
 const report = ref<EvalValidateReport | null>(null)
@@ -366,6 +424,29 @@ const error = ref('')
 const deleteDialog = ref(false)
 const pendingDelete = ref<EvalProbe | null>(null)
 
+const filteredProbes = computed(() => {
+  let list = props.probes || []
+  if (activeFilter.value === 'authenticity') {
+    list = list.filter(p => p.category === 'authenticity')
+  } else if (activeFilter.value === 'iq') {
+    list = list.filter(p => p.category === 'iq')
+  } else if (activeFilter.value === 'custom') {
+    list = list.filter(p => !p.builtin)
+  } else if (activeFilter.value === 'builtin') {
+    list = list.filter(p => p.builtin)
+  }
+
+  if (searchKeyword.value.trim()) {
+    const kw = searchKeyword.value.trim().toLowerCase()
+    list = list.filter(p =>
+      p.name.toLowerCase().includes(kw) ||
+      p.slug.toLowerCase().includes(kw) ||
+      (p.description || '').toLowerCase().includes(kw)
+    )
+  }
+  return list
+})
+
 const startCreate = () => {
   form.value = emptyForm()
   editingId.value = ''
@@ -373,6 +454,10 @@ const startCreate = () => {
   step.value = 0
   mode.value = 'form'
 }
+
+defineExpose({
+  startCreate
+})
 
 const formFromProbe = (probe: EvalProbe) => ({
   ...emptyForm(),
@@ -523,3 +608,19 @@ const confirmDelete = async () => {
   }
 }
 </script>
+
+<style scoped>
+.probe-list {
+  max-height: calc(100vh - 170px);
+  overflow-y: auto;
+}
+
+.probe-card {
+  border-color: rgba(var(--v-theme-on-surface), 0.1);
+  transition: border-color 0.2s;
+}
+
+.probe-card:hover {
+  border-color: rgba(var(--v-theme-primary), 0.3);
+}
+</style>

@@ -71,33 +71,60 @@ func EstimateCalls(probes []Probe, channelCount int) int {
 }
 
 func (r *Runner) Start(req StartRunRequest) (Run, error) {
-	if strings.TrimSpace(req.SuiteID) == "" {
-		return Run{}, fmt.Errorf("suiteId 不能为空")
-	}
 	if len(req.ChannelIDs) == 0 {
 		return Run{}, fmt.Errorf("至少勾选一个渠道")
 	}
-	suite, probes, err := r.store.SuiteWithProbes(req.SuiteID)
-	if err != nil {
-		return Run{}, err
-	}
-	// 前端可选单题：非空 ProbeIDs 只保留套件里存在的，按套件顺序过滤。
-	// 空数组维持原行为：跑套件全部题。
-	if len(req.ProbeIDs) > 0 {
-		wanted := make(map[string]struct{}, len(req.ProbeIDs))
-		for _, id := range req.ProbeIDs {
-			wanted[id] = struct{}{}
+
+	var suite Suite
+	var probes []Probe
+	var err error
+
+	if req.SuiteID == "custom" || strings.TrimSpace(req.SuiteID) == "" {
+		suite = Suite{
+			ID:          "custom",
+			Slug:        "custom",
+			Name:        "自选题目",
+			Description: "自选题库评测",
 		}
-		filtered := make([]Probe, 0, len(probes))
-		for _, probe := range probes {
-			if _, ok := wanted[probe.ID]; ok {
-				filtered = append(filtered, probe)
+		if len(req.ProbeIDs) > 0 {
+			probes, err = r.store.ProbesByIDs(req.ProbeIDs)
+			if err != nil {
+				return Run{}, err
+			}
+		} else {
+			probes, err = r.store.ListProbes()
+			if err != nil {
+				return Run{}, err
 			}
 		}
-		probes = filtered
+	} else {
+		suite, probes, err = r.store.SuiteWithProbes(req.SuiteID)
+		if err != nil {
+			return Run{}, err
+		}
+		// 如果前端明确传入了 ProbeIDs，优先根据 ProbeIDs 完整加载（支持包含套件外自建题）
+		if len(req.ProbeIDs) > 0 {
+			wantedProbes, fetchErr := r.store.ProbesByIDs(req.ProbeIDs)
+			if fetchErr == nil && len(wantedProbes) > 0 {
+				probes = wantedProbes
+			} else {
+				wanted := make(map[string]struct{}, len(req.ProbeIDs))
+				for _, id := range req.ProbeIDs {
+					wanted[id] = struct{}{}
+				}
+				filtered := make([]Probe, 0, len(probes))
+				for _, probe := range probes {
+					if _, ok := wanted[probe.ID]; ok {
+						filtered = append(filtered, probe)
+					}
+				}
+				probes = filtered
+			}
+		}
 	}
+
 	if len(probes) == 0 {
-		return Run{}, fmt.Errorf("套件里没有可选题目，请先给套件加题或取消排除")
+		return Run{}, fmt.Errorf("评测题目列表为空，请先选择要评测的题目")
 	}
 	if req.Trigger == "" {
 		req.Trigger = TriggerManual

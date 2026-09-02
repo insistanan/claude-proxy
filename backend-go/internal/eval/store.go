@@ -625,6 +625,11 @@ func (s *Store) ProbesForSuite(suite Suite) ([]Probe, error) {
 	return s.probesForSuite(suite.ID, suite.ProbeIDs)
 }
 
+// ProbesByIDs 根据 probeIDs 列表一次性取出对应的探针。
+func (s *Store) ProbesByIDs(probeIDs []string) ([]Probe, error) {
+	return s.probesForSuite("custom", probeIDs)
+}
+
 // SuiteWithProbes 是 GetSuite + ProbesForSuite 的组合，供 estimate / validate / 值班共用。
 func (s *Store) SuiteWithProbes(suiteID string) (Suite, []Probe, error) {
 	suite, err := s.GetSuite(suiteID)

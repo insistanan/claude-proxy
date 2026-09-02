@@ -5,7 +5,7 @@
       <div class="d-flex flex-wrap ga-2">
         <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="reloadAll">刷新</v-btn>
         <v-btn variant="text" prepend-icon="mdi-history" @click="historyDrawer = true">历史</v-btn>
-        <v-btn variant="text" prepend-icon="mdi-format-list-bulleted" @click="probeDrawer = true">题目</v-btn>
+        <v-btn variant="text" prepend-icon="mdi-format-list-bulleted" @click="probeDrawer = true">题目管理</v-btn>
       </div>
     </div>
 
@@ -19,14 +19,14 @@
             :items="suiteItems"
             item-title="title"
             item-value="value"
-            label="套件"
+            label="模式"
             density="compact"
             variant="outlined"
             hide-details
-            style="min-width: 220px"
+            style="min-width: 240px"
           >
             <template #selection="{ item }">
-              <span class="text-truncate">{{ item.raw.title }}</span>
+              <span class="text-truncate font-weight-medium">{{ item.raw.title }}</span>
             </template>
             <template #item="{ props: itemProps, item }">
               <v-list-item v-bind="itemProps" :title="item.raw.title">
@@ -50,18 +50,6 @@
         <span class="text-body-2 text-medium-emphasis">已选 {{ selectedChannelIds.length }} 渠道</span>
         <v-spacer />
 
-        <v-select
-          v-model="thinking"
-          :items="EVAL_THINKING_ITEMS"
-          item-title="title"
-          item-value="value"
-          label="思考等级"
-          density="compact"
-          variant="outlined"
-          hide-details
-          style="min-width: 140px"
-        />
-
         <v-menu v-model="watchMenu" :close-on-content-click="false" location="bottom end">
           <template #activator="{ props: activator }">
             <v-btn v-bind="activator" variant="text" size="small" prepend-icon="mdi-clock-outline">
@@ -76,7 +64,7 @@
                 :items="cheapSuiteItems"
                 item-title="title"
                 item-value="value"
-                label="套件"
+                label="模式"
                 density="compact"
                 variant="outlined"
                 hide-details
@@ -110,28 +98,49 @@
         </v-menu>
 
         <v-btn v-if="busy" color="error" variant="tonal" :loading="cancelling" @click="cancelRun">取消</v-btn>
-        <v-btn v-else color="primary" :loading="starting" :disabled="!canStart" @click="startRun">开始</v-btn>
+        <v-btn v-else color="primary" :loading="starting" :disabled="!canStart" @click="startRun">开始评测</v-btn>
       </div>
 
-      <div class="mt-3 d-flex align-center ga-2 probe-select-bar">
-        <span class="text-body-2 text-medium-emphasis">题目</span>
+      <div class="mt-3 d-flex flex-wrap align-center ga-2 probe-select-bar">
+        <span class="text-body-2 text-medium-emphasis">题目 ({{ activeProbeIds.length }}/{{ matrixProbes.length }})：</span>
+        
         <v-chip
           v-for="probe in probeCandidates"
           :key="probe.id"
           size="small"
-          :color="probe.candidate ? 'primary' : 'grey'"
+          :color="probe.candidate ? (probe.builtin ? 'primary' : 'purple') : 'grey'"
           :variant="probe.candidate ? 'flat' : 'outlined'"
+          class="probe-chip"
           @click="toggleProbe(probe.id)"
         >
+          <v-icon v-if="!probe.builtin" start size="14">mdi-star</v-icon>
           {{ probe.name }}
+          <span v-if="!probe.builtin" class="text-caption ml-1 opacity-80">(自建)</span>
         </v-chip>
+
         <v-tooltip :text="probeModeHint" location="top">
           <template #activator="{ props: tip }">
             <v-icon v-bind="tip" icon="mdi-help-circle-outline" size="small" class="text-medium-emphasis" />
           </template>
         </v-tooltip>
+
+        <v-spacer />
+
+        <v-btn
+          size="small"
+          color="primary"
+          variant="tonal"
+          prepend-icon="mdi-checkbox-multiple-marked-outline"
+          @click="openProbeSelector"
+        >
+          挑选题目
+        </v-btn>
+
+        <v-btn size="small" variant="text" prepend-icon="mdi-plus" @click="openProbeDrawerCreate">
+          新增题目
+        </v-btn>
         <v-btn size="small" variant="text" prepend-icon="mdi-format-list-bulleted" @click="probeDrawer = true">
-          管理题目
+          题目管理
         </v-btn>
       </div>
 
@@ -154,7 +163,7 @@
       :class="{ 'run-card--flash': flashRunId === currentRun.id }"
     >
       <div class="d-flex flex-wrap align-center ga-2 mb-2">
-        <div class="text-h6 font-weight-bold">{{ currentRun.suiteName || '未知套件' }}</div>
+        <div class="text-h6 font-weight-bold">{{ currentRun.suiteName || '评测批次' }}</div>
         <v-chip size="small" variant="tonal" :color="evalRunStatusColor(currentRun.status)">
           {{ evalRunStatusLabel(currentRun.status) }}
         </v-chip>
@@ -221,7 +230,7 @@
             <v-chip size="x-small" variant="tonal" :color="evalRunStatusColor(item.status)">
               {{ evalRunStatusLabel(item.status) }}
             </v-chip>
-            <span class="text-truncate font-weight-medium recent-run-title">{{ item.suiteName || '未知套件' }}</span>
+            <span class="text-truncate font-weight-medium recent-run-title">{{ item.suiteName || '评测批次' }}</span>
           </div>
           <div v-if="historyTallySegments(item).length" class="history-tally-bar">
             <div
@@ -237,6 +246,108 @@
         </div>
       </div>
     </v-card>
+
+    <!-- 题目挑选器对话框 -->
+    <v-dialog v-model="probeSelectorOpen" max-width="680" scrollable>
+      <v-card>
+        <v-card-title class="d-flex align-center ga-2 pa-4">
+          <v-icon icon="mdi-checkbox-multiple-marked-outline" color="primary" />
+          <span class="text-h6 font-weight-bold">挑选评测题目</span>
+          <v-spacer />
+          <v-btn icon="mdi-close" size="small" variant="text" @click="probeSelectorOpen = false" />
+        </v-card-title>
+        
+        <v-divider />
+
+        <v-card-text class="pa-4">
+          <div class="d-flex flex-wrap align-center ga-2 mb-3">
+            <v-chip
+              v-for="tab in SELECTOR_TABS"
+              :key="tab.value"
+              size="small"
+              :color="selectorTab === tab.value ? 'primary' : undefined"
+              :variant="selectorTab === tab.value ? 'flat' : 'outlined'"
+              @click="selectorTab = tab.value"
+            >
+              {{ tab.title }}
+            </v-chip>
+            <v-spacer />
+            <v-text-field
+              v-model="selectorSearch"
+              density="compact"
+              variant="outlined"
+              prepend-inner-icon="mdi-magnify"
+              label="搜索题目"
+              hide-details
+              clearable
+              style="max-width: 180px"
+            />
+          </div>
+
+          <div class="d-flex align-center ga-2 mb-3">
+            <span class="text-caption text-medium-emphasis">
+              已选中 {{ selectorSelectedIds.length }} / {{ probes.length }} 道题
+            </span>
+            <v-spacer />
+            <v-btn size="x-small" variant="text" @click="selectAllFilteredProbes">全选当前筛选</v-btn>
+            <v-btn size="x-small" variant="text" @click="selectCustomProbesOnly">只选自建题</v-btn>
+            <v-btn size="x-small" variant="text" @click="selectorSelectedIds = []">清空</v-btn>
+          </div>
+
+          <div v-if="!filteredSelectorProbes.length" class="text-body-2 text-medium-emphasis py-8 text-center">
+            没有匹配的题目
+          </div>
+
+          <div v-else class="selector-probes-list">
+            <v-card
+              v-for="probe in filteredSelectorProbes"
+              :key="probe.id"
+              variant="outlined"
+              class="mb-2 selector-probe-card"
+              :class="{ 'selector-probe-card--selected': isProbeSelectedInSelector(probe.id) }"
+              role="button"
+              tabindex="0"
+              @click="toggleProbeInSelector(probe.id)"
+            >
+              <div class="pa-3 d-flex align-center ga-3">
+                <v-icon size="20" :color="isProbeSelectedInSelector(probe.id) ? 'primary' : undefined">
+                  {{ isProbeSelectedInSelector(probe.id) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline' }}
+                </v-icon>
+                <div class="flex-grow-1">
+                  <div class="d-flex align-center ga-2 mb-1">
+                    <span class="text-body-2 font-weight-bold">{{ probe.name }}</span>
+                    <v-chip v-if="probe.builtin" size="x-small" variant="tonal" color="info">内置</v-chip>
+                    <v-chip v-else size="x-small" variant="tonal" color="purple">自建</v-chip>
+                    <v-chip size="x-small" variant="outlined" color="grey">
+                      {{ probe.category === 'authenticity' ? '真伪' : '智商' }}
+                    </v-chip>
+                  </div>
+                  <div v-if="probe.description" class="text-caption text-medium-emphasis mb-1">
+                    {{ probe.description }}
+                  </div>
+                  <div class="text-caption text-disabled">
+                    抽取 {{ probe.extract.kind }} · 判定 {{ probe.judge.kind }} · 采样 {{ probe.sampleCount }} 次
+                  </div>
+                </div>
+              </div>
+            </v-card>
+          </div>
+        </v-card-text>
+
+        <v-divider />
+
+        <v-card-actions class="pa-4">
+          <span class="text-caption text-medium-emphasis">
+            确认后将自动切换为自定义选题评测
+          </span>
+          <v-spacer />
+          <v-btn variant="text" @click="probeSelectorOpen = false">取消</v-btn>
+          <v-btn color="primary" :disabled="selectorSelectedIds.length === 0" @click="applyProbeSelection">
+            确认选择 ({{ selectorSelectedIds.length }} 题)
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <v-navigation-drawer v-model="historyDrawer" location="end" temporary width="520">
       <div class="pa-4">
@@ -274,13 +385,13 @@
             }"
             role="button"
             tabindex="0"
-            :aria-label="`${item.suiteName || '未知套件'}，${evalRunStatusLabel(item.status)}，${evalFormatTime(item.startedAt || item.createdAt)}`"
+            :aria-label="`${item.suiteName || '评测批次'}，${evalRunStatusLabel(item.status)}，${evalFormatTime(item.startedAt || item.createdAt)}`"
             @click="selectRun(item.id)"
             @keydown.enter.prevent="selectRun(item.id)"
             @keydown.space.prevent="selectRun(item.id)"
           >
             <div class="history-card-header">
-              <div class="text-truncate font-weight-medium">{{ item.suiteName || '未知套件' }}</div>
+              <div class="text-truncate font-weight-medium">{{ item.suiteName || '评测批次' }}</div>
               <v-chip size="x-small" variant="tonal" :color="evalRunStatusColor(item.status)">
                 {{ evalRunStatusLabel(item.status) }}
               </v-chip>
@@ -325,7 +436,7 @@
       :results="currentRun?.results"
       @navigate="onCellNavigate"
     />
-    <EvalProbeManager v-model="probeDrawer" :probes="probes" @changed="reloadProbes" />
+    <EvalProbeManager ref="probeManagerRef" v-model="probeDrawer" :probes="probes" @changed="reloadProbes" />
   </div>
 </template>
 
@@ -363,10 +474,20 @@ import {
   type EvalVerdictTally
 } from '@/utils/eval'
 
+const CUSTOM_SUITE_ID = 'custom'
+
 const INTERVAL_ITEMS = [
   { title: '30 分钟', value: '30m' },
   { title: '2 小时', value: '2h' },
   { title: '1 天', value: '1d' }
+]
+
+const SELECTOR_TABS = [
+  { title: '全部', value: 'all' },
+  { title: '真伪', value: 'authenticity' },
+  { title: '智商', value: 'iq' },
+  { title: '自建题', value: 'custom' },
+  { title: '内置题', value: 'builtin' }
 ]
 
 const emptyByKind = <T,>(): Record<ApiTab, T[]> => ({
@@ -379,6 +500,7 @@ const emptyByKind = <T,>(): Record<ApiTab, T[]> => ({
 
 const route = useRoute()
 const preferences = usePreferencesStore()
+const probeManagerRef = ref<InstanceType<typeof EvalProbeManager> | null>(null)
 
 /** 从渠道条跳转时，使用稳定 channel.id 筛出该渠道的全部历史批次。 */
 const deepLinkChannelId = computed(() => {
@@ -386,11 +508,6 @@ const deepLinkChannelId = computed(() => {
   return typeof value === 'string' ? value.trim() : ''
 })
 
-/**
- * 深链进来时按渠道取历史的条数上限（与后端 evalRunsMaxLimit 一致）。
- * 不能沿用后端默认的全局最近 30 条：该渠道的批次被别的渠道挤出去后，
- * 抽屉会显示"该渠道还没有评测记录"，而它其实跑过。
- */
 const EVAL_CHANNEL_HISTORY_LIMIT = 200
 
 const loading = ref(false)
@@ -406,12 +523,15 @@ const poolsByKind = ref<Record<ApiTab, ChannelPool[]>>(emptyByKind<ChannelPool>(
 
 const selectedSuiteId = ref('')
 const selectedChannelIds = ref<string[]>([])
-const enabledProtocols = ref<ApiTab[]>([...EVAL_PROTOCOL_KINDS])
+const enabledProtocols = ref<ApiTab[]>(['messages'])
 const thinking = ref('inherit')
 const modelOverride = ref('')
 const channelModels = ref<Record<string, string>>({})
 const channelThinking = ref<Record<string, string>>({})
-/** 取消勾选的题（基于当前套件）。跑历史批次时忽略——它用的是当时的题。 */
+
+/** 自定义模式/自选题库下用户选择的 probe IDs */
+const customSelectedProbeIds = ref<string[]>([])
+/** 取消勾选的题（基于当前模式）。跑历史批次时忽略。 */
 const excludedProbeIds = ref<string[]>([])
 
 const busy = ref(false)
@@ -421,8 +541,13 @@ const historyDrawer = ref(false)
 const probeDrawer = ref(false)
 const cellDrawer = ref(false)
 const cellSelection = ref<EvalCellSelection | null>(null)
-/** 点击历史卡片后短暂高亮当前批次卡片，提示已定位。 */
 const flashRunId = ref('')
+
+// 题目挑选器弹窗状态
+const probeSelectorOpen = ref(false)
+const selectorTab = ref('all')
+const selectorSearch = ref('')
+const selectorSelectedIds = ref<string[]>([])
 
 const visibleHistoryRuns = computed(() => {
   const channelId = deepLinkChannelId.value
@@ -430,7 +555,6 @@ const visibleHistoryRuns = computed(() => {
   return runHistory.value.filter(run => run.channelIds.includes(channelId))
 })
 
-const optionsMenu = ref(false)
 const watchMenu = ref(false)
 const watchConfig = ref<EvalWatchConfig>({
   enabled: false,
@@ -444,17 +568,27 @@ const watchForm = ref({ enabled: false, suiteId: '', interval: '2h' })
 
 let runStream: AbortController | null = null
 
-const suiteItems = computed(() =>
-  suites.value.map(suite => ({
+const suiteItems = computed(() => [
+  ...suites.value.map(suite => ({
     title: suite.cheap ? `${suite.name} · 便宜` : suite.name,
     description: suite.description || '',
     value: suite.id
-  }))
-)
+  })),
+  {
+    title: '自定义选题 (全题库)',
+    description: '自由挑选内置题与自建题目组合进行评测',
+    value: CUSTOM_SUITE_ID
+  }
+])
+
 const selectedSuiteDescription = computed(() => {
+  if (selectedSuiteId.value === CUSTOM_SUITE_ID) {
+    return '自由挑选内置题与自建题目组合进行评测'
+  }
   const suite = suites.value.find(item => item.id === selectedSuiteId.value)
   return suite?.description || ''
 })
+
 const cheapSuiteItems = computed(() =>
   suites.value.filter(suite => suite.cheap).map(suite => ({ title: suite.name, value: suite.id }))
 )
@@ -465,20 +599,46 @@ const watchButtonLabel = computed(() => {
 })
 
 /**
- * 配置条里可选的题目：当前套件的题，标注 candidate。
- * 跑历史批次时仍显示当前套件的题作为列（历史结果与当前题对不上的格子显示"待跑"，
- * 这是可接受的近似——历史详情在抽屉里仍能看到真实结果）。
+ * 当前模式下应包含的题目列表：
+ * 1. 若当前展示历史批次，以批次实际题目为准；
+ * 2. 若选了自定义模式，以用户选择的 customSelectedProbeIds（默认全部）为准；
+ * 3. 若选了内置套件模式，以该套件的 probeIds 为准。
  */
-const matrixProbes = computed(() => {
-  const suiteId = currentRun.value?.suiteId || selectedSuiteId.value
-  const suite = suites.value.find(item => item.id === suiteId)
-  if (!suite) return []
+const matrixProbes = computed<EvalProbe[]>(() => {
+  if (currentRun.value) {
+    if (currentRun.value.suiteId === CUSTOM_SUITE_ID) {
+      if (customSelectedProbeIds.value.length) {
+        return customSelectedProbeIds.value
+          .map(id => probes.value.find(p => p.id === id))
+          .filter((p): p is EvalProbe => !!p)
+      }
+      return probes.value
+    }
+    const suite = suites.value.find(item => item.id === currentRun.value?.suiteId)
+    if (suite) {
+      return suite.probeIds
+        .map(id => probes.value.find(probe => probe.id === id))
+        .filter((probe): probe is EvalProbe => !!probe)
+    }
+  }
+
+  if (selectedSuiteId.value === CUSTOM_SUITE_ID) {
+    if (customSelectedProbeIds.value.length) {
+      return customSelectedProbeIds.value
+        .map(id => probes.value.find(p => p.id === id))
+        .filter((p): p is EvalProbe => !!p)
+    }
+    return probes.value
+  }
+
+  const suite = suites.value.find(item => item.id === selectedSuiteId.value)
+  if (!suite) return probes.value
   return suite.probeIds
     .map(id => probes.value.find(probe => probe.id === id))
     .filter((probe): probe is EvalProbe => !!probe)
 })
 
-/** 配置条显示的题带 candidate 标记：true=已选，false=已从套件里取消勾选。 */
+/** 配置条显示的题带 candidate 标记：true=已勾选参与，false=已取消勾选。 */
 const probeCandidates = computed(() =>
   matrixProbes.value.map(probe => ({
     ...probe,
@@ -486,17 +646,16 @@ const probeCandidates = computed(() =>
   }))
 )
 
-/** 本次要跑的题：套件里未取消勾选的。 */
+/** 本次要跑的题：已勾选参与的题目 IDs */
 const activeProbeIds = computed(() =>
   matrixProbes.value.map(probe => probe.id).filter(id => !excludedProbeIds.value.includes(id))
 )
 
 const probeModeHint = computed(() => {
-  if (excludedProbeIds.value.length === 0) return '点击题目可取消勾选；只跑勾中的题。'
-  return `已取消 ${excludedProbeIds.value.length} 题，本次只跑 ${activeProbeIds.value.length} 题。`
+  if (excludedProbeIds.value.length === 0) return '点击题目 Chip 可快速启用/排除；支持点击「挑选题目」自由添加自建题。'
+  return `已排除 ${excludedProbeIds.value.length} 题，本次将评测 ${activeProbeIds.value.length} 题。`
 })
 
-/** 只影响新发起的批次；正在跑的历史批次不受影响。 */
 const toggleProbe = (probeId: string) => {
   if (excludedProbeIds.value.includes(probeId)) {
     excludedProbeIds.value = excludedProbeIds.value.filter(id => id !== probeId)
@@ -505,14 +664,76 @@ const toggleProbe = (probeId: string) => {
   excludedProbeIds.value = [...excludedProbeIds.value, probeId]
 }
 
+// ===== 题目挑选器逻辑 =====
+
+const openProbeSelector = () => {
+  selectorTab.value = 'all'
+  selectorSearch.value = ''
+  selectorSelectedIds.value = activeProbeIds.value.length
+    ? [...activeProbeIds.value]
+    : probes.value.map(p => p.id)
+  probeSelectorOpen.value = true
+}
+
+const filteredSelectorProbes = computed(() => {
+  let list = probes.value || []
+  if (selectorTab.value === 'authenticity') {
+    list = list.filter(p => p.category === 'authenticity')
+  } else if (selectorTab.value === 'iq') {
+    list = list.filter(p => p.category === 'iq')
+  } else if (selectorTab.value === 'custom') {
+    list = list.filter(p => !p.builtin)
+  } else if (selectorTab.value === 'builtin') {
+    list = list.filter(p => p.builtin)
+  }
+
+  if (selectorSearch.value.trim()) {
+    const kw = selectorSearch.value.trim().toLowerCase()
+    list = list.filter(p =>
+      p.name.toLowerCase().includes(kw) ||
+      p.slug.toLowerCase().includes(kw) ||
+      (p.description || '').toLowerCase().includes(kw)
+    )
+  }
+  return list
+})
+
+const isProbeSelectedInSelector = (probeId: string) => selectorSelectedIds.value.includes(probeId)
+
+const toggleProbeInSelector = (probeId: string) => {
+  if (isProbeSelectedInSelector(probeId)) {
+    selectorSelectedIds.value = selectorSelectedIds.value.filter(id => id !== probeId)
+  } else {
+    selectorSelectedIds.value = [...selectorSelectedIds.value, probeId]
+  }
+}
+
+const selectAllFilteredProbes = () => {
+  const currentFilteredIds = filteredSelectorProbes.value.map(p => p.id)
+  const merged = new Set([...selectorSelectedIds.value, ...currentFilteredIds])
+  selectorSelectedIds.value = Array.from(merged)
+}
+
+const selectCustomProbesOnly = () => {
+  const customIds = probes.value.filter(p => !p.builtin).map(p => p.id)
+  selectorSelectedIds.value = customIds
+}
+
+const applyProbeSelection = () => {
+  customSelectedProbeIds.value = [...selectorSelectedIds.value]
+  selectedSuiteId.value = CUSTOM_SUITE_ID
+  excludedProbeIds.value = []
+  probeSelectorOpen.value = false
+}
+
+// =========================
+
 const canStart = computed(
   () => !!selectedSuiteId.value && selectedChannelIds.value.length > 0 && activeProbeIds.value.length > 0 && !busy.value
 )
 
-/** 当前批次的 verdict 分布，用于概览条。total = 渠道数 × 探针数。 */
 const currentTally = computed<EvalVerdictTally | null>(() => {
   if (!currentRun.value) return null
-  // 后端已算好 tally 就直接用（GetRun/ListRuns 都带）；没有时退回前端现算。
   if (currentRun.value.tally) {
     return {
       pass: currentRun.value.tally.pass,
@@ -531,7 +752,6 @@ const currentTally = computed<EvalVerdictTally | null>(() => {
 
 const tallySegments = computed(() => tallyToSegments(currentTally.value))
 
-/** 历史卡片用后端已聚合的 tally 画 mini 条；tally 缺失（极老批次）就空，不画。 */
 const historyTallySegments = (run: EvalRun) => {
   if (!run.tally) return []
   return tallyToSegments({
@@ -546,7 +766,6 @@ const historyTallySegments = (run: EvalRun) => {
   })
 }
 
-/** 最近批次缩略条：历史里最新的 4 个（不含正在显示的当前批次）。 */
 const recentRuns = computed(() => {
   if (!currentRun.value) return []
   return runHistory.value
@@ -569,7 +788,6 @@ const channelNameOf = (channelId: string) => {
   return channelId
 }
 
-/** 深链进入评测页时打开历史抽屉，并把最新一条匹配记录滚入可视区。 */
 const focusDeepLinkedHistory = async () => {
   const channelId = deepLinkChannelId.value
   if (!channelId) return
@@ -588,7 +806,6 @@ const openCell = (selection: EvalCellSelection) => {
   cellDrawer.value = true
 }
 
-/** 抽屉内切换探针后，同步选中态，保持抽屉打开。 */
 const onCellNavigate = (selection: EvalCellSelection) => {
   cellSelection.value = selection
 }
@@ -598,7 +815,6 @@ const stopRunStream = () => {
   runStream = null
 }
 
-/** 订阅批次进度。后端只在有变化时发帧，跑完自动断开。 */
 const subscribeRun = (runId: string) => {
   stopRunStream()
   const controller = new AbortController()
@@ -642,7 +858,6 @@ const loadChannels = async () => {
   )
 }
 
-/** 从渠道菜单跳进来时只亮那个协议并勾上它；否则恢复上次勾选。 */
 const applyDeepLinkOrMemory = () => {
   const deepLink = typeof route.query.channel === 'string' ? route.query.channel : ''
   if (deepLink) {
@@ -695,8 +910,6 @@ const reloadAll = async () => {
     }
     applyDeepLinkOrMemory()
 
-    // 评测页面的模型、思考和渠道选择同时作为值班配置的编辑入口。
-    // 刷新后必须恢复值班实际使用的完整配置，否则用户再次保存时会把旧值覆盖掉。
     if (!deepLinkChannel && watchConfig.value.channelIds?.length) {
       selectedChannelIds.value = [...watchConfig.value.channelIds]
     }
@@ -725,7 +938,6 @@ const reloadAll = async () => {
   }
 }
 
-/** 从历史抽屉点开某次批次，把它展示到矩阵，并滚动定位到批次卡片 + 短暂高亮。 */
 const selectRun = async (runId: string) => {
   if (!runId) return
   error.value = ''
@@ -804,6 +1016,17 @@ const saveWatch = async () => {
   }
 }
 
+const openProbeDrawerCreate = () => {
+  probeDrawer.value = true
+  nextTick(() => {
+    probeManagerRef.value?.startCreate()
+  })
+}
+
+watch(selectedSuiteId, () => {
+  excludedProbeIds.value = []
+})
+
 watch([selectedChannelIds, selectedSuiteId], () => {
   preferences.setEvalLastSelection(selectedChannelIds.value, selectedSuiteId.value)
 })
@@ -812,10 +1035,6 @@ onMounted(() => {
   void reloadAll()
 })
 
-/**
- * 在评测页里再次从另一个渠道深链进来时，路由没变、只有 query 变，组件不会重建。
- * 历史是按渠道取的，不重新取数就会拿上一个渠道的列表去过滤新渠道，看起来像"没有记录"。
- */
 watch(deepLinkChannelId, (next, previous) => {
   if (next === previous) return
   void reloadAll()
@@ -846,6 +1065,32 @@ onUnmounted(() => {
   }
 }
 
+.probe-chip {
+  cursor: pointer;
+  user-select: none;
+}
+
+.selector-probes-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.selector-probe-card {
+  border-color: rgba(var(--v-theme-on-surface), 0.1);
+  transition: all 0.15s ease-in-out;
+  cursor: pointer;
+}
+
+.selector-probe-card:hover {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border-color: rgba(var(--v-theme-primary), 0.3);
+}
+
+.selector-probe-card--selected {
+  background: rgba(var(--v-theme-primary), 0.08);
+  border-color: rgba(var(--v-theme-primary), 0.5);
+}
+
 /* 批次概览元信息行 */
 .run-overview-meta {
   display: flex;
@@ -872,167 +1117,51 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 2px;
-  transition: flex-grow 0.2s;
+  min-width: 4px;
+  transition: flex 0.3s;
 }
 
 .tally-segment-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.92);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  color: white;
+  font-size: 0.72rem;
+  font-weight: bold;
 }
 
-.tally-segment--success { background: rgb(var(--v-theme-success)); }
-.tally-segment--warning { background: rgb(var(--v-theme-warning)); }
-.tally-segment--error   { background: rgb(var(--v-theme-error)); }
-.tally-segment--grey    { background: rgba(var(--v-theme-on-surface), 0.35); }
+.tally-segment--success { background: #4caf50; }
+.tally-segment--warning { background: #fb8c00; }
+.tally-segment--error { background: #e53935; }
+.tally-segment--grey { background: #9e9e9e; }
 
-/* 分布条下方图例 */
+/* 图例 */
 .tally-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px 18px;
-  font-size: 0.75rem;
-  color: rgba(var(--v-theme-on-surface), 0.7);
+  gap: 12px;
+  font-size: 0.8rem;
 }
 
 .tally-legend-item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .tally-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  flex-shrink: 0;
 }
 
-.tally-dot--success { background: rgb(var(--v-theme-success)); }
-.tally-dot--warning { background: rgb(var(--v-theme-warning)); }
-.tally-dot--error   { background: rgb(var(--v-theme-error)); }
-.tally-dot--grey    { background: rgba(var(--v-theme-on-surface), 0.35); }
-
-/* 历史抽屉卡片列表 */
-.history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.history-scope-banner {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 10px 12px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.38);
-  border-left: 3px solid rgb(var(--v-theme-primary));
-  border-radius: 6px 2px 6px 2px;
-  background: rgba(var(--v-theme-primary), 0.08);
-}
-
-.history-scope-copy { min-width: 0; flex: 1; }
-.history-scope-copy > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.history-card {
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.history-card:hover {
-  border-color: rgba(var(--v-theme-primary), 0.4);
-  background: rgba(var(--v-theme-primary), 0.04);
-}
-
-.history-card--active {
-  border-color: rgb(var(--v-theme-primary));
-  background: rgba(var(--v-theme-primary), 0.08);
-}
-
-.history-card--channel-focus {
-  border-left: 3px solid rgba(var(--v-theme-primary), 0.72);
-  padding-left: 10px;
-}
-
-.history-card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.history-card-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  font-size: 0.75rem;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  margin-bottom: 2px;
-}
-
-.meta-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.history-card-time {
-  font-size: 0.6875rem;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-
-/* 历史卡片 mini 统计条 */
-.history-tally-bar {
-  display: flex;
-  height: 4px;
-  border-radius: 2px;
-  overflow: hidden;
-  background: rgba(var(--v-theme-on-surface), 0.08);
-  margin-top: 4px;
-}
-
-.history-tally-seg {
-  min-width: 1px;
-}
-
-.history-tally-seg--success { background: rgb(var(--v-theme-success)); }
-.history-tally-seg--warning { background: rgb(var(--v-theme-warning)); }
-.history-tally-seg--error   { background: rgb(var(--v-theme-error)); }
-.history-tally-seg--grey    { background: rgba(var(--v-theme-on-surface), 0.35); }
-
-/* 套件下拉框 + 问号说明 */
-.suite-select {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-/* 题目选择条 */
-.probe-select-bar {
-  flex-wrap: wrap;
-  row-gap: 6px;
-}
-
-.probe-select-bar .v-chip {
-  cursor: pointer;
-}
-
-/* 当前批次卡片高亮（点击历史后定位提示） */
-.run-card {
-  transition: border-color 0.3s, box-shadow 0.3s;
-}
-
-.run-card--flash {
-  border-color: rgb(var(--v-theme-primary)) !important;
-  box-shadow: 0 0 0 2px rgba(var(--v-theme-primary), 0.25);
-}
+.tally-dot--success { background: #4caf50; }
+.tally-dot--warning { background: #fb8c00; }
+.tally-dot--error { background: #e53935; }
+.tally-dot--grey { background: #9e9e9e; }
 
 /* 最近批次缩略条 */
+.recent-runs {
+  background: rgba(var(--v-theme-surface), 0.6);
+}
+
 .recent-runs-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -1041,18 +1170,116 @@ onUnmounted(() => {
 
 .recent-run-card {
   padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 6px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-surface), 0.4);
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .recent-run-card:hover {
-  border-color: rgba(var(--v-theme-primary), 0.4);
-  background: rgba(var(--v-theme-primary), 0.04);
+  background: rgba(var(--v-theme-on-surface), 0.04);
 }
 
 .recent-run-title {
-  font-size: 0.8125rem;
+  font-size: 0.8rem;
+}
+
+/* 批次卡片高亮动效 */
+.run-card {
+  transition: box-shadow 0.3s, border-color 0.3s;
+}
+
+.run-card--flash {
+  border-color: rgba(var(--v-theme-primary), 0.8) !important;
+  box-shadow: 0 0 0 2px rgba(var(--v-theme-primary), 0.3);
+}
+
+/* 历史抽屉 */
+.history-scope-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-primary), 0.08);
+  border: 1px solid rgba(var(--v-theme-primary), 0.2);
+}
+
+.history-scope-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-card {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  background: rgba(var(--v-theme-surface), 0.6);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: all 0.15s ease-in-out;
+}
+
+.history-card:hover {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.history-card--active {
+  border-color: rgba(var(--v-theme-primary), 0.6);
+  background: rgba(var(--v-theme-primary), 0.06);
+}
+
+.history-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.history-card-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 0.75rem;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+.history-card-meta .meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.history-tally-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.history-tally-seg {
+  min-width: 2px;
+}
+
+.history-tally-seg--success { background: #4caf50; }
+.history-tally-seg--warning { background: #fb8c00; }
+.history-tally-seg--error { background: #e53935; }
+.history-tally-seg--grey { background: #9e9e9e; }
+
+.history-card-time {
+  font-size: 0.7rem;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  text-align: right;
 }
 </style>
