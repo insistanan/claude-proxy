@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/converters"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
@@ -314,6 +315,13 @@ func tryCompactWithKey(
 	channelScheduler *scheduler.ChannelScheduler,
 	conversationID string,
 ) (bool, *compactError) {
+	if upstream == nil || upstream.ServiceType != converters.ResponsesUpstreamResponses {
+		return false, &compactError{
+			status:         http.StatusBadRequest,
+			body:           []byte(`{"error":"当前渠道不是原生 Responses 上游，不支持 /responses/compact"}`),
+			shouldFailover: false,
+		}
+	}
 	if upstream != nil && upstream.DisablePromptCacheKey {
 		var payload map[string]interface{}
 		if json.Unmarshal(bodyBytes, &payload) == nil {
@@ -373,7 +381,7 @@ func tryCompactWithKey(
 		return false, &compactError{responseWritten: true}
 	}
 	compactResponseID := extractCompactResponseID(respBody)
-	if err := commitCompactSession(sessionManager, bodyBytes, respBody); err != nil {
+	if err := commitCompactSession(sessionManager, bodyBytes, respBody, conversationID); err != nil {
 		// 上游 compact 已成功，但代理本地的历史边界没有落盘时，不能
 		// 继续返回成功并清理旧链；否则下一轮可能拿着新 response ID
 		// 进入一个空 session，静默丢失压缩后的上下文。
@@ -432,15 +440,12 @@ func extractCompactResponseID(body []byte) string {
 // commitCompactSession 用 compact 结果替换代理本地旧历史。compact 请求的
 // input 通常是客户端重放的完整 transcript，绝不能再把它当作普通一轮追加，
 // 否则压缩成功后本地 session 仍会保留完整旧上下文。
-func commitCompactSession(sessionManager *session.SessionManager, requestBody, responseBody []byte) error {
+func commitCompactSession(sessionManager *session.SessionManager, requestBody, responseBody []byte, conversationID string) error {
 	if sessionManager == nil {
 		return nil
 	}
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(requestBody, "previous_response_id").String())
 	responseID := extractCompactResponseID(responseBody)
-	if previousResponseID == "" {
-		return nil
-	}
 	if responseID == "" {
 		return fmt.Errorf("compact 响应缺少新 response id，无法建立压缩后的会话边界")
 	}
@@ -459,6 +464,9 @@ func commitCompactSession(sessionManager *session.SessionManager, requestBody, r
 	items, err := parseInputToItems(rawItems)
 	if err != nil {
 		return fmt.Errorf("解析 compact session item 失败: %w", err)
+	}
+	if previousResponseID == "" {
+		return sessionManager.ReplaceConversationSessionAfterCompact(conversationID, responseID, items)
 	}
 	return sessionManager.ReplaceSessionAfterCompact(previousResponseID, responseID, items)
 }

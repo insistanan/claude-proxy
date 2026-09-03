@@ -22,6 +22,10 @@ const (
 	// 完整历史叠加而主动移除了 previous_response_id。响应出口不能再伪造
 	// 旧 PreviousID 元数据。
 	ContextKeyResponsesPreviousIDDropped = "responses-previous-id-dropped"
+	// ContextKeyResponsesHistoryBoundary 表示当前 Responses input 已经成为
+	// 新的本地历史根。非原生 Responses 转换器不能再把旧 session 追加到它
+	// 前面，响应持久化也必须替换旧历史而不是按普通轮次合并。
+	ContextKeyResponsesHistoryBoundary = "responses-history-boundary"
 	claudeCodeDisguiseVersion            = "2.1.238"
 	codexDisguiseVersion                 = "0.150.1"
 )

@@ -662,6 +662,21 @@ func (sm *SessionManager) ReplaceSessionAfterCompact(previousResponseID, respons
 	return nil
 }
 
+// ReplaceConversationSessionAfterCompact 在 compact 请求没有携带
+// previous_response_id 时，按已经绑定的代理 conversation 找到当前 session
+// 并建立新的压缩边界。不能因为缺少外部 response ID 就跳过本地状态替换。
+func (sm *SessionManager) ReplaceConversationSessionAfterCompact(conversationID, responseID string, items []types.ResponsesItem) error {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return fmt.Errorf("compact 缺少可用于恢复会话的 conversation ID")
+	}
+	current, err := sm.GetOrCreateSessionForConversation("", conversationID)
+	if err != nil {
+		return err
+	}
+	return sm.ReplaceSessionAfterBoundary(current.ID, items, false, responseID)
+}
+
 // MarkSessionHasVisionContent 显式标记会话历史含图
 func (sm *SessionManager) MarkSessionHasVisionContent(sessionID string) error {
 	sm.mu.Lock()

@@ -25,6 +25,12 @@ const (
 // ConvertResponsesRequestToUpstream converts a Responses entry request to the target upstream protocol.
 // upstream may be nil (tests); when set it drives history-thinking and prompt_cache_key options.
 func ConvertResponsesRequestToUpstream(serviceType string, model string, bodyBytes []byte, stream bool, sess *types.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
+	if serviceType != ResponsesUpstreamResponses && req != nil && ResponsesInputCarriesOwnHistory(req.Input) {
+		// 非原生 Responses 上游没有 previous_response_id 语义。当前 input
+		// 已经是客户端提供的新历史根时，禁止任何协议转换器再把旧 session
+		// 追加到它前面；provider 会同步删除请求中的旧链字段。
+		sess = nil
+	}
 	switch serviceType {
 	case ResponsesUpstreamResponses:
 		return convertResponsesPassthroughRequestWithSession(model, bodyBytes, upstream, sess, req)
@@ -91,6 +97,21 @@ func ConvertUpstreamStreamLineToResponses(ctx context.Context, serviceType strin
 
 func convertResponsesPassthroughRequest(model string, bodyBytes []byte, upstream *config.UpstreamConfig) ([]byte, error) {
 	return convertResponsesPassthroughRequestWithSession(model, bodyBytes, upstream, nil, nil)
+}
+
+// ResponsesInputCarriesOwnHistory 判断客户端 input 是否已经包含新的历史根。
+// 该信息由 provider 在查找本地 session 前使用：一旦客户端重放了自己的
+// 历史，就不能先加载旧 session 再把两份历史交给转换器合并。
+func ResponsesInputCarriesOwnHistory(input interface{}) bool {
+	encodedInput, err := json.Marshal(input)
+	if err != nil {
+		return false
+	}
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(encodedInput, &rawItems); err != nil {
+		return false
+	}
+	return responsesRawItemsCarryOwnHistory(rawItems)
 }
 
 // convertResponsesPassthroughRequestWithSession 保留 Responses 原始 item 的全部扩展

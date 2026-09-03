@@ -426,7 +426,13 @@ func handleStreamSuccess(
 
 	// 即使客户端向上游声明 store=false，本代理仍需保存会话链，保证重启后可继续。
 	if originalReq != nil {
-		if sess, err := sessionManager.GetOrCreateSessionForConversation(originalReq.PreviousResponseID, conversationID); err == nil {
+		sessionLookupPreviousResponseID := originalReq.PreviousResponseID
+		if c.GetBool(utils.ContextKeyResponsesHistoryBoundary) {
+			// 当前 input 已成为新的历史根，按 conversation 找到旧 session
+			// 后替换它；不能再用旧 response ID 恢复旧边界。
+			sessionLookupPreviousResponseID = ""
+		}
+		if sess, err := sessionManager.GetOrCreateSessionForConversation(sessionLookupPreviousResponseID, conversationID); err == nil {
 			if collectorErr := sessionCollector.Err(); collectorErr != nil {
 				log.Printf("[Session] Responses 流式 output 不完整，跳过本轮会话持久化: %v", collectorErr)
 			} else if !sessionCollector.Completed() &&
@@ -460,7 +466,7 @@ func handleStreamSuccess(
 						// 的完整 input 通过 ReplaceSessionAfterBoundary 原样保存。
 						commitErr = sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens,
 							utils.DetectImageContent(originalRequestJSON), streamResponseID)
-					} else if c.GetBool(utils.ContextKeyResponsesPreviousIDDropped) {
+					} else if c.GetBool(utils.ContextKeyResponsesHistoryBoundary) {
 						commitErr = sessionManager.ReplaceSessionAfterBoundary(sess.ID, turnItems,
 							utils.DetectImageContent(originalRequestJSON), streamResponseID)
 					} else {
@@ -469,8 +475,9 @@ func handleStreamSuccess(
 					}
 					if err := commitErr; err != nil {
 						log.Printf("[Session] 持久化 Responses 流式会话轮次失败: %v", err)
-					} else if utils.ResponsesItemsContainCompactionFromInput(originalReq.Input) {
-						// 流式 compaction 已建立新的本地历史根后，清理旧的
+					} else if utils.ResponsesItemsContainCompactionFromInput(originalReq.Input) ||
+						c.GetBool(utils.ContextKeyResponsesHistoryBoundary) {
+						// 压缩或客户端历史替换已建立新的本地历史根，清理旧的
 						// Messages→Responses 链，避免下一轮复用旧服务端上下文。
 						session.DefaultResponseChainManager().Clear(conversationID)
 					}

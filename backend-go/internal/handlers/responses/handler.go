@@ -200,11 +200,15 @@ func handleSuccess(
 	if _, err := hooks.RunAttachedPostResponseHooks(c.Request.Context(), c, responseBody, resp); err != nil {
 		return nil, err
 	}
-	proxycore.AssociateConversationExternalID(channelScheduler, conversationID, scheduler.ChannelKindResponses, responsesResp.ID)
-
 	// 客户端的 store 只控制上游是否保存，不能关闭本代理自己的七天会话持久化。
 	if originalReq != nil {
-		sess, err := sessionManager.GetOrCreateSessionForConversation(originalReq.PreviousResponseID, conversationID)
+		sessionLookupPreviousResponseID := originalReq.PreviousResponseID
+		if c.GetBool(utils.ContextKeyResponsesHistoryBoundary) {
+			// provider 已经把客户端 input 作为新的历史根发送给上游；
+			// 这里必须按 conversation 找到旧 session，再原子替换其内容。
+			sessionLookupPreviousResponseID = ""
+		}
+		sess, err := sessionManager.GetOrCreateSessionForConversation(sessionLookupPreviousResponseID, conversationID)
 		if err == nil {
 			previousResponseID := sess.LastResponseID
 			compactionRoot := utils.ResponsesItemsContainCompactionFromInput(originalReq.Input)
@@ -223,7 +227,7 @@ func handleSuccess(
 				// session，下一轮转换仍会迅速恢复到旧上下文长度。
 				commitErr = sessionManager.CommitTurn(sess.ID, turnItems, sessionTokens,
 					utils.DetectImageContent(originalRequestJSON), responsesResp.ID)
-			} else if c.GetBool(utils.ContextKeyResponsesPreviousIDDropped) {
+			} else if c.GetBool(utils.ContextKeyResponsesHistoryBoundary) {
 				commitErr = sessionManager.ReplaceSessionAfterBoundary(sess.ID, turnItems,
 					utils.DetectImageContent(originalRequestJSON), responsesResp.ID)
 			} else {
@@ -233,9 +237,9 @@ func handleSuccess(
 			if err := commitErr; err != nil {
 				return nil, fmt.Errorf("持久化 Responses 会话轮次失败: %w", err)
 			}
-			if compactionRoot {
-				// compaction 成功后，Messages→Responses 的旧链也必须失效；
-				// 否则下一轮仍可能携带压缩前的 previous_response_id。
+			if compactionRoot || c.GetBool(utils.ContextKeyResponsesHistoryBoundary) {
+				// 压缩或客户端历史替换成功后，Messages→Responses 的旧链也必须
+				// 失效；否则下一轮仍可能携带压缩前的 previous_response_id。
 				session.DefaultResponseChainManager().Clear(conversationID)
 			}
 
@@ -256,6 +260,9 @@ func handleSuccess(
 		// 继续交给 Cursor，否则客户端下一轮会重新走旧服务端会话。
 		clearResponsesPreviousIDs(responsesResp)
 	}
+	// 只有本地 session 成功写入新 response ID 后才更新 conversation alias，
+	// 避免持久化失败时 registry 先暴露一个不可恢复的外部边界。
+	proxycore.AssociateConversationExternalID(channelScheduler, conversationID, scheduler.ChannelKindResponses, responsesResp.ID)
 
 	utils.ForwardResponseHeaders(resp.Header, c.Writer)
 	proxycore.MarkRequestLogFirstToken(c)

@@ -16,6 +16,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ResponsesProvider Responses API 提供商
@@ -32,6 +33,7 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 	// 同一请求可能在多个渠道/Key 间 failover；不能让前一个候选设置的
 	// “已移除 previous_response_id”状态污染后续候选。
 	c.Set(utils.ContextKeyResponsesPreviousIDDropped, false)
+	c.Set(utils.ContextKeyResponsesHistoryBoundary, false)
 	// 1. 读取原始请求体
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -52,16 +54,28 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 		model := config.ResolveUpstreamModel(responsesReq.Model, upstream)
 		targetModel = model
 		isStream = converters.ResponsesRequestStream(bodyBytes)
+		historyBoundary := responsesRequestStartsNewHistoryBoundary(&responsesReq)
+		effectiveRequest := responsesReq
+		effectiveBody := bodyBytes
+		if historyBoundary {
+			c.Set(utils.ContextKeyResponsesHistoryBoundary, true)
+			c.Set(utils.ContextKeyResponsesPreviousIDDropped, true)
+			effectiveRequest.PreviousResponseID = ""
+			effectiveBody, err = removeResponsesPreviousResponseID(bodyBytes)
+			if err != nil {
+				return nil, bodyBytes, err
+			}
+		}
 		conversationValue, _ := c.Get(utils.ContextKeyConversationUserID)
 		conversationID, _ := conversationValue.(string)
 		var sess *session.Session
-		if p.SessionManager != nil && strings.TrimSpace(responsesReq.PreviousResponseID) != "" {
-			sess, err = p.SessionManager.GetOrCreateSessionForConversation(responsesReq.PreviousResponseID, conversationID)
+		if p.SessionManager != nil && strings.TrimSpace(effectiveRequest.PreviousResponseID) != "" {
+			sess, err = p.SessionManager.GetOrCreateSessionForConversation(effectiveRequest.PreviousResponseID, conversationID)
 			if err != nil {
 				return nil, bodyBytes, fmt.Errorf("获取 Responses 透传会话失败: %w", err)
 			}
 		}
-		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, model, bodyBytes, isStream, sess, &responsesReq, upstream)
+		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, model, effectiveBody, isStream, sess, &effectiveRequest, upstream)
 		if err != nil {
 			return nil, bodyBytes, err
 		}
@@ -69,6 +83,7 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 			strings.TrimSpace(responsesReq.PreviousResponseID) != "" &&
 			gjson.GetBytes(reqBody, "previous_response_id").String() == "" {
 			c.Set(utils.ContextKeyResponsesPreviousIDDropped, true)
+			c.Set(utils.ContextKeyResponsesHistoryBoundary, true)
 		}
 	} else {
 		var responsesReq types.ResponsesRequest
@@ -80,17 +95,38 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 
 		conversationValue, _ := c.Get(utils.ContextKeyConversationUserID)
 		conversationID, _ := conversationValue.(string)
+		historyBoundary := responsesRequestStartsNewHistoryBoundary(&responsesReq)
+		effectiveRequest := responsesReq
+		effectiveBody := bodyBytes
+		if historyBoundary {
+			c.Set(utils.ContextKeyResponsesHistoryBoundary, true)
+			c.Set(utils.ContextKeyResponsesPreviousIDDropped, true)
+			effectiveRequest.PreviousResponseID = ""
+			effectiveBody, err = removeResponsesPreviousResponseID(bodyBytes)
+			if err != nil {
+				return nil, bodyBytes, err
+			}
+		}
 		// 获取或创建会话
-		sess, err := p.SessionManager.GetOrCreateSessionForConversation(responsesReq.PreviousResponseID, conversationID)
+		var sess *session.Session
+		if p.SessionManager == nil {
+			return nil, bodyBytes, fmt.Errorf("Responses 会话管理器未初始化")
+		}
+		sess, err = p.SessionManager.GetOrCreateSessionForConversation(effectiveRequest.PreviousResponseID, conversationID)
 		if err != nil {
 			return nil, bodyBytes, fmt.Errorf("获取会话失败: %w", err)
 		}
+		if historyBoundary {
+			// 当前 input 已经是客户端提供的新历史根；旧 session 只用于
+			// 响应完成后替换本地状态，不能参与本次上游请求转换。
+			sess = nil
+		}
 
 		// 模型重定向
-		responsesReq.Model = config.ResolveUpstreamModel(responsesReq.Model, upstream)
-		targetModel = responsesReq.Model
+		effectiveRequest.Model = config.ResolveUpstreamModel(effectiveRequest.Model, upstream)
+		targetModel = effectiveRequest.Model
 
-		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, responsesReq.Model, bodyBytes, responsesReq.Stream, sess, &responsesReq, upstream)
+		reqBody, err = converters.ConvertResponsesRequestToUpstream(upstream.ServiceType, effectiveRequest.Model, effectiveBody, effectiveRequest.Stream, sess, &effectiveRequest, upstream)
 		if err != nil {
 			return nil, bodyBytes, err
 		}
@@ -125,6 +161,25 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 	req.Header.Set("Content-Type", "application/json")
 
 	return req, bodyBytes, nil
+}
+
+func responsesRequestStartsNewHistoryBoundary(req *types.ResponsesRequest) bool {
+	if req == nil {
+		return false
+	}
+	return utils.ResponsesItemsContainCompactionFromInput(req.Input) ||
+		converters.ResponsesInputCarriesOwnHistory(req.Input)
+}
+
+func removeResponsesPreviousResponseID(bodyBytes []byte) ([]byte, error) {
+	if !gjson.GetBytes(bodyBytes, "previous_response_id").Exists() {
+		return bodyBytes, nil
+	}
+	trimmed, err := sjson.DeleteBytes(bodyBytes, "previous_response_id")
+	if err != nil {
+		return nil, fmt.Errorf("删除 Responses previous_response_id 失败: %w", err)
+	}
+	return trimmed, nil
 }
 
 // buildTargetURL 根据上游类型构建目标 URL
