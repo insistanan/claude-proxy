@@ -13,7 +13,8 @@
 
 - 认证：代理端点总是 经 `ProxyAuthMiddleware` 校验（在 `RunProxyRequest` 第一步）；除 `/health` 外绝不 存在匿名业务端点。生产环境必须设强 `PROXY_ACCESS_KEY`。
 - 渠道与管理：五协议的渠道/key CRUD + Ping 总是 复用 `core/channelcrud`；绝不 在协议 handler 里再写一套渠道增删改。
-- 调度：渠道选择总是 走 `ChannelScheduler`（顺序：对话路由覆盖 → 促销 → Trace 亲和 → 自适应 → 按优先级降级，过滤熔断/挂起渠道）；handler 绝不 自行挑选渠道。
+- 调度：渠道选择总是 走 `ChannelScheduler`（顺序：对话路由覆盖 → 按配置顺序选择渠道 → 过滤熔断/挂起渠道）；handler 绝不 自行挑选渠道。
+- 故障转移顺序：生产请求在命中渠道池内总是先尝试配置顺序第一的渠道，失败后才依次推进到下一个渠道，再进入兜底分组；促销、亲和、自适应评分、in-flight 负载和稳定散列绝不 改写该顺序。模型映射目标数组同理，首个目标失败后才尝试后续目标。
 - 内容安全：钩子管线总是 注入 messages/responses/chat/gemini/images 五协议；新增协议入口必须在 `ProtocolSpec.HookPipeline` 接线并在 `extractSafetySegments` 登记提取器（未登记会显式报错，绝不静默放行），绝不 绕过管线直通。白名单放行只作用于 `tool_result` / `tool_argument` 来源且工具名命中 `ContentSafetyConfig.Whitelist.ToolNames` 的片段；放行**不是静默**，总写一条 `BlockTypeWhitelist` 审计事件到 blocked_store，让拦截记录页可见"已放行"条目。
 - 内容安全流式拦截：`WriteAttachedStreamError` / `WriteAttachedStreamHookError` 写完 error SSE 事件后**必须**补发该协议的流终止序列（messages 发 `message_stop`，responses 发 `response.completed` + ``，chat 发 `data: [DONE]`）。不补终止序列客户端 agent 会一直等 `message_stop`，表现为"卡死、无法中断对话"。
 - multipart 请求体：读写一律走 `utils` 的 `MultipartBoundary` / `ParseMultipartParts` / `EncodeMultipartParts` / `ReadMultipartTextFields`；重新编码后**必须**把 `EncodeMultipartParts` 返回的 Content-Type 同步到请求头——沿用旧 boundary 的上游会读到空表单。

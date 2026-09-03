@@ -34,19 +34,14 @@
 
 ```
 1. 对话路由覆盖（Route Override）— 最高优先级，冲突 409
-2. 促销渠道（Promotion）— 促销期内 + 次数配额
-3. 对话级亲和（Conversation Affinity）— 同一对话复用最近成功渠道（粘滞），
-   仅当渠道健康且 in-flight ≤ affinityLoadThreshold(=3) 时沿用；过载/不健康/失败则放行
-4. 自适应调度 + 对话稳定散列（同优先级/评分接近候选间按 conversationID 稳定散列分布，
-   让不同对话固定摊到不同供应商，而非都选当前负载最低）
-5. 用户级 Trace 亲和（兜底）— 同 userID+kind 绑定 channelIndex，用于尚无对话级亲和的"新对话"
-6. 按优先级降级（同优先级选 in-flight 最低）
-7. 失败率最低的降级
-以上各步均过滤熔断/挂起渠道；渠道内多 BaseURL 按 urlhealth 延迟排序。
+2. 当前命中渠道池内按配置优先级选择第一个可用渠道
+3. 当前渠道失败后，按同一池的配置顺序依次选择下一个渠道
+4. 命中渠道池全部不可用后进入兜底分组，并按兜底分组配置顺序尝试
+仍过滤熔断/挂起渠道，渠道内多 BaseURL 按 urlhealth 延迟排序。
 ```
 
-对话级亲和来源：成功请求经 `MarkConversationSuccess` 写入 conversation `Record.LastResolved`。
-负载未过载时沿用命中渠道满足"同一对话不来回乱切"；过载则让负载均衡按散列摊开，兼顾分布。
+模型映射目标列表同样遵循显式顺序：管理端 `ModelMappingEditor` 支持拖拽
+`modelMapping[source]`，请求先尝试第一个目标模型，失败后才尝试后续目标。
 
 ## F2 视觉旁路（最不透明的链路段）
 

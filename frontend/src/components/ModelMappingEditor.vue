@@ -11,6 +11,7 @@
     <v-card-text class="pt-2">
       <div class="text-body-2 text-medium-emphasis mb-4">
         {{ hint }}
+        <div class="text-caption mt-1">目标模型按列表顺序尝试；拖动左侧手柄可调整优先级。</div>
       </div>
 
       <!-- 现有映射列表 -->
@@ -34,17 +35,28 @@
                   <v-icon size="small" color="primary">mdi-arrow-right</v-icon>
                   <v-chip size="x-small" color="info" variant="tonal">{{ targets.length }} 个备选</v-chip>
                 </div>
-                <div class="d-flex flex-wrap ga-1 mt-1">
-                  <v-chip
-                    v-for="target in targets"
-                    :key="`${source}:${target}`"
-                    size="x-small"
-                    closable
-                    @click:close.stop="removeTarget(source, target)"
-                  >
-                    <code class="text-caption">{{ target }}</code>
-                  </v-chip>
-                </div>
+                <draggable
+                  :list="targets"
+                  :item-key="getTargetKey"
+                  handle=".mapping-target-drag-handle"
+                  class="d-flex flex-wrap ga-1 mt-1"
+                  :animation="150"
+                  ghost-class="mapping-target-ghost"
+                  @change="reorderTargets(source, targets)"
+                >
+                  <template #item="{ element: target }">
+                    <v-chip
+                      size="x-small"
+                      closable
+                      @click:close.stop="removeTarget(source, target)"
+                    >
+                      <v-icon size="12" class="mapping-target-drag-handle mr-1" title="拖拽调整优先级">
+                        mdi-drag-vertical
+                      </v-icon>
+                      <code class="text-caption">{{ target }}</code>
+                    </v-chip>
+                  </template>
+                </draggable>
               </div>
             </v-list-item-title>
             <template #append>
@@ -113,7 +125,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
+import draggable from 'vuedraggable'
 
 const props = defineProps<{
   modelValue: Record<string, string[]>
@@ -132,7 +145,6 @@ const localSource = ref('')
 const localTarget = ref('')
 const fetchingModels = ref(false)
 const fetchError = ref('')
-const hasFetchedModels = ref(false)
 
 const existingTargets = computed(() => {
   const src = getStringValue(localSource.value)
@@ -162,10 +174,11 @@ const getStringValue = (val: unknown): string => {
   return ''
 }
 
+const getTargetKey = (target: string): string => target
+
 const fetchModels = () => {
   const src = getStringValue(localSource.value)
   if (src) {
-    hasFetchedModels.value = true
     emit('fetch-models', src)
   }
 }
@@ -195,6 +208,11 @@ const removeTarget = (source: string, target: string) => {
   emit('update:modelValue', updated)
 }
 
+const reorderTargets = (source: string, targets: string[]) => {
+  const updated = { ...props.modelValue, [source]: [...targets] }
+  emit('update:modelValue', updated)
+}
+
 const removeSource = (source: string) => {
   const updated = { ...props.modelValue }
   delete updated[source]
@@ -204,3 +222,17 @@ const removeSource = (source: string) => {
 // Expose fetch state for parent control
 defineExpose({ fetchingModels, fetchError })
 </script>
+
+<style scoped>
+.mapping-target-drag-handle {
+  cursor: grab;
+}
+
+.mapping-target-drag-handle:active {
+  cursor: grabbing;
+}
+
+.mapping-target-ghost {
+  opacity: 0.45;
+}
+</style>

@@ -88,12 +88,11 @@ func (s *ChannelScheduler) GetChannelInFlight(kind ChannelKind, channelIndex int
 	return 0
 }
 
-// SelectChannel 选择最佳渠道
-// 优先级: 对话路由覆盖 > 促销期渠道（忽略亲和） > 对话级亲和（粘滞，负载未过载时沿用）
+// SelectChannel 按配置的故障转移顺序选择渠道。
+// 优先级: 对话路由覆盖 > 当前分组中按顺序排列的第一个可用渠道 > 兜底分组。
 //
-//	> 自适应 + 对话散列（同优先级/评分接近候选间按稳定散列分摊） > 用户级 Trace 亲和（兜底） > 按优先级降级
-//
-// 同一协议下并发新对话会尽量分摊到不同供应商，同时仍遵循优先级、健康与促销规则。
+// 渠道顺序是显式配置，不再由促销、对话亲和、自适应评分、负载或稳定散列改写。
+// 这样每个请求都会先尝试第一个渠道，只有该渠道失败后才进入下一个渠道。
 //
 // 图片不参与选渠：是否直接处理图片或启用图片理解层，由被选中渠道的配置在
 // 请求发送前决定（见 prepareRequestForUpstream → visionlayer.PrepareRequest）。
@@ -123,7 +122,7 @@ func (s *ChannelScheduler) SelectChannel(
 	}
 
 	// 严格按“命中分组 -> 兜底分组”的顺序选择。只有前一分组没有可实际尝试的渠道时，
-	// 才进入下一分组，避免兜底分组中的促销或低负载渠道抢占正常模型路由。
+	// 才进入下一分组，避免兜底分组中的渠道抢占正常模型路由。
 	poolIDs := make([]string, 0, len(poolRoute))
 	for _, pool := range poolRoute {
 		poolIDs = append(poolIDs, pool.ID)
@@ -153,17 +152,9 @@ func (s *ChannelScheduler) SelectChannel(
 	// 图片不参与选渠：是否直接处理图片或启用图片理解层，由被选中渠道的配置在
 	// 请求发送前决定（见 prepareRequestForUpstream → visionlayer.PrepareRequest）。
 
-	// 获取对应类型的指标管理器
-	metricsManager := s.getMetricsManager(kind)
-
 	if selected, hasOverride, err := s.selectConversationRouteOverride(conversationID, kind, routedChannels, failedChannels, registry); err != nil {
 		return nil, err
 	} else if hasOverride {
-		return s.reserveAndReturn(selected, kind), nil
-	}
-
-	// 1. 检查当前分组的促销渠道（促销期优先，忽略 Trace 亲和性；同优先级内按在途负载分摊）
-	if selected := s.selectPromotedChannel(activeChannels, failedChannels, kind, "promotion_priority"); selected != nil {
 		return s.reserveAndReturn(selected, kind), nil
 	}
 
@@ -171,30 +162,14 @@ func (s *ChannelScheduler) SelectChannel(
 		return nil, noActiveChannelError(kind)
 	}
 
-	// 2. 对话级亲和（粘滞：多轮会话复用最近成功的渠道；负载未过载时才沿用，
-	//    过载则放行给负载均衡处理。用于"不来回乱切"）
-	if selected := s.selectConversationAffinity(activeChannels, failedChannels, kind, conversationID, metricsManager); selected != nil {
+	// 严格按配置优先级选择第一个可用渠道。failedChannels 只记录本次请求已经
+	// 失败的渠道，因此外层 failover 会自然推进到下一个渠道。
+	if selected := s.selectPriorityChannel(activeChannels, failedChannels, kind, requestedModel, s.getMetricsManager(kind)); selected != nil {
 		return s.reserveAndReturn(selected, kind), nil
 	}
 
-	// 3. 尝试使用自适应调度器（基于性能画像 + 在途预留；同优先级/评分接近候选间
-	//    按对话稳定散列分摊，让不同对话固定摊到不同供应商）
-	if selected := s.selectAdaptiveChannel(activeChannels, failedChannels, kind, requestedModel, conversationID, metricsManager); selected != nil {
-		return s.reserveAndReturn(selected, kind), nil
-	}
-
-	// 4. 会话级 Trace 亲和（兜底：同一会话尚无对话级亲和时，沿用既有偏好渠道）
-	if selected := s.selectTraceAffinity(activeChannels, failedChannels, kind, conversationID, metricsManager); selected != nil {
-		return s.reserveAndReturn(selected, kind), nil
-	}
-
-	// 5. 按优先级遍历活跃渠道（降级方案）
-	// 同优先级内收集候选，再按 in-flight 选负载最低者，避免并发新对话全打到第一家供应商。
-	if selected := s.selectPriorityChannel(activeChannels, failedChannels, kind, requestedModel, metricsManager); selected != nil {
-		return s.reserveAndReturn(selected, kind), nil
-	}
-
-	// 6. 当前分组所有健康渠道都失败，选择失败率最低的作为降级
+	// 当前分组没有健康渠道时，保留最后的探测候选，让熔断恢复探测和历史配置
+	// 仍能正常工作；该候选同样由 failedChannels 排除。
 	fallback, err := s.selectFallbackChannel(activeChannels, failedChannels, kind)
 	if err != nil {
 		return nil, err
@@ -496,15 +471,11 @@ func (s *ChannelScheduler) selectPriorityChannel(
 	if len(samePriorityCandidates) == 0 {
 		return nil
 	}
+	// 同一优先级也保持配置顺序，不再按 in-flight 或动态评分选择，避免请求
+	// 在多个渠道之间随机分散。reorder 接口会为每个分组写入连续优先级，
+	// 因此这里的第一个候选就是本次应该优先尝试的渠道。
 	best := samePriorityCandidates[0]
 	bestLoad := s.GetChannelInFlight(kind, best.channel.Index)
-	for _, candidate := range samePriorityCandidates[1:] {
-		candidateLoad := s.GetChannelInFlight(kind, candidate.channel.Index)
-		if candidateLoad < bestLoad || (candidateLoad == bestLoad && candidate.channel.Index < best.channel.Index) {
-			best = candidate
-			bestLoad = candidateLoad
-		}
-	}
 	prefix := kindSchedulerLogPrefix(kind)
 	log.Printf("[%s-Channel] 选择渠道: [%d] %s (配置优先级: %d, 动态分数: %.1f, inFlight: %d, samePriorityCandidates: %d)",
 		prefix, best.channel.Index, best.upstream.Name, best.channel.Priority, best.channel.Score, bestLoad, len(samePriorityCandidates))
@@ -612,20 +583,15 @@ func (s *ChannelScheduler) findPromotedChannels(activeChannels []ChannelInfo, ki
 	return promoted
 }
 
-// selectFallbackChannel 选择降级渠道（失败率最低的；同失败率时优先 in-flight 更低的）
+// selectFallbackChannel 在正常候选都被健康检查过滤后，按配置顺序选择首个
+// 可探测渠道。这里不能再按失败率或负载择优，否则会绕过用户指定的故障转移顺序。
 func (s *ChannelScheduler) selectFallbackChannel(
 	activeChannels []ChannelInfo,
 	failedChannels map[int]bool,
 	kind ChannelKind,
 ) (*SelectionResult, error) {
-	metricsManager := s.getMetricsManager(kind)
-	var bestChannel *ChannelInfo
-	var bestUpstream *config.UpstreamConfig
-	bestFailureRate := float64(2) // 初始化为不可能的值
-	bestLoad := int64(1 << 62)
-
-	for i := range activeChannels {
-		ch := &activeChannels[i]
+	for _, channel := range activeChannels {
+		ch := &channel
 		if failedChannels[ch.Index] {
 			continue
 		}
@@ -639,26 +605,11 @@ func (s *ChannelScheduler) selectFallbackChannel(
 			continue
 		}
 
-		failureRate := metricsManager.CalculateChannelFailureRate(upstream.BaseURL, upstream.APIKeys, ch.Index)
-		load := s.GetChannelInFlight(kind, ch.Index)
-		if failureRate < bestFailureRate ||
-			(failureRate == bestFailureRate && load < bestLoad) ||
-			(failureRate == bestFailureRate && load == bestLoad && bestChannel != nil && ch.Index < bestChannel.Index) ||
-			(failureRate == bestFailureRate && load == bestLoad && bestChannel == nil) {
-			bestFailureRate = failureRate
-			bestLoad = load
-			bestChannel = ch
-			bestUpstream = upstream
-		}
-	}
-
-	if bestChannel != nil && bestUpstream != nil {
 		prefix := kindSchedulerLogPrefix(kind)
-		log.Printf("[%s-Fallback] 警告: 降级选择渠道: [%d] %s (失败率: %.1f%%, inFlight: %d)",
-			prefix, bestChannel.Index, bestUpstream.Name, bestFailureRate*100, bestLoad)
+		log.Printf("[%s-Fallback] 警告: 按配置顺序选择探测渠道: [%d] %s", prefix, ch.Index, ch.Name)
 		return &SelectionResult{
-			Upstream:     bestUpstream,
-			ChannelIndex: bestChannel.Index,
+			Upstream:     upstream,
+			ChannelIndex: ch.Index,
 			Reason:       "fallback",
 		}, nil
 	}

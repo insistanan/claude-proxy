@@ -1,5 +1,5 @@
 // 本文件是单渠道内"模型映射层"故障转移的入口：把请求模型解析成候选上游模型序列
-// （多候选按性能画像排序，AllowModelFailover 为假时只保留首个），逐个交给
+// （多候选按 modelMapping 的显式数组顺序，AllowModelFailover 为假时只保留首个），逐个交给
 // Key/BaseURL 层循环（upstream_attempt_keys.go）尝试。
 // 附带 BaseURL 候选列表的构造（BuildDefaultURLResults）与对话粘性偏好
 // （preferConversationBaseURL）。
@@ -8,8 +8,6 @@ package proxycore
 import (
 	"context"
 	"log"
-	"sort"
-	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
@@ -33,8 +31,6 @@ func (a UpstreamAttempt) tryWithModelMappingFailover() UpstreamAttemptResult {
 	}
 	if !a.AllowModelFailover && len(targetModels) > 1 {
 		targetModels = targetModels[:1]
-	} else {
-		targetModels = rankTargetModelsForChannel(a.ChannelScheduler, a.Upstream, targetModels, a.URLResults, a.LogContext.ChannelIndex)
 	}
 
 	// 如果只有一个目标模型，直接调用原有逻辑
@@ -96,66 +92,6 @@ func (a UpstreamAttempt) tryWithModelMappingFailover() UpstreamAttemptResult {
 	// 所有模型都失败
 	log.Printf("[%s-ModelMapping] 所有 %d 个备选模型都失败", a.APIType, len(targetModels))
 	return newUpstreamAttemptResult(false, "", 0, lastFailoverError, nil, lastErr)
-}
-
-func rankTargetModelsForChannel(
-	channelScheduler *scheduler.ChannelScheduler,
-	upstream *config.UpstreamConfig,
-	targetModels []string,
-	urlResults []urlhealth.URLLatencyResult,
-	channelIndex int,
-) []string {
-	if len(targetModels) <= 1 || channelScheduler == nil || upstream == nil {
-		return targetModels
-	}
-	pm := channelScheduler.GetProfileManager()
-	if pm == nil {
-		return targetModels
-	}
-
-	baseURLs := make([]string, 0, len(urlResults))
-	for _, result := range urlResults {
-		if strings.TrimSpace(result.URL) != "" {
-			baseURLs = append(baseURLs, result.URL)
-		}
-	}
-	if len(baseURLs) == 0 {
-		baseURLs = upstream.GetAllBaseURLs()
-	}
-
-	type rankedModel struct {
-		model          string
-		originalIndex  int
-		healthScore    float64
-		activeRequests int64
-	}
-
-	ranked := make([]rankedModel, 0, len(targetModels))
-	for i, model := range targetModels {
-		snapshot := pm.GetAggregateProfileSnapshot(baseURLs, upstream.APIKeys, model, channelIndex)
-		ranked = append(ranked, rankedModel{
-			model:          model,
-			originalIndex:  i,
-			healthScore:    snapshot.HealthScore,
-			activeRequests: snapshot.ActiveRequests,
-		})
-	}
-
-	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].healthScore == ranked[j].healthScore {
-			if ranked[i].activeRequests == ranked[j].activeRequests {
-				return ranked[i].originalIndex < ranked[j].originalIndex
-			}
-			return ranked[i].activeRequests < ranked[j].activeRequests
-		}
-		return ranked[i].healthScore > ranked[j].healthScore
-	})
-
-	ordered := make([]string, 0, len(ranked))
-	for _, item := range ranked {
-		ordered = append(ordered, item.model)
-	}
-	return ordered
 }
 
 func preferConversationBaseURL(

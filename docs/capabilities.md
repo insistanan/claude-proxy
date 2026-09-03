@@ -10,10 +10,10 @@
 |---|---|---|
 | 渠道 CRUD / key 管理 / Ping | `core/channelcrud` | 五协议共享单份实现；新增协议只需填 Ops 并注册 |
 | 渠道路由注册 | `handlers.RegisterChannelRoutes` | main.go 按 `ChannelKind` 声明式注册 |
-| 渠道选择（过滤熔断） | `scheduler.ChannelScheduler.SelectChannel` / `ReserveChannel` | 顺序：对话路由覆盖 → 促销 → 对话级亲和（粘滞，in-flight ≤ 3 才沿用） → 自适应 + 对话稳定散列（同优先级/评分接近候选间按 conversationID 稳定散列分布） → 用户级 Trace 亲和（兜底） → 按优先级降级（同优先级选 in-flight 最低）；绝不自行挑渠道 |
+| 渠道选择（过滤熔断） | `scheduler.ChannelScheduler.SelectChannel` / `ReserveChannel` | 顺序：对话路由覆盖 → 当前渠道池内按配置优先级的第一个可用渠道 → 该渠道失败后依次进入下一个 → 兜底分组；促销、亲和、自适应评分和负载不改写故障转移顺序；绝不自行挑渠道 |
 | 上游失败是否值得重试（状态码分类 + 不可重试错误码） | `utils.ClassifyUpstreamStatus` / `utils.IsNonRetryableUpstreamErrorBody` / `utils.IsContentPolicyErrorBody`（另有 `IsNonRetryableUpstreamErrorCode` / `IsContentPolicyErrorCode` 收裸错误码） | 主链路 `proxycore.ShouldRetryWithNextKey` 与 `visionlayer.shouldRetryVisionAttempt` 的共同底座。**两层判断缺一不可**：状态码可重试不代表值得重试，响应体里的内容审核 / 请求内容非法错误码一票否决——只看状态码会对审核类 403 轮询所有 Key 空转，并把无辜 Key 标记为失败。`handlers/proxycore` 依赖 `visionlayer`，谓词只能放 utils（放 proxycore 会成循环依赖）。契约由 `utils/upstream_error_test.go` + `visionlayer/vision_layer_test.go:TestShouldRetryVisionAttemptSkipsNonRetryableBody` 锁定 |
 | 跨渠道 failover | `proxycore.HandleMultiChannelFailover` | 候选渠道逐个尝试，含视觉渠道选择 |
-| 单渠道内 key/URL/模型映射重试 | `proxycore.UpstreamAttempt{...}.TryWithModelMappingFailover()` | key 轮换 + 模型映射变更后重试同一循环；结果读 `UpstreamAttemptResult` 命名字段。19 参数的 legacy 长参数入口（`TryUpstreamWithModelMappingFailover` / `TryUpstreamWithAllKeys`）已删除，别再按位置返回值调用 |
+| 单渠道内 key/URL/模型映射重试 | `proxycore.UpstreamAttempt{...}.TryWithModelMappingFailover()` | key 轮换 + 按 `modelMapping` 数组原顺序尝试目标模型；拖拽后的第一个目标模型优先，失败后才尝试下一个。结果读 `UpstreamAttemptResult` 命名字段。19 参数的 legacy 长参数入口（`TryUpstreamWithModelMappingFailover` / `TryUpstreamWithAllKeys`）已删除，别再按位置返回值调用 |
 | 请求体读取 / 放回 | `proxycore.ReadRequestBody` / `RestoreRequestBody` | 大小上限走 env `MAX_REQUEST_BODY_SIZE_MB` |
 | 上游请求发送 | `proxycore.SendRequest` | 统一超时/代理/认证头 |
 | 加载 `.env` | `config.LoadDotEnv` | 先 exe 同目录再 cwd；不覆盖已有环境变量。`main.go` 唯一入口，禁止再写 `godotenv.Load()` |
@@ -44,8 +44,8 @@
 | Responses 续接边界判定（链与完整历史互斥） | `converters.trimResponsesPassthroughInput` + `responsesRawItemsCarryOwnHistory` / `looksLikeResponsesFullReplay` | 官方只承认两种续接：完整历史作为 input，或只发新增输入并用 `previous_response_id` 链接；两者同时到达上游，同一段历史会被按两次语义纳入。能比对前缀就裁掉 input 里已在链上的前缀；比不了时（本地 session 因重启 / TTL / LRU 驱逐为空、扩展 item 下标对不齐、前缀不匹配）按 input 自身形态判定——出现 developer/system 会话根，或首项是 user 且后面还有 assistant 侧产出，则删链按完整历史建新边界，否则保留链。绝不同时删链又裁 input。删链后 `providers/responses.go` 置 `ContextKeyResponsesPreviousIDDropped`，session 侧走 `ReplaceSessionAfterBoundary`。契约由 `converters/responses_passthrough_trim_test.go` 锁定 |
 | Trace 亲和（同用户绑同渠道） | `session.TraceAffinityManager` | 经 scheduler 的 `SetTraceAffinityForKind` 入口（messages 专用旧入口与 Update 入口已作死代码删除） |
 | 对话注册 / 路由覆盖 | `conversation.Registry` | scheduler 注入；冲突校验 `ValidateFixedChannel`，调度时优先级最高 |
-| 对话级亲和（粘滞，负载感知） | `scheduler.ChannelScheduler.selectConversationAffinity` / `GetConversationLastResolved` | 同一对话复用最近成功渠道（`Record.LastResolved`，经 `MarkConversationSuccess` 写入）；渠道健康且 in-flight ≤ 3 才沿用，过载/失败/不可用则放行给负载均衡 |
-| 对话稳定散列分摊 | `adaptiveScheduler.stableHashOffset` + `selectFromGroup` | 同优先级/评分接近候选间按 conversationID 的 FNV-1a 散列做确定性偏移，让不同对话固定摊到不同供应商，而非都选当前负载最低 |
+| 对话级亲和记录 | `scheduler.ChannelScheduler.GetConversationLastResolved` / `MarkConversationSuccess` | 保留最近成功渠道用于会话观测；当前生产渠道选择不读取该记录，避免覆盖显式故障转移顺序 |
+| 性能画像 | `scheduler.AdaptiveScheduler` / `metrics.ProfileManager` | 继续记录渠道性能与负载观测；当前生产渠道选择不使用动态评分或稳定散列改写配置顺序 |
 | 请求成败/用量记录 | `scheduler.RecordRequest*` / `RecordSuccess*` / `RecordFailure` | 按 kind 分发至对应 MetricsManager；勿直接建 |
 | 取用指标管理器 | `scheduler.ChannelScheduler.MetricsManager(kind)` | 五协议各一份实例的唯一取用入口；按协议命名的 `GetXxxMetricsManager()` 薄壳已删除，调用侧不要按 kind 分支 |
 | 熔断判定 | `metrics.MetricsManager.ShouldSuspendKey(baseURL, apiKey, kind)` | 滑动窗口失败率阈值；注意方法名是 `ShouldSuspendKey` |
@@ -71,6 +71,7 @@
 | 评测工作台 API | `services/api.ts` 的 `listEval*` / `startEvalRun` / `getEvalLatestMap` / `putEvalWatch` / `streamEvalRun` | 评测不是 ChannelKind，不走 `channelApiByType`。`/eval` 页用工厂拉四协议渠道。`listEvalRuns({ channelId, limit })` 对应 `GET /api/eval/runs?channel=&limit=`：渠道行深链（`/eval?channel=<uuid>`）必须带 channelId 取数，只靠前端过滤会拿全局最近 30 条去筛，该渠道的老批次会假装"没有记录" |
 | 评测结论文案 / 颜色 / 时间 / SVG 预览 | `utils/eval.ts` | 渠道行块、矩阵、结果抽屉共用一份映射。相对时间走 `evalAgoLabel`（超 30 天退回绝对时间），绝对时间走 `evalFormatTime`。上游 SVG 只经 `evalSvgPreviewUrl` 走 `<img src="data:...">` |
 | 渠道模型映射摘要展示 | `components/ChannelMappingBlock.vue` | 渠道行副行 / 备用资源池 / 弃用池共用；预览截断、代表条挑选、全量 tooltip 全在组件内，`previewLimit` 控制宽窄。禁止再在渠道页各处手写映射 chip |
+| 渠道模型映射排序 | `components/ModelMappingEditor.vue` | 目标模型列表支持拖拽排序，排序结果沿用 `modelMapping[source]` 数组顺序持久化；第一个目标模型是首选，后续目标仅在前一个失败后尝试 |
 | 「标签 + 值」元信息块外形 | `assets/style.css` 的 `.meta-block` 系列 | 渠道行副行的映射块与评测块共用基类（含 `-icon/-label/-value/-badge/-time/-go` 子类）；新增同形块套类名即可，别在各自 scoped 里再抄一份 |
 | 评测页交互块 | `components/EvalChannelPicker` / `EvalMatrix` / `EvalResultDrawer` / `EvalProbeManager` | 分组勾选、协议分组矩阵、格子抽屉、题库逐步表单；`EvalView` 只负责取数与编排 |
 | 客户端配置"从渠道快速选择" | `composables/useChannelQuickPick.ts` | 四客户端配置页（DSH/OpenCode/ClaudeCode/PiAgent）共用；选协议→加载渠道→选渠道→回填 provider。ClaudeCode 用 `useMessagesChannelQuickPick` 固定 messages |

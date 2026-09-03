@@ -46,7 +46,7 @@ func (s *ChannelScheduler) calculateChannelScore(upstream *config.UpstreamConfig
 }
 
 // getActiveChannels 获取故障转移序列（按配置优先级排序）。
-// 动态分数只用于同优先级渠道，不能越过用户配置的 failover 顺序。
+// 动态分数只用于指标展示，不能改变用户配置的 failover 顺序。
 func (s *ChannelScheduler) getActiveChannels(kind ChannelKind, poolIDs ...string) []ChannelInfo {
 	channelsByPool := s.getActiveChannelsByPool(kind, poolIDs)
 	if len(poolIDs) == 0 {
@@ -138,13 +138,11 @@ func (s *ChannelScheduler) getActiveChannelsByPool(kind ChannelKind, poolIDs []s
 
 	for poolID := range channelsByPool {
 		channels := channelsByPool[poolID]
-		// 配置优先级是主顺序；同优先级时再参考动态分数和稳定索引。
+		// 配置优先级和配置索引共同决定故障转移顺序。动态分数只用于展示，
+		// 不能改变用户拖拽后确定的首选渠道。
 		sort.Slice(channels, func(i, j int) bool {
 			if channels[i].Priority != channels[j].Priority {
 				return channels[i].Priority < channels[j].Priority
-			}
-			if channels[i].Score != channels[j].Score {
-				return channels[i].Score > channels[j].Score
 			}
 			return channels[i].Index < channels[j].Index
 		})

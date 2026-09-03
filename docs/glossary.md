@@ -12,7 +12,7 @@
 | **渠道 CRUD 收敛** | 五协议的渠道增删改查 / key 管理 / Ping 由单份实现提供，经 `RegisterChannelRoutes` 声明式注册（替代历史五组重复实现）。 | `internal/core/channelcrud`、`internal/handlers/channel_routes.go` |
 | **API Key** | 上游认证密钥。渠道可挂多个 key，按优先级轮询，失败降级（`MoveAPIKeyToBottomForKind`）。 | `internal/config` |
 | **熔断（Circuit Breaker）** | 滑动窗口失败率超阈值后挂起渠道/key，暂停参与调度，可自动恢复也可手动重置。默认：窗口 10 次、阈值 50%、恢复 15 分钟、最小请求数保护 `max(3, windowSize/2)`。 | `internal/metrics/channel_metrics.go` |
-| **故障转移（Failover）** | key / URL / 渠道失败后按策略切换到下一候选。分两级：单渠道内重试、跨渠道转移。 | `internal/handlers/proxycore/upstream_failover.go`（模型映射层）、`upstream_attempt_keys.go`（Key/BaseURL 层）、`multi_channel_failover.go`（跨渠道） |
+| **故障转移（Failover）** | key / URL / 渠道失败后按显式顺序切换到下一候选。分三层：模型映射目标、单渠道内 Key/BaseURL、跨渠道；渠道与目标模型均先尝试列表第一项，失败后才推进。 | `internal/handlers/proxycore/upstream_failover.go`（模型映射层）、`upstream_attempt_keys.go`（Key/BaseURL 层）、`multi_channel_failover.go`（跨渠道） |
 | **Fuzzy 模式** | 对所有非 2xx 错误都触发 failover 的宽松错误处理模式。 | `config.GetFuzzyModeEnabled` |
 | **Trace 亲和性** | 同一用户/会话绑定同一渠道，保证多轮对话上下文连贯。实现按 `userID + kind` 绑定 `channelIndex`。在选渠顺序中作为**兜底**（新对话尚无对话级亲和时沿用）；对话多轮续接优先走对话级亲和。 | `internal/session/trace_affinity.go` |
 | **对话级亲和（Conversation Affinity）** | 同一**对话**复用最近一次成功命中的渠道（`Record.LastResolved`），保证多轮会话不来回乱切。粘滞带负载感知：渠道健康且 in-flight ≤ `affinityLoadThreshold`(=3) 才沿用，过载/不健康/失败则放行给负载均衡。优先级高于用户级 Trace 亲和。 | `internal/scheduler/selection.go`（`selectConversationAffinity`） |
