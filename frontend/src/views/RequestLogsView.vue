@@ -1,12 +1,15 @@
 <template>
   <div class="request-logs-view">
     <div class="logs-toolbar">
-      <div class="logs-title">
-        <v-icon size="22" color="primary">mdi-text-box-search-outline</v-icon>
-        <span>请求日志</span>
+      <v-tabs v-model="activeTab" color="primary" density="comfortable" class="logs-tabs">
+        <v-tab value="request">请求日志</v-tab>
+        <v-tab value="system">系统日志</v-tab>
+      </v-tabs>
+    </div>
+
+    <div v-show="activeTab === 'request'">
+      <div class="logs-actions mb-4">
         <v-chip size="small" variant="tonal">{{ requestLogs.length }}/50</v-chip>
-      </div>
-      <div class="logs-actions">
         <v-btn-toggle v-model="typeFilter" mandatory density="compact" variant="outlined" divided>
           <v-btn v-for="item in typeItems" :key="item.value" :value="item.value" size="small">
             {{ item.title }}
@@ -23,7 +26,6 @@
           刷新
         </v-btn>
       </div>
-    </div>
 
     <v-alert v-if="error" type="error" variant="tonal" density="compact" class="mb-4">
       {{ error }}
@@ -43,16 +45,17 @@
             <th>缓存 C/R</th>
             <th>TPM</th>
             <th>终止/失败原因</th>
+            <th class="action-column">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="10" class="text-center text-medium-emphasis py-8">
+            <td colspan="11" class="text-center text-medium-emphasis py-8">
               <v-progress-circular indeterminate size="24" width="2" color="primary" />
             </td>
           </tr>
           <tr v-else-if="requestLogs.length === 0">
-            <td colspan="10" class="text-center text-medium-emphasis py-8">暂无请求日志</td>
+            <td colspan="11" class="text-center text-medium-emphasis py-8">暂无请求日志</td>
           </tr>
           <tr v-for="log in requestLogs" :key="log.attemptId">
             <td class="text-no-wrap">{{ formatTime(log.timestamp) }}</td>
@@ -99,18 +102,39 @@
               </template>
               <span v-else class="text-medium-emphasis">--</span>
             </td>
+            <td class="action-cell">
+              <v-btn
+                size="small"
+                variant="text"
+                prepend-icon="mdi-code-braces"
+                :disabled="!log.requestId"
+                @click="openSystemLog(log.requestId)"
+              >
+                查看正文
+              </v-btn>
+            </td>
           </tr>
         </tbody>
       </v-table>
     </v-card>
+    </div>
+
+    <SystemLogsPanel
+      v-if="activeTab === 'system'"
+      :request-id="systemRequestId"
+      @select="openSystemLog"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import SystemLogsPanel from '@/components/SystemLogsPanel.vue'
 import { api, type ConversationKind, type RequestLogEntry } from '@/services/api'
 
 type TypeFilter = ConversationKind | ''
+type LogsTab = 'request' | 'system'
 
 const typeItems: Array<{ title: string; value: TypeFilter }> = [
   { title: '全部', value: '' },
@@ -125,6 +149,36 @@ const typeFilter = ref<TypeFilter>('')
 const loading = ref(false)
 const error = ref('')
 const requestLogs = ref<RequestLogEntry[]>([])
+
+const route = useRoute()
+const router = useRouter()
+
+const activeTab = computed({
+  get: (): LogsTab => (route.query.tab === 'system' ? 'system' : 'request'),
+  set: (tab: LogsTab) => {
+    const query = { ...route.query }
+    if (tab === 'system') {
+      query.tab = 'system'
+    } else {
+      delete query.tab
+      delete query.id
+    }
+    router.replace({ query })
+  }
+})
+
+const systemRequestId = computed(() => String(route.query.id || ''))
+
+const openSystemLog = (requestId: string) => {
+  if (!requestId) return
+  router.replace({
+    query: {
+      ...route.query,
+      tab: 'system',
+      id: requestId
+    }
+  })
+}
 
 const loadLogs = async () => {
   loading.value = true
@@ -233,17 +287,9 @@ onMounted(() => {
 .logs-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 16px;
   padding: 16px 0 8px;
-}
-
-.logs-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 20px;
-  font-weight: 700;
 }
 
 .logs-actions {
@@ -252,6 +298,21 @@ onMounted(() => {
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.logs-tabs {
+  flex: 0 0 auto;
+}
+
+.logs-tabs :deep(.v-tab) {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0;
+  min-width: 96px;
+}
+
+.action-cell {
+  white-space: nowrap;
 }
 
 .logs-table-card {

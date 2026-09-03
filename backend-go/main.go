@@ -264,6 +264,8 @@ func newApp() (*app, error) {
 // setupAdminAPI 注册 Web 管理界面 API 路由（/api 组）。
 func (a *app) setupAdminAPI(apiGroup *gin.RouterGroup) {
 	apiGroup.GET("/request-logs", handlers.GetRequestLogs(a.requestLogStore))
+	apiGroup.GET("/system-logs", handlers.GetSystemLogs(a.logStore))
+	apiGroup.GET("/system-logs/:requestId", handlers.GetSystemLog(a.logStore))
 	apiGroup.GET("/blocked-logs", handlers.GetBlockedLogs(a.blockedStore))
 	apiGroup.GET("/blocked-logs/:id", handlers.GetBlockedLog(a.blockedStore))
 	apiGroup.DELETE("/blocked-logs/:id", handlers.DeleteBlockedLog(a.blockedStore))

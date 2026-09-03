@@ -50,6 +50,53 @@ export interface RequestLogsResponse {
   limit: number
 }
 
+export type TrafficLogPhase = 'client_request' | 'upstream_request' | 'upstream_response' | 'stream_synth'
+
+export interface TrafficLog {
+  id?: number
+  timestamp: string
+  unixMilli?: number
+  requestId: string
+  attemptId?: string
+  phase: TrafficLogPhase | string
+  apiType?: string
+  method?: string
+  url?: string
+  statusCode?: number
+  stream?: boolean
+  headers?: string
+  body?: string
+  truncated?: boolean
+  originalBytes?: number
+}
+
+export interface SystemLogSummary {
+  requestId: string
+  timestamp: string
+  unixMilli: number
+  apiType?: string
+  phases: string[]
+  missingPhases?: string[]
+  statusCode?: number
+  stream: boolean
+  truncated: boolean
+  channelName?: string
+  model?: string
+  status?: string
+}
+
+export interface SystemLogsResponse {
+  logs: SystemLogSummary[]
+  limit: number
+}
+
+export interface SystemLogDetail {
+  requestId: string
+  summary: SystemLogSummary
+  trafficLogs: TrafficLog[]
+  requestLogs?: unknown[]
+}
+
 export type ContentSafetyAPIType = 'messages' | 'responses' | 'chat' | 'gemini'
 export type BlockedLogType = 'sensitive_word' | 'sensitive_info' | 'credential' | 'dangerous_cmd' | 'whitelist'
 

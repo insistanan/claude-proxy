@@ -60,3 +60,4 @@
 | **渠道 API 工厂** | `channelApiByType`：五协议共享同一 API 调用封装。 | `services/api.ts` |
 | **Composable** | Vue 3 组合式函数，抽取跨组件复用逻辑（自动刷新、主题、计数组件）。 | `composables/` |
 | **图标注册表（iconMap）** | mdi 图标需先在 `iconMap` 注册才能使用；`npm run check:icons` 机器校验。 | `plugins/vuetify.ts` |
+| **系统日志** | 日志页内 Tab：按 `requestId` 聚合 `traffic_logs`，展示一次打进代理的大模型请求的原请求 / 发给上游 / 上游返回。不是 `app_logs`。深链 `?tab=system&id=`。 | `views/RequestLogsView.vue`、`components/SystemLogsPanel.vue` |

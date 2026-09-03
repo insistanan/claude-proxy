@@ -63,6 +63,36 @@ type QueryOptions struct {
 	Limit     int
 }
 
+// SystemLogListOptions 是 Web 系统日志列表查询。Limit 默认 100、封顶 200。
+type SystemLogListOptions struct {
+	APIType string
+	Limit   int
+}
+
+// SystemLogSummary 是一次大模型请求的流量摘要（不含正文）。
+type SystemLogSummary struct {
+	RequestID     string   `json:"requestId"`
+	Timestamp     string   `json:"timestamp"`
+	UnixMilli     int64    `json:"unixMilli"`
+	APIType       string   `json:"apiType,omitempty"`
+	Phases        []string `json:"phases"`
+	MissingPhases []string `json:"missingPhases,omitempty"`
+	StatusCode    int      `json:"statusCode,omitempty"`
+	Stream        bool     `json:"stream"`
+	Truncated     bool     `json:"truncated"`
+	ChannelName   string   `json:"channelName,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	Status        string   `json:"status,omitempty"`
+}
+
+// SystemLogDetail 是一次请求的流量正文详情。
+type SystemLogDetail struct {
+	RequestID   string            `json:"requestId"`
+	Summary     SystemLogSummary  `json:"summary"`
+	TrafficLogs []TrafficLog      `json:"trafficLogs"`
+	RequestLogs []json.RawMessage `json:"requestLogs,omitempty"`
+}
+
 // QueryResult 是 CLI `logs query` 的 stdout JSON。
 type QueryResult struct {
 	From        string            `json:"from"`

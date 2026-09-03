@@ -43,6 +43,8 @@ import type {
   PingResult,
   RemoteSkillPreview,
   RequestLogsResponse,
+  SystemLogDetail,
+  SystemLogsResponse,
   SaveClaudeCodeSettings,
   SaveDSHSettings,
   SaveOpenCodeProvider,
@@ -340,6 +342,18 @@ class ApiService {
     if (params.limit) search.set('limit', String(params.limit))
     const query = search.toString()
     return this.request(`/request-logs${query ? `?${query}` : ''}`)
+  }
+
+  async getSystemLogs(params: { type?: ConversationKind | ''; limit?: number } = {}): Promise<SystemLogsResponse> {
+    const search = new URLSearchParams()
+    if (params.type) search.set('type', params.type)
+    if (params.limit) search.set('limit', String(params.limit))
+    const query = search.toString()
+    return this.request(`/system-logs${query ? `?${query}` : ''}`)
+  }
+
+  async getSystemLog(requestId: string): Promise<SystemLogDetail> {
+    return this.request(`/system-logs/${encodeURIComponent(requestId)}`)
   }
 
   async getBlockedLogs(params: BlockedLogFilters = {}): Promise<BlockedLogsResponse> {
