@@ -17,8 +17,129 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
+
+func TestProcessStreamEventCorrectsNestedMessageStartUsageWithoutChangingMetrics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	streamContext := NewStreamContext(&config.EnvConfig{})
+	requestBody := []byte(fmt.Sprintf(
+		`{"messages":[{"role":"user","content":%q}]}`,
+		strings.Repeat("a", 28000),
+	))
+	estimatedInputTokens := utils.EstimateRequestTokens(requestBody)
+	event := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":209736,\"output_tokens\":1}}}\n\n"
+
+	if err := ProcessStreamEvent(
+		ginContext,
+		ginContext.Writer,
+		recorder,
+		event,
+		streamContext,
+		&config.EnvConfig{},
+		requestBody,
+	); err != nil {
+		t.Fatalf("ProcessStreamEvent returned error: %v", err)
+	}
+
+	if streamContext.UpstreamUsage.InputTokens != 209736 {
+		t.Fatalf("上游指标快照应保留原值, got %d", streamContext.UpstreamUsage.InputTokens)
+	}
+	writtenEvent := recorder.Body.String()
+	writtenData, ok := ParseSSEEventData(writtenEvent)
+	if !ok {
+		t.Fatalf("客户端事件应保持可解析: %q", writtenEvent)
+	}
+	usage := writtenData["message"].(map[string]interface{})["usage"].(map[string]interface{})
+	if got := int(usage["input_tokens"].(float64)); got != estimatedInputTokens {
+		t.Fatalf("message_start 客户端 input_tokens = %d, want %d", got, estimatedInputTokens)
+	}
+}
+
+func TestSanityCheckMessageStreamUsageClearsImpossibleCacheTuple(t *testing.T) {
+	requestBody := []byte(fmt.Sprintf(
+		`{"messages":[{"role":"user","content":%q}]}`,
+		strings.Repeat("a", 28000),
+	))
+	estimatedInputTokens := utils.EstimateRequestTokens(requestBody)
+	event := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":500,\"output_tokens\":1,\"cache_read_input_tokens\":204800,\"cache_creation_input_tokens\":1000,\"cache_creation_5m_input_tokens\":400,\"cache_creation_1h_input_tokens\":600,\"cache_ttl\":\"mixed\",\"input_tokens_details\":{\"cached_tokens\":204800}}}}\n\n"
+
+	correctedEvent, changed := sanityCheckMessageStreamInputTokens(event, requestBody, false)
+	if !changed {
+		t.Fatal("不可能的缓存元组应被校正")
+	}
+	data, ok := ParseSSEEventData(correctedEvent)
+	if !ok {
+		t.Fatalf("校正后事件应保持可解析: %q", correctedEvent)
+	}
+	usage := data["message"].(map[string]interface{})["usage"].(map[string]interface{})
+	if got := int(usage["input_tokens"].(float64)); got != estimatedInputTokens {
+		t.Fatalf("input_tokens = %d, want %d", got, estimatedInputTokens)
+	}
+	for _, key := range []string{
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+		"cache_creation_5m_input_tokens",
+		"cache_creation_1h_input_tokens",
+		"cache_ttl",
+		"input_tokens_details",
+	} {
+		if _, exists := usage[key]; exists {
+			t.Fatalf("异常客户端 usage 不应保留 %s", key)
+		}
+	}
+}
+
+func TestProcessStreamEventPreservesTrustedCacheUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	requestBody := []byte(fmt.Sprintf(
+		`{"messages":[{"role":"user","content":%q}]}`,
+		strings.Repeat("a", 28000),
+	))
+	estimatedInputTokens := utils.EstimateRequestTokens(requestBody)
+	uncachedInputTokens := estimatedInputTokens - 600
+	event := fmt.Sprintf(
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":%d,\"output_tokens\":2,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":500,\"cache_creation_5m_input_tokens\":200,\"cache_creation_1h_input_tokens\":300,\"cache_ttl\":\"mixed\"}}}\n\n",
+		uncachedInputTokens,
+	)
+
+	if err := ProcessStreamEvent(
+		ginContext,
+		ginContext.Writer,
+		recorder,
+		event,
+		NewStreamContext(&config.EnvConfig{}),
+		&config.EnvConfig{},
+		requestBody,
+	); err != nil {
+		t.Fatalf("ProcessStreamEvent returned error: %v", err)
+	}
+
+	data, ok := ParseSSEEventData(recorder.Body.String())
+	if !ok {
+		t.Fatalf("客户端事件应保持可解析: %q", recorder.Body.String())
+	}
+	usage := data["message"].(map[string]interface{})["usage"].(map[string]interface{})
+	for key, want := range map[string]interface{}{
+		"input_tokens":                   float64(uncachedInputTokens),
+		"cache_read_input_tokens":        float64(100),
+		"cache_creation_input_tokens":    float64(500),
+		"cache_creation_5m_input_tokens": float64(200),
+		"cache_creation_1h_input_tokens": float64(300),
+		"cache_ttl":                      "mixed",
+	} {
+		if got := usage[key]; got != want {
+			t.Fatalf("%s = %v, want %v", key, got, want)
+		}
+	}
+}
 
 func TestStripCacheFieldsFromClaudeSSE(t *testing.T) {
 	t.Run("strips cache creation fields from nested message.usage", func(t *testing.T) {

@@ -144,7 +144,7 @@ func handleNormalResponse(
 	providers.CacheClaudeResponseReasoning(claudeResp)
 
 	// Token 补全逻辑
-	// 先保存上游 usage 快照；客户端副本后续会做缓存剥离和错报校正，不能反向
+	// 先保存上游 usage 快照；客户端副本后续会做错报校正，不能反向
 	// 污染计费、熔断与性能画像。
 	var metricsUsage *types.Usage
 	if claudeResp.Usage != nil {
@@ -166,7 +166,12 @@ func handleNormalResponse(
 		originalOutput := claudeResp.Usage.OutputTokens
 		patched := false
 
-		hasCacheTokens := claudeResp.Usage.CacheCreationInputTokens > 0 || claudeResp.Usage.CacheReadInputTokens > 0
+		hasCacheTokens := utils.AnthropicCachedInputTokens(
+			claudeResp.Usage.CacheReadInputTokens,
+			claudeResp.Usage.CacheCreationInputTokens,
+			claudeResp.Usage.CacheCreation5mInputTokens,
+			claudeResp.Usage.CacheCreation1hInputTokens,
+		) > 0
 
 		if claudeResp.Usage.InputTokens <= 1 && !hasCacheTokens {
 			claudeResp.Usage.InputTokens = utils.SafeEstimatedInputTokens(utils.EstimateRequestTokens(requestBody))
@@ -209,36 +214,35 @@ func handleNormalResponse(
 		}
 	}()
 
-	// 与流式出口 streams.StripCacheFieldsFromClaudeSSE 保持同一契约：只剥离 cache_creation_*
-	// 与 cache_ttl，保留 cache_read_input_tokens。
-	// cache_read 必须保留：Anthropic 契约由客户端自行求和
-	// total_input = input_tokens + cache_read + cache_creation，清零它会让客户端把已缓存的
-	// 前缀算作不占上下文，从而低估满度、迟迟不触发压缩。
-	// 历史：d60b03a 让流式改为保留 cache_read 时只改了 stream.go，漏了这里，两侧口径分叉。
-	// 内部 usage（claudeResp.Usage）保持完整，后续指标与请求日志仍记录全部缓存字段。
+	// 客户端与内部指标使用不同副本。正常 Anthropic usage 必须完整保留缓存创建和读取量，
+	// 客户端会按 input + cache_read + cache_creation 计算上下文规模；TTL 字段只是创建量明细。
 	clientResp := *claudeResp
 	if claudeResp.Usage != nil {
 		clientUsage := *claudeResp.Usage
-		clientUsage.CacheCreationInputTokens = 0
-		clientUsage.CacheCreation5mInputTokens = 0
-		clientUsage.CacheCreation1hInputTokens = 0
-		clientUsage.CacheTTL = ""
 		// 上游 usage 合理性校验（同流式出口 sanityCheckMessageStreamInputTokens）：
 		// messages+claude 上游是全代理唯一完全不校验、原样透传的路径，实测中转渠道会
 		// 双向错报（448KB 报 26032 / 压缩后 24KB 报 209736），客户端据此误判压缩时机。
 		// 只改客户端副本；上方 claudeResp.Usage 原件继续供指标与请求日志使用。
-		if corrected, need := utils.SanityCheckedInputTokens(
+		if correction, need := utils.SanityCheckedAnthropicUsage(
 			utils.EstimateRequestTokens(requestBody),
 			claudeResp.Usage.InputTokens,
-			claudeResp.Usage.CacheReadInputTokens+
-				claudeResp.Usage.CacheCreationInputTokens+
-				claudeResp.Usage.CacheCreation5mInputTokens+
-				claudeResp.Usage.CacheCreation1hInputTokens); need {
+			claudeResp.Usage.CacheReadInputTokens,
+			claudeResp.Usage.CacheCreationInputTokens,
+			claudeResp.Usage.CacheCreation5mInputTokens,
+			claudeResp.Usage.CacheCreation1hInputTokens,
+		); need {
 			if envCfg.EnableResponseLogs {
-				log.Printf("[Messages-Token] 上游 input_tokens 错报校正: %d -> %d（本地估算，仅改下发值）",
-					claudeResp.Usage.InputTokens, corrected)
+				log.Printf("[Messages-Token] 上游 usage 错报校正: input_tokens=%d->%d, clear_cache=%v（本地估算，仅改下发值）",
+					claudeResp.Usage.InputTokens, correction.InputTokens, correction.ClearCache)
 			}
-			clientUsage.InputTokens = corrected
+			clientUsage.InputTokens = correction.InputTokens
+			if correction.ClearCache {
+				clientUsage.CacheReadInputTokens = 0
+				clientUsage.CacheCreationInputTokens = 0
+				clientUsage.CacheCreation5mInputTokens = 0
+				clientUsage.CacheCreation1hInputTokens = 0
+				clientUsage.CacheTTL = ""
+			}
 		}
 		clientResp.Usage = &clientUsage
 	}

@@ -4,7 +4,6 @@
 //     ProcessStreamEvents / ProcessStreamEvent）
 //   - 事件判定与构造：stream_events.go
 //   - usage 检测/修补：stream_usage_detect.go / stream_usage_patch.go
-//     （含 StripCacheFieldsFromClaudeSSE）
 //   - thinking 与工具调用累积：stream_reasoning.go
 //   - 结束收尾与日志：stream_log.go
 //   - 非流式响应体转发：response_stream.go

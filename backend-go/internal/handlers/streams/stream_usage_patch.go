@@ -1,6 +1,5 @@
 // 本文件负责把估算/补齐后的 usage "写回" SSE 事件：token 字段修补、message_start 的
-// input_tokens 补齐、message_delta 形态的 usage 事件构造，以及在发往客户端前剥离
-// cache_creation_* / cache_ttl 字段（cache_read_input_tokens 保留）。
+// input_tokens 校验、message_delta 形态的 usage 事件构造，以及异常 usage 元组的重建。
 // 读取（检测）侧在 stream_usage_detect.go。
 package streams
 
@@ -191,7 +190,11 @@ func BuildUsageEvent(requestBody []byte, outputText string) string {
 	return fmt.Sprintf("event: message_delta\ndata: %s\n\n", eventJSON)
 }
 
-// StripCacheFieldsFromClaudeSSE removes cache_creation_* fields from client-facing Claude SSE.
+// StripCacheFieldsFromClaudeSSE removes cache_creation_* fields from Claude SSE.
+//
+// Deprecated: Anthropic 客户端需要完整缓存字段计算上下文规模，生产出口不得调用本函数。
+// 保留它只用于兼容已有包内特征测试和可能的定向诊断工具。
+//
 // cache_read_input_tokens is preserved so clients can correctly assess
 // cached context size and trigger conversation compaction.
 // Admin metrics have already collected the full usage earlier in the pipeline.
@@ -260,12 +263,12 @@ func StripCacheFieldsFromClaudeSSE(event string) string {
 	return strings.Join(lines, "\n")
 }
 
-// sanityCheckMessageStreamInputTokens 用 utils.SanityCheckedInputTokens 校验 message_delta /
-// message_stop 事件里的 input_tokens 是否被上游错报，需要时重建。
+// sanityCheckMessageStreamInputTokens 校验 message_start.message.usage 与顶层 usage 中的
+// input_tokens 是否被上游错报，需要时重建客户端副本。
 //
 // Anthropic 语义：input_tokens 不含缓存，上游声明的总量 = input + cache_read + cache_creation
-// 各档之和；校正值 = 估算总量 - 上游缓存量，保证客户端 input + cache 之和回到真实规模、
-// 不与保留下来的 cache_read 字段重叠（语义对照与双重计数风险见 utils/usage_sanity.go）。
+// 缓存创建总量优先使用 cache_creation_input_tokens；5m/1h 只是总量明细，只有总字段
+// 缺失时才求和。若缓存量本身不可信，则连同缓存明细一起从客户端副本清除。
 //
 // 只改返回的事件字符串；ctx.CollectedUsage 与指标路径一律保持上游原值。
 func sanityCheckMessageStreamInputTokens(event string, requestBody []byte, enableLog bool) (string, bool) {
@@ -280,40 +283,42 @@ func sanityCheckMessageStreamInputTokens(event string, requestBody []byte, enabl
 		if err := json.Unmarshal([]byte(payload), &root); err != nil {
 			return "", false
 		}
-		usage, ok := root["usage"].(map[string]interface{})
-		if !ok {
+		usage := claudeUsageFromEvent(root)
+		if usage == nil {
 			return "", false
 		}
-		upstreamInput := 0
-		if v, ok := usage["input_tokens"].(float64); ok {
-			upstreamInput = int(v)
-		}
-		upstreamCached := 0
-		for _, key := range []string{
-			"cache_read_input_tokens",
-			"cache_creation_input_tokens",
-			"cache_creation_5m_input_tokens",
-			"cache_creation_1h_input_tokens",
-		} {
-			if v, ok := usage[key].(float64); ok && v > 0 {
-				upstreamCached += int(v)
-			}
-		}
-		corrected, need := utils.SanityCheckedInputTokens(
-			utils.EstimateRequestTokens(requestBody), upstreamInput, upstreamCached)
+		upstreamUsage := extractUsageFromMap(usage)
+		correction, need := utils.SanityCheckedAnthropicUsage(
+			utils.EstimateRequestTokens(requestBody),
+			upstreamUsage.InputTokens,
+			upstreamUsage.CacheReadInputTokens,
+			upstreamUsage.CacheCreationInputTokens,
+			upstreamUsage.CacheCreation5mInputTokens,
+			upstreamUsage.CacheCreation1hInputTokens,
+		)
 		if !need {
 			return "", false
 		}
-		usage["input_tokens"] = corrected
+		usage["input_tokens"] = correction.InputTokens
+		if correction.ClearCache {
+			clearAnthropicCacheUsageFields(usage)
+		}
 		// Anthropic usage 无 total_tokens 字段；若上游带了就同步，避免留下与 input 矛盾的值
-		if outputTokens, ok := usage["output_tokens"].(float64); ok {
-			if _, hasTotal := usage["total_tokens"]; hasTotal {
-				usage["total_tokens"] = corrected + int(outputTokens)
+		if _, hasTotal := usage["total_tokens"]; hasTotal {
+			correctedCached := 0
+			if !correction.ClearCache {
+				correctedCached = utils.AnthropicCachedInputTokens(
+					upstreamUsage.CacheReadInputTokens,
+					upstreamUsage.CacheCreationInputTokens,
+					upstreamUsage.CacheCreation5mInputTokens,
+					upstreamUsage.CacheCreation1hInputTokens,
+				)
 			}
+			usage["total_tokens"] = correction.InputTokens + correctedCached + upstreamUsage.OutputTokens
 		}
 		if enableLog {
-			log.Printf("[Messages-Stream-Token] 上游 input_tokens 错报校正: %d -> %d（本地估算，仅改下发值）",
-				upstreamInput, corrected)
+			log.Printf("[Messages-Stream-Token] 上游 usage 错报校正: input_tokens=%d->%d, clear_cache=%v（本地估算，仅改下发值）",
+				upstreamUsage.InputTokens, correction.InputTokens, correction.ClearCache)
 		}
 		encoded, err := json.Marshal(root)
 		if err != nil {
@@ -322,4 +327,30 @@ func sanityCheckMessageStreamInputTokens(event string, requestBody []byte, enabl
 		return string(encoded), true
 	})
 	return rewritten, changed
+}
+
+func claudeUsageFromEvent(root map[string]interface{}) map[string]interface{} {
+	if usage, ok := root["usage"].(map[string]interface{}); ok {
+		return usage
+	}
+	message, ok := root["message"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	usage, _ := message["usage"].(map[string]interface{})
+	return usage
+}
+
+func clearAnthropicCacheUsageFields(usage map[string]interface{}) {
+	for _, key := range []string{
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+		"cache_creation_5m_input_tokens",
+		"cache_creation_1h_input_tokens",
+		"cache_ttl",
+		"input_tokens_details",
+		"prompt_tokens_details",
+	} {
+		delete(usage, key)
+	}
 }

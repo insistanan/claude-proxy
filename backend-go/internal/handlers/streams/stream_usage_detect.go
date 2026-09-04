@@ -133,15 +133,22 @@ func checkUsageFieldsWithPatch(usage interface{}) (bool, bool, bool) {
 			needInputPatch := false
 			needOutputPatch := false
 
-			cacheCreation, _ := u["cache_creation_input_tokens"].(float64)
-			cacheRead, _ := u["cache_read_input_tokens"].(float64)
+			cacheCreation := usageTokenValue(u, "cache_creation_input_tokens")
+			cacheCreation5m := usageTokenValue(u, "cache_creation_5m_input_tokens")
+			cacheCreation1h := usageTokenValue(u, "cache_creation_1h_input_tokens")
+			cacheRead := usageTokenValue(u, "cache_read_input_tokens")
 			if cacheRead <= 0 {
-				cacheRead = nestedCachedTokens(u["input_tokens_details"])
+				cacheRead = int(nestedCachedTokens(u["input_tokens_details"]))
 			}
 			if cacheRead <= 0 {
-				cacheRead = nestedCachedTokens(u["prompt_tokens_details"])
+				cacheRead = int(nestedCachedTokens(u["prompt_tokens_details"]))
 			}
-			hasCacheTokens := cacheCreation > 0 || cacheRead > 0
+			hasCacheTokens := utils.AnthropicCachedInputTokens(
+				cacheRead,
+				cacheCreation,
+				cacheCreation5m,
+				cacheCreation1h,
+			) > 0
 
 			if hasInput {
 				if inputTokens == nil {
@@ -166,18 +173,10 @@ func checkUsageFieldsWithPatch(usage interface{}) (bool, bool, bool) {
 func extractUsageFromMap(usage map[string]interface{}) CollectedUsageData {
 	var data CollectedUsageData
 
-	if v, ok := usage["input_tokens"].(float64); ok {
-		data.InputTokens = int(v)
-	}
-	if v, ok := usage["output_tokens"].(float64); ok {
-		data.OutputTokens = int(v)
-	}
-	if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
-		data.CacheCreationInputTokens = int(v)
-	}
-	if v, ok := usage["cache_read_input_tokens"].(float64); ok {
-		data.CacheReadInputTokens = int(v)
-	}
+	data.InputTokens = usageTokenValue(usage, "input_tokens")
+	data.OutputTokens = usageTokenValue(usage, "output_tokens")
+	data.CacheCreationInputTokens = usageTokenValue(usage, "cache_creation_input_tokens")
+	data.CacheReadInputTokens = usageTokenValue(usage, "cache_read_input_tokens")
 	if data.CacheReadInputTokens == 0 {
 		if cached := nestedCachedTokens(usage["input_tokens_details"]); cached > 0 {
 			data.CacheReadInputTokens = int(cached)
@@ -190,14 +189,10 @@ func extractUsageFromMap(usage map[string]interface{}) CollectedUsageData {
 	}
 
 	var has5m, has1h bool
-	if v, ok := usage["cache_creation_5m_input_tokens"].(float64); ok {
-		data.CacheCreation5mInputTokens = int(v)
-		has5m = data.CacheCreation5mInputTokens > 0
-	}
-	if v, ok := usage["cache_creation_1h_input_tokens"].(float64); ok {
-		data.CacheCreation1hInputTokens = int(v)
-		has1h = data.CacheCreation1hInputTokens > 0
-	}
+	data.CacheCreation5mInputTokens = usageTokenValue(usage, "cache_creation_5m_input_tokens")
+	data.CacheCreation1hInputTokens = usageTokenValue(usage, "cache_creation_1h_input_tokens")
+	has5m = data.CacheCreation5mInputTokens > 0
+	has1h = data.CacheCreation1hInputTokens > 0
 
 	if has5m && has1h {
 		data.CacheTTL = "mixed"
@@ -208,6 +203,23 @@ func extractUsageFromMap(usage map[string]interface{}) CollectedUsageData {
 	}
 
 	return data
+}
+
+func usageTokenValue(usage map[string]interface{}, key string) int {
+	switch value := usage[key].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case json.Number:
+		parsed, err := value.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+	}
+	return 0
 }
 
 func nestedCachedTokens(raw interface{}) float64 {

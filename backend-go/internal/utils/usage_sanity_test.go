@@ -120,3 +120,102 @@ func TestSanityCheckedInputTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestAnthropicCachedInputTokens(t *testing.T) {
+	tests := []struct {
+		name             string
+		cacheRead        int
+		cacheCreation    int
+		cacheCreation5m  int
+		cacheCreation1h  int
+		wantCachedTokens int
+	}{
+		{
+			name:             "创建总量存在时不重复加 TTL 明细",
+			cacheRead:        100,
+			cacheCreation:    500,
+			cacheCreation5m:  200,
+			cacheCreation1h:  300,
+			wantCachedTokens: 600,
+		},
+		{
+			name:             "创建总量缺失时使用 TTL 明细之和",
+			cacheRead:        100,
+			cacheCreation5m:  200,
+			cacheCreation1h:  300,
+			wantCachedTokens: 600,
+		},
+		{
+			name:             "负值按零处理",
+			cacheRead:        -100,
+			cacheCreation:    -500,
+			cacheCreation5m:  200,
+			cacheCreation1h:  300,
+			wantCachedTokens: 500,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := AnthropicCachedInputTokens(
+				testCase.cacheRead,
+				testCase.cacheCreation,
+				testCase.cacheCreation5m,
+				testCase.cacheCreation1h,
+			)
+			if got != testCase.wantCachedTokens {
+				t.Fatalf("cached tokens = %d, want %d", got, testCase.wantCachedTokens)
+			}
+		})
+	}
+}
+
+func TestSanityCheckedAnthropicUsage(t *testing.T) {
+	t.Run("可信缓存元组保持不变", func(t *testing.T) {
+		_, needsCorrection := SanityCheckedAnthropicUsage(
+			205071,
+			271,
+			204800,
+			0,
+			0,
+			0,
+		)
+		if needsCorrection {
+			t.Fatal("可信 usage 不应被校正")
+		}
+	})
+
+	t.Run("input 错报但缓存可信时只重建 input", func(t *testing.T) {
+		correction, needsCorrection := SanityCheckedAnthropicUsage(
+			130000,
+			100,
+			1000,
+			0,
+			0,
+			0,
+		)
+		if !needsCorrection {
+			t.Fatal("数量级错报应触发校正")
+		}
+		if correction.InputTokens != 129000 || correction.ClearCache {
+			t.Fatalf("unexpected correction: %+v", correction)
+		}
+	})
+
+	t.Run("缓存本身错报时重建完整客户端元组", func(t *testing.T) {
+		correction, needsCorrection := SanityCheckedAnthropicUsage(
+			7000,
+			500,
+			204800,
+			0,
+			0,
+			0,
+		)
+		if !needsCorrection {
+			t.Fatal("缓存数量级错报应触发校正")
+		}
+		if correction.InputTokens != 7000 || !correction.ClearCache {
+			t.Fatalf("unexpected correction: %+v", correction)
+		}
+	})
+}

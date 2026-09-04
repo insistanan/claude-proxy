@@ -46,13 +46,82 @@ func SafeEstimatedInputTokens(estimated int) int {
 	return estimated
 }
 
+// AnthropicCachedInputTokens 返回 Anthropic usage 中需要与 input_tokens 相加的缓存量。
+// cache_creation_input_tokens 是缓存创建总量；5m/1h 字段只是总量的 TTL 明细，不能
+// 在总量存在时再次相加。部分兼容上游只返回 TTL 明细，此时才用两档之和补足总量。
+func AnthropicCachedInputTokens(cacheRead, cacheCreation, cacheCreation5m, cacheCreation1h int) int {
+	if cacheRead < 0 {
+		cacheRead = 0
+	}
+	if cacheCreation < 0 {
+		cacheCreation = 0
+	}
+	if cacheCreation5m < 0 {
+		cacheCreation5m = 0
+	}
+	if cacheCreation1h < 0 {
+		cacheCreation1h = 0
+	}
+
+	cacheCreationTotal := cacheCreation
+	if cacheCreationTotal == 0 {
+		cacheCreationTotal = saturatingAdd(cacheCreation5m, cacheCreation1h)
+	}
+	return saturatingAdd(cacheRead, cacheCreationTotal)
+}
+
+// AnthropicUsageCorrection 描述只用于客户端出口的 Anthropic usage 校正结果。
+// ClearCache 表示上游缓存量本身已大于可信的整个请求规模，调用方必须同时清除
+// cache_read/cache_creation 及其明细，不能只改 input_tokens 后留下仍然虚假的总量。
+type AnthropicUsageCorrection struct {
+	InputTokens int
+	ClearCache  bool
+}
+
+// SanityCheckedAnthropicUsage 校验完整的 Anthropic 输入 usage 元组。
+// 正常情况下保留上游缓存字段，只重建 uncached input_tokens；只有缓存量本身已经
+// 与请求规模数量级冲突时，才清除客户端副本中的缓存字段，并用估算总量作为 input。
+func SanityCheckedAnthropicUsage(
+	estimatedTotal int,
+	upstreamInput int,
+	cacheRead int,
+	cacheCreation int,
+	cacheCreation5m int,
+	cacheCreation1h int,
+) (AnthropicUsageCorrection, bool) {
+	upstreamCached := AnthropicCachedInputTokens(
+		cacheRead,
+		cacheCreation,
+		cacheCreation5m,
+		cacheCreation1h,
+	)
+	correctedInput, needsCorrection := SanityCheckedInputTokens(
+		estimatedTotal,
+		upstreamInput,
+		upstreamCached,
+	)
+	if !needsCorrection {
+		return AnthropicUsageCorrection{}, false
+	}
+
+	if upstreamCached > estimatedTotal {
+		return AnthropicUsageCorrection{
+			InputTokens: estimatedTotal,
+			ClearCache:  true,
+		}, true
+	}
+
+	return AnthropicUsageCorrection{InputTokens: correctedInput}, true
+}
+
 // SanityCheckedInputTokens 交叉验证上游回报的上下文规模，返回应当下发给客户端的 input_tokens。
 //
 // estimatedTotal 是代理本地估算的真实上下文总规模（含缓存部分，即整个请求体的量）。
 // upstreamInput 是上游回报的 input_tokens；0/1 且没有单独缓存量时视为缺失占位，
 // 不使用整包本地估算填回长请求，避免与 SafeEstimatedInputTokens 的保护互相抵消。
 // upstreamCached 是上游**单独回报、且不包含在 input_tokens 内**的缓存 token 总量：
-//   - Anthropic 语义（input_tokens 是未缓存余量）：传 cache_read + cache_creation 各档之和。
+//   - Anthropic 语义（input_tokens 是未缓存余量）：传 cache_read + cache_creation 总量；
+//     5m/1h 明细仅在总字段缺失时求和，可直接使用 AnthropicCachedInputTokens。
 //   - OpenAI 语义（cached_tokens 已含在 input_tokens 内）：传 0，否则会把缓存算两遍。
 //
 // 第二个返回值为 false 表示上游数据可信，调用方必须原样保留上游值。

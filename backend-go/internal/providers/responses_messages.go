@@ -880,8 +880,7 @@ func (s *responsesToClaudeStreamState) ensureMessageStart(root gjson.Result) []s
 	// Prefer any early usage if present; otherwise leave zeros (stream handler may estimate).
 	// captureResponsesUsage 已把 s.inputTokens 收敛成 uncached 余量，这里直接用。
 	startInputTokens := s.inputTokens
-	// cache_* emitted for the admin collector; only cache_creation_*/cache_ttl are stripped
-	// before the client write (StripCacheFieldsFromClaudeSSE keeps cache_read).
+	// cache_* 同时供管理端采集与 Claude 客户端计算完整上下文占用，客户端出口保持原样。
 	startUsage := map[string]interface{}{
 		"input_tokens":  startInputTokens,
 		"output_tokens": 0,
@@ -1220,10 +1219,9 @@ func (s *responsesToClaudeStreamState) emitMessageDelta() []string {
 		s.stopReason = "end_turn"
 	}
 	// s.inputTokens 已由 captureResponsesUsage 收敛成 uncached 余量。
-	// cache_read_input_tokens 既给管理端采集，也会到达 Claude 客户端：
-	// handlers/streams.StripCacheFieldsFromClaudeSSE 只剥离 cache_creation_*/cache_ttl，
-	// 有意保留 cache_read，让客户端按 Anthropic 契约求和 input_tokens + cache_read
-	// 得到真实上下文占用。两者必须同步：把 input_tokens 改回总量就会重新双计。
+	// cache_read_input_tokens 和 cache_creation_input_tokens 既给管理端采集，也会到达
+	// Claude 客户端，让客户端按 Anthropic 契约求和 input_tokens + cache_read +
+	// cache_creation 得到真实上下文占用。三者必须同步：把 input_tokens 改回总量会双计。
 	clientInputTokens := s.inputTokens
 	usageMap := map[string]interface{}{
 		"output_tokens": s.outputTokens,

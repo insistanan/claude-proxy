@@ -50,8 +50,9 @@ type Context struct {
 	// 低质量渠道处理
 	RequestModel string // 请求中的 model（用于一致性检查）
 	LowQuality   bool   // 是否为低质量渠道
-	// 隐式缓存推断
-	MessageStartInputTokens int // message_start 事件中的 input_tokens（用于推断隐式缓存）
+	// 兼容旧的隐式缓存推断状态。标准 Anthropic usage 不再填入该字段，避免把
+	// message_start 与 message_delta 的供应商私有差值冒充 cache_read。
+	MessageStartInputTokens int
 	// 兜底注入
 	SeenMessageStart bool // 是否已收到 message_start 事件
 	// 最终转换为 Claude SSE 后的工具调用；用于跨协议回放 reasoning_content。
@@ -316,8 +317,6 @@ func ProcessStreamEvent(
 		hasUsage, needInputPatch, needOutputPatch, usageData = CheckEventUsageStatus(event, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"))
 	}
 	needPatch := needInputPatch || needOutputPatch
-	// 保存原始 usageData 用于后续 PatchMessageStartInputTokensIfNeeded
-	originalUsageData := usageData
 	if hasUsage {
 		if !ctx.HasUsage {
 			ctx.HasUsage = true
@@ -326,13 +325,9 @@ func ProcessStreamEvent(
 				log.Printf("[Messages-Stream-Token] 检测到虚假值, 延迟到流结束修补")
 			}
 		}
-		// 对于 message_start 事件，不累积 input_tokens 到 CollectedUsage
-		// 因为 message_start 的 input_tokens 是请求总 token，而非最终计费值
-		// CollectedUsage.InputTokens 应该只记录 message_delta 的最终计费值
-		if IsMessageStartEvent(event) && usageData.InputTokens > 0 {
-			usageData.InputTokens = 0
-		}
-		// 保留一份未经过客户端补全/缓存推断的上游快照。
+		// Anthropic 标准流通常只在 message_start.message.usage 中报告输入量。
+		// 必须保留该值；后续 message_delta 可能只有 output_tokens。
+		// 保留一份未经过客户端补全的上游快照。
 		updateCollectedUsage(&ctx.UpstreamUsage, usageData)
 		// 累积收集 usage 数据
 		updateCollectedUsage(&ctx.CollectedUsage, usageData)
@@ -395,38 +390,12 @@ func ProcessStreamEvent(
 		eventToSend = PatchMessageStartEvent(eventToSend, ctx.RequestModel, envCfg.RewriteResponseModel, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"))
 	}
 
-	// 处理 message_start 事件：尽早补全 input_tokens（部分客户端只读取首个 usage 来累计）
-	// 注意：使用 originalUsageData 而非被清零后的 usageData，避免误判
-	if hasUsage {
-		eventToSend = PatchMessageStartInputTokensIfNeeded(eventToSend, requestBody, needInputPatch, originalUsageData, true, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"), ctx.LowQuality)
-	}
-
-	// 记录 message_start 中的 input_tokens（用于后续推断隐式缓存）
-	// 注意：必须在 PatchMessageStartInputTokensIfNeeded 之后执行，因为原始值可能是 0 被修补成估算值
-	if IsMessageStartEvent(event) && ctx.MessageStartInputTokens == 0 {
-		if patchedInputTokens := ExtractInputTokensFromEvent(eventToSend); patchedInputTokens > 0 {
-			ctx.MessageStartInputTokens = patchedInputTokens
-		}
-	}
-
 	eventHasUsage := hasUsage
 	if !hasEventData {
 		eventHasUsage = HasEventWithUsage(event)
 	}
 	if ctx.NeedTokenPatch && eventHasUsage {
 		if IsMessageDeltaEvent(event) || IsMessageStopEvent(event) {
-			hasCacheTokens := ctx.CollectedUsage.CacheCreationInputTokens > 0 ||
-				ctx.CollectedUsage.CacheReadInputTokens > 0 ||
-				ctx.CollectedUsage.CacheCreation5mInputTokens > 0 ||
-				ctx.CollectedUsage.CacheCreation1hInputTokens > 0
-
-			// 在转发前执行隐式缓存推断，确保下游能收到推断的 cache_read_input_tokens
-			if !hasCacheTokens {
-				inferImplicitCacheRead(ctx, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"))
-				// 重新检查是否有缓存 token（可能刚被推断出来）
-				hasCacheTokens = ctx.CollectedUsage.CacheReadInputTokens > 0
-			}
-
 			inputTokens := ctx.CollectedUsage.InputTokens
 			// Never EstimateRequestTokens(full requestBody) into client usage.
 			outputTokens := ctx.CollectedUsage.OutputTokens
@@ -435,9 +404,6 @@ func ProcessStreamEvent(
 				outputTokens = estimatedOutputTokens
 			}
 
-			if inputTokens > ctx.CollectedUsage.InputTokens {
-				ctx.CollectedUsage.InputTokens = inputTokens
-			}
 			if outputTokens > ctx.CollectedUsage.OutputTokens {
 				ctx.CollectedUsage.OutputTokens = outputTokens
 			}
@@ -453,23 +419,18 @@ func ProcessStreamEvent(
 		}
 	}
 
-	// Strip cache_creation_* from client-facing Claude SSE to avoid meter jumps
-	// from gateway-side cache creation. Keep cache_read_input_tokens so Cursor
-	// can correctly perceive cached context size and trigger conversation compact.
-	// Admin metrics already collected all cache fields via CheckEventUsageStatus above.
-	eventToSend = StripCacheFieldsFromClaudeSSE(eventToSend)
-
 	// 上游 usage 合理性校验：中转渠道会双向错报（实测 448KB 请求报 26032、压缩后 24KB 请求
 	// 报 209736），而 messages+claude 上游是全代理唯一完全不校验、原样透传的路径。客户端
 	// （Cursor/Codex/OpenCode）全拿这个数字决定何时压缩上下文，假值直接表现为
 	// 「压缩后立刻又要压缩」或「撞满上限也不压缩」。与估算相差 2 倍且量级 ≥20000 时，
-	// 用估算总量重建下发的 input_tokens；cache_read 保持上游值不动（校正值已扣除缓存）。
+	// 用估算总量重建客户端 usage。正常缓存字段完整保留；缓存量本身不可信时，客户端副本
+	// 会同时清理缓存字段，避免留下 input=0、cache_read=20万这种仍然虚假的总量。
 	// 只改客户端事件，ctx.CollectedUsage 保持上游原值用于指标/计费。
 	//
 	// 历史约定变更：stream_usage_patch.go 曾约定「绝不用更大的估算覆盖真实正数」，那是防
 	// 「全量估算塞给客户端」的无条件覆盖；本校正只在数量级级错报（≥2 倍）时介入，
 	// 两种风险同时挡住。实测数据与外部佐证见 utils/usage_sanity.go。
-	if IsMessageDeltaEvent(eventToSend) || IsMessageStopEvent(eventToSend) {
+	if eventHasUsage {
 		if corrected, ok := sanityCheckMessageStreamInputTokens(eventToSend, requestBody, envCfg.EnableResponseLogs); ok {
 			eventToSend = corrected
 		}
