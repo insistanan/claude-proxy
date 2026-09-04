@@ -105,9 +105,16 @@ func handleSuccess(
 	if upstreamType == converters.ResponsesUpstreamResponses && isResponsesImageGenerationRequest(originalRequestJSON) {
 		return handleResponsesImagePassthrough(c, resp, envCfg, startTime, isStream)
 	}
+	usageRequestJSON, err := prepareResponsesUsageRequestBody(
+		originalRequestJSON,
+		c.GetBool(utils.ContextKeyResponsesHistoryBoundary),
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	if isStream {
-		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, channelScheduler, conversationID)
+		return handleStreamSuccess(c, resp, upstreamType, envCfg, sessionManager, startTime, originalReq, originalRequestJSON, usageRequestJSON, channelScheduler, conversationID)
 	}
 
 	// 非流式响应处理
@@ -173,7 +180,7 @@ func handleSuccess(
 	// 服务于客户端压缩判断，不写入本地会话累计，避免启发式估算污染持久化状态。
 	sessionTokens := responsesResp.Usage.TotalTokens
 	// Token 补全逻辑只作用于客户端响应副本。
-	patchResponsesUsage(responsesResp, originalRequestJSON, envCfg)
+	patchResponsesUsage(responsesResp, usageRequestJSON, envCfg)
 	if sessionTokens <= 0 {
 		sessionTokens = responsesResp.Usage.TotalTokens
 		if sessionTokens <= 0 {
@@ -185,12 +192,12 @@ func handleSuccess(
 	// Cursor 误判上下文一直满、反复触发压缩。Claude 原生缓存与携带 previous_response_id 的
 	// 链式增量请求不受影响（函数内按字段语义判断保留）
 	if upstreamType == converters.ResponsesUpstreamResponses {
-		stripAccumulatedCacheFromResponse(responsesResp, originalRequestJSON)
+		stripAccumulatedCacheFromResponse(responsesResp, usageRequestJSON)
 		// 剥离缓存字段后 input_tokens 成了客户端判断上下文占用的唯一依据，
 		// 校正上游对长上下文的错报值，否则 Cursor 会误判上下文为空、永不触发压缩。
 		// 携带 previous_response_id 的链式请求跳过校正，避免增量估算篡改服务端历史上下文。
 		clientUsage := responsesResp.Usage
-		correctUnderreportedInputTokensInResponse(responsesResp, &clientUsage, originalRequestJSON, envCfg)
+		correctUnderreportedInputTokensInResponse(responsesResp, &clientUsage, usageRequestJSON, envCfg)
 		responsesResp.Usage = clientUsage
 	}
 	responseBody, err := utils.MarshalJSONNoEscape(responsesResp)

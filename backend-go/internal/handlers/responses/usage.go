@@ -2,6 +2,7 @@ package responses
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 
@@ -9,7 +10,25 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
+
+// prepareResponsesUsageRequestBody 返回用于客户端 usage 修正的请求体。
+//
+// provider 在压缩/完整历史边界上会从实际上游请求中删除 previous_response_id，
+// 但 handler 仍保留原始客户端请求体用于会话持久化和响应转换。若这里继续使用原始
+// 请求体，usage 处理会把已经切断的边界误判为链式增量，从而跳过缓存剥离和本地
+// 上下文规模校正，客户端就会在压缩后继续看到旧的上下文占用。
+func prepareResponsesUsageRequestBody(requestBody []byte, historyBoundary bool) ([]byte, error) {
+	if !historyBoundary || !hasPreviousResponseID(requestBody) {
+		return requestBody, nil
+	}
+	trimmed, err := sjson.DeleteBytes(requestBody, "previous_response_id")
+	if err != nil {
+		return nil, fmt.Errorf("删除 usage 修正请求体中的 previous_response_id 失败: %w", err)
+	}
+	return trimmed, nil
+}
 
 func hasPreviousResponseID(requestBody []byte) bool {
 	if len(requestBody) == 0 {

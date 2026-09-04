@@ -125,6 +125,7 @@ func handleStreamSuccess(
 	startTime time.Time,
 	originalReq *types.ResponsesRequest,
 	originalRequestJSON []byte,
+	usageRequestJSON []byte,
 	channelScheduler *scheduler.ChannelScheduler,
 	conversationID string,
 ) (*types.Usage, error) {
@@ -276,7 +277,7 @@ func handleStreamSuccess(
 				if !hasUsage {
 					// 上游完全没有 usage，注入本地估算
 					var injectedInput, injectedOutput int
-					eventToSend, injectedInput, injectedOutput = injectResponsesUsageToCompletedEventWithTokens(event, originalRequestJSON, estimatedOutputTokens, envCfg)
+					eventToSend, injectedInput, injectedOutput = injectResponsesUsageToCompletedEventWithTokens(event, usageRequestJSON, estimatedOutputTokens, envCfg)
 					// 更新 collectedUsage 以便最终日志输出
 					collectedUsage.InputTokens = injectedInput
 					collectedUsage.OutputTokens = injectedOutput
@@ -286,7 +287,7 @@ func handleStreamSuccess(
 					}
 				} else if needTokenPatch {
 					// 需要修补虚假值
-					eventToSend = patchResponsesCompletedEventUsageWithTokens(event, originalRequestJSON, estimatedOutputTokens, &collectedUsage, envCfg)
+					eventToSend = patchResponsesCompletedEventUsageWithTokens(event, usageRequestJSON, estimatedOutputTokens, &collectedUsage, envCfg)
 				}
 				// 透传分支（上游本身就是 responses 协议）剥离累积式缓存统计：
 				// grok-4.6 等 OpenAI 兼容上游的 input_tokens_details.cached_tokens 是跨请求
@@ -294,11 +295,12 @@ func handleStreamSuccess(
 				// 真正 Claude 上游的 cache_read_input_tokens 与携带 previous_response_id 的
 				// 链式增量请求不受影响（函数内按字段语义判断保留）。
 				if upstreamType == converters.ResponsesUpstreamResponses {
-					eventToSend = stripAccumulatedCacheFromCompletedEvent(eventToSend, originalRequestJSON)
+					eventToSend = stripAccumulatedCacheFromCompletedEvent(eventToSend, usageRequestJSON)
 					// 剥离缓存字段后 input_tokens 成了客户端判断上下文占用的唯一依据，
 					// 校正上游对长上下文的错报值，否则 Cursor 会误判上下文为空、永不触发压缩。
-					// 携带 previous_response_id 的链式请求跳过校正，避免增量估算篡改服务端历史上下文。
-					eventToSend = correctUnderreportedInputTokensInCompletedEvent(eventToSend, originalRequestJSON, envCfg)
+					// 只有仍处于真实链式增量模式时才跳过；压缩边界已经使用不带旧 ID 的
+					// usageRequestJSON，因此必须按新的完整历史重新校正。
+					eventToSend = correctUnderreportedInputTokensInCompletedEvent(eventToSend, usageRequestJSON, envCfg)
 				}
 			}
 			if streamResponseID == "" {
