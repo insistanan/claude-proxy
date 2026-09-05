@@ -503,3 +503,78 @@ func TestUpstreamAttemptThinkingSignatureRectifierRetriesSuccessfully(t *testing
 		t.Fatalf("期望请求上游 2 次（初次失败+就地重试），实际: %d", requestCount)
 	}
 }
+
+func TestUpstreamAttemptMediaSanitizerRetriesSuccessfully(t *testing.T) {
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		reqBody, _ := io.ReadAll(r.Body)
+		if requestCount == 1 {
+			// 第一次请求返回 400 模态拒绝错误
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Model only support text input"}}`))
+			return
+		}
+		// 第二次请求断言图片已被替换为纯文本占位符
+		if strings.Contains(string(reqBody), `"base64"`) {
+			t.Errorf("重试请求仍包含图片 base64 数据: %s", string(reqBody))
+		}
+		if !strings.Contains(string(reqBody), `[Unsupported Image]`) {
+			t.Errorf("重试请求未包含降级占位符: %s", string(reqBody))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_media_ok","content":[{"type":"text","text":"sanitized ok"}]}`))
+	}))
+	defer server.Close()
+
+	cfgManager, err := config.NewConfigManager(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("创建配置管理器失败: %v", err)
+	}
+	t.Cleanup(func() { _ = cfgManager.Close() })
+
+	metricsManager := metrics.NewMetricsManager()
+	t.Cleanup(metricsManager.Stop)
+
+	channelScheduler := scheduler.NewChannelScheduler(cfgManager, metricsManager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(channelScheduler.Stop)
+
+	upstream := &config.UpstreamConfig{
+		BaseURL: server.URL,
+		APIKeys: []string{"key-a"},
+	}
+
+	initialBody := `{"model":"deepseek-chat","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"xyz"}},{"type":"text","text":"hi"}]}]}`
+	result := (UpstreamAttempt{
+		Context:          newAttemptTestContext(context.Background()),
+		EnvConfig:        &config.EnvConfig{LogLevel: "error"},
+		ConfigManager:    cfgManager,
+		ChannelScheduler: channelScheduler,
+		Kind:             scheduler.ChannelKindMessages,
+		MetricsManager:   metricsManager,
+		Upstream:         upstream,
+		RequestedModel:   "deepseek-chat",
+		RequestBody:      []byte(initialBody),
+		URLResults:       BuildDefaultURLResults(upstream.GetAllBaseURLs()),
+		NextAPIKey: func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			return up.APIKeys[0], nil
+		},
+		BuildRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			bodyBytes, _ := io.ReadAll(c.Request.Body)
+			req, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(string(bodyBytes)))
+			return req, err
+		},
+		HandleSuccess: func(_ *gin.Context, resp *http.Response, _ *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+			defer resp.Body.Close()
+			return &types.Usage{}, nil
+		},
+	}).TryWithModelMappingFailover()
+
+	if !result.Handled || result.SuccessKey != "key-a" {
+		t.Fatalf("Media 降级就地重试期望成功，实际: Handled=%v LastError=%v", result.Handled, result.LastError)
+	}
+	if requestCount != 2 {
+		t.Fatalf("期望请求上游 2 次（初次失败+就地重试），实际: %d", requestCount)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/mediasanitizer"
 	"github.com/BenedictKing/claude-proxy/internal/rectifier"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
@@ -380,6 +381,30 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 							sendAction:    "Budget 整流重试失败",
 							prepareAction: "准备 Budget 整流请求失败",
 							successAction: "Thinking Budget 整流重试成功",
+						}, finishRetryContentSafety)
+						if aborted != nil {
+							return *aborted
+						}
+						RestoreRequestBody(c, requestBody)
+					}
+				}
+
+				// 模态拒绝与纯文本降级自愈（参照 cc-switch media_sanitizer）：
+				// 当上游返回 400/415/422/501 且明确表示不支持图片/多模态输入时，
+				// 将请求体内的图片块替换为 "[Unsupported Image]" 纯文本占位符，并在同一渠道就地重试一次。
+				if !retrySucceeded && mediasanitizer.IsUnsupportedImageError(resp.StatusCode, respBodyBytes) {
+					sanitizedBody, modified, count := mediasanitizer.SanitizeImagesWithMarker(requestBody)
+					if modified {
+						log.Printf("[%s-MediaSanitizer] 捕获模型模态拒绝错误，已将 %d 处图片降级为纯文本占位符并在同一渠道重试", apiType, count)
+						RestoreRequestBody(c, sanitizedBody)
+						retryResult := a.retrySameCandidateRequest(upstreamCopy, apiKey, proxyURL)
+						var aborted *UpstreamAttemptResult
+						resp, respBodyBytes, retrySucceeded, aborted = applyCompatibilityRetryResult(retryResult, resp, respBodyBytes, retrySucceeded, apiType, compatRetryLogs{
+							component:     "MediaSanitizer",
+							buildAction:   "重建图片降级请求失败",
+							sendAction:    "图片降级重试失败",
+							prepareAction: "准备图片降级请求失败",
+							successAction: "图片降级重试成功",
 						}, finishRetryContentSafety)
 						if aborted != nil {
 							return *aborted
