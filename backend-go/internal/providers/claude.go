@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/cacheinject"
+	"github.com/BenedictKing/claude-proxy/internal/copilotopt"
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -117,6 +118,14 @@ func (p *ClaudeProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 
 	// 设置认证头（会覆盖客户端的认证头）
 	utils.SetAuthenticationHeader(req.Header, apiKey)
+
+	// Copilot 请求优化：如果上游为 Copilot / Github 兼容渠道，自动计算交互分类并附带 x-initiator / x-interaction-type 请求头
+	hasBeta := req.Header.Get("anthropic-beta") != ""
+	classification := copilotopt.ClassifyRequest(bodyBytes, hasBeta, true, true)
+	copilotopt.ApplyCopilotHeaders(req.Header, classification)
+	if mergedBody, ok := copilotopt.MergeToolResults(bodyBytes); ok {
+		bodyBytes = mergedBody
+	}
 
 	return req, bodyBytes, nil
 }
