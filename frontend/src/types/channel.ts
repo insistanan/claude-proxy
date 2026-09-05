@@ -19,6 +19,9 @@ export interface TimeWindowStats {
   cacheHitRate?: number
 }
 
+// 渠道级熔断器运行时状态（internal/circuit 三态；与配置状态 ChannelStatus 正交）
+export type CircuitState = 'closed' | 'open' | 'half_open'
+
 export interface ChannelMetrics {
   channelIndex: number
   requestCount: number
@@ -30,6 +33,10 @@ export interface ChannelMetrics {
   latency: number // ms
   lastSuccessAt?: string
   lastFailureAt?: string
+  // 渠道级三态熔断运行时状态（dashboard API 注入）
+  circuitState?: CircuitState
+  circuitConsecutiveFailures?: number
+  circuitOpenedAt?: string
   // 分时段统计 (15m, 1h, 6h, 24h)
   timeWindows?: {
     '15m': TimeWindowStats

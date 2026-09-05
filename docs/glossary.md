@@ -12,6 +12,7 @@
 | **渠道 CRUD 收敛** | 五协议的渠道增删改查 / key 管理 / Ping 由单份实现提供，经 `RegisterChannelRoutes` 声明式注册（替代历史五组重复实现）。 | `internal/core/channelcrud`、`internal/handlers/channel_routes.go` |
 | **API Key** | 上游认证密钥。渠道可挂多个 key，按优先级轮询，失败降级（`MoveAPIKeyToBottomForKind`）。 | `internal/config` |
 | **熔断（Circuit Breaker）** | 滑动窗口失败率超阈值后挂起渠道/key，暂停参与调度，可自动恢复也可手动重置。默认：窗口 10 次、阈值 50%、恢复 15 分钟、最小请求数保护 `max(3, windowSize/2)`。 | `internal/metrics/channel_metrics.go` |
+| **渠道级熔断器（Channel Circuit）** | 渠道粒度的三态熔断器（Closed/Open/HalfOpen），与 Key 级滑动窗口熔断正交。触发：连续失败 ≥`CIRCUIT_FAILURE_THRESHOLD`(4) 或 样本 ≥`CIRCUIT_MIN_REQUESTS`(10) 且错误率 ≥`CIRCUIT_ERROR_RATE`(0.6)。Open 冷却 `CIRCUIT_COOLDOWN_SECONDS`(60s) 后**惰性**转 HalfOpen（无后台定时器，被查询时转换）；HalfOpen 同时只放 1 个探测请求，探测失败立即回 Open 重新计时，连续成功 `CIRCUIT_SUCCESS_THRESHOLD`(2) 次恢复 Closed。客户端取消与内容审核拦截记 Neutral（只释放探测名额不计健康度）。状态仅内存，重启清零；`CIRCUIT_ENABLED=false` 一键关闭。手动重置 `POST /api/circuit-breakers/reset`。 | `internal/circuit`、`internal/scheduler/selection.go`（拦截）、`internal/handlers/proxycore/multi_channel_failover.go`（记账） |
 | **故障转移（Failover）** | key / URL / 渠道失败后按显式顺序切换到下一候选。分三层：模型映射目标、单渠道内 Key/BaseURL、跨渠道；渠道与目标模型均先尝试列表第一项，失败后才推进。 | `internal/handlers/proxycore/upstream_failover.go`（模型映射层）、`upstream_attempt_keys.go`（Key/BaseURL 层）、`multi_channel_failover.go`（跨渠道） |
 | **Fuzzy 模式** | 对所有非 2xx 错误都触发 failover 的宽松错误处理模式。 | `config.GetFuzzyModeEnabled` |
 | **Trace 亲和性** | 同一用户/会话绑定同一渠道，保证多轮对话上下文连贯。实现按 `userID + kind` 绑定 `channelIndex`。在选渠顺序中作为**兜底**（新对话尚无对话级亲和时沿用）；对话多轮续接优先走对话级亲和。 | `internal/session/trace_affinity.go` |

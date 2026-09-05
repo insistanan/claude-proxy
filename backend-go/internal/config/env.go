@@ -32,6 +32,13 @@ type EnvConfig struct {
 	// 指标配置
 	MetricsWindowSize       int     // 滑动窗口大小
 	MetricsFailureThreshold float64 // 失败率阈值
+	// 渠道级熔断配置（internal/circuit；与 Key 级滑动窗口正交）
+	CircuitEnabled               bool    // 总开关，false 时全部放行（一键回滚）
+	CircuitFailureThreshold      int     // 连续失败多少次转 Open
+	CircuitErrorRateThreshold    float64 // 错误率阈值（0-1）
+	CircuitMinRequests           int     // 计算错误率前的最小累计请求数
+	CircuitCooldownSeconds       int     // Open 冷却秒数，到期后转 HalfOpen
+	CircuitProbeSuccessThreshold int     // HalfOpen 连续成功多少次转 Closed
 	// 指标持久化配置
 	MetricsPersistenceEnabled bool // 是否启用 SQLite 持久化
 	MetricsRetentionDays      int  // 数据保留天数（3-30）
@@ -74,6 +81,13 @@ func NewEnvConfig() *EnvConfig {
 		// 指标配置
 		MetricsWindowSize:       getEnvAsInt("METRICS_WINDOW_SIZE", 10),
 		MetricsFailureThreshold: getEnvAsFloat("METRICS_FAILURE_THRESHOLD", 0.5),
+		// 渠道级熔断配置（默认值与 cc-switch 一致）
+		CircuitEnabled:               getEnv("CIRCUIT_ENABLED", "true") != "false",
+		CircuitFailureThreshold:      clampInt(getEnvAsInt("CIRCUIT_FAILURE_THRESHOLD", 4), 1, 20),
+		CircuitErrorRateThreshold:    getEnvAsFloat("CIRCUIT_ERROR_RATE", 0.6),
+		CircuitMinRequests:           clampInt(getEnvAsInt("CIRCUIT_MIN_REQUESTS", 10), 2, 100),
+		CircuitCooldownSeconds:       clampInt(getEnvAsInt("CIRCUIT_COOLDOWN_SECONDS", 60), 5, 600),
+		CircuitProbeSuccessThreshold: clampInt(getEnvAsInt("CIRCUIT_SUCCESS_THRESHOLD", 2), 1, 10),
 		// 指标持久化配置
 		MetricsPersistenceEnabled: getEnv("METRICS_PERSISTENCE_ENABLED", "true") != "false",
 		MetricsRetentionDays:      clampInt(getEnvAsInt("METRICS_RETENTION_DAYS", 7), 3, 30),

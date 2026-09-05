@@ -183,6 +183,29 @@ func ConvertResponsesToOpenAIChatRequestWithOptions(modelName string, inputRawJS
 		out, _ = sjson.Set(out, "top_p", topP.Float())
 	}
 
+	// 频率/存在惩罚直传（Responses 与 Chat 同名同语义）。
+	if v := root.Get("frequency_penalty"); v.Exists() && v.Float() != 0 {
+		out, _ = sjson.Set(out, "frequency_penalty", v.Float())
+	}
+	if v := root.Get("presence_penalty"); v.Exists() && v.Float() != 0 {
+		out, _ = sjson.Set(out, "presence_penalty", v.Float())
+	}
+
+	// stop：Responses 的 stop（string 或数组）直传 Chat stop。
+	if stop := root.Get("stop"); stop.Exists() {
+		if stop.Type == gjson.String {
+			if stop.String() != "" {
+				out, _ = sjson.Set(out, "stop", []string{stop.String()})
+			}
+		} else if stop.IsArray() && len(stop.Array()) > 0 {
+			stops := make([]string, 0, len(stop.Array()))
+			for _, item := range stop.Array() {
+				stops = append(stops, item.String())
+			}
+			out, _ = sjson.Set(out, "stop", stops)
+		}
+	}
+
 	if user := root.Get("user"); user.Exists() {
 		out, _ = sjson.Set(out, "user", user.String())
 	}

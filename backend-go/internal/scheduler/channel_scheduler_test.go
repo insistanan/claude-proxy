@@ -78,8 +78,10 @@ func createTestScheduler(t *testing.T, cfg config.Config) (*ChannelScheduler, fu
 	}
 }
 
-// TestPromotedChannelBypassesHealthCheck 测试促销渠道绕过健康检查
-func TestPromotedChannelBypassesHealthCheck(t *testing.T) {
+// TestPromotedChannelDoesNotRewriteConfigOrder 锁定 864841f 后的调度契约：
+// 促销不改写故障转移顺序（docs/capabilities.md 渠道选择行）。
+// 健康渠道按配置优先级选择；促销渠道不健康时同样被健康过滤跳过。
+func TestPromotedChannelDoesNotRewriteConfigOrder(t *testing.T) {
 	// 设置促销截止时间为 5 分钟后
 	promotionUntil := time.Now().Add(5 * time.Minute)
 
@@ -118,26 +120,28 @@ func TestPromotedChannelBypassesHealthCheck(t *testing.T) {
 		t.Fatal("促销渠道应该被标记为不健康")
 	}
 
-	// 选择渠道 - 促销渠道应该被选中，即使它不健康
+	// 选择渠道 - 按配置优先级选择第一个渠道，促销不参与排序
 	result, err := scheduler.SelectChannel(context.Background(), "test-user", make(map[int]bool), ChannelKindMessages, "")
 	if err != nil {
 		t.Fatalf("选择渠道失败: %v", err)
 	}
 
-	if result.ChannelIndex != 1 {
-		t.Errorf("期望选择促销渠道 (index=1)，实际选择了 index=%d", result.ChannelIndex)
+	if result.ChannelIndex != 0 {
+		t.Errorf("期望按配置顺序选择渠道 (index=0)，实际选择了 index=%d", result.ChannelIndex)
 	}
 
-	if result.Reason != "promotion_priority" {
-		t.Errorf("期望选择原因为 promotion_priority，实际为 %s", result.Reason)
+	if result.Reason != "priority_order" {
+		t.Errorf("期望选择原因为 priority_order，实际为 %s", result.Reason)
 	}
 
-	if result.Upstream.Name != "promoted-channel" {
-		t.Errorf("期望选择 promoted-channel，实际选择了 %s", result.Upstream.Name)
+	if result.Upstream.Name != "normal-channel" {
+		t.Errorf("期望选择 normal-channel，实际选择了 %s", result.Upstream.Name)
 	}
 }
 
-func TestSelectChannel_PromotionPrecedesTraceAffinity(t *testing.T) {
+// TestSelectChannel_ConfigOrderPrecedesPromotionAndAffinity 锁定 864841f 后的调度契约：
+// 配置顺序优先，促销与 Trace 亲和都不改写故障转移顺序。
+func TestSelectChannel_ConfigOrderPrecedesPromotionAndAffinity(t *testing.T) {
 	promotionUntil := time.Now().Add(5 * time.Minute)
 	cfg := config.Config{
 		Upstream: []config.UpstreamConfig{
@@ -171,12 +175,12 @@ func TestSelectChannel_PromotionPrecedesTraceAffinity(t *testing.T) {
 	}
 	defer scheduler.ReleaseChannelReservation(result.Kind, result.ChannelIndex)
 
-	if result.ChannelIndex != 1 || result.Reason != "promotion_priority" {
-		t.Fatalf("促销应优先于 Trace 亲和，got index=%d reason=%s", result.ChannelIndex, result.Reason)
+	if result.ChannelIndex != 0 || result.Reason != "priority_order" {
+		t.Fatalf("配置顺序应优先于促销与亲和，got index=%d reason=%s", result.ChannelIndex, result.Reason)
 	}
 }
 
-func TestSelectChannel_ConversationOverridePrecedesPromotion(t *testing.T) {
+func TestSelectChannel_ConfigOrderPrecedesPromotion(t *testing.T) {
 	promotionUntil := time.Now().Add(5 * time.Minute)
 	cfg := config.Config{
 		Upstream: []config.UpstreamConfig{
@@ -223,7 +227,9 @@ func TestSelectChannel_ConversationOverridePrecedesPromotion(t *testing.T) {
 	}
 }
 
-func TestSelectChannel_UsesTraceAffinityWithoutPromotion(t *testing.T) {
+// TestSelectChannel_ConfigOrderPrecedesTraceAffinity 锁定 864841f 后的调度契约：
+// Trace 亲和不再改写配置顺序（生产选渠不使用亲和结果，仅会话观测保留）。
+func TestSelectChannel_ConfigOrderPrecedesTraceAffinity(t *testing.T) {
 	cfg := config.Config{
 		Upstream: []config.UpstreamConfig{
 			{
@@ -255,8 +261,8 @@ func TestSelectChannel_UsesTraceAffinityWithoutPromotion(t *testing.T) {
 	}
 	defer scheduler.ReleaseChannelReservation(result.Kind, result.ChannelIndex)
 
-	if result.ChannelIndex != 1 || result.Reason != "trace_affinity" {
-		t.Fatalf("无促销时应使用 Trace 亲和，got index=%d reason=%s", result.ChannelIndex, result.Reason)
+	if result.ChannelIndex != 0 || result.Reason != "priority_order" {
+		t.Fatalf("配置顺序应优先于 Trace 亲和，got index=%d reason=%s", result.ChannelIndex, result.Reason)
 	}
 }
 
@@ -316,7 +322,7 @@ func TestMatchedGroupPrecedesFallbackGroupAndFallsBackAfterFailure(t *testing.T)
 	if err != nil {
 		t.Fatalf("首次选择渠道失败: %v", err)
 	}
-	if first.ChannelIndex != 1 || first.Reason != "promotion_priority" {
+	if first.ChannelIndex != 1 || first.Reason != "priority_order" {
 		t.Fatalf("首次应选择命中分组渠道，got index=%d reason=%s", first.ChannelIndex, first.Reason)
 	}
 	scheduler.ReleaseChannelReservation(first.Kind, first.ChannelIndex)
@@ -326,7 +332,7 @@ func TestMatchedGroupPrecedesFallbackGroupAndFallsBackAfterFailure(t *testing.T)
 		t.Fatalf("命中分组渠道失败后的兜底选择失败: %v", err)
 	}
 	defer scheduler.ReleaseChannelReservation(second.Kind, second.ChannelIndex)
-	if second.ChannelIndex != 0 || second.Reason != "promotion_priority" {
+	if second.ChannelIndex != 0 || second.Reason != "priority_order" {
 		t.Fatalf("命中分组失败后应进入兜底分组，got index=%d reason=%s", second.ChannelIndex, second.Reason)
 	}
 }

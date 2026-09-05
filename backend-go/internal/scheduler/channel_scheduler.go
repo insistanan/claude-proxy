@@ -3,6 +3,7 @@ package scheduler
 import (
 	"sync"
 
+	"github.com/BenedictKing/claude-proxy/internal/circuit"
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
@@ -23,6 +24,7 @@ type ChannelScheduler struct {
 	urlManager           *urlhealth.URLManager   // URL 管理器（非阻塞，动态排序）
 	profileManager       *metrics.ProfileManager // 性能画像管理器
 	adaptiveScheduler    *AdaptiveScheduler      // 自适应调度器
+	circuitManager       *circuit.Manager        // 渠道级三态熔断器（nil 表示未启用）
 	// inFlightByKind 记录选渠后、真正发出上游请求前的在途预留。
 	// 让并发对话在 StartRequest 之前就能看到彼此占用，从而分摊到不同供应商。
 	inFlightByKind map[ChannelKind]map[int]int64
@@ -77,6 +79,27 @@ func NewChannelScheduler(
 		urlManager:      urlMgr,
 		inFlightByKind:  make(map[ChannelKind]map[int]int64),
 	}
+}
+
+// SetCircuitManager 注入渠道级熔断器管理器（internal/circuit）。
+// 由 main.go 在构造 scheduler 后调用；nil 表示不启用渠道级熔断。
+func (s *ChannelScheduler) SetCircuitManager(manager *circuit.Manager) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.circuitManager = manager
+}
+
+// CircuitManager 返回渠道级熔断器管理器（可能为 nil；nil 表示未启用）。
+func (s *ChannelScheduler) CircuitManager() *circuit.Manager {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.circuitManager
 }
 
 // getMetricsManager 根据类型获取对应的指标管理器

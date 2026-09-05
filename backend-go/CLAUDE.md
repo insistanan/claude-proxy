@@ -58,6 +58,8 @@ log.Printf("[Component] 警告: 消息内容")
 | Responses | `[Responses-Stream-Token]` | Responses Token 统计 |
 | Models | `[Models]` | 跨接口的模型列表合并操作 |
 | 评测 | `[Eval-Init]` / `[Eval-Seed]` / `[Eval-Run]` / `[Eval-Watch]` / `[Eval-Fingerprint]` / `[Eval-Shutdown]` | 评测工作台 |
+| 熔断 | `[Circuit-Open]` / `[Circuit-Close]` / `[Circuit-Probe]` / `[Circuit-Init]` | 渠道级三态熔断器（internal/circuit） |
+| 调度熔断 | `[X-Circuit]`（X 为协议前缀，如 Messages-Circuit） | 选渠时跳过熔断渠道 |
 
 ## 工具使用注意事项
 

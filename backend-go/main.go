@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BenedictKing/claude-proxy/internal/circuit"
 	"github.com/BenedictKing/claude-proxy/internal/cli"
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
@@ -159,6 +160,24 @@ func newApp() (*app, error) {
 	log.Printf("[Scheduler-Init] 多渠道调度器已初始化 (失败率阈值: %.0f%%, 滑动窗口: %d)",
 		a.metricsByKind[scheduler.ChannelKindMessages].GetFailureThreshold()*100,
 		a.metricsByKind[scheduler.ChannelKindMessages].GetWindowSize())
+
+	// 渠道级三态熔断器（internal/circuit）。CIRCUIT_ENABLED=false 一键关闭。
+	circuitConfig := circuit.Config{
+		FailureThreshold:   a.envCfg.CircuitFailureThreshold,
+		ErrorRateThreshold: a.envCfg.CircuitErrorRateThreshold,
+		MinRequests:        a.envCfg.CircuitMinRequests,
+		Cooldown:           time.Duration(a.envCfg.CircuitCooldownSeconds) * time.Second,
+		SuccessThreshold:   a.envCfg.CircuitProbeSuccessThreshold,
+	}
+	circuitManager := circuit.NewManager(circuitConfig, a.envCfg.CircuitEnabled)
+	a.channelScheduler.SetCircuitManager(circuitManager)
+	if a.envCfg.CircuitEnabled {
+		log.Printf("[Circuit-Init] 渠道级熔断已启用 (连续失败阈值: %d, 错误率: %.0f%%, 最小样本: %d, 冷却: %ds, 半开成功阈值: %d)",
+			circuitConfig.FailureThreshold, circuitConfig.ErrorRateThreshold*100, circuitConfig.MinRequests,
+			a.envCfg.CircuitCooldownSeconds, circuitConfig.SuccessThreshold)
+	} else {
+		log.Printf("[Circuit-Init] 渠道级熔断已禁用 (CIRCUIT_ENABLED=false)")
+	}
 
 	// 初始化自适应负载均衡
 	profileManager := metrics.NewProfileManager()
@@ -329,6 +348,10 @@ func (a *app) setupAdminAPI(apiGroup *gin.RouterGroup) {
 			"data":    reports,
 		})
 	})
+
+	// 渠道级熔断器（查询 / 手动重置）
+	apiGroup.GET("/circuit-breakers", handlers.GetCircuitBreakers(a.channelScheduler))
+	apiGroup.POST("/circuit-breakers/reset", handlers.ResetCircuitBreaker(a.channelScheduler))
 
 	// 对话与路由覆盖
 	apiGroup.GET("/conversations/route-options", handlers.GetConversationRouteOptions(a.cfgManager))

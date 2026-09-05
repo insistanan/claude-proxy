@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/converters"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
@@ -196,6 +197,22 @@ func (p *GeminiProvider) convertToGeminiRequest(claudeReq *types.ClaudeRequest, 
 	if claudeReq.Temperature > 0 {
 		genConfig["temperature"] = claudeReq.Temperature
 	}
+	if claudeReq.TopP > 0 {
+		genConfig["topP"] = claudeReq.TopP
+	}
+	if len(claudeReq.StopSequences) > 0 {
+		genConfig["stopSequences"] = claudeReq.StopSequences
+	}
+
+	// thinking → generationConfig.thinkingConfig。Claude thinking 与 Responses
+	// reasoning 同为 effort 语义，复用 converters.ResponsesReasoningToGeminiThinking
+	// 的档位映射（Gemini 2.5 预算表 / Gemini 3 thinkingLevel 分支都在那里），
+	// 不在 providers 再写一份。
+	if cfg, err := geminiThinkingConfigFromClaude(claudeReq); err != nil {
+		return nil, err
+	} else if cfg != nil {
+		genConfig["thinkingConfig"] = cfg
+	}
 
 	if len(genConfig) > 0 {
 		req["generationConfig"] = genConfig
@@ -223,6 +240,19 @@ func (p *GeminiProvider) convertToGeminiRequest(claudeReq *types.ClaudeRequest, 
 	}
 
 	return req, nil
+}
+
+// geminiThinkingConfigFromClaude 把 Claude thinking 配置转为 Gemini thinkingConfig。
+// effort 解析复用 resolveClaudeReasoningEffort（与 Chat/Responses 上游同判据），
+// 档位映射复用 converters.ResponsesReasoningToGeminiThinking。
+func geminiThinkingConfigFromClaude(claudeReq *types.ClaudeRequest) (*types.GeminiThinkingConfig, error) {
+	effort := resolveClaudeReasoningEffort(claudeReq)
+	if effort == "" || effort == "auto" {
+		// "auto" 在 Gemini 无等价字段：省略即交由上游默认策略。
+		return nil, nil
+	}
+	reasoning := map[string]interface{}{"effort": effort}
+	return converters.ResponsesReasoningToGeminiThinking(claudeReq.Model, reasoning)
 }
 
 func buildGeminiSystemInstructionText(claudeReq *types.ClaudeRequest) string {

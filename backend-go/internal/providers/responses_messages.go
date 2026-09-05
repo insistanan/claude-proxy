@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,8 @@ type claudeResponsesRequest struct {
 	Stream               bool          `json:"stream"`
 	MaxOutputTokens      int           `json:"max_output_tokens,omitempty"`
 	Temperature          float64       `json:"temperature,omitempty"`
+	TopP                 float64       `json:"top_p,omitempty"`
+	Stop                 []string      `json:"stop,omitempty"`
 	Tools                []interface{} `json:"tools,omitempty"`
 	ToolChoice           interface{}   `json:"tool_choice,omitempty"`
 	Reasoning            interface{}   `json:"reasoning,omitempty"`
@@ -145,6 +148,12 @@ func (p *MessagesResponsesProvider) HandleStreamResponseCtx(ctx context.Context,
 				send(event)
 			}
 		}
+		// 流内失败（response.failed / 顶层 error）：经 errChan 上报由消费端统一
+		// 写错误事件并补终止序列；不伪造 message_stop，也不登记链/缓存。
+		if state.failed {
+			fail(NewUpstreamStreamFailedError(state.capacityError, state.failedMessage))
+			return
+		}
 		for _, event := range state.finish() {
 			send(event)
 		}
@@ -185,6 +194,13 @@ func claudeRequestToResponsesRequest(claudeReq *types.ClaudeRequest, upstream *c
 	}
 	if claudeReq.Temperature > 0 {
 		req.Temperature = claudeReq.Temperature
+	}
+	// top_p / stop_sequences 直传（cc-switch transform_responses.rs 同映射）。
+	if claudeReq.TopP > 0 {
+		req.TopP = claudeReq.TopP
+	}
+	if len(claudeReq.StopSequences) > 0 {
+		req.Stop = claudeReq.StopSequences
 	}
 	if len(claudeReq.Tools) > 0 {
 		req.Tools = claudeToolsToResponsesTools(claudeReq.Tools)
@@ -687,6 +703,13 @@ type responsesToClaudeStreamState struct {
 	cacheReadInputTokens     int
 	cacheCreationInputTokens int
 	hasUsage                 bool
+
+	// 上游失败状态（response.failed / 顶层 error 事件）：
+	// failed 阻止 finish() 伪造成功终止；capacityError 标记 model at capacity
+	// 类容量错误（上层同渠道重试）；failedMessage 保存错误信封供上报。
+	failed        bool
+	capacityError bool
+	failedMessage string
 }
 
 type responsesStreamToolCall struct {
@@ -713,6 +736,7 @@ func (s *responsesToClaudeStreamState) processLine(line string) []string {
 	}
 	root := gjson.Parse(data)
 	if root.Get("error").Exists() {
+		s.failed = true
 		return []string{buildClaudeSSE("error", map[string]interface{}{
 			"type":  "error",
 			"error": root.Get("error").Value(),
@@ -720,6 +744,24 @@ func (s *responsesToClaudeStreamState) processLine(line string) []string {
 	}
 
 	eventType := root.Get("type").String()
+
+	// response.failed 的错误信封在 response.error 下（与顶层 error 事件不同形态）。
+	// 不处理会让流尾 finish() 伪造 message_stop，客户端把失败当成功终止。
+	// model at capacity 类容量错误转 RetrySameCandidateError 由上层同渠道重试。
+	if eventType == "response.failed" {
+		s.failed = true
+		failedPayload := root.Get("response.error").Raw
+		if failedPayload == "" {
+			failedPayload = data
+		}
+		if proxycoreIsModelCapacity(failedPayload) {
+			s.capacityError = true
+		} else {
+			s.failedMessage = failedPayload
+		}
+		return nil
+	}
+
 	s.captureUpstreamResponseID(root)
 	s.captureResponsesUsage(root)
 	out := s.ensureMessageStart(root)
@@ -838,6 +880,10 @@ func (s *responsesToClaudeStreamState) emitCompletedOutput(root gjson.Result) []
 }
 
 func (s *responsesToClaudeStreamState) finish() []string {
+	if s.failed {
+		// 错误流：不伪造成功终止（message_delta/message_stop 由错误路径统一处理）。
+		return nil
+	}
 	out := []string{}
 	out = append(out, s.closeReasoningBlock()...)
 	out = append(out, s.closeTextBlock()...)
@@ -849,6 +895,47 @@ func (s *responsesToClaudeStreamState) finish() []string {
 		out = append(out, buildClaudeSSE("message_stop", map[string]interface{}{"type": "message_stop"}))
 	}
 	return out
+}
+
+// proxycoreIsModelCapacity 与 handlers/proxycore.IsUpstreamModelCapacityError 同判据
+// （providers 不能 import proxycore：proxycore→visionlayer→providers 会成环）。
+// 仅匹配已知的明确容量错误措辞，避免裸 capacity 误判业务正文。
+func proxycoreIsModelCapacity(payload string) bool {
+	message := strings.ToLower(payload)
+	return strings.Contains(message, "selected model is at capacity") ||
+		strings.Contains(message, "model is at capacity")
+}
+
+// UpstreamStreamFailedError 表示 Responses 上游在流内报告了失败
+// （response.failed / 顶层 error 事件）。Capacity=true 时是 model at capacity
+// 类容量错误，调用方（proxycore）可按同候选重试处理；否则是真实上游失败。
+type UpstreamStreamFailedError struct {
+	Capacity bool
+	Payload  string
+}
+
+func (e *UpstreamStreamFailedError) Error() string {
+	if e.Capacity {
+		return "upstream stream failed: model at capacity"
+	}
+	if e.Payload != "" {
+		return "upstream stream failed: " + e.Payload
+	}
+	return "upstream stream failed"
+}
+
+// NewUpstreamStreamFailedError 构造流内失败错误。
+func NewUpstreamStreamFailedError(capacity bool, payload string) error {
+	return &UpstreamStreamFailedError{Capacity: capacity, Payload: payload}
+}
+
+// IsUpstreamStreamFailed 判断 err 是否为流内失败错误（供上层分类）。
+func IsUpstreamStreamFailed(err error) (*UpstreamStreamFailedError, bool) {
+	var target *UpstreamStreamFailedError
+	if errors.As(err, &target) {
+		return target, true
+	}
+	return nil, false
 }
 
 func (s *responsesToClaudeStreamState) captureUpstreamResponseID(root gjson.Result) {

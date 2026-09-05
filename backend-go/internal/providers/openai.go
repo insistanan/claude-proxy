@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // OpenAIProvider OpenAI 提供商
@@ -46,6 +44,14 @@ func (p *OpenAIProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 		Messages:    p.convertMessages(&claudeReq, upstream != nil && upstream.RequireReasoningContent),
 		Stream:      claudeReq.Stream,
 		Temperature: claudeReq.Temperature,
+	}
+	// top_p / stop_sequences：与 temperature 同级的采样参数直传
+	//（cc-switch transform.rs 同映射；0 值/空数组省略避免触发部分网关的严格校验）。
+	if claudeReq.TopP > 0 {
+		openaiReq.TopP = claudeReq.TopP
+	}
+	if len(claudeReq.StopSequences) > 0 {
+		openaiReq.Stop = claudeReq.StopSequences
 	}
 	if claudeReq.Stream {
 		openaiReq.StreamOptions = map[string]interface{}{"include_usage": true}
@@ -312,6 +318,21 @@ func (p *OpenAIProvider) convertTools(claudeTools []types.ClaudeTool) []types.Op
 
 // cleanJsonSchema 清理 JSON Schema，移除某些上游不支持的字段
 func cleanJsonSchema(schema interface{}) interface{} {
+	cleaned := cleanJsonSchemaFields(schema)
+	// 根级缺 type/properties 时补最小 object schema（cc-switch clean_schema 同语义）：
+	// 部分严格 OpenAI 兼容网关对缺根 type 的 function parameters 直接 400。
+	if schemaMap, ok := cleaned.(map[string]interface{}); ok {
+		if _, hasType := schemaMap["type"]; !hasType {
+			schemaMap["type"] = "object"
+			if _, hasProps := schemaMap["properties"]; !hasProps {
+				schemaMap["properties"] = map[string]interface{}{}
+			}
+		}
+	}
+	return cleaned
+}
+
+func cleanJsonSchemaFields(schema interface{}) interface{} {
 	if schema == nil {
 		return schema
 	}
@@ -333,13 +354,13 @@ func cleanJsonSchema(schema interface{}) interface{} {
 			}
 			// 递归处理嵌套对象
 			if key == "properties" || key == "items" {
-				cleaned[key] = cleanJsonSchema(value)
+				cleaned[key] = cleanJsonSchemaFields(value)
 			} else if valueMap, isMap := value.(map[string]interface{}); isMap {
-				cleaned[key] = cleanJsonSchema(valueMap)
+				cleaned[key] = cleanJsonSchemaFields(valueMap)
 			} else if valueSlice, isSlice := value.([]interface{}); isSlice {
 				cleanedSlice := make([]interface{}, len(valueSlice))
 				for i, item := range valueSlice {
-					cleanedSlice[i] = cleanJsonSchema(item)
+					cleanedSlice[i] = cleanJsonSchemaFields(item)
 				}
 				cleaned[key] = cleanedSlice
 			} else {
@@ -354,7 +375,7 @@ func cleanJsonSchema(schema interface{}) interface{} {
 	if schemaSlice, ok := schema.([]interface{}); ok {
 		cleaned := make([]interface{}, len(schemaSlice))
 		for i, item := range schemaSlice {
-			cleaned[i] = cleanJsonSchema(item)
+			cleaned[i] = cleanJsonSchemaFields(item)
 		}
 		return cleaned
 	}
@@ -485,9 +506,9 @@ func (p *OpenAIProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string
 	return p.HandleStreamResponseCtx(context.Background(), body)
 }
 
-// HandleStreamResponseCtx 处理流式响应（支持客户端断连中止）
-// 修复：所有向 eventChan 的发送都通过 send() 包装，select ctx.Done()，
-// 客户端断连时立即停止读取上游并退出，杜绝"缓冲写满后永久阻塞"的 goroutine 泄漏。
+// HandleStreamResponseCtx 处理流式响应（支持客户端断连中止）。
+// 协议转换逻辑在 chat_stream.go 的 chatToClaudeStreamState；本函数只负责
+// streamPump 脚手架（事件/错误双通道、断连中止、SSE scanner）与状态机驱动。
 func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
 	pump := newStreamPump(ctx)
 	eventChan, errChan := pump.eventChan, pump.errChan
@@ -500,413 +521,48 @@ func (p *OpenAIProvider) HandleStreamResponseCtx(ctx context.Context, body io.Re
 		send := pump.send
 		fail := pump.fail
 
+		state := newChatToClaudeStreamState()
 		scanner := pump.newScanner(body)
 
-		toolCallAccumulator := make(map[int]*ToolCallAccumulator)
-		assistantToolCalls := make(map[int]types.OpenAIToolCall)
-		nextBlockIndex := 0
-
-		// 文本块状态跟踪
-		textBlockStarted := false
-		textBlockIndex := -1
-
-		// reasoning_content / 文本累积器：用于缓存 (assistant 文本 → reasoning)，
-		// 供客户端回传历史丢失明文 thinking 时自动补回（Chat 推理模型要求回传）。
-		// 注意：assistantTextBuffer 刻意不复用 textDeltaBuffer（后者在 closeTextBlock 时会 Reset）。
-		var reasoningDeltaBuffer strings.Builder
-		var assistantTextBuffer strings.Builder
-		embeddedReasoningMode := false
-
-		// message_start 事件状态
-		messageStartEmitted := false
-		var streamModel string
-		var textDeltaBuffer strings.Builder
-		var streamUsage types.Usage
-		hasStreamUsage := false
-		pendingStopReason := ""
-		messageDeltaEmitted := false
-
-		// 发送 message_stop 的辅助函数
-		emitMessageStop := func() {
-			send("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-		}
-		emitMessageDelta := func(stopReason string) {
-			if messageDeltaEmitted {
-				return
-			}
-			if stopReason == "" {
-				stopReason = "end_turn"
-			}
-			send(buildOpenAIMessageDeltaEvent(stopReason, streamUsage, hasStreamUsage))
-			messageDeltaEmitted = true
-		}
-
-		emitTextDelta := func(text string) {
-			if text == "" {
-				return
-			}
-			deltaEvent := map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": textBlockIndex,
-				"delta": map[string]string{
-					"type": "text_delta",
-					"text": text,
-				},
-			}
-			deltaJSON, _ := json.Marshal(deltaEvent)
-			send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
-		}
-
-		flushTextDelta := func() {
-			if !textBlockStarted || textDeltaBuffer.Len() == 0 {
-				return
-			}
-			emitTextDelta(textDeltaBuffer.String())
-			textDeltaBuffer.Reset()
-		}
-
-		// 关闭文本块的辅助函数
-		closeTextBlock := func() {
-			if !textBlockStarted {
-				return
-			}
-			flushTextDelta()
-			stopEvent := map[string]interface{}{
-				"type":  "content_block_stop",
-				"index": textBlockIndex,
-			}
-			stopJSON, _ := json.Marshal(stopEvent)
-			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
-			textBlockStarted = false
-			textBlockIndex = -1
-		}
-		emitToolCallStart := func(acc *ToolCallAccumulator) {
-			startEvent := map[string]interface{}{
-				"type":  "content_block_start",
-				"index": acc.BlockIndex,
-				"content_block": map[string]interface{}{
-					"type":  "tool_use",
-					"id":    acc.ID,
-					"name":  acc.Name,
-					"input": map[string]interface{}{},
-				},
-			}
-			startJSON, _ := json.Marshal(startEvent)
-			send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
-		}
-		emitToolCallArgumentDelta := func(acc *ToolCallAccumulator, partialJSON string) {
-			if partialJSON == "" {
-				return
-			}
-			deltaEvent := map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": acc.BlockIndex,
-				"delta": map[string]string{
-					"type":         "input_json_delta",
-					"partial_json": partialJSON,
-				},
-			}
-			deltaJSON, _ := json.Marshal(deltaEvent)
-			send(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", deltaJSON))
-		}
-		emitContentBlockStop := func(index int) {
-			stopEvent := map[string]interface{}{
-				"type":  "content_block_stop",
-				"index": index,
-			}
-			stopJSON, _ := json.Marshal(stopEvent)
-			send(fmt.Sprintf("event: content_block_stop\ndata: %s\n\n", stopJSON))
-		}
-		ensureToolCallStarted := func(acc *ToolCallAccumulator) bool {
-			if acc == nil {
-				return false
-			}
-			if acc.Started {
-				return true
-			}
-			if acc.ID == "" || acc.Name == "" {
-				return false
-			}
-			acc.BlockIndex = nextBlockIndex
-			nextBlockIndex++
-			acc.Started = true
-			emitToolCallStart(acc)
-			if acc.Arguments != "" {
-				emitToolCallArgumentDelta(acc, acc.Arguments)
-				acc.EmittedArgumentLen = len(acc.Arguments)
-			}
-			return true
-		}
-		emitPendingToolCallArgumentDelta := func(acc *ToolCallAccumulator) {
-			if acc == nil || !acc.Started || acc.EmittedArgumentLen >= len(acc.Arguments) {
-				return
-			}
-			emitToolCallArgumentDelta(acc, acc.Arguments[acc.EmittedArgumentLen:])
-			acc.EmittedArgumentLen = len(acc.Arguments)
-		}
-		closeToolCall := func(index int) {
-			acc := toolCallAccumulator[index]
-			if acc == nil {
-				return
-			}
-			if ensureToolCallStarted(acc) {
-				emitPendingToolCallArgumentDelta(acc)
-				emitContentBlockStop(acc.BlockIndex)
-			}
-			delete(toolCallAccumulator, index)
-		}
-		closeAllToolCalls := func() {
-			if len(toolCallAccumulator) == 0 {
-				return
-			}
-			indexes := make([]int, 0, len(toolCallAccumulator))
-			for index := range toolCallAccumulator {
-				indexes = append(indexes, index)
-			}
-			sort.Ints(indexes)
-			for _, index := range indexes {
-				closeToolCall(index)
-			}
-		}
-		snapshotAssistantToolCalls := func() []types.OpenAIToolCall {
-			if len(assistantToolCalls) == 0 {
-				return nil
-			}
-			indexes := make([]int, 0, len(assistantToolCalls))
-			for index := range assistantToolCalls {
-				indexes = append(indexes, index)
-			}
-			sort.Ints(indexes)
-			toolCalls := make([]types.OpenAIToolCall, 0, len(indexes))
-			for _, index := range indexes {
-				toolCalls = append(toolCalls, assistantToolCalls[index])
-			}
-			return toolCalls
-		}
-		finishStream := func() {
-			// 缓存本轮完整 assistant 消息。工具调用回合通常没有文本，仍需用其
-			// 工具调用内容关联 reasoning_content，供 Claude Code 下一轮回传时补回。
-			if reasoningDeltaBuffer.Len() > 0 {
-				storeReasoningForAssistantMessage(types.OpenAIMessage{
-					Role:      "assistant",
-					Content:   assistantTextBuffer.String(),
-					ToolCalls: snapshotAssistantToolCalls(),
-				}, reasoningDeltaBuffer.String())
-			}
-			closeTextBlock()
-			closeAllToolCalls()
-			if pendingStopReason == "" && messageStartEmitted {
-				pendingStopReason = "end_turn"
-			}
-			if pendingStopReason != "" {
-				emitMessageDelta(pendingStopReason)
-			}
-			emitMessageStop()
-		}
-
 		for scanner.Scan() {
-			line := scanner.Text()
-			line = strings.TrimSpace(line)
-
-			if line == "" {
-				continue
-			}
-
-			jsonStr, isData := utils.ParseSSEDataLine(line)
-			if !isData {
-				continue
-			}
-			if jsonStr == utils.SSEDoneMarker {
-				finishStream()
-				return
-			}
-
-			var chunk map[string]interface{}
-			if err := json.Unmarshal([]byte(jsonStr), &chunk); err != nil {
-				continue
-			}
-			if mergeOpenAIUsageFromChunk(chunk, &streamUsage) {
-				hasStreamUsage = true
-			}
-
-			// 检查是否有错误
-			if errObj, ok := chunk["error"]; ok {
-				fail(fmt.Errorf("upstream error: %v", errObj))
-				emitMessageStop()
-				return
-			}
-
-			// 首次收到有效 chunk 时，提取 model 并发送 message_start
-			if !messageStartEmitted {
-				if m, ok := chunk["model"].(string); ok {
-					streamModel = m
-				}
-				msgStart := map[string]interface{}{
-					"type": "message_start",
-					"message": map[string]interface{}{
-						"id":            fmt.Sprintf("msg_%s", uuid.New().String()),
-						"type":          "message",
-						"role":          "assistant",
-						"content":       []interface{}{},
-						"model":         streamModel,
-						"stop_reason":   nil,
-						"stop_sequence": nil,
-						"usage":         map[string]interface{}{"input_tokens": 0, "output_tokens": 1},
-					},
-				}
-				startJSON, _ := json.Marshal(msgStart)
-				send(fmt.Sprintf("event: message_start\ndata: %s\n\n", startJSON))
-				messageStartEmitted = true
-			}
-
-			choices, ok := chunk["choices"].([]interface{})
-			if !ok || len(choices) == 0 {
-				continue
-			}
-
-			choice, ok := choices[0].(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			delta, ok := choice["delta"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			// reasoning_content 只在代理内部缓存，不作为 thinking 发送给客户端。
-			// 下一轮若上游要求原样回传，finishStream 会按最终正文/工具调用指纹从
-			// 代理缓存中补齐。
-			if reasoningContent := extractOpenAIReasoningContent(delta); reasoningContent != "" {
-				reasoningDeltaBuffer.WriteString(reasoningContent)
-			}
-
-			// 处理文本内容
-			if content, ok := delta["content"].(string); ok && content != "" {
-				visibleContent, embeddedReasoning := splitEmbeddedReasoningDelta(content, &embeddedReasoningMode)
-				if embeddedReasoning != "" {
-					reasoningDeltaBuffer.WriteString(embeddedReasoning)
-				}
-				if visibleContent != "" {
-					assistantTextBuffer.WriteString(visibleContent)
-					// 如果是第一个文本块,发送 content_block_start
-					if !textBlockStarted {
-						textBlockIndex = nextBlockIndex
-						nextBlockIndex++
-						startEvent := map[string]interface{}{
-							"type":  "content_block_start",
-							"index": textBlockIndex,
-							"content_block": map[string]string{
-								"type": "text",
-								"text": "",
-							},
-						}
-						startJSON, _ := json.Marshal(startEvent)
-						send(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", startJSON))
-						textBlockStarted = true
-					}
-
-					textDeltaBuffer.WriteString(visibleContent)
-					if shouldFlushOpenAITextDelta(textDeltaBuffer.String(), visibleContent) {
-						flushTextDelta()
-					}
-				}
-			}
-
-			// 处理工具调用。部分 OpenAI 兼容上游会在普通文本 delta 中携带空 tool_calls: []，
-			// 不能因此关闭文本块，否则 Claude Code 会把连续文本拆成多个 content block 显示。
-			if toolCalls, ok := delta["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
-				closeTextBlock()
-
-				for _, tc := range toolCalls {
-					toolCall, ok := tc.(map[string]interface{})
-					if !ok {
-						continue
-					}
-
-					index := 0
-					if idx, ok := toolCall["index"].(float64); ok {
-						index = int(idx)
-					}
-
-					// 获取或创建累加器
-					if _, exists := toolCallAccumulator[index]; !exists {
-						toolCallAccumulator[index] = &ToolCallAccumulator{BlockIndex: -1}
-					}
-					acc := toolCallAccumulator[index]
-
-					// 累积数据
-					if id, ok := toolCall["id"].(string); ok {
-						acc.ID = id
-					}
-
-					if function, ok := toolCall["function"].(map[string]interface{}); ok {
-						if name, ok := function["name"].(string); ok {
-							acc.Name = name
-						}
-						if args, ok := function["arguments"].(string); ok {
-							acc.Arguments += args
-						}
-					}
-					assistantToolCalls[index] = types.OpenAIToolCall{
-						ID:   acc.ID,
-						Type: "function",
-						Function: types.OpenAIToolCallFunction{
-							Name:      acc.Name,
-							Arguments: acc.Arguments,
-						},
-					}
-
-					if ensureToolCallStarted(acc) {
-						emitPendingToolCallArgumentDelta(acc)
-					}
-				}
-			}
-
-			// 处理结束原因
-			if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" && finishReason != "none" && finishReason != "null" {
-				// 关闭所有未关闭的块
-				closeTextBlock()
-				closeAllToolCalls()
-
-				// 根据 finish_reason 确定 stop_reason
-				stopReason := "end_turn"
-				if finishReason == "tool_calls" || finishReason == "function_call" {
-					stopReason = "tool_use"
-				} else if finishReason == "length" {
-					stopReason = "max_tokens"
-				}
-				pendingStopReason = stopReason
-				if stopReason == "tool_use" {
-					finishStream()
+			for _, event := range state.ProcessLine(scanner.Text()) {
+				if !send(event) {
 					return
 				}
 			}
 		}
-
 		if err := scanner.Err(); err != nil {
 			if isDisconnectLikeError(err) {
-				// 客户端主动断开，仍然发送 message_stop
-				finishStream()
+				// 客户端主动断开：不再伪造成功收尾。
 				return
 			}
 			fail(err)
+			return
 		}
-
-		// 流正常结束，发送 message_stop
-		finishStream()
+		if state.Failed() {
+			// 上游错误事件：经 errChan 交给消费端统一写 error 事件并补协议终止序列，
+			// 生产端不再伪造 message_stop。
+			fail(fmt.Errorf("upstream returned an error event"))
+			return
+		}
+		for _, event := range state.Finish() {
+			if !send(event) {
+				return
+			}
+		}
 	}()
 
 	return eventChan, errChan, nil
 }
 
-// ToolCallAccumulator 工具调用累加器
+// ToolCallAccumulator 工具调用累加器（Chat / Responses 上游流共用）。
 type ToolCallAccumulator struct {
 	ID                 string
 	Name               string
 	Arguments          string
 	BlockIndex         int
 	Started            bool
+	StartEventEmitted  bool
 	EmittedArgumentLen int
 }
 
@@ -1163,6 +819,12 @@ func shouldUseMaxCompletionTokens(targetModel string, claudeReq *types.ClaudeReq
 		return true
 	}
 
+	// OpenAI o-series / gpt-5 推理模型只接受 max_completion_tokens
+	//（cc-switch transform.rs 同判据；对官方与兼容网关都发 max_tokens 会被 400 拒绝）。
+	if isOpenAIReasoningModelFamily(targetModel) {
+		return true
+	}
+
 	if upstream == nil {
 		return false
 	}
@@ -1178,6 +840,15 @@ func shouldUseMaxCompletionTokens(targetModel string, claudeReq *types.ClaudeReq
 	}
 
 	return false
+}
+
+// isOpenAIReasoningModelFamily 判断目标模型是否属于只接受 max_completion_tokens 的
+// OpenAI 推理模型家族（o1/o3/o4 系列与 gpt-5 系列）。子串匹配与 cc-switch 的
+// is_openai_o_series 判据一致。
+func isOpenAIReasoningModelFamily(model string) bool {
+	value := strings.ToLower(model)
+	return strings.Contains(value, "o1") || strings.Contains(value, "o3") ||
+		strings.Contains(value, "o4") || strings.Contains(value, "gpt-5")
 }
 
 func looksLikeKimiOrMoonshot(value string) bool {

@@ -6,6 +6,7 @@ package proxycore
 
 import (
 	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/claude-proxy/internal/providers"
 
 	"context"
 	"errors"
@@ -136,6 +137,14 @@ func classifyResponseProcessingError(err error, responseWritten bool) responsePr
 			action:  responseProcessingContentSafetyHook,
 			hookErr: hookErr,
 		}
+	}
+	// 上游流内失败（response.failed / error 事件）：容量错误按同候选重试处理
+	// （与 RetrySameCandidateError 同语义）；其余为真实渠道失败。
+	if streamFailed, ok := providers.IsUpstreamStreamFailed(err); ok {
+		if streamFailed.Capacity && !responseWritten {
+			return responseProcessingDecision{action: responseProcessingRetryCandidate}
+		}
+		return responseProcessingDecision{action: responseProcessingChannelFailure}
 	}
 	if isRetrySameCandidateError(err) && !responseWritten {
 		return responseProcessingDecision{action: responseProcessingRetryCandidate}

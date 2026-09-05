@@ -13,6 +13,8 @@ type ClaudeRequest struct {
 	MaxTokens           int                    `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int                    `json:"max_completion_tokens,omitempty"`
 	Temperature         float64                `json:"temperature,omitempty"`
+	TopP                float64                `json:"top_p,omitempty"`
+	StopSequences       []string               `json:"stop_sequences,omitempty"`
 	Stream              bool                   `json:"stream,omitempty"`
 	Tools               []ClaudeTool           `json:"tools,omitempty"`
 	ToolChoice          interface{}            `json:"tool_choice,omitempty"`   // string 或 object
@@ -30,6 +32,8 @@ func (r *ClaudeRequest) UnmarshalJSON(data []byte) error {
 		MaxTokens           int                    `json:"max_tokens,omitempty"`
 		MaxCompletionTokens int                    `json:"max_completion_tokens,omitempty"`
 		Temperature         float64                `json:"temperature,omitempty"`
+		TopP                float64                `json:"top_p,omitempty"`
+		StopSequences       []string               `json:"stop_sequences,omitempty"`
 		Stream              bool                   `json:"stream,omitempty"`
 		Tools               json.RawMessage        `json:"tools,omitempty"`
 		ToolChoice          interface{}            `json:"tool_choice,omitempty"`
@@ -54,6 +58,8 @@ func (r *ClaudeRequest) UnmarshalJSON(data []byte) error {
 	r.MaxTokens = wire.MaxTokens
 	r.MaxCompletionTokens = wire.MaxCompletionTokens
 	r.Temperature = wire.Temperature
+	r.TopP = wire.TopP
+	r.StopSequences = wire.StopSequences
 	r.Stream = wire.Stream
 	r.Tools = tools
 	r.ToolChoice = wire.ToolChoice
@@ -168,6 +174,8 @@ type OpenAIRequest struct {
 	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
 	MaxTokens           int             `json:"max_tokens,omitempty"`
 	Temperature         float64         `json:"temperature,omitempty"`
+	TopP                float64         `json:"top_p,omitempty"`
+	Stop                []string        `json:"stop,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	StreamOptions       interface{}     `json:"stream_options,omitempty"`
 	Tools               []OpenAITool    `json:"tools,omitempty"`

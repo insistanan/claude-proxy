@@ -106,6 +106,14 @@ func HandleMultiChannelFailover(
 			// 请求已完成（成功或已写回非 failover 错误），释放选渠预留。
 			// 注意：上游实际 ActiveRequests 仍由 ProfileManager 独立维护。
 			releaseReservation()
+			// 渠道级熔断记账（internal/circuit）：真正成功记成功；
+			// 已写回但非成功（内容安全拦截等 Handled-with-error 场景）按 Neutral 处理，
+			// 由 SuccessKey 区分。客户端取消（LastError 是 context.Canceled）不计健康度。
+			if result.SuccessKey != "" {
+				channelScheduler.RecordCircuitSuccess(kind, channelIndex)
+			} else if isClientSideError(result.LastError) {
+				channelScheduler.RecordCircuitNeutral(kind, channelIndex)
+			}
 			if onHandled != nil {
 				onHandled(selection, result)
 			}
@@ -147,9 +155,18 @@ func HandleMultiChannelFailover(
 			return
 		}
 
-		// 当前渠道失败，释放预留后再尝试下一渠道，避免“失败渠道”继续占负载。
+		// 当前渠道失败，释放预留后再尝试下一渠道，避免”失败渠道”继续占负载。
 		releaseReservation()
 		failedChannels[channelIndex] = true
+		// 渠道级熔断记账：渠道整体尝试失败（可重试错误）记失败；
+		// 客户端取消不计入健康度。
+		if result.Attempted {
+			if isClientSideError(result.LastError) {
+				channelScheduler.RecordCircuitNeutral(kind, channelIndex)
+			} else {
+				channelScheduler.RecordCircuitFailure(kind, channelIndex)
+			}
+		}
 
 		if result.FailoverError != nil {
 			lastFailoverError = result.FailoverError

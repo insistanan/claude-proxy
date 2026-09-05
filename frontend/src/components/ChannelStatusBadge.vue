@@ -14,6 +14,10 @@
             <div>请求数: {{ metrics.requestCount }}</div>
             <div>成功率: {{ metrics.successRate?.toFixed(1) || 0 }}%</div>
             <div>连续失败: {{ metrics.consecutiveFailures }}</div>
+            <div v-if="metrics.circuitState && metrics.circuitState !== 'closed'">
+              熔断状态: {{ metrics.circuitState === 'open' ? '熔断中' : '半开探测' }}
+              <template v-if="metrics.circuitConsecutiveFailures">（连续失败 {{ metrics.circuitConsecutiveFailures }}）</template>
+            </div>
             <div v-if="metrics.lastSuccessAt">最后成功: {{ formatTime(metrics.lastSuccessAt) }}</div>
             <div v-if="metrics.lastFailureAt">最后失败: {{ formatTime(metrics.lastFailureAt) }}</div>
           </div>
@@ -45,7 +49,21 @@ const STATUS_CONFIG: Record<string, { icon: string; color: string; label: string
   unknown:    { icon: 'mdi-help-circle',  color: 'grey',    label: '未知', class: 'status-unknown' }
 }
 
-const statusConfig = computed(() => STATUS_CONFIG[props.status] || STATUS_CONFIG.unknown)
+// 渠道级熔断器运行时态（dashboard API 的 circuitState）：覆盖 active 渠道的展示。
+// open=熔断（红）、half_open=探测中（黄）；closed 不覆盖原状态。
+const CIRCUIT_CONFIG: Record<string, { icon: string; color: string; label: string; class: string }> = {
+  open:      { icon: 'mdi-flash-alert', color: 'error',   label: '熔断', class: 'status-circuit-open' },
+  half_open: { icon: 'mdi-check-underline-circle', color: 'warning', label: '探测中', class: 'status-circuit-half-open' }
+}
+
+const circuitConfig = computed(() => {
+  if (props.status !== 'active' && props.status !== 'healthy') return null
+  const state = props.metrics?.circuitState
+  if (!state || state === 'closed') return null
+  return CIRCUIT_CONFIG[state] ?? null
+})
+
+const statusConfig = computed(() => circuitConfig.value ?? STATUS_CONFIG[props.status] ?? STATUS_CONFIG.unknown)
 const statusIcon = computed(() => statusConfig.value.icon)
 const statusLabel = computed(() => statusConfig.value.label)
 const statusClass = computed(() => statusConfig.value.class)
@@ -181,6 +199,38 @@ const formatTime = (dateStr: string): string => {
   position: relative;
   /* 故障徽章本体持续警报呼吸，不必等 hover 就能被余光捕捉 */
   animation: alarm-breathe 1.6s ease-in-out infinite;
+}
+
+/* 渠道级熔断（运行时 circuitState=open）：错误色 + 警报呼吸，与 status-error 同强度 */
+.status-circuit-open .badge-content {
+  background: rgba(var(--v-theme-error), 0.14);
+  color: rgb(var(--v-theme-error));
+  border-color: rgba(var(--v-theme-error), 0.5);
+  position: relative;
+  animation: alarm-breathe 1.6s ease-in-out infinite;
+}
+
+/* 半开探测中（circuitState=half_open）：警示黄 + 状态灯 */
+.status-circuit-half-open .badge-content {
+  background: rgba(var(--v-theme-warning), 0.14);
+  color: rgb(var(--v-theme-warning));
+  border-color: rgba(var(--v-theme-warning), 0.45);
+  position: relative;
+  padding-left: 24px;
+}
+
+.status-circuit-half-open .badge-content::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(var(--v-theme-warning));
+  box-shadow: 0 0 7px 1px rgba(var(--v-theme-warning), 0.85);
+  animation: none;
 }
 
 /* 错误状态 — 短促冲击波警示扩散 */

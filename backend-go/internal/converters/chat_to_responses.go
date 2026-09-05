@@ -86,6 +86,20 @@ func ConvertOpenAIChatToResponses(ctx context.Context, modelName string, origina
 
 	nextSeq := func() int { st.Seq++; return st.Seq }
 
+	// 上游错误 chunk（带 error 字段、无 choices）：转成 response.failed 交给
+	// 消费端（responsesStreamEventError 按该 type 上报并终止流），不再静默丢弃
+	// 后于 [DONE] 伪造 response.completed。model at capacity 类容量错误的识别
+	// 由消费端按事件载荷统一判定。
+	if errObj := root.Get("error"); errObj.Exists() && !root.Get("choices").Exists() {
+		failed := `{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"failed","error":null}}`
+		failed, _ = sjson.Set(failed, "sequence_number", nextSeq())
+		failed, _ = sjson.Set(failed, "response.id", st.ResponseID)
+		failed, _ = sjson.Set(failed, "response.created_at", st.CreatedAt)
+		failed, _ = sjson.SetRaw(failed, "response.error", errObj.Raw)
+		out = append(out, emitResponsesEvent("response.failed", failed))
+		return out
+	}
+
 	// 处理首次 chunk - 初始化并生成 response.created 和 response.in_progress
 	if st.FirstChunk {
 		st.FirstChunk = false

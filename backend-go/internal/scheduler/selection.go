@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/BenedictKing/claude-proxy/internal/circuit"
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/conversation"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
@@ -456,6 +457,12 @@ func (s *ChannelScheduler) selectPriorityChannel(
 			log.Printf("[%s-Channel] 警告: 跳过不健康渠道: [%d] %s (失败率: %.1f%%)", prefix, ch.Index, ch.Name, failureRate*100)
 			continue
 		}
+		// 渠道级熔断检查（internal/circuit）：Open 未到期直接跳过；到期转 HalfOpen
+		// 并占用探测名额放行。探测名额随渠道级记账（RecordSuccess/RecordFailure/
+		// RecordNeutral）释放。
+		if !s.allowByCircuit(kind, ch.Index, ch.Name) {
+			continue
+		}
 
 		if len(samePriorityCandidates) == 0 {
 			currentPriority = ch.Priority
@@ -509,6 +516,84 @@ func (s *ChannelScheduler) hasAttemptableChannel(
 		return true
 	}
 	return false
+}
+
+// allowByCircuit 渠道级熔断放行判定。未启用（circuitManager 为 nil）时恒放行。
+// Open 未到期返回 false；冷却到期惰性转 HalfOpen 并占用探测名额放行。
+// 探测名额由渠道级记账（scheduler 层 RecordCircuit* 系列）释放。
+func (s *ChannelScheduler) allowByCircuit(kind ChannelKind, channelIndex int, channelName string) bool {
+	manager := s.CircuitManager()
+	if manager == nil {
+		return true
+	}
+	result := manager.Allow(string(kind), channelIndex)
+	if result.Allowed {
+		if result.Probe {
+			log.Printf("[Circuit-Probe] 渠道 [%d] %s 处于半开状态，放行探测请求", channelIndex, channelName)
+		}
+		return true
+	}
+	prefix := kindSchedulerLogPrefix(kind)
+	snap := manager.SnapshotEntry(string(kind), channelIndex)
+	log.Printf("[%s-Circuit] 跳过熔断中的渠道: [%d] %s (冷却剩余: %ds)",
+		prefix, channelIndex, channelName, snap.CooldownRemainingSec)
+	return false
+}
+
+// RecordCircuitSuccess / RecordCircuitFailure / RecordCircuitNeutral 渠道级熔断记账。
+// 与 Key 级 Record* 正交：这里的粒度是 (kind, channelIndex) 整个渠道。
+// Neutral 用于客户端取消、内容审核拦截等"结果不应计入渠道健康度"的场景。
+func (s *ChannelScheduler) RecordCircuitSuccess(kind ChannelKind, channelIndex int) {
+	if manager := s.CircuitManager(); manager != nil {
+		manager.RecordSuccess(string(kind), channelIndex)
+	}
+}
+
+func (s *ChannelScheduler) RecordCircuitFailure(kind ChannelKind, channelIndex int) {
+	if manager := s.CircuitManager(); manager != nil {
+		manager.RecordFailure(string(kind), channelIndex)
+	}
+}
+
+func (s *ChannelScheduler) RecordCircuitNeutral(kind ChannelKind, channelIndex int) {
+	if manager := s.CircuitManager(); manager != nil {
+		manager.RecordNeutral(string(kind), channelIndex)
+	}
+}
+
+// GetCircuitSnapshotForKind 返回指定协议的渠道熔断快照（dashboard 展示用）。
+func (s *ChannelScheduler) GetCircuitSnapshotForKind(kind ChannelKind) map[int]circuit.Snapshot {
+	manager := s.CircuitManager()
+	if manager == nil {
+		return nil
+	}
+	result := make(map[int]circuit.Snapshot)
+	for _, entry := range manager.Snapshot() {
+		if entry.Kind != string(kind) || entry.ChannelIndex < 0 {
+			continue
+		}
+		result[entry.ChannelIndex] = entry.Snapshot
+	}
+	return result
+}
+
+// CircuitManagerSnapshot 返回全部渠道熔断器快照（管理 API 用）。
+// 未启用熔断时返回空切片（非 nil，便于 JSON 序列化为 []）。
+func (s *ChannelScheduler) CircuitManagerSnapshot() []circuit.Entry {
+	manager := s.CircuitManager()
+	if manager == nil {
+		return []circuit.Entry{}
+	}
+	return manager.Snapshot()
+}
+
+// ResetCircuitBreaker 手动重置指定渠道的熔断器。
+func (s *ChannelScheduler) ResetCircuitBreaker(kind string, channelIndex int) bool {
+	manager := s.CircuitManager()
+	if manager == nil {
+		return false
+	}
+	return manager.Reset(kind, channelIndex)
 }
 
 func (s *ChannelScheduler) selectPromotedChannel(

@@ -219,3 +219,62 @@ func TestProcessToolUsePartIncludesInitialInputObject(t *testing.T) {
 		t.Fatalf("missing input_json_delta event:\n%s", events)
 	}
 }
+
+// 反证切片 2 的结构性修复：finish_reason=tool_calls 不再提前结束流，
+// 其后到达的 usage chunk 必须被纳入 message_delta（旧实现提前 return 丢 usage）。
+func TestChatStream_ToolCallsFinishDoesNotDropTrailingUsage(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"c","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"edit_file","arguments":"{\"path\":"}}]},"finish_reason":null}]}`,
+		`data: {"id":"c","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"main.go\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"c","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: {"id":"c","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	p := &OpenAIProvider{}
+	eventChan, _, err := p.HandleStreamResponse(io.NopCloser(strings.NewReader(body)))
+	if err != nil {
+		t.Fatalf("HandleStreamResponse() err = %v", err)
+	}
+	var events strings.Builder
+	for event := range eventChan {
+		events.WriteString(event)
+	}
+	got := events.String()
+	// usage 在 finish_reason 之后到达：message_delta 必须携带它。
+	if !strings.Contains(got, `"output_tokens":5`) {
+		t.Fatalf("trailing usage dropped; events:\n%s", got)
+	}
+	if !strings.Contains(got, `"stop_reason":"tool_use"`) {
+		t.Fatalf("missing tool_use stop_reason; events:\n%s", got)
+	}
+}
+
+// 反证切片 2 的结构性修复：上游 error 事件不再伪造 message_stop，
+// 流失败时客户端不应收到成功终止序列。
+func TestChatStream_UpstreamErrorDoesNotFakeMessageStop(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"c","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`,
+		`data: {"error":{"message":"internal","type":"server_error","code":"internal"}}`,
+		``,
+	}, "\n")
+
+	p := &OpenAIProvider{}
+	eventChan, errChan, err := p.HandleStreamResponse(io.NopCloser(strings.NewReader(body)))
+	if err != nil {
+		t.Fatalf("HandleStreamResponse() err = %v", err)
+	}
+	var events strings.Builder
+	for event := range eventChan {
+		events.WriteString(event)
+	}
+	err = <-errChan
+	if err == nil {
+		t.Fatalf("上游 error 应通过 errChan 上报")
+	}
+	got := events.String()
+	if strings.Contains(got, "message_stop") {
+		t.Fatalf("错误流不应伪造 message_stop; events:\n%s", got)
+	}
+}

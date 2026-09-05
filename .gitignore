@@ -258,3 +258,5 @@ docs/claude-code-investigation-*.md
 # 不允许 backend-go/backend-go/... 或 frontend/backend-go/... 任何子树入仓
 **/backend-go/backend-go/
 **/frontend/backend-go/
+
+临时/

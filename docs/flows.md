@@ -40,6 +40,8 @@
 仍过滤熔断/挂起渠道，渠道内多 BaseURL 按 urlhealth 延迟排序。
 ```
 
+渠道级三态熔断（`internal/circuit`）叠加在第 2/3/4 步的健康过滤之上：Open 渠道直接跳过；Open 冷却到期后惰性转 HalfOpen 并限量放行 1 个探测请求（探测失败立即回 Open，连续成功 2 次恢复 Closed）。渠道级记账在跨渠道 failover（`HandleMultiChannelFailover`）与单渠道出口（`handleSingleChannelProxy`）按渠道整体结果记录——成功记 Success、可重试失败记 Failure、客户端取消与内容审核转移记 Neutral（只释放探测名额不计健康度）。`CIRCUIT_ENABLED=false` 一键关闭；运行时状态经 `GET /api/circuit-breakers` 查询、`POST /api/circuit-breakers/reset` 手动重置。
+
 模型映射目标列表同样遵循显式顺序：管理端 `ModelMappingEditor` 支持拖拽
 `modelMapping[source]`，请求先尝试第一个目标模型，失败后才尝试后续目标。
 

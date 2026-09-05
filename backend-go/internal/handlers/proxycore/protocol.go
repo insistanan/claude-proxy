@@ -275,12 +275,19 @@ func handleSingleChannelProxy(
 		if result.SuccessKey != "" {
 			MarkConversationSuccess(channelScheduler, conversationID, spec.Kind, channelIndex, upstream.Name)
 			channelScheduler.ConsumePromotionCount(channelIndex, spec.Kind)
+			// 渠道级熔断记账（与多渠道路径同口径）。
+			channelScheduler.RecordCircuitSuccess(spec.Kind, channelIndex)
 		} else if result.LastError != nil && !errors.Is(result.LastError, context.Canceled) {
 			MarkConversationFailure(channelScheduler, conversationID, spec.Kind, result.LastError)
+		} else if errors.Is(result.LastError, context.Canceled) {
+			// 客户端取消不计入渠道健康度。
+			channelScheduler.RecordCircuitNeutral(spec.Kind, channelIndex)
 		}
 		return
 	}
 
+	// 渠道整体失败（可重试错误）：记入渠道级熔断。
+	channelScheduler.RecordCircuitFailure(spec.Kind, channelIndex)
 	log.Printf("[%s-Error] 所有API密钥都失败了", spec.LogName)
 	MarkConversationFailure(channelScheduler, conversationID, spec.Kind, result.LastError)
 	if spec.HandleAllKeysFailed != nil {

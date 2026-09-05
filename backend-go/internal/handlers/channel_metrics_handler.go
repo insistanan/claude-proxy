@@ -562,6 +562,7 @@ func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.Channe
 		channels := config.ChannelListToDTO(upstreams)
 
 		// 2. 构建 metrics 数据
+		circuitSnapshots := sch.GetCircuitSnapshotForKind(kind)
 		metricsResult := make([]gin.H, 0, len(upstreams))
 		for i, upstream := range upstreams {
 			if config.GetChannelStatus(&upstream) == config.ChannelStatusDeleted {
@@ -581,6 +582,18 @@ func GetChannelDashboard(cfgManager *config.ConfigManager, sch *scheduler.Channe
 				"latency":             resp.Latency,
 				"keyMetrics":          resp.KeyMetrics,
 				"timeWindows":         resp.TimeWindows,
+			}
+
+			// 渠道级熔断状态（internal/circuit 运行时态；无记录时为 closed 零值）
+			if snap, ok := circuitSnapshots[i]; ok {
+				item["circuitState"] = snap.State
+				item["circuitConsecutiveFailures"] = snap.ConsecutiveFailures
+				if snap.LastOpenedAt != "" {
+					item["circuitOpenedAt"] = snap.LastOpenedAt
+				}
+			} else {
+				item["circuitState"] = "closed"
+				item["circuitConsecutiveFailures"] = 0
 			}
 
 			if resp.LastSuccessAt != nil {
