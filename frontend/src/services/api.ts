@@ -449,6 +449,19 @@ class ApiService {
     })
   }
 
+  /** 弹出原生文件选择对话框选择 CC Switch 路径并保存；用户取消返回空串 */
+  async pickCcsPath(): Promise<{ path: string }> {
+    return this.request('/settings/ccs/pick-path', { method: 'POST' })
+  }
+
+  /** 以 deeplink 为参数拉起 CC Switch，由用户在其确认框中完成导入 */
+  async importToCcs(url: string): Promise<{ success: boolean }> {
+    return this.request('/settings/ccs/import', {
+      method: 'POST',
+      body: JSON.stringify({ url })
+    })
+  }
+
   async discoverUpstreamModels(request: UpstreamModelsRequest): Promise<ModelsResponse> {
     return this.request('/upstream/models', {
       method: 'POST',

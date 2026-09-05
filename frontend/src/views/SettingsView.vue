@@ -14,6 +14,7 @@
         <v-list v-model:selected="selectedSections" nav mandatory density="compact" bg-color="transparent">
           <v-list-item value="network" color="primary" prepend-icon="mdi-web" title="网络" />
           <v-list-item value="content-safety" color="primary" prepend-icon="mdi-shield-alert" title="内容安全" />
+          <v-list-item value="integration" color="primary" prepend-icon="mdi-swap-horizontal" title="集成" />
         </v-list>
       </nav>
 
@@ -66,6 +67,68 @@
             <div class="settings-actions">
               <v-btn type="submit" color="primary" prepend-icon="mdi-content-save" :loading="saving" :disabled="!networkDirty">
                 保存网络设置
+              </v-btn>
+            </div>
+          </v-form>
+        </section>
+
+        <section v-else-if="activeSection === 'integration'" aria-labelledby="integration-settings-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="integration-settings-title" class="text-h6 font-weight-bold">集成</h2>
+              <p class="text-body-2 text-medium-emphasis mt-1 mb-0">与外部工具的联动配置</p>
+            </div>
+          </div>
+
+          <v-form ref="integrationFormRef" @submit.prevent="saveIntegrationSettings">
+            <div class="setting-row">
+              <div class="setting-copy">
+                <div class="text-body-1 font-weight-medium">CC Switch 路径</div>
+                <div class="text-body-2 text-medium-emphasis mt-1">
+                  配置后，渠道菜单可将渠道一键导入 CC Switch（支持便携版）；
+                  未配置时渠道菜单仅提供"复制 CCS 链接"
+                </div>
+              </div>
+            </div>
+
+            <div class="ccs-path-row">
+              <v-text-field
+                v-model="ccSwitchPath"
+                label="CC Switch 可执行文件路径"
+                placeholder="例如 D:\\Tools\\cc-switch\\cc-switch.exe"
+                prepend-inner-icon="mdi-application-export"
+                variant="outlined"
+                density="comfortable"
+                autocomplete="off"
+                spellcheck="false"
+                :rules="[ccSwitchPathRule]"
+                hint="便携版无需安装协议，配置路径后即可一键导入"
+                persistent-hint
+              />
+              <v-btn
+                color="primary"
+                variant="tonal"
+                prepend-icon="mdi-folder-open"
+                :loading="pickingCcsPath"
+                @click="pickCcsPath"
+              >
+                选择文件
+              </v-btn>
+            </div>
+
+            <v-alert v-if="integrationNotice" :type="integrationNotice.type" variant="tonal" density="compact" class="mt-5">
+              {{ integrationNotice.message }}
+            </v-alert>
+
+            <div class="settings-actions">
+              <v-btn
+                type="submit"
+                color="primary"
+                prepend-icon="mdi-content-save"
+                :loading="saving"
+                :disabled="!integrationDirty"
+              >
+                保存集成设置
               </v-btn>
             </div>
           </v-form>
@@ -335,7 +398,7 @@ import {
   type SensitiveInfoRule
 } from '@/services/api'
 
-type SettingsSection = 'network' | 'content-safety'
+type SettingsSection = 'network' | 'content-safety' | 'integration'
 type Notice = { type: 'success' | 'error'; message: string } | null
 type SensitiveWordToggle =
   | 'pornographyEnabled'
@@ -488,6 +551,22 @@ const contentSafety = ref<ContentSafetySettings>(defaultContentSafety())
 const savedContentSafety = ref('')
 const notice = ref<Notice>(null)
 
+// 集成设置（CC Switch）
+const integrationFormRef = ref()
+const ccSwitchPath = ref('')
+const savedCcSwitchPath = ref('')
+const pickingCcsPath = ref(false)
+const integrationNotice = ref<Notice>(null)
+
+const integrationDirty = computed(() => ccSwitchPath.value.trim() !== savedCcSwitchPath.value)
+
+const ccSwitchPathRule = (value: string) => {
+  const raw = value?.trim()
+  if (!raw) return true // 允许为空：未配置时渠道菜单退化为复制链接
+  if (!/\.exe$/i.test(raw)) return '路径必须指向 .exe 可执行文件'
+  return true
+}
+
 const normalizedProxyUrl = computed(() => (proxyEnabled.value ? proxyUrl.value.trim() : ''))
 const networkDirty = computed(() =>
   proxyEnabled.value !== savedProxyEnabled.value || normalizedProxyUrl.value !== savedProxyUrl.value
@@ -525,6 +604,9 @@ const loadSettings = async () => {
     proxyEnabled.value = enabled
     contentSafety.value = normalizeContentSafety(settings.contentSafety)
     savedContentSafety.value = JSON.stringify(contentSafety.value)
+    const savedPath = settings.integration?.ccSwitchPath ?? ''
+    savedCcSwitchPath.value = savedPath
+    ccSwitchPath.value = savedPath
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : '加载设置失败'
   } finally {
@@ -559,6 +641,45 @@ const saveNetworkSettings = async () => {
     notice.value = { type: 'error', message: error instanceof Error ? error.message : '保存网络设置失败' }
   } finally {
     saving.value = false
+  }
+}
+
+const saveIntegrationSettings = async () => {
+  const { valid } = await integrationFormRef.value.validate()
+  if (!valid) return
+
+  integrationNotice.value = null
+  saving.value = true
+  try {
+    const settings = await api.updateSettings({
+      integration: { ccSwitchPath: ccSwitchPath.value.trim() }
+    })
+    const savedPath = settings.integration?.ccSwitchPath ?? ''
+    savedCcSwitchPath.value = savedPath
+    ccSwitchPath.value = savedPath
+    integrationNotice.value = { type: 'success', message: '集成设置已保存' }
+  } catch (error) {
+    integrationNotice.value = { type: 'error', message: error instanceof Error ? error.message : '保存集成设置失败' }
+  } finally {
+    saving.value = false
+  }
+}
+
+const pickCcsPath = async () => {
+  pickingCcsPath.value = true
+  integrationNotice.value = null
+  try {
+    const { path } = await api.pickCcsPath()
+    if (path) {
+      // 后端选择时已顺手保存，这里同步本地状态
+      savedCcSwitchPath.value = path
+      ccSwitchPath.value = path
+      integrationNotice.value = { type: 'success', message: '路径已保存' }
+    }
+  } catch (error) {
+    integrationNotice.value = { type: 'error', message: error instanceof Error ? error.message : '打开文件选择框失败，请手动填写路径' }
+  } finally {
+    pickingCcsPath.value = false
   }
 }
 
@@ -616,6 +737,17 @@ onMounted(loadSettings)
   grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
   gap: 40px;
   padding-top: 24px;
+}
+
+.ccs-path-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.ccs-path-row .v-btn {
+  margin-top: 4px;
+  flex-shrink: 0;
 }
 
 .settings-nav {

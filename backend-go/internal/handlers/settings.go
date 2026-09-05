@@ -22,12 +22,13 @@ func UpdateSettings(cfgManager *config.ConfigManager) gin.HandlerFunc {
 		var req struct {
 			Network       *config.NetworkSettings     `json:"network"`
 			ContentSafety *config.ContentSafetyConfig `json:"contentSafety"`
+			Integration   *config.IntegrationSettings `json:"integration"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的设置参数"})
 			return
 		}
-		if req.Network == nil && req.ContentSafety == nil {
+		if req.Network == nil && req.ContentSafety == nil && req.Integration == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "至少需要提交一个设置分类"})
 			return
 		}
@@ -47,6 +48,10 @@ func UpdateSettings(cfgManager *config.ConfigManager) gin.HandlerFunc {
 				return
 			}
 			settings.ContentSafety = *req.ContentSafety
+		}
+		if req.Integration != nil {
+			req.Integration.CCSwitchPath = strings.TrimSpace(req.Integration.CCSwitchPath)
+			settings.Integration = *req.Integration
 		}
 
 		if err := cfgManager.UpdateSettings(settings); err != nil {

@@ -6,6 +6,10 @@ export interface AppSettings {
     upstreamProxyEnabled: boolean
   }
   contentSafety: ContentSafetySettings
+  integration: {
+    /** CC Switch 可执行文件路径；空串表示未配置 */
+    ccSwitchPath: string
+  }
 }
 
 export interface ContentSafetySettings {

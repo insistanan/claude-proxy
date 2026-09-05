@@ -60,6 +60,7 @@
 | gzip 解压 | `utils.DecompressGzipIfNeeded` | 上游响应 body |
 | 客户端伪装 | 头伪装 `utils/headers.go`（`ApplyClaudeCodeDisguise` / `ApplyCodexDisguise` / `PrepareUpstreamHeaders`）；请求体伪装 `utils/claude_disguise.go`（`ApplyClaudeCodeBodyDisguise`） | 两个文件分工：头 vs body，勿混用 |
 | Pi Agent 配置管理 | `piagent` | providers + model-settings；路由在 main.go 直接注册 `/api/settings/pi-agent/*`（10 端点）。credentials/backups 端点已移除，凭据状态只读展示仍经 `ReadCredentials` |
+| CC Switch 一键导入（文件选择 / 拉起） | `handlers/ccs.go`（`PickCcsPath` / `ImportToCcs`） | 路由 `/api/settings/ccs/pick-path`（PowerShell + WinForms 弹原生文件框并顺手保存路径，仅 Windows，5 分钟超时）与 `/api/settings/ccs/import`（校验 `ccswitch://` scheme 后 `exec.Command(exePath, url).Start()` 非阻塞拉起，后台 `Wait()` 防僵尸）。exe 路径存 `Settings.Integration.CCSwitchPath`。**不感知 deeplink 内容**——链接由前端生成，后端只做 scheme 校验 |
 | Agent Skill 管理（目录发现/扫描/导入/复制/译文备份） | `internal/skills` 包 | **所有 Skill 文件系统操作一律走本包**，`handlers/skills.go` 与 `skills_remote.go` 只做 HTTP 参数解析与响应，绝不再直接 `os.ReadFile`/`os.RemoveAll`/`filepath.WalkDir` 操作 Skill 目录。导出面：目录 `Locations`/`Resolve`/`Scan`/`RestoreProjectBackups`；内容 `ReadContent`/`ContentPath`/`Remove`/`CopyDir`/`WriteFilesForLocation`/`WriteFilesPreserving`/`EnsureProjectTarget`；解析 `ParseImported`/`ParseFrontmatter`；备份与元数据 `SaveTranslationBackup`/`LatestBackup`/`ProjectBackupDir`/`ProjectRootForName`/`WriteGlobalMetadata`；校验 `ValidName`/`ContentSHA256`/`MaxImportBytes`。`Locations(openCodeSkillsDir)` 与 `Resolve(..., openCodeSkillsDir)` 需要传入 OpenCode skills 目录——OpenCode 配置路径的多级回退规则归 OpenCode 配置页所有（`handlers.openCodeSkillsDir()`），本包不重复实现；Claude Code / Codex 目录由本包按 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 自行解析（与 `piagent.ResolveConfigDir` 同样的就地 `filepath.Abs`，不上升为公共能力）|
 
 ## 前端（frontend/src）
@@ -83,6 +84,7 @@
 | mdi 图标 | `plugins/vuetify.ts` 的 `iconMap` | 先查表；未注册先注册，`check:icons` 把关 |
 | 版本信息 | `services/version.ts` | UI 展示构建注入的版本 |
 | 前端 API 类型定义该写哪个文件 | `types/` 按领域分文件（`channel` / `client-config` / `conversation` / `eval` / `logs` / `metrics` / `model` / `settings` / `skill`），`types/index.ts` 汇总导出；`services/api.ts` 顶部 `export * from '@/types'` 转发 | 新增类型放对应领域文件，**绝不写回 `services/api.ts`**（那里只留 `ApiError` / `ApiTab` / `ChannelApi` / `TestChannelContext` / `HealthResponse` 这类服务自身的类型）。转发行让既有 `import { Channel } from '@/services/api'` 全部继续可用，新代码优先从 `@/types` 取 |
+| CC Switch deeplink 生成 | `utils/ccsDeepLink.ts` 的 `buildCcsDeepLink` + `components/CcsImportModal.vue` | 渠道 → `ccswitch://v1/import` 链接的唯一出处。目标 app 由**导入弹窗显式选择**，按渠道池预选（`CCS_APP_BY_KIND`：messages/chat→claude、responses→codex、gemini→gemini；**不按 serviceType 推断**——messages 池挂 openai 上游是代理在转换，用户意图仍是 claude，弹窗里 serviceType 与所选 app 不一致时会提示）；`baseUrls` 逗号合并进 endpoint、取第一个 apiKey、不传 `enabled`（不自动激活）。消费链路：`ChannelOrchestration.vue` `openCcsImport` → 弹窗确认 → 已配置路径走 `api.importToCcs` 拉起，未配置退化 `navigator.clipboard` 复制。协议参照 cc-switch v1（parser.rs），便携版无协议注册时命令行参数通道依然生效 |
 
 ## 已知重复与待治理（不新增，治理前先核实再动）
 

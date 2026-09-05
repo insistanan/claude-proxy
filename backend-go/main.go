@@ -354,6 +354,8 @@ func (a *app) setupAdminAPI(apiGroup *gin.RouterGroup) {
 	apiGroup.PUT("/settings/claude-code", handlers.SaveClaudeCodeSettings())
 	apiGroup.GET("/settings/dsh", handlers.GetDSHSettings())
 	apiGroup.PUT("/settings/dsh", handlers.SaveDSHSettings())
+	apiGroup.POST("/settings/ccs/pick-path", handlers.PickCcsPath(a.cfgManager))
+	apiGroup.POST("/settings/ccs/import", handlers.ImportToCcs(a.cfgManager))
 
 	// pi-agent 配置管理（沿用 apiGroup 的统一鉴权）
 	apiGroup.GET("/settings/pi-agent", a.piAgentAPI.Status())

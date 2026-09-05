@@ -213,6 +213,14 @@ func decodeModelMapping(raw json.RawMessage) (map[string][]string, error) {
 type SettingsConfig struct {
 	Network       NetworkSettings     `json:"network"`
 	ContentSafety ContentSafetyConfig `json:"contentSafety"`
+	Integration   IntegrationSettings `json:"integration"`
+}
+
+// IntegrationSettings 外部工具集成设置。
+type IntegrationSettings struct {
+	// CCSwitchPath CC Switch 可执行文件路径；为空表示未配置，
+	// 渠道菜单的"导入到 CCS"退化为"复制 CCS 链接"。
+	CCSwitchPath string `json:"ccSwitchPath"`
 }
 
 // NetworkSettings 网络相关设置。

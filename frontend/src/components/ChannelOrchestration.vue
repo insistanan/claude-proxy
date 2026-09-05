@@ -337,10 +337,12 @@
                 :supports-vision-capability="supportsVisionCapability"
                 :can-delete="canDeleteChannel(element)"
                 :show-eval="channelType !== 'images'"
+                :supports-ccs="channelType !== 'images'"
                 @edit="$emit('edit', element)"
                 @duplicate="duplicateChannel(element.index)"
                 @toggle-vision="toggleVisionCapability(element)"
                 @copy-config="copyChannelConfig(element)"
+                @import-ccs="openCcsImport(element)"
                 @quick-test="handleQuickTest(element)"
                 @eval="openEvalForChannel(element)"
                 @ping="$emit('ping', element.index)"
@@ -411,10 +413,12 @@
           :supports-vision-capability="supportsVisionCapability"
           :allow-reorder="false"
           :show-eval="channelType !== 'images'"
+          :supports-ccs="channelType !== 'images'"
           @edit="$emit('edit', channel)"
           @duplicate="duplicateChannel(channel.index)"
           @toggle-vision="toggleVisionCapability(channel)"
           @copy-config="copyChannelConfig(channel)"
+          @import-ccs="openCcsImport(channel)"
           @quick-test="handleQuickTest(channel)"
           @eval="openEvalForChannel(channel)"
           @ping="$emit('ping', channel.index)"
@@ -785,6 +789,17 @@
       :api-type="channelType"
     />
 
+    <!-- CC Switch 导入弹窗 -->
+    <CcsImportModal
+      v-model="showCcsModal"
+      :channel="ccsModalChannel"
+      :channel-type="channelType"
+      :ccs-configured="ccsConfigured"
+      @imported="name => emit('success', `已调用 CC Switch 导入 ${name}，请在其确认框中确认`)"
+      @copied="emit('success', 'CCS 链接已复制，粘贴到浏览器地址栏回车即可唤起 CC Switch；也可在 设置 → 集成 配置路径实现一键导入')"
+      @error="message => emit('error', message)"
+    />
+
 </template>
 
 <script setup lang="ts">
@@ -794,6 +809,7 @@ import VueApexCharts from 'vue3-apexcharts'
 import type { ApexOptions } from 'apexcharts'
 import { api, channelApiByType, type Channel, type ChannelMetrics, type ChannelStatus, type TimeWindowStats, type ChannelRecentActivity, type ChannelLogEntry, type EvalChannelLatest } from '../services/api'
 import { evalAggregateColor, evalAgoLabel, evalFormatTime } from '../utils/eval'
+import CcsImportModal from './CcsImportModal.vue'
 import ChannelStatusBadge from './ChannelStatusBadge.vue'
 import ChannelPoolGrid from './ChannelPoolGrid.vue'
 import ChannelQuickMenu from './ChannelQuickMenu.vue'
@@ -1063,6 +1079,29 @@ URL: ${channel.baseUrl}
   } catch (error) {
     console.error('复制配置失败:', error)
   }
+}
+
+// ============== CC Switch 导入 ==============
+
+// CC Switch 路径（settings.integration），决定弹窗按钮是"导入"还是"复制链接"
+const ccsConfigured = ref(false)
+const showCcsModal = ref(false)
+const ccsModalChannel = ref<Channel | null>(null)
+
+onMounted(async () => {
+  try {
+    const settings = await api.getSettings()
+    ccsConfigured.value = Boolean(settings.integration?.ccSwitchPath?.trim())
+  } catch {
+    // 取不到设置就按未配置处理：复制链接兜底
+    ccsConfigured.value = false
+  }
+})
+
+// 打开导入弹窗（目标 app 在弹窗中选择，按渠道池预选）
+const openCcsImport = (channel: Channel) => {
+  ccsModalChannel.value = channel
+  showCcsModal.value = true
 }
 
 // 计算属性：非活跃渠道 - 仅 disabled 状态
