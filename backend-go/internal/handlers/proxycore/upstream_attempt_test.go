@@ -359,3 +359,147 @@ func TestUpstreamAttempt2xxNormalJSONPassesThrough(t *testing.T) {
 		t.Fatalf("HandleSuccess 收到的 body 不完整: %q", receivedBody)
 	}
 }
+
+func TestUpstreamAttemptThinkingBudgetRectifierRetriesSuccessfully(t *testing.T) {
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		reqBody, _ := io.ReadAll(r.Body)
+		if requestCount == 1 {
+			// 第一次请求返回 400 budget_tokens 约束错误
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","message":"thinking.budget_tokens: Input should be greater than or equal to 1024"}}`))
+			return
+		}
+		// 第二次请求由整流器修复参数后重试，断言收到了修复后的 budget_tokens 和 max_tokens
+		if !strings.Contains(string(reqBody), `"budget_tokens":32000`) {
+			t.Errorf("重试请求未包含修复后的 budget_tokens: %s", string(reqBody))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_ok","content":[{"type":"text","text":"budget ok"}]}`))
+	}))
+	defer server.Close()
+
+	cfgManager, err := config.NewConfigManager(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("创建配置管理器失败: %v", err)
+	}
+	t.Cleanup(func() { _ = cfgManager.Close() })
+
+	metricsManager := metrics.NewMetricsManager()
+	t.Cleanup(metricsManager.Stop)
+
+	channelScheduler := scheduler.NewChannelScheduler(cfgManager, metricsManager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(channelScheduler.Stop)
+
+	upstream := &config.UpstreamConfig{
+		BaseURL: server.URL,
+		APIKeys: []string{"key-a"},
+	}
+
+	initialBody := `{"model":"claude-3-7-sonnet-20250219","thinking":{"type":"enabled","budget_tokens":500},"max_tokens":1000}`
+	result := (UpstreamAttempt{
+		Context:          newAttemptTestContext(context.Background()),
+		EnvConfig:        &config.EnvConfig{LogLevel: "error"},
+		ConfigManager:    cfgManager,
+		ChannelScheduler: channelScheduler,
+		Kind:             scheduler.ChannelKindMessages,
+		MetricsManager:   metricsManager,
+		Upstream:         upstream,
+		RequestedModel:   "claude-3-7-sonnet-20250219",
+		RequestBody:      []byte(initialBody),
+		URLResults:       BuildDefaultURLResults(upstream.GetAllBaseURLs()),
+		NextAPIKey: func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			return up.APIKeys[0], nil
+		},
+		BuildRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			bodyBytes, _ := io.ReadAll(c.Request.Body)
+			req, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(string(bodyBytes)))
+			return req, err
+		},
+		HandleSuccess: func(_ *gin.Context, resp *http.Response, _ *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+			defer resp.Body.Close()
+			return &types.Usage{}, nil
+		},
+	}).TryWithModelMappingFailover()
+
+	if !result.Handled || result.SuccessKey != "key-a" {
+		t.Fatalf("Budget 整流就地重试期望成功，实际: Handled=%v LastError=%v", result.Handled, result.LastError)
+	}
+	if requestCount != 2 {
+		t.Fatalf("期望请求上游 2 次（初次失败+就地重试），实际: %d", requestCount)
+	}
+}
+
+func TestUpstreamAttemptThinkingSignatureRectifierRetriesSuccessfully(t *testing.T) {
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		reqBody, _ := io.ReadAll(r.Body)
+		if requestCount == 1 {
+			// 第一次请求返回 400 signature 错误
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Invalid 'signature' in 'thinking' block"}}`))
+			return
+		}
+		// 第二次请求断言 signature/thinking 块已被清理
+		if strings.Contains(string(reqBody), `"bad_signature"`) {
+			t.Errorf("重试请求仍包含非法 signature: %s", string(reqBody))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_sig_ok","content":[{"type":"text","text":"signature rectified"}]}`))
+	}))
+	defer server.Close()
+
+	cfgManager, err := config.NewConfigManager(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("创建配置管理器失败: %v", err)
+	}
+	t.Cleanup(func() { _ = cfgManager.Close() })
+
+	metricsManager := metrics.NewMetricsManager()
+	t.Cleanup(metricsManager.Stop)
+
+	channelScheduler := scheduler.NewChannelScheduler(cfgManager, metricsManager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(channelScheduler.Stop)
+
+	upstream := &config.UpstreamConfig{
+		BaseURL: server.URL,
+		APIKeys: []string{"key-a"},
+	}
+
+	initialBody := `{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"text","signature":"bad_signature"},{"type":"text","text":"hi"}]}]}`
+	result := (UpstreamAttempt{
+		Context:          newAttemptTestContext(context.Background()),
+		EnvConfig:        &config.EnvConfig{LogLevel: "error"},
+		ConfigManager:    cfgManager,
+		ChannelScheduler: channelScheduler,
+		Kind:             scheduler.ChannelKindMessages,
+		MetricsManager:   metricsManager,
+		Upstream:         upstream,
+		RequestedModel:   "claude-3-7-sonnet-20250219",
+		RequestBody:      []byte(initialBody),
+		URLResults:       BuildDefaultURLResults(upstream.GetAllBaseURLs()),
+		NextAPIKey: func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			return up.APIKeys[0], nil
+		},
+		BuildRequest: func(c *gin.Context, up *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			bodyBytes, _ := io.ReadAll(c.Request.Body)
+			req, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(string(bodyBytes)))
+			return req, err
+		},
+		HandleSuccess: func(_ *gin.Context, resp *http.Response, _ *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+			defer resp.Body.Close()
+			return &types.Usage{}, nil
+		},
+	}).TryWithModelMappingFailover()
+
+	if !result.Handled || result.SuccessKey != "key-a" {
+		t.Fatalf("Signature 整流就地重试期望成功，实际: Handled=%v LastError=%v", result.Handled, result.LastError)
+	}
+	if requestCount != 2 {
+		t.Fatalf("期望请求上游 2 次（初次失败+就地重试），实际: %d", requestCount)
+	}
+}

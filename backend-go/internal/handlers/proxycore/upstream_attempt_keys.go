@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/rectifier"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -331,6 +332,54 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 							sendAction:    "转义请求重试失败",
 							prepareAction: "准备转义请求失败",
 							successAction: "等价 JSON 转义重试成功",
+						}, finishRetryContentSafety)
+						if aborted != nil {
+							return *aborted
+						}
+						RestoreRequestBody(c, requestBody)
+					}
+				}
+
+				// Thinking Signature 整流自愈：当上游报错提示 signature 校验失败或块结构不合规时，
+				// 清理历史消息中的非法 signature 与 thinking 块，并在同一渠道就地重试一次。
+				if !retrySucceeded && rectifier.ShouldRectifyThinkingSignature(respBodyBytes) {
+					rectifiedBody, applied, stats := rectifier.RectifyThinkingSignature(requestBody)
+					if applied {
+						log.Printf("[%s-Rectifier] 触发 Thinking 签名整流重试 (移除了 %d 个 thinking 块, %d 个 redacted_thinking 块, %d 个 signature 字段, topLevelThinkingRemoved=%v)",
+							apiType, stats.RemovedThinkingBlocks, stats.RemovedRedactedThinkingBlocks, stats.RemovedSignatureFields, stats.RemovedTopLevelThinking)
+						RestoreRequestBody(c, rectifiedBody)
+						retryResult := a.retrySameCandidateRequest(upstreamCopy, apiKey, proxyURL)
+						var aborted *UpstreamAttemptResult
+						resp, respBodyBytes, retrySucceeded, aborted = applyCompatibilityRetryResult(retryResult, resp, respBodyBytes, retrySucceeded, apiType, compatRetryLogs{
+							component:     "Rectifier",
+							buildAction:   "重建签名整流请求失败",
+							sendAction:    "签名整流重试失败",
+							prepareAction: "准备签名整流请求失败",
+							successAction: "Thinking 签名整流重试成功",
+						}, finishRetryContentSafety)
+						if aborted != nil {
+							return *aborted
+						}
+						RestoreRequestBody(c, requestBody)
+					}
+				}
+
+				// Thinking Budget 参数整流自愈：当上游报错提示 budget_tokens 约束失败（如 < 1024 或 max_tokens <= budget_tokens）时，
+				// 自动整流 budget_tokens=32000, max_tokens=64000，并在同一渠道就地重试一次。
+				if !retrySucceeded && rectifier.ShouldRectifyThinkingBudget(respBodyBytes) {
+					rectifiedBody, applied, stats := rectifier.RectifyThinkingBudget(requestBody)
+					if applied {
+						log.Printf("[%s-Rectifier] 触发 Thinking Budget 整流重试 (budget: %d -> %d, max_tokens: %d -> %d)",
+							apiType, stats.PreviousBudgetTokens, stats.NewBudgetTokens, stats.PreviousMaxTokens, stats.NewMaxTokens)
+						RestoreRequestBody(c, rectifiedBody)
+						retryResult := a.retrySameCandidateRequest(upstreamCopy, apiKey, proxyURL)
+						var aborted *UpstreamAttemptResult
+						resp, respBodyBytes, retrySucceeded, aborted = applyCompatibilityRetryResult(retryResult, resp, respBodyBytes, retrySucceeded, apiType, compatRetryLogs{
+							component:     "Rectifier",
+							buildAction:   "重建 Budget 整流请求失败",
+							sendAction:    "Budget 整流重试失败",
+							prepareAction: "准备 Budget 整流请求失败",
+							successAction: "Thinking Budget 整流重试成功",
 						}, finishRetryContentSafety)
 						if aborted != nil {
 							return *aborted
