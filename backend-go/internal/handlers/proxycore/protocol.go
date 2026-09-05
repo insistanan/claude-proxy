@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/BenedictKing/claude-proxy/internal/bodyfilter"
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
@@ -92,6 +93,14 @@ func RunProxyRequest(
 		return
 	}
 	BindRequestLogID(c)
+
+	// 过滤客户端私有参数（如 _debug, _internal_id 等），保护 JSON Schema 属性定义
+	if filteredBytes, modified, removed := bodyfilter.FilterPrivateParams(bodyBytes); modified {
+		if envCfg.ShouldLog("debug") {
+			log.Printf("[%s-BodyFilter] 过滤私有参数: %v", spec.LogName, removed)
+		}
+		bodyBytes = filteredBytes
+	}
 
 	// 3. 解析请求
 	model, stream, prompts, ok := spec.ParseRequest(c, bodyBytes)

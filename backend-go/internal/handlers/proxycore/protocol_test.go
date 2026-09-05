@@ -28,6 +28,37 @@ type runProxyTestEnv struct {
 	channelScheduler *scheduler.ChannelScheduler
 }
 
+func TestRunProxyRequestFiltersPrivateParams(t *testing.T) {
+	env := newRunProxyTestEnv(t)
+	server := newRecordingUpstreamServer(t, nil)
+	addTestUpstream(t, env, "ch-0", server.URL(), "key-a")
+
+	var receivedBody string
+	rec := &specRecorder{}
+	spec := rec.newSpec()
+	spec.BuildUpstreamRequest = func(c *gin.Context, up *config.UpstreamConfig, apiKey string, bodyBytes []byte) (*http.Request, error) {
+		receivedBody = string(bodyBytes)
+		req, err := http.NewRequest(http.MethodPost, up.GetEffectiveBaseURL()+"/v1/test", bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("x-api-key", apiKey)
+		return req, nil
+	}
+
+	inputBody := `{"model":"test-model","_internal_trace_id":"xyz-123","messages":[{"role":"user","content":"hi","_debug":true}]}`
+	w := performRunProxyRequest(t, env, spec, inputBody, "test-access-key")
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际: %d", w.Code)
+	}
+	if strings.Contains(receivedBody, "_internal_trace_id") {
+		t.Errorf("上游收到的请求体仍包含 _internal_trace_id: %s", receivedBody)
+	}
+	if strings.Contains(receivedBody, "_debug") {
+		t.Errorf("上游收到的请求体仍包含 _debug: %s", receivedBody)
+	}
+}
+
 func newRunProxyTestEnv(t *testing.T) *runProxyTestEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
