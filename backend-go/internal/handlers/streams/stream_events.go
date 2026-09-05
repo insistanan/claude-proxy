@@ -126,6 +126,51 @@ func IsMessageDeltaEvent(event string) bool {
 	return false
 }
 
+// IsStreamErrorEvent 判断 SSE 事件是否为上游错误事件。
+func IsStreamErrorEvent(event string) bool {
+	if strings.Contains(event, "event: error") {
+		return true
+	}
+
+	data, hasData := ParseSSEEventData(event)
+	if !hasData {
+		return false
+	}
+
+	if typeStr, ok := data["type"].(string); ok && typeStr == "error" {
+		return true
+	}
+
+	if errVal, exists := data["error"]; exists && errVal != nil {
+		switch v := errVal.(type) {
+		case map[string]interface{}:
+			return len(v) > 0
+		case string:
+			return strings.TrimSpace(v) != ""
+		}
+	}
+
+	return false
+}
+
+// ExtractStreamErrorMessage 提取流错误事件中的错误详情。
+func ExtractStreamErrorMessage(event string) string {
+	data, hasData := ParseSSEEventData(event)
+	if hasData {
+		if errObj, ok := data["error"].(map[string]interface{}); ok {
+			if msg, ok := errObj["message"].(string); ok && msg != "" {
+				return msg
+			}
+		} else if errStr, ok := data["error"].(string); ok && errStr != "" {
+			return errStr
+		}
+		if msg, ok := data["message"].(string); ok && msg != "" {
+			return msg
+		}
+	}
+	return strings.TrimSpace(event)
+}
+
 // BuildMessageStartEvent 构造一个合成的 message_start 事件
 func BuildMessageStartEvent(model string) string {
 	if model == "" {

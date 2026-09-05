@@ -1,11 +1,21 @@
 package streams
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/gin-gonic/gin"
 )
 
 func TestPatchUsageFieldsWithLog_NilInputTokens(t *testing.T) {
@@ -160,6 +170,163 @@ func TestPatchMessageStartInputTokensIfNeeded(t *testing.T) {
 		got := extractInputTokens(t, patched)
 		if got != 50 {
 			t.Fatalf("expected input_tokens=50, got %v", got)
+		}
+	})
+}
+
+type mockPrimeStreamProvider struct {
+	events  []string
+	errChan chan error
+	initErr error
+}
+
+func (m *mockPrimeStreamProvider) ConvertToProviderRequest(c *gin.Context, upstream *config.UpstreamConfig, apiKey string) (*http.Request, []byte, error) {
+	return nil, nil, nil
+}
+
+func (m *mockPrimeStreamProvider) ConvertToClaudeResponse(providerResp *types.ProviderResponse) (*types.ClaudeResponse, error) {
+	return nil, nil
+}
+
+func (m *mockPrimeStreamProvider) HandleStreamResponse(body io.ReadCloser) (<-chan string, <-chan error, error) {
+	return m.HandleStreamResponseCtx(context.Background(), body)
+}
+
+func (m *mockPrimeStreamProvider) HandleStreamResponseCtx(ctx context.Context, body io.ReadCloser) (<-chan string, <-chan error, error) {
+	if m.initErr != nil {
+		return nil, nil, m.initErr
+	}
+	eventChan := make(chan string, len(m.events))
+	for _, e := range m.events {
+		eventChan <- e
+	}
+	close(eventChan)
+	return eventChan, m.errChan, nil
+}
+
+func TestHandleStreamResponse_PrimeThenCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	envCfg := &config.EnvConfig{}
+	upstream := &config.UpstreamConfig{Name: "test-upstream"}
+	requestBody := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hello"}]}`)
+
+	t.Run("non-event-stream response fails without writing headers", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(requestBody))
+
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"bad gateway"}}`)),
+		}
+
+		provider := &mockPrimeStreamProvider{}
+		_, err := HandleStreamResponse(c, resp, provider, envCfg, time.Now(), upstream, requestBody, "claude-3-5-sonnet")
+		if err == nil {
+			t.Fatal("expected error for non-event-stream response")
+		}
+		if c.Writer.Written() {
+			t.Fatal("c.Writer.Written() should be false when non-event-stream fails")
+		}
+	})
+
+	t.Run("empty stream fails without writing headers", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(requestBody))
+
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+
+		errChan := make(chan error, 1)
+		close(errChan)
+		provider := &mockPrimeStreamProvider{
+			events:  nil,
+			errChan: errChan,
+		}
+
+		_, err := HandleStreamResponse(c, resp, provider, envCfg, time.Now(), upstream, requestBody, "claude-3-5-sonnet")
+		if err == nil {
+			t.Fatal("expected error for empty stream")
+		}
+		if !strings.Contains(err.Error(), "closed without sending any events") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+		if c.Writer.Written() {
+			t.Fatal("c.Writer.Written() should be false when empty stream is primed")
+		}
+	})
+
+	t.Run("initial error event fails without writing headers", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(requestBody))
+
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+
+		errChan := make(chan error, 1)
+		close(errChan)
+		provider := &mockPrimeStreamProvider{
+			events: []string{
+				"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Server Overloaded\"}}\n\n",
+			},
+			errChan: errChan,
+		}
+
+		_, err := HandleStreamResponse(c, resp, provider, envCfg, time.Now(), upstream, requestBody, "claude-3-5-sonnet")
+		if err == nil {
+			t.Fatal("expected error for initial error event")
+		}
+		if !strings.Contains(err.Error(), "Server Overloaded") {
+			t.Fatalf("error should contain Server Overloaded, got: %v", err)
+		}
+		if c.Writer.Written() {
+			t.Fatal("c.Writer.Written() should be false when error event is primed (allows failover)")
+		}
+	})
+
+	t.Run("valid stream primes and commits successfully", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(requestBody))
+
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+
+		errChan := make(chan error, 1)
+		close(errChan)
+		provider := &mockPrimeStreamProvider{
+			events: []string{
+				"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_prime_1\",\"model\":\"claude-3-5-sonnet\",\"usage\":{\"input_tokens\":20,\"output_tokens\":1}}}\n\n",
+				"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Hello\"}}\n\n",
+				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n",
+				"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+			},
+			errChan: errChan,
+		}
+
+		usage, err := HandleStreamResponse(c, resp, provider, envCfg, time.Now(), upstream, requestBody, "claude-3-5-sonnet")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !c.Writer.Written() {
+			t.Fatal("c.Writer.Written() should be true after valid stream commits")
+		}
+		if usage == nil {
+			t.Fatal("expected non-nil usage")
 		}
 	})
 }

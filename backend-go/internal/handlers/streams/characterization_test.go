@@ -193,6 +193,83 @@ func TestStripCacheFieldsFromClaudeSSE(t *testing.T) {
 	})
 }
 
+func TestIsStreamErrorEvent(t *testing.T) {
+	cases := []struct {
+		name    string
+		event   string
+		isError bool
+	}{
+		{
+			name:    "event line error",
+			event:   "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"Overloaded\"}}\n\n",
+			isError: true,
+		},
+		{
+			name:    "data type error",
+			event:   "data: {\"type\":\"error\",\"error\":{\"message\":\"Rate limit\"}}\n\n",
+			isError: true,
+		},
+		{
+			name:    "data error object without type",
+			event:   "data: {\"error\":{\"message\":\"Invalid key\",\"code\":\"invalid_api_key\"}}\n\n",
+			isError: true,
+		},
+		{
+			name:    "data error string",
+			event:   "data: {\"error\":\"Service unavailable\"}\n\n",
+			isError: true,
+		},
+		{
+			name:    "normal message_start",
+			event:   "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n",
+			isError: false,
+		},
+		{
+			name:    "normal ping",
+			event:   "event: ping\ndata: {\"type\":\"ping\"}\n\n",
+			isError: false,
+		},
+		{
+			name:    "empty event",
+			event:   "",
+			isError: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsStreamErrorEvent(tc.event); got != tc.isError {
+				t.Errorf("IsStreamErrorEvent(%q) = %v, want %v", tc.event, got, tc.isError)
+			}
+		})
+	}
+}
+
+func TestExtractStreamErrorMessage(t *testing.T) {
+	t.Run("nested error.message", func(t *testing.T) {
+		event := "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"Overloaded error\"}}\n\n"
+		got := ExtractStreamErrorMessage(event)
+		if got != "Overloaded error" {
+			t.Fatalf("got %q, want %q", got, "Overloaded error")
+		}
+	})
+
+	t.Run("top-level error string", func(t *testing.T) {
+		event := "data: {\"error\":\"Quota exceeded\"}\n\n"
+		got := ExtractStreamErrorMessage(event)
+		if got != "Quota exceeded" {
+			t.Fatalf("got %q, want %q", got, "Quota exceeded")
+		}
+	})
+
+	t.Run("top-level message string", func(t *testing.T) {
+		event := "data: {\"message\":\"Something went wrong\"}\n\n"
+		got := ExtractStreamErrorMessage(event)
+		if got != "Something went wrong" {
+			t.Fatalf("got %q, want %q", got, "Something went wrong")
+		}
+	})
+}
+
 func TestStreamEventPredicates(t *testing.T) {
 	cases := []struct {
 		name  string

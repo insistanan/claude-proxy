@@ -172,10 +172,46 @@ func HandleStreamResponse(
 	// 杜绝"缓冲写满后永久阻塞"的 goroutine/上游连接泄漏。
 	eventChan, errChan, err := provider.HandleStreamResponseCtx(c.Request.Context(), resp.Body)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Failed to handle stream response"})
 		return nil, err
 	}
 
+	// Prime 阶段：在向客户端提交（Commit）响应头前，先预读第一个事件。
+	// 若首包到达前上游报错、流异常中断或返回错误信封事件，保持 c.Writer.Written() 为 false，
+	// 返回 error 让上层 proxycore 触发 Key/渠道级 Failover。
+	var firstEvent string
+	var primed bool
+
+	for !primed {
+		select {
+		case <-c.Request.Context().Done():
+			return nil, c.Request.Context().Err()
+
+		case err, ok := <-errChan:
+			if !ok {
+				errChan = nil
+				continue
+			}
+			if err != nil {
+				log.Printf("[Messages-Stream] 预读首个流事件失败: %v", err)
+				return nil, err
+			}
+
+		case event, ok := <-eventChan:
+			if !ok {
+				return nil, fmt.Errorf("upstream stream closed without sending any events")
+			}
+			firstEvent = event
+			primed = true
+		}
+	}
+
+	if IsStreamErrorEvent(firstEvent) {
+		errorMsg := ExtractStreamErrorMessage(firstEvent)
+		log.Printf("[Messages-Stream] 上游首包返回错误事件: %s", errorMsg)
+		return nil, fmt.Errorf("upstream stream returned error event: %s", errorMsg)
+	}
+
+	// Commit 阶段：成功收到有效首包后，正式向客户端写入响应头与状态码
 	SetupStreamHeaders(c, resp)
 
 	w := c.Writer
@@ -190,6 +226,18 @@ func HandleStreamResponse(
 	ctx.RequestModel = requestModel
 	ctx.LowQuality = upstream.LowQuality
 	seedSynthesizerFromRequest(ctx, requestBody)
+
+	// 处理并写出预读的首个事件
+	if err := ProcessStreamEvent(c, w, flusher, firstEvent, ctx, envCfg, requestBody); err != nil {
+		// 内容安全错误由上层统一按入口协议编码，避免先写通用
+		// stream_error、随后再写 content_safety_error 的重复事件。
+		if !ctx.ClientGone && hooks.ContentSafetyErrorFrom(err) == nil {
+			w.Write([]byte(BuildStreamErrorEvent(err)))
+			flusher.Flush()
+		}
+		return nil, err
+	}
+
 	usage, processErr := ProcessStreamEvents(c, w, flusher, eventChan, errChan, ctx, envCfg, startTime, requestBody)
 	if processErr == nil {
 		ctx.cacheClaudeReasoning()

@@ -522,6 +522,11 @@ func (s *ChannelScheduler) hasAttemptableChannel(
 // Open 未到期返回 false；冷却到期惰性转 HalfOpen 并占用探测名额放行。
 // 探测名额由渠道级记账（scheduler 层 RecordCircuit* 系列）释放。
 func (s *ChannelScheduler) allowByCircuit(kind ChannelKind, channelIndex int, channelName string) bool {
+	return s.AllowChannelByCircuit(kind, channelIndex, channelName)
+}
+
+// AllowChannelByCircuit 供外部（如单渠道代理 handleSingleChannelProxy）调用渠道级熔断放行判定。
+func (s *ChannelScheduler) AllowChannelByCircuit(kind ChannelKind, channelIndex int, channelName string) bool {
 	manager := s.CircuitManager()
 	if manager == nil {
 		return true

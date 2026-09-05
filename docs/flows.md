@@ -26,7 +26,7 @@
 → prepareRequestForUpstream：内容安全 pre-request 钩子 → visionlayer.PrepareRequest → 内容安全钩子二次
 → SendRequest
 → 失败：按状态码/错误分类（ShouldRetryWithNextKey；Fuzzy 模式下所有非 2xx 都转移）
-→ 成功：spec.HandleSuccess（流式经 HandleStreamResponseCtx + IdleTimeoutReader）
+→ 成功：spec.HandleSuccess（非流式 2xx 错误信封嗅探拦截；Messages 流式经 prime-then-commit 预读首包健康校验后再提交响应头）
        → post-response 钩子 → scheduler.RecordSuccessWithUsage → 会话/对话成功标记
 ```
 

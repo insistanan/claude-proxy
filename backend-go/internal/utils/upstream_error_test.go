@@ -159,3 +159,29 @@ func TestUpstreamErrorBodyPredicates(t *testing.T) {
 		})
 	}
 }
+
+// 切片 A 反证：2xx 错误信封谓词的判定边界。
+func TestIsUpstreamErrorEnvelope(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"对象信封命中", `{"error":{"message":"boom","type":"server_error"}}`, true},
+		{"error:null 不命中（Responses 正常响应形态）", `{"id":"resp_1","error":null,"output":[]}`, false},
+		{"error 为字符串不命中", `{"error":"something went wrong"}`, false},
+		{"无 error 字段不命中", `{"id":"msg_1","role":"assistant"}`, false},
+		{"顶层 error + choices 同样命中（Chat 错误 chunk 形态）", `{"error":{"message":"quota exceeded"},"choices":[]}`, true},
+		{"非 JSON 不命中", `<html>Server Error</html>`, false},
+		{"空 body 不命中", ``, false},
+		{"JSON 数组顶层不命中", `[1,2,3]`, false},
+		{"前导空白仍命中", "\n  {\"error\":{\"code\":\"x\"}}", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsUpstreamErrorEnvelope([]byte(tt.body)); got != tt.want {
+				t.Fatalf("IsUpstreamErrorEnvelope(%q) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}

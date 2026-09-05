@@ -7,11 +7,13 @@ package proxycore
 import (
 	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -24,6 +26,42 @@ import (
 
 type upstreamAttemptPreflight struct {
 	proxyURL string
+}
+
+// maxEnvelopeSniffBytes 是 2xx 错误信封检测的最大读取字节数。错误信封必然
+// 很小；正常非流式响应通常也在该上限内（HandleSuccess 本就全量读）；超过
+// 上限的巨型响应按读失败处理，走 failover 让其他候选接手。
+const maxEnvelopeSniffBytes = 10 * 1024 * 1024
+
+// readBodyWithLimit 读取响应体，超过 limit 返回错误（与静默截断相比，
+// 显式失败能触发 failover 而不是把半个 JSON 交给下游解析）。
+func readBodyWithLimit(body io.Reader, limit int64) ([]byte, error) {
+	limited, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("读取上游响应体失败: %w", err)
+	}
+	if int64(len(limited)) > limit {
+		return nil, fmt.Errorf("上游响应体超过 %d MB 上限", limit/1024/1024)
+	}
+	return limited, nil
+}
+
+// looksLikeJSONResponse 判断上游响应是否声称 JSON 载荷。错误信封只可能是
+// JSON；SSE / 图片 / 其他二进制响应直接跳过检测。
+func looksLikeJSONResponse(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		return true // 无 Content-Type 时保守检测（body 谓词本身会做 JSON 校验）
+	}
+	mediaType := contentType
+	if idx := strings.Index(contentType, ";"); idx >= 0 {
+		mediaType = contentType[:idx]
+	}
+	mediaType = strings.TrimSpace(strings.ToLower(mediaType))
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
 func (a UpstreamAttempt) prepareAllKeys() (upstreamAttemptPreflight, bool, error) {
@@ -351,6 +389,44 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 				for key := range failoverState.deprioritizeCandidates {
 					a.DeprioritizeKey(key)
 				}
+			}
+
+			// 2xx 错误信封检测（参照 cc-switch forwarder 的 buffer 校验）：部分
+			// OpenAI 兼容网关用 HTTP 200 包错误 body 返回。非流式 JSON 响应先
+			// 缓冲校验，命中错误信封按 Key 失败处理继续 failover，不再把错误
+			// 当成功交给 HandleSuccess。流式响应交给 HandleSuccess（流式防御
+			// 在 streams 层 prime-then-commit）。全量读取与 HandleSuccess 非流式
+			// 路径的 io.ReadAll 开销相同；上限外的超大响应按读失败处理。
+			if !isStream && looksLikeJSONResponse(resp) {
+				sniff, readErr := readBodyWithLimit(resp.Body, maxEnvelopeSniffBytes)
+				if readErr != nil {
+					// 响应体读取中断/超上限：连接已不可靠或响应异常巨大，按网络故障处理。
+					failoverState.lastError = readErr
+					retryState.markKeyFailed(apiKey)
+					cfgManager.MarkKeyAsFailed(apiKey, apiType)
+					lifecycle.finalizeFailed()
+					if a.MarkURLFailure != nil {
+						a.MarkURLFailure(currentBaseURL)
+					}
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "read_body", readErr.Error(), true, isStream, nil)
+					log.Printf("[%s-Key] 警告: 读取上游响应体失败 (状态: %d)，尝试下一个密钥: %v", apiType, resp.StatusCode, readErr)
+					continue
+				}
+				if utils.IsUpstreamErrorEnvelope(sniff) {
+					failoverState.lastError = fmt.Errorf("上游 2xx 响应携带错误信封")
+					failoverState.lastFailoverError = &FailoverError{Status: resp.StatusCode, Body: sniff}
+					retryState.markKeyFailed(apiKey)
+					cfgManager.MarkKeyAsFailed(apiKey, apiType)
+					lifecycle.finalizeFailed()
+					if a.MarkURLFailure != nil {
+						a.MarkURLFailure(currentBaseURL)
+					}
+					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "error_envelope", string(sniff), true, isStream, nil)
+					log.Printf("[%s-Envelope] 渠道 %s 返回 2xx 错误信封，尝试下一个密钥", apiType, upstream.Name)
+					continue
+				}
+				// 非命中：body 原样放回，HandleSuccess 正常消费。
+				resp.Body = io.NopCloser(bytes.NewReader(sniff))
 			}
 
 			usage, err = a.HandleSuccess(c, resp, upstreamCopy, apiKey)

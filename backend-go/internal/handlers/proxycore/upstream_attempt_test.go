@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -213,5 +214,148 @@ func TestUpstreamAttemptReadBodyErrorFailsOverToNextKey(t *testing.T) {
 	}
 	if result.LastError != nil {
 		t.Fatalf("LastError = %v, want nil", result.LastError)
+	}
+}
+
+// 切片 A 反证：HTTP 200 + JSON 错误信封必须按 Key 失败继续 failover，
+// 不得当成功交给 HandleSuccess。
+func TestUpstreamAttempt2xxErrorEnvelopeFailsOverToNextKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"error":{"message":"boom","type":"server_error","code":"internal"}}`))
+	}))
+	defer server.Close()
+
+	cfgManager, err := config.NewConfigManager(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("创建配置管理器失败: %v", err)
+	}
+	t.Cleanup(func() { _ = cfgManager.Close() })
+
+	metricsManager := metrics.NewMetricsManager()
+	t.Cleanup(metricsManager.Stop)
+
+	channelScheduler := scheduler.NewChannelScheduler(cfgManager, metricsManager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(channelScheduler.Stop)
+
+	upstream := &config.UpstreamConfig{
+		BaseURL: server.URL,
+		APIKeys: []string{"key-a", "key-b"},
+	}
+	handleSuccessCalls := 0
+
+	result := (UpstreamAttempt{
+		Context:          newAttemptTestContext(context.Background()),
+		EnvConfig:        &config.EnvConfig{LogLevel: "error"},
+		ConfigManager:    cfgManager,
+		ChannelScheduler: channelScheduler,
+		Kind:             scheduler.ChannelKindMessages,
+		MetricsManager:   metricsManager,
+		Upstream:         upstream,
+		RequestedModel:   "requested-model",
+		URLResults:       BuildDefaultURLResults(upstream.GetAllBaseURLs()),
+		NextAPIKey: func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			for _, key := range up.APIKeys {
+				if !failedKeys[key] {
+					return key, nil
+				}
+			}
+			return "", errors.New("没有可用密钥")
+		},
+		BuildRequest: func(_ *gin.Context, up *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			req, err := http.NewRequest(http.MethodPost, server.URL, nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("x-api-key", apiKey)
+			return req, nil
+		},
+		HandleSuccess: func(_ *gin.Context, resp *http.Response, _ *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+			handleSuccessCalls++
+			defer resp.Body.Close()
+			return &types.Usage{}, nil
+		},
+	}).TryWithModelMappingFailover()
+
+	// 全部 Key 都被信封判失败：Handled=false（可 failover 到其他渠道），且
+	// HandleSuccess 从未被调用（错误没有被当成功消费）。
+	if result.Handled {
+		t.Fatalf("2xx 错误信封不应判为 Handled")
+	}
+	if handleSuccessCalls != 0 {
+		t.Fatalf("HandleSuccess 被调用 %d 次，错误信封不应交给成功路径", handleSuccessCalls)
+	}
+	if result.FailoverError == nil {
+		t.Fatalf("应携带 FailoverError 供外层继续选渠道")
+	}
+}
+
+// 切片 A 反证：正常 2xx JSON 不受信封检测影响，body 完整交给 HandleSuccess。
+func TestUpstreamAttempt2xxNormalJSONPassesThrough(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1","error":null,"content":[{"type":"text","text":"hi"}]}`))
+	}))
+	defer server.Close()
+
+	cfgManager, err := config.NewConfigManager(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("创建配置管理器失败: %v", err)
+	}
+	t.Cleanup(func() { _ = cfgManager.Close() })
+
+	metricsManager := metrics.NewMetricsManager()
+	t.Cleanup(metricsManager.Stop)
+
+	channelScheduler := scheduler.NewChannelScheduler(cfgManager, metricsManager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(channelScheduler.Stop)
+
+	upstream := &config.UpstreamConfig{
+		BaseURL: server.URL,
+		APIKeys: []string{"key-a"},
+	}
+	var receivedBody string
+
+	result := (UpstreamAttempt{
+		Context:          newAttemptTestContext(context.Background()),
+		EnvConfig:        &config.EnvConfig{LogLevel: "error"},
+		ConfigManager:    cfgManager,
+		ChannelScheduler: channelScheduler,
+		Kind:             scheduler.ChannelKindMessages,
+		MetricsManager:   metricsManager,
+		Upstream:         upstream,
+		RequestedModel:   "requested-model",
+		URLResults:       BuildDefaultURLResults(upstream.GetAllBaseURLs()),
+		NextAPIKey: func(up *config.UpstreamConfig, failedKeys map[string]bool) (string, error) {
+			if len(up.APIKeys) == 0 {
+				return "", errors.New("没有可用密钥")
+			}
+			return up.APIKeys[0], nil
+		},
+		BuildRequest: func(_ *gin.Context, up *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			req, err := http.NewRequest(http.MethodPost, server.URL, nil)
+			if err != nil {
+				return nil, err
+			}
+			return req, nil
+		},
+		HandleSuccess: func(_ *gin.Context, resp *http.Response, _ *config.UpstreamConfig, apiKey string) (*types.Usage, error) {
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return nil, err
+			}
+			receivedBody = string(body)
+			return &types.Usage{}, nil
+		},
+	}).TryWithModelMappingFailover()
+
+	if !result.Handled || result.SuccessKey != "key-a" {
+		t.Fatalf("正常响应应成功: Handled=%v SuccessKey=%q", result.Handled, result.SuccessKey)
+	}
+	if !strings.Contains(receivedBody, `"content"`) {
+		t.Fatalf("HandleSuccess 收到的 body 不完整: %q", receivedBody)
 	}
 }

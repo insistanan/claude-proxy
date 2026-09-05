@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -97,6 +98,31 @@ func IsNonRetryableUpstreamErrorCode(code string) bool {
 // IsContentPolicyErrorBody 从上游响应体提取 error.code 后判断是否为内容审核拦截。
 func IsContentPolicyErrorBody(bodyBytes []byte) bool {
 	return IsContentPolicyErrorCode(upstreamErrorCode(bodyBytes))
+}
+
+// IsUpstreamErrorEnvelope 判断 body 是否为"HTTP 2xx 但 body 是错误信封"。
+// 部分 OpenAI 兼容网关用 200 包错误返回，若当成功处理，错误会被原样转给客户端
+// 且不触发 failover。判定条件（全部满足才算命中）：
+//   - body 是合法 JSON 顶层对象；
+//   - "error" 字段存在且为 JSON 对象（null 不算——Responses 正常响应就带
+//     "error": null 字段；字符串形式的 error 也不算，避免误判业务正文）。
+func IsUpstreamErrorEnvelope(bodyBytes []byte) bool {
+	if len(bodyBytes) == 0 {
+		return false
+	}
+	// 快速预检：合法 JSON 顶层对象以 '{' 开头（允许前导空白）。
+	trimmed := bytes.TrimLeft(bodyBytes, " \t\r\n")
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return false
+	}
+	var envelope struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(bodyBytes, &envelope); err != nil {
+		return false
+	}
+	trimmedError := bytes.TrimSpace(envelope.Error)
+	return len(trimmedError) > 0 && trimmedError[0] == '{'
 }
 
 // IsNonRetryableUpstreamErrorBody 从上游响应体提取 error.code 后判断是否不应重试。

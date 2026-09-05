@@ -243,10 +243,26 @@ func handleSingleChannelProxy(
 	}
 
 	// 快捷测试跳过模型重定向，直接使用用户指定的请求模型
-	if IsQuickTestRequest(c, bodyBytes) {
+	isQuickTest := IsQuickTestRequest(c, bodyBytes)
+	if isQuickTest {
 		upstream = upstream.Clone()
 		upstream.ModelMapping = nil
 		upstream.DefaultModel = ""
+	}
+
+	// 渠道级熔断检查（internal/circuit）：非快捷测试且已熔断（Open）时直接拦截并返回 503 CIRCUIT_OPEN。
+	// 快捷测试跳过熔断拦截，允许管理端手动探测或快速测试已熔断的渠道。
+	if !isQuickTest && !channelScheduler.AllowChannelByCircuit(spec.Kind, channelIndex, upstream.Name) {
+		snapMap := channelScheduler.GetCircuitSnapshotForKind(spec.Kind)
+		cooldown := 0
+		if snap, ok := snapMap[channelIndex]; ok {
+			cooldown = snap.CooldownRemainingSec
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": fmt.Sprintf("当前渠道 [%d] %s 处于熔断保护状态 (冷却剩余 %d 秒)，请稍后重试或切换渠道", channelIndex, upstream.Name, cooldown),
+			"code":  "CIRCUIT_OPEN",
+		})
+		return
 	}
 
 	// 无 API Key 检查

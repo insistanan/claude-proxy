@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BenedictKing/claude-proxy/internal/circuit"
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
