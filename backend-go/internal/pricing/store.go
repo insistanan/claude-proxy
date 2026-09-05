@@ -70,7 +70,7 @@ func NewStore(filePath string) (*Store, error) {
 
 // NormalizeModelID 归一化模型名，只用于**查表**：去空白 + 转小写。
 // 单价解析绝不改写模型名本身，也绝不剥离日期 / 上下文后缀
-//（见 docs/invariants.md「模型名一律原样匹配」）——后缀由包含匹配吸收。
+// （见 docs/invariants.md「模型名一律原样匹配」）——后缀由包含匹配吸收。
 func NormalizeModelID(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
 }

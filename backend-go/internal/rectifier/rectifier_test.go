@@ -108,7 +108,7 @@ func TestShouldRectifyThinkingSignature(t *testing.T) {
 		},
 		{
 			name:     "expected thinking found tool_use",
-			body:     `{"error":{"message":"Expected ` + "`thinking`" + ` or ` + "`redacted_thinking`" + `, but found ` + "`tool_use`"}}`,
+			body:     "{\"error\":{\"message\":\"Expected `thinking` or `redacted_thinking`, but found `tool_use`\"}}",
 			expected: true,
 		},
 		{

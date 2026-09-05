@@ -540,9 +540,13 @@ func TestUpstreamAttemptMediaSanitizerRetriesSuccessfully(t *testing.T) {
 	channelScheduler := scheduler.NewChannelScheduler(cfgManager, metricsManager, nil, nil, nil, nil, nil, nil)
 	t.Cleanup(channelScheduler.Stop)
 
+	// 渠道声明支持图片（visionlayer 因此放行原图），上游却回模态拒绝——
+	// 这正是 mediasanitizer 的适用场景；VisionCapable=false 的渠道图片早被转成文本了。
 	upstream := &config.UpstreamConfig{
-		BaseURL: server.URL,
-		APIKeys: []string{"key-a"},
+		BaseURL:       server.URL,
+		APIKeys:       []string{"key-a"},
+		ServiceType:   "claude",
+		VisionCapable: true,
 	}
 
 	initialBody := `{"model":"deepseek-chat","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"xyz"}},{"type":"text","text":"hi"}]}]}`

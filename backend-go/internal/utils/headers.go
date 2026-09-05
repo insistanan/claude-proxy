@@ -26,8 +26,8 @@ const (
 	// 新的本地历史根。非原生 Responses 转换器不能再把旧 session 追加到它
 	// 前面，响应持久化也必须替换旧历史而不是按普通轮次合并。
 	ContextKeyResponsesHistoryBoundary = "responses-history-boundary"
-	claudeCodeDisguiseVersion            = "2.1.238"
-	codexDisguiseVersion                 = "0.150.1"
+	claudeCodeDisguiseVersion          = "2.1.238"
+	codexDisguiseVersion               = "0.150.1"
 )
 
 // PrepareUpstreamHeaders 准备上游请求头（统一头部处理逻辑）

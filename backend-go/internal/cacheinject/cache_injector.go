@@ -12,11 +12,11 @@ const MaxCacheBreakpoints = 4
 
 // InjectionStats 记录断点注入的结果与详情。
 type InjectionStats struct {
-	ExistingCount int
-	InjectedCount int
-	InjectedTools bool
-	InjectedSystem bool
-	InjectedLatestMsg bool
+	ExistingCount        int
+	InjectedCount        int
+	InjectedTools        bool
+	InjectedSystem       bool
+	InjectedLatestMsg    bool
 	InjectedPriorUserMsg bool
 }
 

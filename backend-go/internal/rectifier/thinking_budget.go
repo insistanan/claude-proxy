@@ -15,12 +15,12 @@ const (
 
 // BudgetRectifyStats 记录 Budget 整流的影响统计。
 type BudgetRectifyStats struct {
-	PreviousThinkingType   string
-	NewThinkingType        string
-	PreviousBudgetTokens   int64
-	NewBudgetTokens        int64
-	PreviousMaxTokens      int64
-	NewMaxTokens           int64
+	PreviousThinkingType string
+	NewThinkingType      string
+	PreviousBudgetTokens int64
+	NewBudgetTokens      int64
+	PreviousMaxTokens    int64
+	NewMaxTokens         int64
 }
 
 // ShouldRectifyThinkingBudget 检测上游错误响应是否由于 thinking budget 参数约束失败引起。

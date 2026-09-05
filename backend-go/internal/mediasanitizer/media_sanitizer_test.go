@@ -9,10 +9,10 @@ import (
 
 func TestIsUnsupportedImageError(t *testing.T) {
 	cases := []struct {
-		name       string
-		status     int
-		body       string
-		expected   bool
+		name     string
+		status   int
+		body     string
+		expected bool
 	}{
 		{
 			name:     "volcengine text only error",
