@@ -27,6 +27,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/logger"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/middleware"
+	"github.com/BenedictKing/claude-proxy/internal/pricing"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/sensitive"
 	"github.com/BenedictKing/claude-proxy/internal/session"
@@ -50,6 +51,7 @@ type app struct {
 	conversationRegistry  *conversation.Registry
 	metricsStore          *metrics.SQLiteStore
 	metricsByKind         map[scheduler.ChannelKind]*metrics.MetricsManager
+	pricingStore          *pricing.Store
 	channelScheduler      *scheduler.ChannelScheduler
 	adaptiveScheduler     *scheduler.AdaptiveScheduler
 	piAgentAPI            *handlers.PiAgentAPI
@@ -80,6 +82,14 @@ func newApp() (*app, error) {
 	a.cfgManager, err = config.NewConfigManager(".config/config.json")
 	if err != nil {
 		return nil, fmt.Errorf("初始化配置管理器失败: %w", err)
+	}
+
+	// 模型单价表：内置价格在代码里，用户改写与删除墓碑在 .config/pricing.json。
+	// 加载失败一律中止启动，不降级成空表——空价表会让全部花费静默变 0，
+	// 界面上看不出是"没配价"还是"配置坏了"。
+	a.pricingStore, err = pricing.NewStore(pricing.DefaultFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("初始化模型单价表失败: %w", err)
 	}
 
 	a.blockedStore, err = sensitive.NewBlockedStore(".config/blocked-logs.db")
@@ -127,12 +137,17 @@ func newApp() (*app, error) {
 	}
 	a.metricsByKind = make(map[scheduler.ChannelKind]*metrics.MetricsManager, len(metricsKinds))
 	for _, kind := range metricsKinds {
+		// apiType 必须无条件传入：花费折算靠它判断 input_tokens 是否已含缓存
+		// （pricing.IsCacheInclusiveAPIType），空串会被当成 messages 口径，
+		// 于 responses/gemini/chat 上把缓存 Token 重复计一次输入费。
+		// 这里先把可选的 metricsStore 收进接口变量：直接传 nil 的 *SQLiteStore
+		// 会变成"非 nil 接口值"，AddRecord 里的 store != nil 判断随之失效。
+		var store metrics.PersistenceStore
 		if a.metricsStore != nil {
-			a.metricsByKind[kind] = metrics.NewMetricsManagerWithPersistence(
-				a.envCfg.MetricsWindowSize, a.envCfg.MetricsFailureThreshold, a.metricsStore, string(kind))
-		} else {
-			a.metricsByKind[kind] = metrics.NewMetricsManagerWithConfig(a.envCfg.MetricsWindowSize, a.envCfg.MetricsFailureThreshold)
+			store = a.metricsStore
 		}
+		a.metricsByKind[kind] = metrics.NewMetricsManagerWithPersistence(
+			a.envCfg.MetricsWindowSize, a.envCfg.MetricsFailureThreshold, store, string(kind))
 	}
 
 	traceAffinityManager := session.NewTraceAffinityManager()
@@ -282,13 +297,18 @@ func newApp() (*app, error) {
 
 // setupAdminAPI 注册 Web 管理界面 API 路由（/api 组）。
 func (a *app) setupAdminAPI(apiGroup *gin.RouterGroup) {
-	apiGroup.GET("/request-logs", handlers.GetRequestLogs(a.requestLogStore))
+	apiGroup.GET("/request-logs", handlers.GetRequestLogs(a.requestLogStore, a.pricingStore))
 	apiGroup.GET("/system-logs", handlers.GetSystemLogs(a.logStore))
 	apiGroup.GET("/system-logs/:requestId", handlers.GetSystemLog(a.logStore))
 	apiGroup.GET("/blocked-logs", handlers.GetBlockedLogs(a.blockedStore))
 	apiGroup.GET("/blocked-logs/:id", handlers.GetBlockedLog(a.blockedStore))
 	apiGroup.DELETE("/blocked-logs/:id", handlers.DeleteBlockedLog(a.blockedStore))
 	apiGroup.DELETE("/blocked-logs", handlers.ClearBlockedLogs(a.blockedStore))
+
+	// 模型单价表（内置价 + 用户改写），花费统计的单价来源
+	apiGroup.GET("/pricing/models", handlers.GetModelPricing(a.pricingStore))
+	apiGroup.POST("/pricing/models", handlers.UpsertModelPricing(a.pricingStore))
+	apiGroup.DELETE("/pricing/models", handlers.DeleteModelPricing(a.pricingStore))
 
 	// 渠道管理 API 路由（messages/responses/gemini/chat/images 五组收敛为一次调用）
 	// 各渠道类型的 CRUD / key 管理 / pools / reorder / status / promotion / metrics / ping
@@ -299,6 +319,7 @@ func (a *app) setupAdminAPI(apiGroup *gin.RouterGroup) {
 		MetricsByKind: func(kind scheduler.ChannelKind) *metrics.MetricsManager {
 			return a.metricsByKind[kind]
 		},
+		Prices: a.pricingStore,
 	}
 
 	// Messages 渠道管理

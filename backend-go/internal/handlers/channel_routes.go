@@ -4,6 +4,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/core/channelcrud"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
+	"github.com/BenedictKing/claude-proxy/internal/pricing"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/gin-gonic/gin"
 )
@@ -13,6 +14,7 @@ type ChannelRouteDeps struct {
 	Cfg           *config.ConfigManager
 	Scheduler     *scheduler.ChannelScheduler
 	MetricsByKind func(kind scheduler.ChannelKind) *metrics.MetricsManager
+	Prices        *pricing.Store
 }
 
 // ChannelRouteOptions 各渠道类型的路由差异点。
@@ -79,7 +81,8 @@ func RegisterChannelRoutes(api *gin.RouterGroup, kind scheduler.ChannelKind, dep
 	api.GET(p+"/channels/metrics/history", GetChannelMetricsHistoryByKind(mm, deps.Cfg, kind))
 	api.GET(p+"/channels/:id/keys/metrics/history", GetChannelKeyMetricsHistoryByKind(mm, deps.Cfg, kind))
 	api.GET(p+"/channels/:id/logs", GetChannelLogs(deps.Scheduler, deps.Cfg, kind))
-	api.GET(p+"/global/stats/history", GetGlobalStatsHistory(mm))
+	api.GET(p+"/global/stats/history", GetGlobalStatsHistory(mm, deps.Prices))
+	api.GET(p+"/global/stats/models", GetModelCostStats(mm, deps.Prices))
 
 	// ===== Ping =====
 	api.GET(p+"/ping/:id", crud.PingChannel)

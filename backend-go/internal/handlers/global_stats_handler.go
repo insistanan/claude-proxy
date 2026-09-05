@@ -4,48 +4,29 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
+	"github.com/BenedictKing/claude-proxy/internal/pricing"
 	"github.com/gin-gonic/gin"
 )
 
 // GetGlobalStatsHistory 获取全局统计历史数据
 // GET /api/{messages|responses}/global/stats/history?duration={1h|6h|24h|today}
-func GetGlobalStatsHistory(metricsManager *metrics.MetricsManager) gin.HandlerFunc {
+func GetGlobalStatsHistory(metricsManager *metrics.MetricsManager, prices *pricing.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 解析 duration 参数
-		durationStr := c.DefaultQuery("duration", "24h")
-
-		var duration time.Duration
-		var err error
-
-		// 特殊处理 "today" 参数
-		if durationStr == "today" {
-			duration = metrics.CalculateTodayDuration()
-			// 如果刚过零点，duration 可能非常小，设置最小值
-			if duration < time.Minute {
-				duration = time.Minute
-			}
-		} else {
-			duration, err = time.ParseDuration(durationStr)
-			if err != nil {
-				c.JSON(400, gin.H{"error": "Invalid duration parameter. Use: 1h, 6h, 24h, or today"})
-				return
-			}
-		}
-
-		// 限制最大查询范围为 24 小时
-		if duration > 24*time.Hour {
-			duration = 24 * time.Hour
+		duration, durationStr, ok := parseStatsDuration(c)
+		if !ok {
+			return
 		}
 
 		// 解析或自动选择 interval
 		intervalStr := c.Query("interval")
 		var interval time.Duration
 		if intervalStr != "" {
-			interval, err = time.ParseDuration(intervalStr)
+			parsed, err := time.ParseDuration(intervalStr)
 			if err != nil {
 				c.JSON(400, gin.H{"error": "Invalid interval parameter"})
 				return
 			}
+			interval = parsed
 			// 限制 interval 最小值为 1 分钟，防止生成过多 bucket
 			if interval < time.Minute {
 				interval = time.Minute
@@ -67,7 +48,7 @@ func GetGlobalStatsHistory(metricsManager *metrics.MetricsManager) gin.HandlerFu
 		}
 
 		// 获取全局统计数据
-		result := metricsManager.GetGlobalHistoricalStatsWithTokens(duration, interval)
+		result := metricsManager.GetGlobalHistoricalStatsWithTokens(duration, interval, prices)
 
 		// 更新 duration 字符串（特别是 today 情况）
 		if durationStr == "today" {
@@ -76,4 +57,50 @@ func GetGlobalStatsHistory(metricsManager *metrics.MetricsManager) gin.HandlerFu
 
 		c.JSON(200, result)
 	}
+}
+
+// GetModelCostStats 按模型拆分统计区间内的用量与花费。
+// GET /api/{kind}/global/stats/models?duration={1h|6h|24h|today}
+func GetModelCostStats(metricsManager *metrics.MetricsManager, prices *pricing.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		duration, durationStr, ok := parseStatsDuration(c)
+		if !ok {
+			return
+		}
+
+		result := metricsManager.GetModelCostStats(duration, prices)
+		if durationStr == "today" {
+			result.Duration = "today"
+		}
+		c.JSON(200, result)
+	}
+}
+
+// parseStatsDuration 解析统计区间参数，两个统计端点共用一套口径。
+// 上限固定 24 小时：数据源是内存里的 24 小时请求历史，放大区间也拿不到更多记录，
+// 悄悄返回一个"48 小时"标签只会让人以为看到了两天的账。
+// 第二个返回值是原始参数，供调用方在 today 时把展示用的 Duration 改回 "today"。
+func parseStatsDuration(c *gin.Context) (time.Duration, string, bool) {
+	durationStr := c.DefaultQuery("duration", "24h")
+
+	var duration time.Duration
+	if durationStr == "today" {
+		duration = metrics.CalculateTodayDuration()
+		// 如果刚过零点，duration 可能非常小，设置最小值
+		if duration < time.Minute {
+			duration = time.Minute
+		}
+	} else {
+		parsed, err := time.ParseDuration(durationStr)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "Invalid duration parameter. Use: 1h, 6h, 24h, or today"})
+			return 0, "", false
+		}
+		duration = parsed
+	}
+
+	if duration > 24*time.Hour {
+		duration = 24 * time.Hour
+	}
+	return duration, durationStr, true
 }

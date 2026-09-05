@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/logger"
+	"github.com/BenedictKing/claude-proxy/internal/pricing"
 )
 
 const defaultRequestLogLimit = 50
@@ -42,6 +43,13 @@ type RequestLogEntry struct {
 	Retried               bool    `json:"retried"`
 	Stream                bool    `json:"stream"`
 	ConversationID        string  `json:"conversationId,omitempty"`
+	// CostUSD 是读取时按**当前**单价表折算的花费，不落盘（写入的 payload 里没有这个字段）。
+	// 与 TPM 的处理方式不同：TPM 只依赖本条记录自身，写死没有后果；花费依赖单价表，
+	// 写死会让改价后新旧记录出现两个口径，同一条请求在日志页与统计页显示不同金额。
+	CostUSD float64 `json:"costUsd,omitempty"`
+	// CostPriced 区分"花费为 0"与"查不到单价"：两者 CostUSD 都是 0，
+	// 界面必须把后者显式标成未计价，否则免费模型和缺价模型看起来一模一样。
+	CostPriced bool `json:"costPriced"`
 }
 
 type RequestLogListOptions struct {
@@ -69,6 +77,9 @@ func (s *RequestLogStore) Record(entry RequestLogEntry) {
 	if entry.TPM == 0 {
 		entry.TPM = calculateRequestLogTPM(entry)
 	}
+	// 花费是读取时折算的派生字段，落盘会造出第二个真相源，这里显式清掉。
+	entry.CostUSD = 0
+	entry.CostPriced = false
 	payload, err := json.Marshal(entry)
 	if err != nil {
 		return
@@ -81,7 +92,10 @@ func (s *RequestLogStore) Record(entry RequestLogEntry) {
 	})
 }
 
-func (s *RequestLogStore) List(opts RequestLogListOptions) ([]RequestLogEntry, error) {
+// List 读取最近的流量日志，并按当前单价表就地折算每条的花费。
+// prices 允许为 nil（未注入单价表时全部记为未计价），但不接受"跳过折算"这种沉默分支：
+// 花费缺失必须表现为 CostPriced=false，而不是一个看起来正常的 0 美元。
+func (s *RequestLogStore) List(opts RequestLogListOptions, prices *pricing.Store) ([]RequestLogEntry, error) {
 	if s == nil || s.logStore == nil {
 		return nil, nil
 	}
@@ -104,9 +118,33 @@ func (s *RequestLogStore) List(opts RequestLogListOptions) ([]RequestLogEntry, e
 		}
 		entry.APIType = normalizeRequestLogAPIType(entry.APIType)
 		entry.Entry = normalizeRequestLogEntry(entry.Entry, entry.APIType)
+		fillRequestLogCost(&entry, prices)
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// fillRequestLogCost 按 entry.Model（客户端请求的模型名）折算花费，与 request_records
+// 的花费统计同一口径；想按映射后的目标模型计价，给目标模型名单独配一条单价。
+// 四项用量全 0 的记录（失败、取消、未回写 usage）不折算也不标未计价。
+func fillRequestLogCost(entry *RequestLogEntry, prices *pricing.Store) {
+	usage := pricing.TokenUsage{
+		InputTokens:         int64(entry.InputTokens),
+		OutputTokens:        int64(entry.OutputTokens),
+		CacheReadTokens:     int64(entry.CacheReadTokens),
+		CacheCreationTokens: int64(entry.CacheCreationTokens),
+	}
+	entry.CostUSD = 0
+	entry.CostPriced = false
+	if !hasTokenUsage(usage) {
+		return
+	}
+	breakdown, ok := prices.CostFor(entry.Model, usage, entry.APIType, 1)
+	if !ok {
+		return
+	}
+	entry.CostPriced = true
+	entry.CostUSD = breakdown.TotalCost
 }
 
 func (s *RequestLogStore) Close() {

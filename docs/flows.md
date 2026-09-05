@@ -110,4 +110,5 @@ FindChannelByID（稳定 UUID，跨五类切片）
 - 持久化：metrics / session / blocked 各自带 sqlite_store，路径由 main.go 注入。
 - 日志库：`.config/logs.db`，由 `logger.Setup` 在 main.go 注入；运行日志 / 流量正文 / 请求元数据三表，保留今天与昨天。Web 日志页「系统日志」Tab 按 requestId 看三段正文（`GET /api/system-logs`）。
 - 评测库：`.config/eval.db`，由 `eval.NewService` 在 main.go 注入；关闭顺序在调度器 Stop 之后。
+- 单价表：`.config/pricing.json`，由 `pricing.NewStore` 在 main.go 注入；**只存用户改写与删除墓碑**，内置价留在代码里。加载失败中止启动（空价表会让全部花费静默变 0，界面上分不清"没配价"与"配置坏了"）。花费不落盘，按当前单价表在读取时折算——详见 `docs/capabilities.md` 的「模型单价表 / 花费折算」。
 - 路由总表：main.go 是路由唯一真相；文档不复制路由清单。

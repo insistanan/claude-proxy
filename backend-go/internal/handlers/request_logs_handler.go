@@ -5,10 +5,11 @@ import (
 	"strconv"
 
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
+	"github.com/BenedictKing/claude-proxy/internal/pricing"
 	"github.com/gin-gonic/gin"
 )
 
-func GetRequestLogs(store *metrics.RequestLogStore) gin.HandlerFunc {
+func GetRequestLogs(store *metrics.RequestLogStore, prices *pricing.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		limit := 50
 		if rawLimit := c.Query("limit"); rawLimit != "" {
@@ -26,7 +27,7 @@ func GetRequestLogs(store *metrics.RequestLogStore) gin.HandlerFunc {
 		logs, err := store.List(metrics.RequestLogListOptions{
 			APIType: c.Query("type"),
 			Limit:   limit,
-		})
+		}, prices)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load request logs"})
 			return
