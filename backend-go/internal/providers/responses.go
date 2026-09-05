@@ -120,6 +120,20 @@ func (p *ResponsesProvider) ConvertToProviderRequest(
 			// 当前 input 已经是客户端提供的新历史根；旧 session 只用于
 			// 响应完成后替换本地状态，不能参与本次上游请求转换。
 			sess = nil
+		} else if converters.ResponsesInputRerootsSession(sess, effectiveRequest.Input) {
+			// input 形态判断不了客户端自己压缩上下文后的形态（摘要成新根 + 重发最近
+			// 几轮），只有与本地会话的重叠能认出来，而这个判断必须等 session 载入后
+			// 才能做。漏掉这里会让转换器把压缩前的整段历史重新前置到新根之前。
+			c.Set(utils.ContextKeyResponsesHistoryBoundary, true)
+			if strings.TrimSpace(effectiveRequest.PreviousResponseID) != "" {
+				c.Set(utils.ContextKeyResponsesPreviousIDDropped, true)
+			}
+			effectiveRequest.PreviousResponseID = ""
+			effectiveBody, err = removeResponsesPreviousResponseID(effectiveBody)
+			if err != nil {
+				return nil, bodyBytes, err
+			}
+			sess = nil
 		}
 
 		// 模型重定向

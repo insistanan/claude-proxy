@@ -164,19 +164,64 @@ func TestStripAccumulatedCache(t *testing.T) {
 		assertSameLineStructure(t, event, out)
 	})
 
-	t.Run("流式: 携带 previous_response_id 时保留 input_tokens_details 且不剥离", func(t *testing.T) {
+	t.Run("流式: 链式请求且缓存是 input 子集时保留", func(t *testing.T) {
+		// OpenAI 语义下 input_tokens 已含缓存命中部分，cached ≤ input 说明上游报数正常
 		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":919612,\"output_tokens\":532,\"total_tokens\":920144,\"input_tokens_details\":{\"cached_tokens\":913152}}}}\n\n"
 		out := stripAccumulatedCacheFromCompletedEvent(event, dummyBodyWithPreviousID)
 
 		data := extractCompletedPayload(t, out)
 		usage := data["response"].(map[string]interface{})["usage"].(map[string]interface{})
 		if _, exists := usage["input_tokens_details"]; !exists {
-			t.Errorf("携带 previous_response_id 时 input_tokens_details 应保留")
+			t.Errorf("缓存是 input 子集时 input_tokens_details 应保留")
 		}
 		if got, _ := usage["input_tokens"].(float64); int(got) != 919612 {
 			t.Errorf("input_tokens 不应被改动: %v, want 919612", usage["input_tokens"])
 		}
 		assertSameLineStructure(t, event, out)
+	})
+
+	// 以下两例锁定本次修复的核心判据：cached_tokens > input_tokens 在 OpenAI 语义下
+	// 不可能成立（缓存必须是 input 的子集），因此它自证了该字段是跨请求累积器。这个不等式
+	// 不依赖本地估算、也不依赖请求是否链式，所以链式请求同样适用。
+	// 收敛前两个剥离函数都以 hasPreviousResponseID 直接返回，而 Cursor 从第二轮起每次都带
+	// previous_response_id——反累积逻辑只在第一轮生效，之后客户端一直看到满缓存、数字压缩
+	// 后也不下降，压缩于是无限循环。
+	t.Run("流式: 链式请求遇到累积式缓存仍然剥离", func(t *testing.T) {
+		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":271,\"output_tokens\":188,\"total_tokens\":459,\"input_tokens_details\":{\"cached_tokens\":204800}}}}\n\n"
+		out := stripAccumulatedCacheFromCompletedEvent(event, dummyBodyWithPreviousID)
+
+		usage := extractCompletedPayload(t, out)["response"].(map[string]interface{})["usage"].(map[string]interface{})
+		if _, exists := usage["input_tokens_details"]; exists {
+			t.Errorf("cached_tokens 超过 input_tokens 时应剥离 input_tokens_details")
+		}
+		if _, exists := usage["cache_read_input_tokens"]; exists {
+			t.Errorf("派生的 cache_read_input_tokens 应被剥离")
+		}
+		if got, _ := usage["input_tokens"].(float64); int(got) != 271 {
+			t.Errorf("input_tokens 被改动: %v, want 271", usage["input_tokens"])
+		}
+		assertSameLineStructure(t, event, out)
+	})
+
+	t.Run("非流式: 链式请求遇到累积式缓存仍然剥离", func(t *testing.T) {
+		resp := &types.ResponsesResponse{
+			Usage: types.ResponsesUsage{
+				InputTokens:          271,
+				OutputTokens:         188,
+				CacheReadInputTokens: 204800,
+				InputTokensDetails:   &types.InputTokensDetails{CachedTokens: 204800},
+			},
+		}
+		stripAccumulatedCacheFromResponse(resp, dummyBodyWithPreviousID)
+		if resp.Usage.InputTokensDetails != nil {
+			t.Errorf("cached_tokens 超过 input_tokens 时应剥离 InputTokensDetails")
+		}
+		if resp.Usage.CacheReadInputTokens != 0 {
+			t.Errorf("派生的 CacheReadInputTokens 应被剥离: %d", resp.Usage.CacheReadInputTokens)
+		}
+		if resp.Usage.InputTokens != 271 {
+			t.Errorf("InputTokens 被改动: %d", resp.Usage.InputTokens)
+		}
 	})
 
 	t.Run("流式: Claude 原生缓存保留 cache_read", func(t *testing.T) {
@@ -229,7 +274,7 @@ func TestStripAccumulatedCache(t *testing.T) {
 		}
 	})
 
-	t.Run("非流式: 携带 previous_response_id 时保留缓存", func(t *testing.T) {
+	t.Run("非流式: 链式请求且缓存是 input 子集时保留", func(t *testing.T) {
 		resp := &types.ResponsesResponse{
 			Usage: types.ResponsesUsage{
 				InputTokens:        919612,
@@ -239,7 +284,7 @@ func TestStripAccumulatedCache(t *testing.T) {
 		}
 		stripAccumulatedCacheFromResponse(resp, dummyBodyWithPreviousID)
 		if resp.Usage.InputTokensDetails == nil || resp.Usage.InputTokensDetails.CachedTokens != 913152 {
-			t.Errorf("携带 previous_response_id 时 InputTokensDetails 应保留")
+			t.Errorf("缓存是 input 子集时 InputTokensDetails 应保留")
 		}
 		if resp.Usage.InputTokens != 919612 {
 			t.Errorf("InputTokens 被改动: %d", resp.Usage.InputTokens)
@@ -260,6 +305,78 @@ func TestStripAccumulatedCache(t *testing.T) {
 		}
 		if resp.Usage.CacheCreationInputTokens != 200 {
 			t.Errorf("Claude cache_creation 应保留: %d", resp.Usage.CacheCreationInputTokens)
+		}
+	})
+}
+
+// TestExtractResponsesUsageFromMapCacheSemantics 锁定 OpenAI 缓存字段的拆分口径。
+//
+// OpenAI 语义下 input_tokens 已经包含缓存命中部分，代理要把它拆成
+// input（未命中）+ cache_read（命中）以对齐 Anthropic 口径。但 grok-4.6 等上游的
+// cached_tokens 是跨请求单调递增的累积器，会远超本次 input_tokens；按子集去减会把
+// 上报输入量压到 0，指标与计费全部失真。cached > input 这个不等式在 OpenAI 语义下
+// 不可能成立，正是"该字段不是子集"的自证证据。
+func TestExtractResponsesUsageFromMapCacheSemantics(t *testing.T) {
+	t.Run("子集语义: 从 input_tokens 中拆出缓存命中量", func(t *testing.T) {
+		usage := map[string]interface{}{
+			"input_tokens":  float64(205071),
+			"output_tokens": float64(188),
+			"total_tokens":  float64(205259),
+			"input_tokens_details": map[string]interface{}{
+				"cached_tokens": float64(204800),
+			},
+		}
+		got := extractResponsesUsageFromMap(usage)
+		if got.InputTokens != 271 {
+			t.Errorf("InputTokens = %d, want 271", got.InputTokens)
+		}
+		if got.CacheReadInputTokens != 204800 {
+			t.Errorf("CacheReadInputTokens = %d, want 204800", got.CacheReadInputTokens)
+		}
+		if got.TotalTokens != 459 {
+			t.Errorf("TotalTokens = %d, want 459（须与拆分后的口径一致）", got.TotalTokens)
+		}
+		if got.HasClaudeCache {
+			t.Errorf("OpenAI 格式不应置 HasClaudeCache")
+		}
+	})
+
+	t.Run("累积式: cached 超过 input 时不做减法", func(t *testing.T) {
+		usage := map[string]interface{}{
+			"input_tokens":  float64(271),
+			"output_tokens": float64(188),
+			"total_tokens":  float64(459),
+			"input_tokens_details": map[string]interface{}{
+				"cached_tokens": float64(204800),
+			},
+		}
+		got := extractResponsesUsageFromMap(usage)
+		if got.InputTokens != 271 {
+			t.Errorf("InputTokens = %d, want 271（不得被累积器减成 0）", got.InputTokens)
+		}
+		if got.TotalTokens != 459 {
+			t.Errorf("TotalTokens = %d, want 459", got.TotalTokens)
+		}
+		if got.CacheReadInputTokens != 204800 {
+			t.Errorf("CacheReadInputTokens = %d, want 204800", got.CacheReadInputTokens)
+		}
+	})
+
+	t.Run("Anthropic 显式 cache_read 时 input_tokens 不再拆分", func(t *testing.T) {
+		usage := map[string]interface{}{
+			"input_tokens":            float64(271),
+			"output_tokens":           float64(188),
+			"cache_read_input_tokens": float64(204800),
+			"input_tokens_details": map[string]interface{}{
+				"cached_tokens": float64(204800),
+			},
+		}
+		got := extractResponsesUsageFromMap(usage)
+		if got.InputTokens != 271 {
+			t.Errorf("InputTokens = %d, want 271", got.InputTokens)
+		}
+		if !got.HasClaudeCache {
+			t.Errorf("非零 cache_read_input_tokens 应置 HasClaudeCache")
 		}
 	})
 }

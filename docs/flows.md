@@ -74,6 +74,18 @@ images 的两点差异：① 请求体有 JSON 与 multipart/form-data 两种形
 
 `/v1/responses` 已并入 `RunProxyRequest` 主骨架（F1），协议差异全部经 `ProtocolSpec` 闭包表达：BuildUpstreamRequest 内走 `converters` 转换（主分发在 `responses_protocol.go`，仅 Claude 上游走 factory.go 工厂）、`session.SessionManager` 会话管理（previous_response_id 链）与流式事件转换（`converters.ConvertUpstreamStreamLineToResponses`）都在 HandleSuccess/Provider 回调内完成。会话记录 ID 经 `utils.ContextKeyConversationUserID` 从骨架传入回调。多渠道模式下内容审核错误跨渠道转移（`AllowContentPolicyChannelFailover`），单渠道不生效。`/v1/responses/compact` 是唯一独立于主骨架的端点。
 
+### 历史边界（压缩 / 换根）
+
+Responses 只承认两种续接：完整历史作为 input，或只发新增输入并用 `previous_response_id` 链接。两者同时到达上游时同一段历史被算两次，上下文与计费都翻倍，客户端读到的 usage 压缩后不降反升，于是压缩后立刻又要压缩。
+
+上下文压缩有两种来源，检测方式不同：
+- **服务端压缩**：`/v1/responses/compact` 产出显式 `type:"compaction"` item，`utils.ResponsesRawItemsContainCompaction` / `ResponsesItemsContainCompactionFromInput` 一眼可辨。
+- **客户端压缩**（Cursor）：客户端静默重写自己的 transcript——把中间若干轮换成一条摘要、再原样重发最近几轮，没有任何结构标记。此时 input 比本地历史更短且可能不以 user/developer 开头，按条数或按形态都判不出来，只有与本地 session 的**重叠**能认出来（合法增量只发服务端链上还不存在的 item）。判据与保守规则见 `docs/capabilities.md` 的「Responses 续接边界判定」。
+
+`providers/responses.go` 在转换前判定边界：命中则清空 `PreviousResponseID`、从请求体删掉 `previous_response_id`、把 `sess` 置 nil（旧 session 只用于响应完成后替换本地状态，不能参与本次转换），并置 `ContextKeyResponsesHistoryBoundary` / `ContextKeyResponsesPreviousIDDropped`。这两个 context key 下游驱动三件事：`prepareResponsesUsageRequestBody` 的 usage 校正门控、session 侧走 `ReplaceSessionAfterBoundary` 而非 `CommitTurn`、以及 `clearResponsesPreviousIDs`。同一请求可能在多渠道/多 Key 间 failover，两个 key 在每个候选开始时都会重置，避免前一个候选的状态污染后续候选。
+
+usage 侧另有一条独立的循环成因：OpenAI 兼容上游（grok-4.6 实测）的 `input_tokens_details.cached_tokens` 是跨请求单调递增的累积器，原样下发会让客户端一直看到满缓存。剥离判据见 `docs/capabilities.md` 的「累积式缓存统计剥离」。
+
 ## F6 评测原生发送（观察，不进生产调度）
 
 管理端 `/api/eval/*`（`WebAuthMiddleware`）。与 F1 并列，**不**走 `RunProxyRequest`。

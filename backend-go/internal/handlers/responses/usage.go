@@ -317,19 +317,7 @@ func extractResponsesUsageFromMap(usage map[string]interface{}) responsesStreamU
 	}
 
 	// 检查 input_tokens_details.cached_tokens (OpenAI 格式，不设置 HasClaudeCache)
-	openAICachedTokens := 0
-	if details, ok := usage["input_tokens_details"].(map[string]interface{}); ok {
-		if cached, ok := details["cached_tokens"].(float64); ok && cached > 0 {
-			openAICachedTokens = int(cached)
-		}
-	}
-	if openAICachedTokens == 0 {
-		if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
-			if cached, ok := details["cached_tokens"].(float64); ok && cached > 0 {
-				openAICachedTokens = int(cached)
-			}
-		}
-	}
+	openAICachedTokens := openAICachedTokensFromUsageMap(usage)
 	if openAICachedTokens > 0 {
 		// 仅当 CacheReadInputTokens 未被设置时才使用 OpenAI 的 cached_tokens
 		if data.CacheReadInputTokens == 0 {
@@ -338,7 +326,9 @@ func extractResponsesUsageFromMap(usage map[string]interface{}) responsesStreamU
 		// cache_read_input_tokens=0 只是零值占位，不能阻止 OpenAI
 		// cached_tokens 的子集拆分；只有明确的非零 Anthropic cache-read
 		// 才表示 input_tokens 已经按“未缓存部分”上报。
-		if !hasExplicitCacheRead {
+		// 累积式上游（cached_tokens 超过本次 input_tokens）不满足子集前提，
+		// 按子集去减会把上报的输入量压到 0，指标与计费都会失真。
+		if !hasExplicitCacheRead && !openAICacheLooksAccumulated(openAICachedTokens, data.InputTokens) {
 			data.InputTokens -= openAICachedTokens
 			if data.InputTokens < 0 {
 				data.InputTokens = 0
@@ -367,6 +357,48 @@ func extractResponsesUsageFromMap(usage map[string]interface{}) responsesStreamU
 	}
 
 	return data
+}
+
+// openAICachedTokensFromUsageMap 读取 OpenAI 格式的缓存命中量。
+// Anthropic 的 cache_read_input_tokens 语义不同（input_tokens 已扣除缓存），不在此列。
+func openAICachedTokensFromUsageMap(usage map[string]interface{}) int {
+	for _, key := range []string{"input_tokens_details", "prompt_tokens_details"} {
+		details, ok := usage[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if cached, ok := details["cached_tokens"].(float64); ok && cached > 0 {
+			return int(cached)
+		}
+	}
+	return 0
+}
+
+// openAICacheLooksAccumulated 判断 OpenAI 格式的 cached_tokens 是否是跨请求累积值。
+//
+// OpenAI 语义下 input_tokens 已经包含缓存命中部分，cached_tokens 必须是它的子集。
+// 累积式上游（grok-4.6 等）把 cached_tokens 当成跨请求单调递增的命中总量上报，很快
+// 就会超过本次 input_tokens。该不等式是自证的：不依赖本地估算，也不依赖请求是否
+// 携带 previous_response_id，因此链式增量请求同样可以用它判断缓存字段的语义。
+//
+// inputTokens <= 0 时无从比较（上游漏报），按“无法判定”处理，保留上游原值。
+func openAICacheLooksAccumulated(cachedTokens, inputTokens int) bool {
+	return cachedTokens > 0 && inputTokens > 0 && cachedTokens > inputTokens
+}
+
+func usageMapHasAccumulatedOpenAICache(usage map[string]interface{}) bool {
+	inputTokens := 0
+	if v, ok := usage["input_tokens"].(float64); ok {
+		inputTokens = int(v)
+	}
+	return openAICacheLooksAccumulated(openAICachedTokensFromUsageMap(usage), inputTokens)
+}
+
+func responsesUsageHasAccumulatedOpenAICache(usage *types.ResponsesUsage) bool {
+	if usage == nil || usage.InputTokensDetails == nil {
+		return false
+	}
+	return openAICacheLooksAccumulated(usage.InputTokensDetails.CachedTokens, usage.InputTokens)
 }
 
 // updateResponsesStreamUsage 更新收集的 usage 数据
@@ -642,12 +674,12 @@ func patchResponsesCompletedEventUsageWithTokens(event string, requestBody []byt
 // 用 input_tokens（已扣除缓存的 uncached 真实值）判断上下文大小。
 //
 // 注意：如果请求携带 previous_response_id，usage 可能包含服务端链上历史，
-// 此时严禁剥离。client_metadata 只代表客户端身份，不能用来推断上游缓存字段
-// 是当前请求子集还是跨请求累积值，因此不参与这里的缓存语义判断。
+// 此时不能凭本地请求体大小推断缓存语义。但 cached_tokens 超过本次 input_tokens
+// 是自证的累积式证据（OpenAI 语义下缓存必须是 input 的子集），这类请求仍然剥离——
+// 否则 Cursor 从第二轮起就一直看到满缓存，压缩后数字不降，压缩会无限循环。
+// client_metadata 只代表客户端身份，不能用来推断上游缓存字段的语义，不参与判断。
 func stripAccumulatedCacheFromCompletedEvent(event string, requestBody []byte) string {
-	if hasPreviousResponseID(requestBody) {
-		return event
-	}
+	chained := hasPreviousResponseID(requestBody)
 	if !strings.Contains(event, "cached_tokens") &&
 		!strings.Contains(event, "cache_read_input_tokens") {
 		return event
@@ -666,6 +698,9 @@ func stripAccumulatedCacheFromCompletedEvent(event string, requestBody []byte) s
 		}
 		usage, ok := response["usage"].(map[string]interface{})
 		if !ok {
+			return "", false
+		}
+		if chained && !usageMapHasAccumulatedOpenAICache(usage) {
 			return "", false
 		}
 		changed := false
@@ -815,7 +850,10 @@ func correctUnderreportedInputTokensInResponse(resp *types.ResponsesResponse, cl
 // stripAccumulatedCacheFromResponse 从非流式 ResponsesResponse 的 usage 里剥离累积式缓存统计。
 // 语义同 stripAccumulatedCacheFromCompletedEvent，作用于结构体字段而非 SSE 事件。
 func stripAccumulatedCacheFromResponse(resp *types.ResponsesResponse, requestBody []byte) {
-	if resp == nil || hasPreviousResponseID(requestBody) {
+	if resp == nil {
+		return
+	}
+	if hasPreviousResponseID(requestBody) && !responsesUsageHasAccumulatedOpenAICache(&resp.Usage) {
 		return
 	}
 	// 有 Claude 原生缓存创建字段说明上游是 Claude，cache_read 是真实当前缓存，保留。

@@ -25,7 +25,8 @@ const (
 // ConvertResponsesRequestToUpstream converts a Responses entry request to the target upstream protocol.
 // upstream may be nil (tests); when set it drives history-thinking and prompt_cache_key options.
 func ConvertResponsesRequestToUpstream(serviceType string, model string, bodyBytes []byte, stream bool, sess *types.Session, req *types.ResponsesRequest, upstream *config.UpstreamConfig) ([]byte, error) {
-	if serviceType != ResponsesUpstreamResponses && req != nil && ResponsesInputCarriesOwnHistory(req.Input) {
+	if serviceType != ResponsesUpstreamResponses && req != nil &&
+		(ResponsesInputCarriesOwnHistory(req.Input) || ResponsesInputRerootsSession(sess, req.Input)) {
 		// 非原生 Responses 上游没有 previous_response_id 语义。当前 input
 		// 已经是客户端提供的新历史根时，禁止任何协议转换器再把旧 session
 		// 追加到它前面；provider 会同步删除请求中的旧链字段。
@@ -103,15 +104,51 @@ func convertResponsesPassthroughRequest(model string, bodyBytes []byte, upstream
 // 该信息由 provider 在查找本地 session 前使用：一旦客户端重放了自己的
 // 历史，就不能先加载旧 session 再把两份历史交给转换器合并。
 func ResponsesInputCarriesOwnHistory(input interface{}) bool {
-	encodedInput, err := json.Marshal(input)
-	if err != nil {
-		return false
-	}
-	var rawItems []json.RawMessage
-	if err := json.Unmarshal(encodedInput, &rawItems); err != nil {
+	rawItems, ok := responsesInputRawItems(input)
+	if !ok {
 		return false
 	}
 	return responsesRawItemsCarryOwnHistory(rawItems)
+}
+
+// ResponsesInputRerootsSession 判断客户端 input 是否已经把会话换到了新的历史根。
+//
+// 与 ResponsesInputCarriesOwnHistory 互补：后者只看 input 自身形态（有会话根消息，
+// 或从 user 开头且带 assistant 产出），识别不了客户端自己压缩上下文后的形态——摘要成
+// 一条新的 user 根、再重发最近几轮。这里改用与本地会话的重叠来判断：合法增量只发
+// 服务端链上还不存在的 item，重发链上已有的 item 就说明历史被重写了。
+//
+// 前缀能对齐时说明 input 是本地历史的严格延伸，属于正常续接，不算换根。
+func ResponsesInputRerootsSession(sess *types.Session, input interface{}) bool {
+	if sess == nil || len(sess.Messages) == 0 {
+		return false
+	}
+	rawItems, ok := responsesInputRawItems(input)
+	if !ok {
+		return false
+	}
+	if prefixEnd, matched := utils.ResponsesItemsPrefixMatchRaw(sess.Messages, rawItems); matched && prefixEnd > 0 {
+		return false
+	}
+	return utils.ResponsesRawItemsReplayHistory(sess.Messages, rawItems)
+}
+
+// responsesInputRawItems 把 ResponsesRequest.Input 还原成原始 item 数组。
+// 原始 item 必须保持原样：内部 ResponsesItem 结构只覆盖代理需要转换的字段，
+// 用它来做形态判断会丢掉 encrypted_content 等扩展字段。
+func responsesInputRawItems(input interface{}) ([]json.RawMessage, bool) {
+	if input == nil {
+		return nil, false
+	}
+	encodedInput, err := json.Marshal(input)
+	if err != nil {
+		return nil, false
+	}
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(encodedInput, &rawItems); err != nil {
+		return nil, false
+	}
+	return rawItems, len(rawItems) > 0
 }
 
 // convertResponsesPassthroughRequestWithSession 保留 Responses 原始 item 的全部扩展
@@ -220,6 +257,18 @@ func trimResponsesPassthroughInput(bodyBytes []byte, req *types.ResponsesRequest
 			trimmed, err := sjson.DeleteBytes(bodyBytes, "previous_response_id")
 			if err != nil {
 				return nil, fmt.Errorf("透传模式下删除无法确认历史的 previous_response_id 失败: %w", err)
+			}
+			return trimmed, nil
+		}
+		// 按历史条数的判断只覆盖“input 不短于本地历史”的重放。客户端自己压缩上下文
+		// （摘要成新根 + 重发最近几轮）时 input 比本地历史更短，条数比较必然漏判，
+		// 而重叠不会：合法增量只发链上还没有的 item。漏掉这里会让压缩后的请求继续
+		// 携带旧链，上游把压缩前的服务端历史整段前置，上下文立刻回到压缩前的规模，
+		// 客户端读到的 usage 不降反升，于是压缩后立刻又要压缩。
+		if utils.ResponsesRawItemsReplayHistory(sess.Messages, rawItems) {
+			trimmed, err := sjson.DeleteBytes(bodyBytes, "previous_response_id")
+			if err != nil {
+				return nil, fmt.Errorf("透传模式下删除被重写历史的 previous_response_id 失败: %w", err)
 			}
 			return trimmed, nil
 		}

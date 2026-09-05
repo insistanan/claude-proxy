@@ -404,6 +404,62 @@ func hasVisibleRawItemAfter(items []json.RawMessage, start int) bool {
 	return false
 }
 
+// ResponsesRawItemsReplayHistory 判断客户端 input 是否重放了本地会话里已经存在的可见 item。
+//
+// 前缀匹配（ResponsesItemsPrefixMatchRaw）对“真实增量”和“历史被客户端重写”都返回
+// (0, false)，无法区分二者。重叠可以：合法增量只发服务端链上还不存在的新 item，
+// 而客户端侧压缩/分支/编辑会把最近若干轮原样重发到新的历史根之后。
+//
+// 判据故意保守——误判会删掉服务端链而 input 其实只是后缀，整段上下文都会丢：
+//   - 命中两个以上历史 item 才算重放。单个命中可能只是用户又发了一条内容相同的
+//     短消息（“继续”“ok”），那是正常增量。
+//   - 单个命中里只有 assistant 侧产出（assistant 消息 / 工具调用）算重放：这类 item
+//     只可能由服务端生成，客户端把它重新发上来本身就说明在重放历史。
+//   - 工具结果（function_call_output 等）不算：上游已成功但客户端没收到响应时的
+//     重试会原样重发同一条工具结果，此时必须保留链，否则上下文全丢。
+func ResponsesRawItemsReplayHistory(history []types.ResponsesItem, currentRaw []json.RawMessage) bool {
+	if len(history) == 0 || len(currentRaw) == 0 {
+		return false
+	}
+
+	historyFingerprints := make(map[string]struct{}, len(history))
+	for _, item := range history {
+		if isResponsesReasoningItem(item) {
+			continue
+		}
+		historyFingerprints[CanonicalJSON(canonicalResponsesItem(item))] = struct{}{}
+	}
+	if len(historyFingerprints) == 0 {
+		return false
+	}
+
+	replayed := 0
+	for _, rawItem := range currentRaw {
+		var decoded map[string]interface{}
+		if err := json.Unmarshal(rawItem, &decoded); err != nil {
+			continue
+		}
+		if isResponsesReasoningMap(decoded) {
+			continue
+		}
+		if _, ok := historyFingerprints[CanonicalJSON(canonicalResponsesRawItem(decoded))]; !ok {
+			continue
+		}
+		replayed++
+		if replayed >= 2 || isResponsesAssistantOutputMap(decoded) {
+			return true
+		}
+	}
+	return false
+}
+
+func isResponsesAssistantOutputMap(item map[string]interface{}) bool {
+	if strings.EqualFold(strings.TrimSpace(stringFromRawMap(item, "role")), "assistant") {
+		return true
+	}
+	return isResponsesToolCallItem(types.ResponsesItem{Type: stringFromRawMap(item, "type")})
+}
+
 // ResponsesItemsPrefixOverlap 返回可安全从 current 起点裁掉的历史长度。
 //
 // current 完整包含 history 的可见前缀，或部分前缀带稳定身份且后面有新增 item 时，
