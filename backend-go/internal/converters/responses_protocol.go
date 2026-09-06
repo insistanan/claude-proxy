@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/BenedictKing/claude-proxy/internal/cacheinject"
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
@@ -615,7 +616,15 @@ func convertResponsesRequestWithStructConverter(serviceType string, sess *types.
 	if err != nil {
 		return nil, fmt.Errorf("转换请求失败: %w", err)
 	}
-	return utils.MarshalJSONNoEscape(convertedReq)
+	convertedBytes, err := utils.MarshalJSONNoEscape(convertedReq)
+	if err != nil {
+		return nil, fmt.Errorf("序列化Claude请求失败: %w", err)
+	}
+	if upstream == nil || !upstream.DisablePromptCacheInjection {
+		injectedBytes, _, _ := cacheinject.InjectPromptCacheBreakpoints(convertedBytes)
+		return injectedBytes, nil
+	}
+	return convertedBytes, nil
 }
 
 func ResponsesRequestStream(bodyBytes []byte) bool {

@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"strings"
+
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
 
 // streamPump 聚合各 provider 流式实现共有的脚手架：事件/错误双通道、
@@ -52,7 +54,7 @@ func (p *streamPump) fail(err error) {
 func (p *streamPump) newScanner(body io.Reader) *bufio.Scanner {
 	scanner := bufio.NewScanner(body)
 	const maxScannerBufferSize = 1024 * 1024 // 1MB
-	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBufferSize)
+	scanner.Buffer(utils.GetChunkBuffer64KB()[:0], maxScannerBufferSize)
 	return scanner
 }
 

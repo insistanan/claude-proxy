@@ -50,7 +50,8 @@ func ForwardUpstreamResponseBody(c *gin.Context, resp *http.Response, defaultCon
 
 	c.Status(resp.StatusCode)
 	flusher, _ := c.Writer.(http.Flusher)
-	buffer := make([]byte, 32*1024)
+	buffer := utils.GetChunkBuffer32KB()
+	defer utils.PutChunkBuffer32KB(buffer)
 	markedFirstChunk := false
 
 	for {

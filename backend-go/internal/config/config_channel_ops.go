@@ -451,6 +451,9 @@ func applyCommonUpdates(upstream *UpstreamConfig, index int, updates UpstreamUpd
 	if updates.IncludeHistoryThinking != nil {
 		upstream.IncludeHistoryThinking = *updates.IncludeHistoryThinking
 	}
+	if updates.DisablePromptCacheInjection != nil {
+		upstream.DisablePromptCacheInjection = *updates.DisablePromptCacheInjection
+	}
 	if updates.DisablePromptCacheKey != nil {
 		upstream.DisablePromptCacheKey = *updates.DisablePromptCacheKey
 	}

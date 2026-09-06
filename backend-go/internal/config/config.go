@@ -50,6 +50,7 @@ type UpstreamConfig struct {
 	InjectDummyThoughtSignature bool `json:"injectDummyThoughtSignature,omitempty"` // 给空 thought_signature 注入 dummy 值（兼容 x666.me 等要求必须有该字段的 API）
 	StripThoughtSignature       bool `json:"stripThoughtSignature,omitempty"`       // 移除 thought_signature 字段（兼容旧版 Gemini API）
 	IncludeHistoryThinking      bool `json:"includeHistoryThinking,omitempty"`      // 是否将历史 reasoning/thinking 回灌上游
+	DisablePromptCacheInjection bool `json:"disablePromptCacheInjection,omitempty"` // 是否禁用 Claude Prompt Cache 自动断点注入
 	DisablePromptCacheKey       bool `json:"disablePromptCacheKey,omitempty"`       // 是否禁用兼容上游的 prompt_cache_key
 	RequireReasoningContent     bool `json:"requireReasoningContent,omitempty"`     // 严格渠道要求所有缺失的 assistant reasoning_content 使用兼容续接值
 	EnablePreviousResponseID    bool `json:"enablePreviousResponseID,omitempty"`    // Messages->Responses 是否启用 previous_response_id 链
@@ -130,6 +131,7 @@ type UpstreamUpdate struct {
 	InjectDummyThoughtSignature *bool `json:"injectDummyThoughtSignature"`
 	StripThoughtSignature       *bool `json:"stripThoughtSignature"`
 	IncludeHistoryThinking      *bool `json:"includeHistoryThinking"`
+	DisablePromptCacheInjection *bool `json:"disablePromptCacheInjection"`
 	DisablePromptCacheKey       *bool `json:"disablePromptCacheKey"`
 	RequireReasoningContent     *bool `json:"requireReasoningContent"`
 	EnablePreviousResponseID    *bool `json:"enablePreviousResponseID"`

@@ -33,6 +33,7 @@ func ChannelToDTO(up *UpstreamConfig, index int) map[string]interface{} {
 		"lowQuality":                  up.LowQuality,
 		"visionCapable":               up.VisionCapable,
 		"excludeFromConversation":     up.ExcludeFromConversation,
+		"disablePromptCacheInjection": up.DisablePromptCacheInjection,
 		"disablePromptCacheKey":       up.DisablePromptCacheKey,
 		"visionLayerEnabled":          up.VisionLayerEnabled,
 		"visionLayerChannelId":        up.VisionLayerChannelID,

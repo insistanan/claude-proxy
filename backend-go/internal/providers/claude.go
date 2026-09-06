@@ -66,8 +66,10 @@ func (p *ClaudeProvider) ConvertToProviderRequest(c *gin.Context, upstream *conf
 
 	// 自动 Prompt Caching 断点注入（参照 cc-switch cache_injector）：
 	// 若现有断点 < 4，在 tools 末尾、system 末尾、最新消息与历史 anchor 自动补充 cache_control
-	injectedBytes, _, _ := cacheinject.InjectPromptCacheBreakpoints(bodyBytes)
-	bodyBytes = injectedBytes
+	if upstream == nil || !upstream.DisablePromptCacheInjection {
+		injectedBytes, _, _ := cacheinject.InjectPromptCacheBreakpoints(bodyBytes)
+		bodyBytes = injectedBytes
+	}
 
 	// 构建目标URL（"#"后缀与版本前缀约定见 utils.BuildUpstreamURL）
 	endpoint := strings.TrimPrefix(c.Request.URL.Path, "/v1")

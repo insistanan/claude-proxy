@@ -18,6 +18,7 @@ import (
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/mediasanitizer"
+	"github.com/BenedictKing/claude-proxy/internal/ratelimit"
 	"github.com/BenedictKing/claude-proxy/internal/rectifier"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
@@ -199,6 +200,9 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 				recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, attemptStatus, status, false, attemptStart, "content_safety", preparationErr.Error(), false, isStream, nil)
 			}
 
+			// 429 平滑排队：若当前 BaseURL 处于瞬时冷却期，在 context 允许范围内轻量排队
+			ratelimit.GetDefaultLimiter().WaitOrAcquire(c.Request.Context(), currentBaseURL, 0, 0, 0, 2*time.Second)
+
 			req = AttachRequestLogID(c, req)
 			resp, err := SendRequest(req, upstream, envCfg, isStream, apiType, proxyURL)
 			if err != nil {
@@ -263,6 +267,26 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 					}
 					retryState.markKeyFailed(apiKey)
 					continue
+				}
+
+				// 处理 429 速率限制（Rate Limit / TPM / RPM 瞬时冲顶）：
+				// 记录短暂冷却，并在同一候选上进行轻量毫秒级退避排队重试 1 次，避免瞬时并发将所有 key 击穿。
+				if resp.StatusCode == http.StatusTooManyRequests && !utils.IsNonRetryableUpstreamErrorBody(respBodyBytes) {
+					ratelimit.GetDefaultLimiter().Record429(currentBaseURL, 600*time.Millisecond)
+					candidate := currentBaseURL + "\x00" + apiKey
+					if retryState.canRetryCandidate(candidate, c.Request.Context()) {
+						retryCount := retryState.recordCandidateRetry(candidate)
+						log.Printf("[%s-RateLimit] 渠道 %s 遭遇速率限制 (429)，排队退避 500ms 后原位重试 (%d/1)", apiType, upstream.Name, retryCount)
+						select {
+						case <-c.Request.Context().Done():
+							lifecycle.finalizeClientCancelled()
+							recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "cancelled", 0, false, attemptStart, "client_cancelled", c.Request.Context().Err().Error(), false, isStream, nil)
+							return newUpstreamAttemptResult(true, "", 0, nil, nil, c.Request.Context().Err())
+						case <-time.After(500 * time.Millisecond):
+						}
+						RestoreRequestBody(c, requestBody)
+						continue
+					}
 				}
 
 				// 兼容部分严格的 OpenAI 协议网关：首次明确拒绝 prompt_cache_key 时，

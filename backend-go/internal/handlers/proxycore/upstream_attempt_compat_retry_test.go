@@ -229,6 +229,34 @@ func TestModelCapacityErrorRetriesSameCandidateOnce(t *testing.T) {
 	}
 }
 
+func TestRateLimit429RetriesSameCandidateOnce(t *testing.T) {
+	h := newCompatRetryHarness(t)
+	rateLimitBody := `{"error":{"type":"rate_limit_error","message":"Rate limit exceeded, please slow down"}}`
+	rs := newRecordingServer(t, func(seq int, r *http.Request, body string) (int, string) {
+		if seq == 0 {
+			return http.StatusTooManyRequests, rateLimitBody
+		}
+		return http.StatusOK, `{"ok":true}`
+	})
+
+	upstream := &config.UpstreamConfig{
+		BaseURL: rs.server.URL,
+		APIKeys: []string{"key-a"},
+		Name:    "ratelimit-test",
+	}
+	var successKeys []string
+
+	result := runAttempt(h, t, upstream, []byte(`{}`),
+		func(_ *gin.Context, up *config.UpstreamConfig, apiKey string) (*http.Request, error) {
+			return http.NewRequest(http.MethodPost, up.BaseURL, nil)
+		},
+		successRecorder(&successKeys))
+
+	if !result.Handled || result.SuccessKey != "key-a" {
+		t.Fatalf("Handled=%v SuccessKey=%q, want 同候选在 429 退避后重试成功", result.Handled, result.SuccessKey)
+	}
+}
+
 // TestContentPolicyEscapeRetryOnResponsesChannel 锚点：Responses 渠道把请求正文中的
 // 审核错误码原文误判为拦截时，保持 JSON 值不变改用 Unicode 转义重试一次。
 func TestContentPolicyEscapeRetryOnResponsesChannel(t *testing.T) {
