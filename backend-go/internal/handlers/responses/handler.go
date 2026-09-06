@@ -124,6 +124,18 @@ func handleSuccess(
 		return nil, err
 	}
 
+	decompressedBytes, wasDecoded, decompressErr := utils.DecompressResponseBodyIfNeeded(resp, bodyBytes, envCfg.MaxRequestBodySize)
+	if decompressErr != nil && errors.Is(decompressErr, utils.ErrDecompressedBodyTooLarge) {
+		log.Printf("[Responses-Response] 错误: 解压响应体超过大小限制: %v", decompressErr)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Decompressed response body too large"})
+		return nil, decompressErr
+	}
+	if wasDecoded {
+		bodyBytes = decompressedBytes
+		utils.StripEntityHeadersForRebuiltBody(resp.Header)
+		resp.Header.Del("Content-Encoding")
+	}
+
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()
 		log.Printf("[Responses-Timing] Responses 响应完成: %dms, 状态: %d", responseTime, resp.StatusCode)

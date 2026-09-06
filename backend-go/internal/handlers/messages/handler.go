@@ -3,6 +3,7 @@ package messages
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -100,6 +101,18 @@ func handleNormalResponse(
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to read response"})
 		return nil, err
+	}
+
+	decompressedBytes, wasDecoded, decompressErr := utils.DecompressResponseBodyIfNeeded(resp, bodyBytes, envCfg.MaxRequestBodySize)
+	if decompressErr != nil && errors.Is(decompressErr, utils.ErrDecompressedBodyTooLarge) {
+		log.Printf("[Messages-Response] 错误: 解压响应体超过大小限制: %v", decompressErr)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Decompressed response body too large"})
+		return nil, decompressErr
+	}
+	if wasDecoded {
+		bodyBytes = decompressedBytes
+		utils.StripEntityHeadersForRebuiltBody(resp.Header)
+		resp.Header.Del("Content-Encoding")
 	}
 
 	if envCfg.EnableResponseLogs {

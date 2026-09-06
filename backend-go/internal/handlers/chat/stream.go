@@ -32,6 +32,19 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(resp.StatusCode)
 
+	// 检查流式响应是否含有 Content-Encoding。由于已强制设置 Accept-Encoding: identity，
+	// 正常情况下上游不应压缩 SSE；若上游违规压缩，尝试包装流式解码 Reader 以防分块解析失败。
+	if encoding := utils.GetContentEncoding(resp.Header); encoding != "" {
+		log.Printf("[Chat-Stream] 警告: 上游流式响应包含 Content-Encoding: %s，尝试流式解压", encoding)
+		wrappedBody, wrapped, wrapErr := utils.WrapStreamReaderIfNeeded(resp)
+		if wrapErr != nil {
+			log.Printf("[Chat-Stream] 警告: 包装流式解压 Reader 失败 (%s): %v", encoding, wrapErr)
+		} else if wrapped {
+			resp.Body = wrappedBody
+			utils.StripEntityHeadersForRebuiltBody(resp.Header)
+		}
+	}
+
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := bufio.NewReaderSize(resp.Body, 64*1024)
 	var streamUsage *types.Usage

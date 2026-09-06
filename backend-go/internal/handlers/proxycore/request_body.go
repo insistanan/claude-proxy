@@ -3,6 +3,7 @@ package proxycore
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -29,6 +30,35 @@ func ReadRequestBody(c *gin.Context, maxBodySize int64) ([]byte, error) {
 		io.Copy(io.Discard, c.Request.Body)
 		c.JSON(413, gin.H{"error": fmt.Sprintf("Request body too large, maximum size is %d MB", maxBodySize/1024/1024)})
 		return nil, fmt.Errorf("request body too large")
+	}
+
+	// 检测入站压缩请求体（例如 Codex Desktop 在登录态发送的 zstd 压缩体）
+	contentEncoding := utils.GetContentEncoding(c.Request.Header)
+	if contentEncoding != "" {
+		if !utils.IsSupportedContentEncoding(contentEncoding) {
+			log.Printf("[Request-Decompress] 警告: 不支持的请求 Content-Encoding: %s", contentEncoding)
+			c.JSON(400, gin.H{"error": fmt.Sprintf("Unsupported request content-encoding: %s", contentEncoding)})
+			return nil, fmt.Errorf("unsupported request content-encoding: %s", contentEncoding)
+		}
+
+		decompressedBytes, wasDecompressed, decompressErr := utils.DecompressBodyWithLimit(contentEncoding, bodyBytes, maxBodySize)
+		if decompressErr != nil {
+			if errors.Is(decompressErr, utils.ErrDecompressedBodyTooLarge) {
+				log.Printf("[Request-Decompress] 警告: 请求体解压后超过大小上限 (%d MB)", maxBodySize/1024/1024)
+				c.JSON(413, gin.H{"error": fmt.Sprintf("Decompressed request body too large, maximum size is %d MB", maxBodySize/1024/1024)})
+				return nil, decompressErr
+			}
+			log.Printf("[Request-Decompress] 警告: 解压请求体失败 (%s): %v", contentEncoding, decompressErr)
+			c.JSON(400, gin.H{"error": fmt.Sprintf("Failed to decompress request body (%s): %v", contentEncoding, decompressErr)})
+			return nil, decompressErr
+		}
+
+		if wasDecompressed {
+			bodyBytes = decompressedBytes
+			// 剥除失真的实体头，后续转发层基于解压后的明文 JSON 处理
+			utils.StripEntityHeadersForRebuiltBody(c.Request.Header)
+			c.Request.ContentLength = int64(len(bodyBytes))
+		}
 	}
 
 	// 恢复请求体供后续使用

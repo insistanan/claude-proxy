@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
@@ -14,6 +15,23 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/logger"
 	"github.com/BenedictKing/claude-proxy/internal/utils"
 )
+
+// ShouldForceIdentityEncoding 判定是否应强制上游使用 identity 编码（禁止压缩）。
+// 对流式响应（SSE）、流式端点（如 Gemini streamGenerateContent / alt=sse）或指定 text/event-stream 的请求，
+// 必须强制 identity，防止上游压缩 SSE 流导致分块按行解析失败。
+func ShouldForceIdentityEncoding(req *http.Request, isStream bool) bool {
+	if isStream {
+		return true
+	}
+	if req == nil || req.URL == nil {
+		return false
+	}
+	if strings.Contains(req.URL.Path, "streamGenerateContent") || strings.Contains(req.URL.RawQuery, "alt=sse") {
+		return true
+	}
+	acceptHeader := strings.ToLower(req.Header.Get("Accept"))
+	return strings.Contains(acceptHeader, "text/event-stream")
+}
 
 // SendRequest 发送 HTTP 请求到上游
 // isStream: 是否为流式请求（流式请求使用无超时客户端）
@@ -28,6 +46,12 @@ func SendRequest(req *http.Request, upstream *config.UpstreamConfig, envCfg *con
 	} else {
 		timeout := time.Duration(envCfg.RequestTimeout) * time.Millisecond
 		client, err = clientManager.GetStandardClient(timeout, upstream.InsecureSkipVerify, proxyURL)
+	}
+
+	// 流式请求或 SSE 端点强制设置 Accept-Encoding: identity，防止上游压缩 SSE 流
+	// 普通非流式请求保持清空，由 Go Transport 自动添加 gzip 并处理
+	if ShouldForceIdentityEncoding(req, isStream) {
+		req.Header.Set("Accept-Encoding", "identity")
 	}
 	if err != nil {
 		if req.Body != nil {

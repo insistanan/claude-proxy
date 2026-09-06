@@ -4,6 +4,7 @@ package gemini
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -337,6 +338,24 @@ func handleSuccess(
 			},
 		})
 		return nil, err
+	}
+
+	decompressedBytes, wasDecoded, decompressErr := utils.DecompressResponseBodyIfNeeded(resp, bodyBytes, envCfg.MaxRequestBodySize)
+	if decompressErr != nil && errors.Is(decompressErr, utils.ErrDecompressedBodyTooLarge) {
+		log.Printf("[Gemini-Response] 错误: 解压响应体超过大小限制: %v", decompressErr)
+		c.JSON(http.StatusBadGateway, types.GeminiError{
+			Error: types.GeminiErrorDetail{
+				Code:    502,
+				Message: "Decompressed response body too large",
+				Status:  "UNAVAILABLE",
+			},
+		})
+		return nil, decompressErr
+	}
+	if wasDecoded {
+		bodyBytes = decompressedBytes
+		utils.StripEntityHeadersForRebuiltBody(resp.Header)
+		resp.Header.Del("Content-Encoding")
 	}
 
 	if envCfg.EnableResponseLogs {

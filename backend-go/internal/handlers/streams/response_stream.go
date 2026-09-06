@@ -31,7 +31,8 @@ func ForwardUpstreamResponseBody(c *gin.Context, resp *http.Response, defaultCon
 		return nil
 	}
 
-	utils.ForwardResponseHeaders(resp.Header, c.Writer)
+	// 透传模式未在本地解压响应体，保留 Content-Encoding 等实体头供客户端自行解压
+	utils.ForwardResponseHeadersEx(resp.Header, c.Writer, false)
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = defaultContentType

@@ -96,27 +96,42 @@ func EnsureCompatibleUserAgent(headers http.Header, serviceType string) {
 	}
 }
 
+// StripEntityHeadersForRebuiltBody 移除在解压或重建响应体后会失真的实体头部。
+func StripEntityHeadersForRebuiltBody(headers http.Header) {
+	if headers == nil {
+		return
+	}
+	headers.Del("Content-Encoding")
+	headers.Del("Content-Length")
+	headers.Del("Transfer-Encoding")
+}
+
 // ForwardResponseHeaders 转发上游响应头到客户端
-// 作为透明代理，应该转发所有响应头，只过滤框架自动处理的头部
+// 默认响应体已被解压（或重建），剥除 content-encoding 等实体头
 func ForwardResponseHeaders(upstreamHeaders http.Header, clientWriter http.ResponseWriter) {
+	ForwardResponseHeadersEx(upstreamHeaders, clientWriter, true)
+}
+
+// ForwardResponseHeadersEx 转发上游响应头到客户端，可显式指定响应体是否已被解码。
+// bodyDecoded 为 true 时剥除 content-encoding（因为 body 已经变为明文）；
+// bodyDecoded 为 false 时保留 content-encoding（透传模式，由客户端自行解压）。
+func ForwardResponseHeadersEx(upstreamHeaders http.Header, clientWriter http.ResponseWriter, bodyDecoded bool) {
 	// 不应转发的头部列表（由框架或代理层自动处理）
 	skipHeaders := map[string]bool{
 		"transfer-encoding": true, // 由框架自动处理
 		"content-length":    true, // 由框架自动处理
 		"connection":        true, // 代理层控制
-		"content-encoding":  true, // 如果已解压则不应转发
+	}
+	if bodyDecoded {
+		skipHeaders["content-encoding"] = true // 如果已解压则不应转发
 	}
 
 	// 复制所有上游响应头到客户端
 	for key, values := range upstreamHeaders {
 		lowerKey := strings.ToLower(key)
-
-		// 跳过不应转发的头部
 		if skipHeaders[lowerKey] {
 			continue
 		}
-
-		// 转发头部（可能有多个值）
 		for _, value := range values {
 			clientWriter.Header().Add(key, value)
 		}

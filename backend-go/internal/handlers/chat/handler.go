@@ -311,7 +311,17 @@ func handleSuccess(c *gin.Context, resp *http.Response, envCfg *config.EnvConfig
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
 		return nil, err
 	}
-	bodyBytes = utils.DecompressGzipIfNeeded(resp, bodyBytes)
+	decompressedBytes, wasDecoded, decompressErr := utils.DecompressResponseBodyIfNeeded(resp, bodyBytes, envCfg.MaxRequestBodySize)
+	if decompressErr != nil && errors.Is(decompressErr, utils.ErrDecompressedBodyTooLarge) {
+		log.Printf("[Chat-Response] 错误: 解压响应体超过大小限制: %v", decompressErr)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Decompressed response body too large"})
+		return nil, decompressErr
+	}
+	if wasDecoded {
+		bodyBytes = decompressedBytes
+		utils.StripEntityHeadersForRebuiltBody(resp.Header)
+		resp.Header.Del("Content-Encoding")
+	}
 
 	if envCfg.EnableResponseLogs {
 		responseTime := time.Since(startTime).Milliseconds()

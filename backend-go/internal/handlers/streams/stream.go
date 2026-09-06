@@ -167,6 +167,19 @@ func HandleStreamResponse(
 			resp.Header.Get("Content-Type"), snippet)
 	}
 
+	// 检查流式响应是否含有 Content-Encoding。由于已强制设置 Accept-Encoding: identity，
+	// 正常情况下上游不应压缩 SSE；若上游违规压缩，尝试包装流式解码 Reader 以防分块解析失败。
+	if encoding := utils.GetContentEncoding(resp.Header); encoding != "" {
+		log.Printf("[Messages-Stream] 警告: 上游流式响应包含 Content-Encoding: %s，尝试流式解压", encoding)
+		wrappedBody, wrapped, wrapErr := utils.WrapStreamReaderIfNeeded(resp)
+		if wrapErr != nil {
+			log.Printf("[Messages-Stream] 警告: 包装流式解压 Reader 失败 (%s): %v", encoding, wrapErr)
+		} else if wrapped {
+			resp.Body = wrappedBody
+			utils.StripEntityHeadersForRebuiltBody(resp.Header)
+		}
+	}
+
 	// 使用带 ctx 的流式方法：客户端断连时 ctx 取消，
 	// provider goroutine 在向 eventChan 发送事件时 select ctx.Done() 立即退出，
 	// 杜绝"缓冲写满后永久阻塞"的 goroutine/上游连接泄漏。
