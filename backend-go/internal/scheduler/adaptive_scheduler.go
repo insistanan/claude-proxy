@@ -229,13 +229,15 @@ func (as *AdaptiveScheduler) selectBestModelProfile(
 	bestModel := targetModels[0]
 	bestProfile := as.profileManager.GetAggregateProfileSnapshot(baseURLs, apiKeys, bestModel, channelIdx)
 	bestLoadScore := as.calculateLoadScoreWithReserved(bestProfile, reservedLoad)
-	bestFinalScore := bestProfile.HealthScore - bestLoadScore*0.3
+	bestTTFTPenalty := calculateTTFTPenalty(bestProfile)
+	bestFinalScore := bestProfile.HealthScore - bestLoadScore*0.3 - bestTTFTPenalty
 
 	for i := 1; i < len(targetModels); i++ {
 		model := targetModels[i]
 		profile := as.profileManager.GetAggregateProfileSnapshot(baseURLs, apiKeys, model, channelIdx)
 		loadScore := as.calculateLoadScoreWithReserved(profile, reservedLoad)
-		finalScore := profile.HealthScore - loadScore*0.3
+		ttftPenalty := calculateTTFTPenalty(profile)
+		finalScore := profile.HealthScore - loadScore*0.3 - ttftPenalty
 
 		// 同分时优先在途更少的模型画像
 		if finalScore > bestFinalScore ||
@@ -248,6 +250,19 @@ func (as *AdaptiveScheduler) selectBestModelProfile(
 	}
 
 	return bestModel, bestProfile, bestLoadScore, bestFinalScore
+}
+
+// calculateTTFTPenalty 计算首字/首字节延迟惩罚因子（0-25分，越低越好）。
+// 当渠道平均首字节或首包延迟 > 1200ms 时开始平滑惩罚，> 4000ms 时达到满额惩罚（25分），
+// 促使自适应调度在健康评分与负载相当时，优先将请求分派至低首字延迟的敏捷渠道。
+func calculateTTFTPenalty(profile metrics.PerformanceSnapshotView) float64 {
+	if profile.AvgTTFB <= 1200 {
+		return 0
+	}
+	if profile.AvgTTFB >= 4000 {
+		return 25.0
+	}
+	return (profile.AvgTTFB - 1200) / (4000 - 1200) * 25.0
 }
 
 // calculateLoadScore 计算负载评分（0-100，越低越好）

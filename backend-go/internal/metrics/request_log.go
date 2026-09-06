@@ -23,6 +23,7 @@ type RequestLogEntry struct {
 	Success               bool    `json:"success"`
 	DurationMs            int64   `json:"durationMs"`
 	FirstTokenMs          int64   `json:"firstTokenMs,omitempty"`
+	TPS                   float64 `json:"tps,omitempty"`
 	Model                 string  `json:"model,omitempty"`
 	ResolvedModel         string  `json:"resolvedModel,omitempty"`
 	Transform             string  `json:"transform,omitempty"`

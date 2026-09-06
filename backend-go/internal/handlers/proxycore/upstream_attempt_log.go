@@ -6,6 +6,7 @@ package proxycore
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -113,6 +114,7 @@ func recordAttemptLog(
 	timestamp := time.Now().Format(time.RFC3339Nano)
 	attemptID := nextAttemptLogID("attempt")
 	durationMs := time.Since(start).Milliseconds()
+	firstTokenMs := requestLogFirstTokenMs(c, start)
 	errorMessage = truncateLogMessage(errorMessage, 500)
 
 	if logCtx.LogStore != nil {
@@ -152,7 +154,8 @@ func recordAttemptLog(
 			StatusCode:            statusCode,
 			Success:               success,
 			DurationMs:            durationMs,
-			FirstTokenMs:          requestLogFirstTokenMs(c, start),
+			FirstTokenMs:          firstTokenMs,
+			TPS:                   calculateRequestTPS(usageOutputTokens(usage), durationMs, firstTokenMs, isStream),
 			Model:                 logCtx.Model,
 			ResolvedModel:         resolvedModel,
 			Transform:             transform,
@@ -187,6 +190,21 @@ func truncateLogMessage(message string, limit int) string {
 		return message
 	}
 	return message[:limit] + "..."
+}
+
+func calculateRequestTPS(outputTokens int, durationMs int64, firstTokenMs int64, isStream bool) float64 {
+	if outputTokens <= 0 || durationMs <= 0 {
+		return 0
+	}
+	generationMs := durationMs
+	if isStream && firstTokenMs > 0 && durationMs > firstTokenMs {
+		generationMs = durationMs - firstTokenMs
+	}
+	if generationMs <= 0 {
+		return 0
+	}
+	tps := float64(outputTokens) / (float64(generationMs) / 1000.0)
+	return math.Round(tps*100) / 100
 }
 
 func usageInputTokens(usage *types.Usage) int {

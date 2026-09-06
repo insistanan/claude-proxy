@@ -525,45 +525,8 @@ func claudeReasoningToResponsesReasoning(claudeReq *types.ClaudeRequest) interfa
 }
 
 func resolveClaudeReasoningEffort(claudeReq *types.ClaudeRequest) string {
-	if claudeReq == nil {
-		return ""
-	}
-	if claudeReq.OutputConfig != nil {
-		if effort, _ := claudeReq.OutputConfig["effort"].(string); effort != "" {
-			switch strings.ToLower(effort) {
-			case "none", "auto", "minimal", "low", "medium", "high", "xhigh":
-				return strings.ToLower(effort)
-			case "max", "ultra":
-				return "max"
-			default:
-				return ""
-			}
-		}
-	}
-
-	raw := claudeReq.Thinking
-	obj, ok := raw.(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	typ, _ := obj["type"].(string)
-	if typ == "" || typ == "disabled" {
-		return "none"
-	}
-	switch typ {
-	case "adaptive":
-		return "auto"
-	case "enabled":
-		budget, ok := numericBudgetTokens(obj["budget_tokens"])
-		if !ok {
-			return "high"
-		}
-		// 反向阈值与 converters.ReasoningBudgetTokens 的默认预算表对齐（相邻档位中点），
-		// 保证 effort -> budget -> effort 的往返不发生档位漂移。
-		return converters.EffortFromReasoningBudget(int(budget))
-	default:
-		return ""
-	}
+	cfg := converters.ExtractReasoningFromClaude(claudeReq)
+	return cfg.Effort
 }
 
 func numericBudgetTokens(raw interface{}) (float64, bool) {
