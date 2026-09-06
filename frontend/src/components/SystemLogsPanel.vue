@@ -196,7 +196,12 @@
             </div>
             <template v-if="section.log">
               <pre v-if="headerVisible[section.key]" class="headers-pre">{{ formatHeaders(section.log.headers) }}</pre>
-              <JsonBodyPane :body="section.log.body || ''" :wrap="wrapEnabled[section.key]" />
+              <SessionInspector
+                :body="section.log.body || ''"
+                :wrap="wrapEnabled[section.key]"
+                :url="section.log.url || ''"
+                :method="section.log.method || 'POST'"
+              />
             </template>
           </section>
 
@@ -235,6 +240,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import JsonBodyPane from '@/components/JsonBodyPane.vue'
+import SessionInspector from '@/components/SessionInspector.vue'
 import { api, type ConversationKind, type SystemLogDetail, type SystemLogSummary, type TrafficLog } from '@/services/api'
 
 type TypeFilter = ConversationKind | ''

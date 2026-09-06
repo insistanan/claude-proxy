@@ -82,6 +82,7 @@
 | 需求 | 现成实现 | 备注 |
 |---|---|---|
 | 渠道 API 调用 | `services/api.ts`（`channelApiByType` 工厂） | 五协议共用；store 层调用 |
+| 会话与工具调用回放调试器 | `components/SessionInspector.vue` | 结构化解析 Claude/OpenAI/Responses/Gemini 的消息体与流正文；卡片化渲染思考过程（Thinking 展开/折叠）、工具调用（Tool Calls 格式化参数）与执行结果（Tool Results），支持一键 cURL 导出回放与 Raw JSON 自由切换 |
 | 系统日志（流量正文） | `api.getSystemLogs` / `api.getSystemLog` + `components/SystemLogsPanel.vue` | 日志页内 Tab；列表不带 body，详情按 requestId 懒加载。正文展示走 `JsonBodyPane`，禁止再引 JSON 树库 |
 | 评测工作台 API | `services/api.ts` 的 `listEval*` / `startEvalRun` / `getEvalLatestMap` / `putEvalWatch` / `streamEvalRun` | 评测不是 ChannelKind，不走 `channelApiByType`。`/eval` 页用工厂拉四协议渠道。`listEvalRuns({ channelId, limit })` 对应 `GET /api/eval/runs?channel=&limit=`：渠道行深链（`/eval?channel=<uuid>`）必须带 channelId 取数，只靠前端过滤会拿全局最近 30 条去筛，该渠道的老批次会假装"没有记录" |
 | 评测结论文案 / 颜色 / 时间 / SVG 预览 | `utils/eval.ts` | 渠道行块、矩阵、结果抽屉共用一份映射。相对时间走 `evalAgoLabel`（超 30 天退回绝对时间），绝对时间走 `evalFormatTime`。上游 SVG 只经 `evalSvgPreviewUrl` 走 `<img src="data:...">` |

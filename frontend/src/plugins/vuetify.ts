@@ -129,6 +129,10 @@ import {
   mdiFilterVariant,
   mdiPlaylistPlus,
   mdiCheckboxMultipleMarkedOutline,
+  mdiBrain,
+  mdiWrench,
+  mdiReplay,
+  mdiCodeJson,
   mdiApplicationExport,
   mdiFolderOpen
 } from '@mdi/js'
@@ -302,6 +306,10 @@ const iconMap: Record<string, string> = {
   send: mdiSend,
   download: mdiDownload,
   'application-export': mdiApplicationExport,
+  brain: mdiBrain,
+  wrench: mdiWrench,
+  replay: mdiReplay,
+  'code-json': mdiCodeJson,
   'folder-open': mdiFolderOpen
 }
 
