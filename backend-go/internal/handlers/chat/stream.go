@@ -71,8 +71,12 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 				return nil, err
 			}
 		}
+		restoredLine, err := hooks.RestoreAttachedSSEEvent(c, string(rawLine))
+		if err != nil {
+			return nil, err
+		}
 		proxycore.MarkRequestLogFirstToken(c)
-		if _, err := c.Writer.Write(rawLine); err != nil {
+		if _, err := c.Writer.Write([]byte(restoredLine)); err != nil {
 			return nil, err
 		}
 		if flusher != nil {
@@ -84,6 +88,15 @@ func handleStreamSuccess(c *gin.Context, resp *http.Response, envCfg *config.Env
 				break
 			}
 			return nil, readErr
+		}
+	}
+	remaining, err := hooks.DrainAttachedStreamRestoration(c)
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range remaining {
+		if _, err := c.Writer.Write([]byte(event)); err != nil {
+			return nil, err
 		}
 	}
 	if err := hooks.FlushAttachedStreamHooks(c); err != nil {

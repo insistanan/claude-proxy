@@ -3,6 +3,7 @@ package proxycore
 import (
 	"encoding/json"
 
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 	"github.com/gin-gonic/gin"
 )
 
@@ -36,11 +37,16 @@ func HandleAllChannelsFailed(c *gin.Context, fuzzyMode bool, lastFailoverError *
 		if status == 0 {
 			status = 503
 		}
+		body, err := hooks.RestoreAttachedResponseBody(c, lastFailoverError.Body)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "敏感信息还原失败", "code": "CONTENT_SAFETY_HOOK_ERROR"})
+			return
+		}
 		var errBody map[string]interface{}
-		if err := json.Unmarshal(lastFailoverError.Body, &errBody); err == nil {
+		if err := json.Unmarshal(body, &errBody); err == nil {
 			c.JSON(status, errBody)
 		} else {
-			c.JSON(status, gin.H{"error": string(lastFailoverError.Body)})
+			c.JSON(status, gin.H{"error": string(body)})
 		}
 	} else {
 		errMsg := "所有渠道都不可用"
@@ -74,11 +80,16 @@ func HandleAllKeysFailed(c *gin.Context, fuzzyMode bool, lastFailoverError *Fail
 		if status == 0 {
 			status = 500
 		}
+		body, err := hooks.RestoreAttachedResponseBody(c, lastFailoverError.Body)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "敏感信息还原失败", "code": "CONTENT_SAFETY_HOOK_ERROR"})
+			return
+		}
 		var errBody map[string]interface{}
-		if err := json.Unmarshal(lastFailoverError.Body, &errBody); err == nil {
+		if err := json.Unmarshal(body, &errBody); err == nil {
 			c.JSON(status, errBody)
 		} else {
-			c.JSON(status, gin.H{"error": string(lastFailoverError.Body)})
+			c.JSON(status, gin.H{"error": string(body)})
 		}
 	} else {
 		errMsg := "未知错误"

@@ -233,11 +233,18 @@ type NetworkSettings struct {
 
 // ContentSafetyConfig 内容安全相关设置。
 type ContentSafetyConfig struct {
+	SensitiveData SensitiveDataConfig `json:"sensitiveData"`
 	SensitiveWord SensitiveWordConfig `json:"sensitiveWord"`
 	SensitiveInfo SensitiveInfoConfig `json:"sensitiveInfo"`
 	Credential    CredentialConfig    `json:"credential"`
 	DangerousCmd  DangerousCmdConfig  `json:"dangerousCmd"`
 	Whitelist     WhitelistConfig     `json:"whitelist"`
+}
+
+// SensitiveDataConfig 统一控制敏感信息与凭据命中后的处置方式。
+// 各检测分组仍负责决定检测哪些内置规则。
+type SensitiveDataConfig struct {
+	Mode string `json:"mode"`
 }
 
 // SensitiveWordConfig 敏感词检测设置。
@@ -294,8 +301,9 @@ const (
 	SensitiveInfoRuleIDCard    = "id_card"
 	SensitiveInfoRuleEmail     = "email"
 	SensitiveInfoRuleIPAddress = "ip_address"
+	SensitiveInfoRuleBankCard  = "bank_card"
 
-	// SensitiveInfoIPMaskScopePublic 仅掩码公网单播地址（默认行为）。
+	// SensitiveInfoIPMaskScopePublic 仅掩码公网单播地址。
 	SensitiveInfoIPMaskScopePublic = "public"
 	// SensitiveInfoIPMaskScopeAll 掩码全部合法形态的地址，含私网/保留/文档段。
 	SensitiveInfoIPMaskScopeAll = "all"
@@ -320,6 +328,9 @@ const (
 // DefaultContentSafetyConfig 返回开箱即用的内容安全默认设置。
 func DefaultContentSafetyConfig() ContentSafetyConfig {
 	return ContentSafetyConfig{
+		SensitiveData: SensitiveDataConfig{
+			Mode: ContentSafetyModeBlock,
+		},
 		SensitiveWord: SensitiveWordConfig{
 			Enabled:               false,
 			PornographyEnabled:    false,
@@ -334,7 +345,7 @@ func DefaultContentSafetyConfig() ContentSafetyConfig {
 			Enabled:      false,
 			Mode:         ContentSafetyModeMask,
 			EnabledRules: []string{},
-			IPMaskScope:  SensitiveInfoIPMaskScopePublic,
+			IPMaskScope:  SensitiveInfoIPMaskScopeAll,
 		},
 		Credential: CredentialConfig{
 			Enabled:          false,

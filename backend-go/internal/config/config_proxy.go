@@ -168,6 +168,9 @@ func (cm *ConfigManager) UpdateNetworkSettings(settings NetworkSettings) error {
 
 // ValidateContentSafetyConfig 校验内容安全规则选择，拒绝未知、空白或重复配置。
 func ValidateContentSafetyConfig(settings ContentSafetyConfig) error {
+	if err := validateSensitiveDataMode(settings.SensitiveData.Mode); err != nil {
+		return err
+	}
 	if settings.SensitiveWord.Enabled &&
 		!settings.SensitiveWord.PornographyEnabled &&
 		!settings.SensitiveWord.GamblingEnabled &&
@@ -192,6 +195,7 @@ func ValidateContentSafetyConfig(settings ContentSafetyConfig) error {
 			SensitiveInfoRuleIDCard:    {},
 			SensitiveInfoRuleEmail:     {},
 			SensitiveInfoRuleIPAddress: {},
+			SensitiveInfoRuleBankCard:  {},
 		},
 	); err != nil {
 		return err
@@ -255,6 +259,15 @@ func ValidateContentSafetyConfig(settings ContentSafetyConfig) error {
 		return err
 	}
 	return nil
+}
+
+func validateSensitiveDataMode(mode string) error {
+	switch mode {
+	case ContentSafetyModeBlock, ContentSafetyModeMask:
+		return nil
+	default:
+		return proxyConfigErrorf("敏感数据处置模式必须是 block 或 mask，当前为 %q", mode)
+	}
 }
 
 func validateWhitelistConfig(settings WhitelistConfig) error {

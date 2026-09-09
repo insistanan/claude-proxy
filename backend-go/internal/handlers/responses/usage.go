@@ -458,7 +458,7 @@ func injectResponsesUsageToCompletedEventWithTokens(event string, requestBody []
 		if err := json.Unmarshal([]byte(payload), &data); err != nil {
 			// 调试日志：JSON 解析失败
 			if debugLog {
-				log.Printf("[Responses-Stream-Token] JSON解析失败: %v, 内容前200字符: %.200s", err, payload)
+				log.Printf("[Responses-Stream-Token] JSON解析失败: %v, 内容前200字符: %.200s", err, utils.RedactSensitivePlaceholdersForLog(payload))
 			}
 			return "", false
 		}
@@ -522,7 +522,7 @@ func injectResponsesUsageToCompletedEventWithTokens(event string, requestBody []
 		if len(eventPreview) > 500 {
 			eventPreview = eventPreview[:500] + "..."
 		}
-		log.Printf("[Responses-Stream-Token] 警告: 未找到 response.completed 事件进行注入, event内容: %s", eventPreview)
+		log.Printf("[Responses-Stream-Token] 警告: 未找到 response.completed 事件进行注入, event内容: %s", utils.RedactSensitivePlaceholdersForLog(eventPreview))
 	}
 	return event, inputTokens, outputTokens
 }

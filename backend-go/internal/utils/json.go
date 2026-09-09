@@ -3,8 +3,11 @@ package utils
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 )
+
+var sensitivePlaceholderPattern = regexp.MustCompile(`\{\{([A-Z0-9]+)_[A-Z0-9]{8,64}\}\}`)
 
 // MarshalJSONNoEscape 序列化 JSON 并禁用 HTML 字符转义
 // 使用 json.Encoder + SetEscapeHTML(false) 避免将 <, >, & 等字符转义为 \u003c 等
@@ -438,7 +441,7 @@ func FormatJSONForLog(data interface{}, maxTextLength int) string {
 	// 使用自定义格式化来实现content数组的紧凑显示
 	result := formatJSONWithCompactArrays(truncated, "", 0)
 
-	return result
+	return RedactSensitivePlaceholdersForLog(result)
 }
 
 // formatMapAsOneLine 将map格式化为单行JSON
@@ -732,6 +735,7 @@ func formatJSONWithCompactArrays(data interface{}, indent string, depth int) str
 
 // FormatJSONBytesForLog 格式化JSON字节数组用于日志输出
 func FormatJSONBytesForLog(jsonData []byte, maxTextLength int) string {
+	jsonData = []byte(RedactSensitivePlaceholdersForLog(string(jsonData)))
 	var data interface{}
 	if err := json.Unmarshal(jsonData, &data); err != nil {
 		// 如果不是有效JSON,按字符串处理
@@ -789,5 +793,10 @@ func MaskAPIKey(key string) string {
 
 // FormatJSONBytesRaw 原始输出JSON字节数组（不缩进、不截断、不重排序）
 func FormatJSONBytesRaw(jsonData []byte) string {
-	return string(jsonData)
+	return RedactSensitivePlaceholdersForLog(string(jsonData))
+}
+
+// RedactSensitivePlaceholdersForLog 去掉请求级占位符中的随机映射 ID，日志只保留类型。
+func RedactSensitivePlaceholdersForLog(text string) string {
+	return sensitivePlaceholderPattern.ReplaceAllString(text, `{{${1}_REDACTED}}`)
 }

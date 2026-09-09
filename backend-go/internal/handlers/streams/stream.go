@@ -162,7 +162,7 @@ func HandleStreamResponse(
 		bodySnippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		snippet := strings.TrimSpace(string(bodySnippet))
 		log.Printf("[Messages-Stream] 上游返回非 event-stream Content-Type: %s, body: %s",
-			resp.Header.Get("Content-Type"), snippet)
+			resp.Header.Get("Content-Type"), utils.RedactSensitivePlaceholdersForLog(snippet))
 		return nil, fmt.Errorf("upstream returned non-stream response (Content-Type: %s): %s",
 			resp.Header.Get("Content-Type"), snippet)
 	}
@@ -283,6 +283,16 @@ func ProcessStreamEvents(
 
 		case event, ok := <-eventChan:
 			if !ok {
+				remaining, err := hooks.DrainAttachedStreamRestoration(c)
+				if err != nil {
+					return nil, err
+				}
+				for _, pendingEvent := range remaining {
+					if _, err := w.Write([]byte(pendingEvent)); err != nil {
+						return nil, err
+					}
+					flusher.Flush()
+				}
 				if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 					return nil, err
 				}
@@ -495,6 +505,10 @@ func ProcessStreamEvent(
 		if corrected, ok := sanityCheckMessageStreamInputTokens(eventToSend, requestBody, envCfg.EnableResponseLogs); ok {
 			eventToSend = corrected
 		}
+	}
+	eventToSend, err := hooks.RestoreAttachedSSEEvent(c, eventToSend)
+	if err != nil {
+		return err
 	}
 
 	// 转发给客户端

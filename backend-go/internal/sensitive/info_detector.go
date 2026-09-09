@@ -34,9 +34,10 @@ type infoCandidate struct {
 }
 
 var (
-	idCardPattern = regexp.MustCompile(`\b[1-9][0-9]{16}[0-9Xx]\b`)
-	ipv4Pattern   = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
-	ipv6Pattern   = regexp.MustCompile(`(?i)[0-9a-f:][0-9a-f:.]*:[0-9a-f:.]*`)
+	idCardPattern   = regexp.MustCompile(`\b[1-9][0-9]{16}[0-9Xx]\b`)
+	ipv4Pattern     = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
+	ipv6Pattern     = regexp.MustCompile(`(?i)[0-9a-f:][0-9a-f:.]*:[0-9a-f:.]*`)
+	bankCardPattern = regexp.MustCompile(`(?:^|[^0-9])([0-9](?:[ -]?[0-9]){12,18})(?:[^0-9]|$)`)
 
 	// versionHintPattern 匹配 IPv4 命中前文末尾的版本号语境词
 	//（version/release/build/rev/revision，允许字母数字与 _-. 前缀，
@@ -202,6 +203,7 @@ func validateInfoRules(rules []string) error {
 		config.SensitiveInfoRuleIDCard:    {},
 		config.SensitiveInfoRuleEmail:     {},
 		config.SensitiveInfoRuleIPAddress: {},
+		config.SensitiveInfoRuleBankCard:  {},
 	}
 	seen := make(map[string]struct{}, len(rules))
 	for _, rule := range rules {
@@ -219,8 +221,8 @@ func validateInfoRules(rules []string) error {
 	return nil
 }
 
-// normalizeIPMaskScope 归一化 IP 掩码范围：合法值原样返回，零值按默认 public
-// 处理（覆盖未填该字段的既有调用方），未知取值显式报错。
+// normalizeIPMaskScope 归一化 IP 掩码范围：合法值原样返回，零值继续按 public
+// 处理以兼容未填该字段的既有直接调用方，未知取值显式报错。
 func normalizeIPMaskScope(scope string) (string, error) {
 	switch scope {
 	case config.SensitiveInfoIPMaskScopePublic, config.SensitiveInfoIPMaskScopeAll:
@@ -254,7 +256,53 @@ func allInfoRules(ipMaskScope string) []infoRule {
 				return findIPCandidates(text, ipMaskScope)
 			},
 		},
+		{
+			name: config.SensitiveInfoRuleBankCard,
+			find: findBankCardCandidates,
+		},
 	}
+}
+
+func findBankCardCandidates(text string) []infoCandidate {
+	indices := bankCardPattern.FindAllStringSubmatchIndex(text, -1)
+	candidates := make([]infoCandidate, 0, len(indices))
+	for _, index := range indices {
+		if len(index) < 4 || index[2] < 0 {
+			continue
+		}
+		original := text[index[2]:index[3]]
+		digits := strings.NewReplacer(" ", "", "-", "").Replace(original)
+		if !validLuhn(digits) {
+			continue
+		}
+		candidates = append(candidates, infoCandidate{
+			start: index[2], end: index[3], replacement: "[MASKED_PII:bank_card]",
+		})
+	}
+	return candidates
+}
+
+func validLuhn(value string) bool {
+	if len(value) < 13 || len(value) > 19 {
+		return false
+	}
+	sum := 0
+	double := false
+	for index := len(value) - 1; index >= 0; index-- {
+		if value[index] < '0' || value[index] > '9' {
+			return false
+		}
+		digit := int(value[index] - '0')
+		if double {
+			digit *= 2
+			if digit > 9 {
+				digit -= 9
+			}
+		}
+		sum += digit
+		double = !double
+	}
+	return sum%10 == 0
 }
 
 func findIDCardCandidates(text string) []infoCandidate {

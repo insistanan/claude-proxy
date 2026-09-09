@@ -101,12 +101,15 @@ const contentSafetyPipelineKey = "__content_safety_hook_pipeline"
 
 type attachedHookPipeline struct {
 	pipeline       *Pipeline
+	vault          *sensitive.Vault
 	metadataMu     sync.RWMutex
 	metadata       HookContext
 	streamMu       sync.Mutex
 	stream         *sensitive.StreamCmdScanner
 	toolArgs       map[string]string
 	credentialHits map[string]struct{}
+	restorers      map[string]*sensitive.StreamRestorer
+	restorePending map[string]streamRestoreTemplate
 }
 
 // AttachHookPipeline 将内容安全 Hook 管道绑定到当前请求。入口解析请求后调用，
@@ -118,7 +121,13 @@ func AttachHookPipeline(c requestContextSetter, pipeline *Pipeline, metadata Hoo
 	if metadata.eventDeduper == nil {
 		metadata.eventDeduper = newSafetyEventDeduper()
 	}
-	c.Set(contentSafetyPipelineKey, &attachedHookPipeline{pipeline: pipeline, metadata: metadata})
+	vault := sensitive.NewVault()
+	metadata.redactionVault = vault
+	c.Set(contentSafetyPipelineKey, &attachedHookPipeline{
+		pipeline: pipeline,
+		metadata: metadata,
+		vault:    vault,
+	})
 }
 
 type requestContextSetter interface {
@@ -161,6 +170,7 @@ func runAttachedPreRequestHooks(ctx context.Context, c requestContextGetter, req
 		}
 	}
 	metadata := attached.currentMetadata()
+	metadata.redactionVault = attached.vault
 	metadata.ChannelName = channelName
 	metadata.RequestID = requestIDFromHeaders(req.Header)
 	if len(payloadProtocols) > 1 {
@@ -279,7 +289,62 @@ func RunAttachedPostResponseHooks(ctx context.Context, c requestContextGetter, b
 	if err != nil {
 		return body, wrapContentSafetyHookError(attached.recordContentSafetyError(ctx, metadata, err))
 	}
-	return result.ResponseBody, nil
+	restored, err := RestoreAttachedResponseBody(c, result.ResponseBody)
+	if err != nil {
+		return body, wrapContentSafetyHookError(err)
+	}
+	return restored, nil
+}
+
+// RestoreAttachedResponseBody 仅执行请求级占位符还原，供非 2xx 错误等不会进入
+// PostResponse 管道的响应出口复用。
+func RestoreAttachedResponseBody(c requestContextGetter, body []byte) ([]byte, error) {
+	attached, err := attachedPipelineFromContext(c)
+	if err != nil || attached == nil || attached.vault == nil {
+		return body, err
+	}
+	return attached.vault.RestoreJSON(body)
+}
+
+// MaskAttachedText 使用当前请求已经建立的映射脱敏协议解析阶段提前提取的文本。
+func MaskAttachedText(c requestContextGetter, text string) (string, error) {
+	attached, err := attachedPipelineFromContext(c)
+	if err != nil || attached == nil || attached.vault == nil {
+		return text, err
+	}
+	return attached.vault.MaskKnown(text), nil
+}
+
+// ClearAttachedSensitiveData 在请求统一退出路径释放明文映射和流式还原状态。
+func ClearAttachedSensitiveData(c requestContextGetter) {
+	attached, err := attachedPipelineFromContext(c)
+	if err != nil || attached == nil {
+		return
+	}
+	attached.streamMu.Lock()
+	attached.restorers = nil
+	attached.restorePending = nil
+	attached.toolArgs = nil
+	attached.credentialHits = nil
+	attached.stream = nil
+	attached.streamMu.Unlock()
+	if attached.vault != nil {
+		attached.vault.Clear()
+	}
+}
+
+// ResetAttachedStreamRestoration 在新的上游尝试开始前丢弃上一尝试的分片状态，
+// 但保留请求级 Vault，使重试和渠道故障转移继续使用同一批占位符。
+func ResetAttachedStreamRestoration(c requestContextGetter) error {
+	attached, err := attachedPipelineFromContext(c)
+	if err != nil || attached == nil {
+		return err
+	}
+	attached.streamMu.Lock()
+	attached.restorers = nil
+	attached.restorePending = nil
+	attached.streamMu.Unlock()
+	return nil
 }
 
 func (a *attachedHookPipeline) currentMetadata() HookContext {
@@ -367,6 +432,9 @@ func (h *contentSafetyPreRequestHook) Run(ctx context.Context, metadata HookCont
 	}
 	if len(result.RequestBody) == 0 || result.UpstreamRequest == nil {
 		return result, nil
+	}
+	if metadata.redactionVault != nil {
+		metadata.redactionVault.ReserveText(string(result.RequestBody))
 	}
 	protocol := metadata.PayloadProtocol
 	if protocol == "" {

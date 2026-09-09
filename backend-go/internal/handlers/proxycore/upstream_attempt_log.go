@@ -185,7 +185,7 @@ func nextAttemptLogID(prefix string) string {
 }
 
 func truncateLogMessage(message string, limit int) string {
-	message = strings.TrimSpace(message)
+	message = strings.TrimSpace(utils.RedactSensitivePlaceholdersForLog(message))
 	if limit <= 0 || len(message) <= limit {
 		return message
 	}

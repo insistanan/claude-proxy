@@ -5,8 +5,6 @@
 package proxycore
 
 import (
-	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
-
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -17,6 +15,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 	"github.com/BenedictKing/claude-proxy/internal/mediasanitizer"
 	"github.com/BenedictKing/claude-proxy/internal/ratelimit"
 	"github.com/BenedictKing/claude-proxy/internal/rectifier"
@@ -476,7 +475,12 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 						// 非 failover 错误，记录失败指标后返回（请求已处理）
 						lifecycle.finalizeFailed()
 						recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, decision.errorType, string(respBodyBytes), false, isStream, nil)
-						c.Data(resp.StatusCode, "application/json", respBodyBytes)
+						restoredBody, restoreErr := hooks.RestoreAttachedResponseBody(c, respBodyBytes)
+						if restoreErr != nil {
+							c.JSON(http.StatusInternalServerError, gin.H{"error": "敏感信息还原失败", "code": "CONTENT_SAFETY_HOOK_ERROR"})
+							return newUpstreamAttemptResult(true, "", 0, nil, nil, restoreErr)
+						}
+						c.Data(resp.StatusCode, "application/json", restoredBody)
 						return newUpstreamAttemptResult(true, "", 0, nil, nil, nil)
 					}
 				}
@@ -590,7 +594,7 @@ func (a UpstreamAttempt) tryWithAllKeys() UpstreamAttemptResult {
 					lifecycle.finalizeFailed()
 					shouldRetryResponseProcessing := !c.Writer.Written()
 					recordAttemptLog(c, logCtx, upstream, apiType, requestLogID, currentBaseURL, apiKey, "failed", resp.StatusCode, false, attemptStart, "response_processing", err.Error(), shouldRetryResponseProcessing, isStream, usage)
-					log.Printf("[%s-Key] 警告: 响应处理失败: %v", apiType, err)
+					log.Printf("[%s-Key] 警告: 响应处理失败: %s", apiType, utils.RedactSensitivePlaceholdersForLog(err.Error()))
 					if shouldRetryResponseProcessing {
 						retryState.markKeyFailed(apiKey)
 						if a.MarkURLFailure != nil {
@@ -768,6 +772,9 @@ func prepareRequestForUpstream(
 	req *http.Request,
 	apiType string,
 ) (string, error) {
+	if err := hooks.ResetAttachedStreamRestoration(c); err != nil {
+		return "content_safety", err
+	}
 	payloadProtocol := hooks.PayloadProtocolForServiceType(upstream.ServiceType, apiType)
 	if err := hooks.RunAttachedPreRequestHooks(c.Request.Context(), c, req, upstream.Name, payloadProtocol); err != nil {
 		return "content_safety", err

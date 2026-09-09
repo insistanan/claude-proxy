@@ -65,6 +65,7 @@ func TestMultipartContentSafetyMasksPromptAndSyncsBoundary(t *testing.T) {
 	c := newImagesSafetyContext(t, func(settings *config.SettingsConfig) {
 		settings.ContentSafety.SensitiveWord.Enabled = false
 		settings.ContentSafety.SensitiveInfo.Enabled = true
+		settings.ContentSafety.SensitiveData.Mode = config.ContentSafetyModeMask
 		settings.ContentSafety.SensitiveInfo.Mode = config.ContentSafetyModeMask
 		settings.ContentSafety.SensitiveInfo.EnabledRules = []string{config.SensitiveInfoRulePhone}
 	})
@@ -102,7 +103,7 @@ func TestMultipartContentSafetyMasksPromptAndSyncsBoundary(t *testing.T) {
 	if len(parts) != 3 {
 		t.Fatalf("改写后部件数量 = %d，期望 3", len(parts))
 	}
-	if !strings.Contains(string(parts[1].Content), "[MASKED_PII:phone]") {
+	if !strings.Contains(string(parts[1].Content), "{{PHONE_") || strings.Contains(string(parts[1].Content), "18012345523") {
 		t.Errorf("prompt 字段未掩码: %q", parts[1].Content)
 	}
 	if parts[2].FileName != "cat.png" || !bytes.Equal(parts[2].Content, fileBytes) {
@@ -169,6 +170,7 @@ func TestMultipartContentSafetyKeepsBytesWhenNothingMatches(t *testing.T) {
 	c := newImagesSafetyContext(t, func(settings *config.SettingsConfig) {
 		settings.ContentSafety.SensitiveWord.Enabled = false
 		settings.ContentSafety.SensitiveInfo.Enabled = true
+		settings.ContentSafety.SensitiveData.Mode = config.ContentSafetyModeMask
 		settings.ContentSafety.SensitiveInfo.Mode = config.ContentSafetyModeMask
 		settings.ContentSafety.SensitiveInfo.EnabledRules = []string{config.SensitiveInfoRulePhone}
 	})

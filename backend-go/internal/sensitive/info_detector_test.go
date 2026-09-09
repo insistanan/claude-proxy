@@ -285,3 +285,31 @@ func defaultSensitiveInfoSettings() config.SensitiveInfoConfig {
 		IPMaskScope: config.SensitiveInfoIPMaskScopePublic,
 	}
 }
+
+func TestInfoDetectorBankCardUsesLuhnValidation(t *testing.T) {
+	detector, err := NewInfoDetector(config.SensitiveInfoConfig{
+		Enabled: true, EnabledRules: []string{config.SensitiveInfoRuleBankCard},
+	})
+	if err != nil {
+		t.Fatalf("创建银行卡检测器失败: %v", err)
+	}
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "连续数字", text: "卡号 4111111111111111", want: true},
+		{name: "空格分组", text: "卡号 4111 1111 1111 1111", want: true},
+		{name: "短横线分组", text: "卡号 4111-1111-1111-1111", want: true},
+		{name: "校验失败", text: "普通编号 4111111111111112", want: false},
+		{name: "长度不足", text: "手机号 18012345523", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			matches := detector.FindAll(test.text)
+			if got := len(matches) == 1; got != test.want {
+				t.Fatalf("命中状态 = %v，期望 %v，matches=%+v", got, test.want, matches)
+			}
+		})
+	}
+}

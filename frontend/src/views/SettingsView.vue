@@ -147,6 +147,19 @@
             <div class="safety-group">
               <div class="setting-row safety-master-row">
                 <div class="setting-copy">
+                  <div class="text-body-1 font-weight-medium">敏感数据处置</div>
+                  <div class="text-body-2 text-medium-emphasis mt-1">统一控制个人信息与凭据命中后的处理方式</div>
+                </div>
+                <v-btn-toggle v-model="contentSafety.sensitiveData.mode" mandatory divided density="compact">
+                  <v-btn value="block">阻断</v-btn>
+                  <v-btn value="mask">可逆脱敏</v-btn>
+                </v-btn-toggle>
+              </div>
+            </div>
+
+            <div class="safety-group">
+              <div class="setting-row safety-master-row">
+                <div class="setting-copy">
                   <div class="text-body-1 font-weight-medium">敏感词检测</div>
                   <div class="text-body-2 text-medium-emphasis mt-1">请求前检查用户输入</div>
                 </div>
@@ -187,18 +200,6 @@
                   aria-label="启用个人信息保护"
                 />
               </div>
-              <v-btn-toggle
-                v-model="contentSafety.sensitiveInfo.mode"
-                mandatory
-                divided
-                density="compact"
-                class="mode-toggle"
-                :disabled="!contentSafety.sensitiveInfo.enabled"
-              >
-                <v-btn value="audit">审计</v-btn>
-                <v-btn value="block">阻断</v-btn>
-                <v-btn value="mask">掩码</v-btn>
-              </v-btn-toggle>
               <div class="option-grid" :class="{ 'options-disabled': !contentSafety.sensitiveInfo.enabled }">
                 <v-checkbox
                   v-for="item in sensitiveInfoRules"
@@ -246,48 +247,6 @@
                   hide-details
                   aria-label="启用凭据保护"
                 />
-              </div>
-              <div class="mode-settings" :class="{ 'options-disabled': !contentSafety.credential.enabled }">
-                <div class="mode-setting-row">
-                  <span class="text-body-2">用户与系统输入</span>
-                  <v-btn-toggle
-                    v-model="contentSafety.credential.userInputMode"
-                    mandatory
-                    divided
-                    density="compact"
-                    :disabled="!contentSafety.credential.enabled"
-                  >
-                    <v-btn value="audit">审计</v-btn>
-                    <v-btn value="block">阻断</v-btn>
-                    <v-btn value="mask">掩码</v-btn>
-                  </v-btn-toggle>
-                </div>
-                <div class="mode-setting-row">
-                  <span class="text-body-2">工具读取结果</span>
-                  <v-btn-toggle
-                    v-model="contentSafety.credential.toolResultMode"
-                    mandatory
-                    divided
-                    density="compact"
-                    :disabled="!contentSafety.credential.enabled"
-                  >
-                    <v-btn value="audit">审计</v-btn>
-                    <v-btn value="block">阻断</v-btn>
-                  </v-btn-toggle>
-                </div>
-                <div class="mode-setting-row">
-                  <span class="text-body-2">模型生成的工具参数</span>
-                  <v-btn-toggle
-                    v-model="contentSafety.credential.toolArgumentMode"
-                    mandatory
-                    divided
-                    density="compact"
-                    :disabled="!contentSafety.credential.enabled"
-                  >
-                    <v-btn value="audit">审计</v-btn>
-                    <v-btn value="block">阻断</v-btn>
-                  </v-btn-toggle>
-                </div>
               </div>
               <div class="option-grid" :class="{ 'options-disabled': !contentSafety.credential.enabled }">
                 <v-checkbox
@@ -421,7 +380,8 @@ const sensitiveInfoRules: Array<{ value: SensitiveInfoRule; label: string }> = [
   { value: 'phone', label: '手机号' },
   { value: 'id_card', label: '身份证号' },
   { value: 'email', label: '邮箱' },
-  { value: 'ip_address', label: 'IP 地址' }
+  { value: 'ip_address', label: 'IP 地址' },
+  { value: 'bank_card', label: '银行卡号' }
 ]
 
 const credentialRules: Array<{ value: CredentialRule; label: string }> = [
@@ -441,6 +401,9 @@ const dangerousCommandRules: Array<{ value: DangerousCommandRule; label: string 
 ]
 
 const defaultContentSafety = (): ContentSafetySettings => ({
+  sensitiveData: {
+    mode: 'block'
+  },
   sensitiveWord: {
     enabled: false,
     pornographyEnabled: false,
@@ -455,7 +418,7 @@ const defaultContentSafety = (): ContentSafetySettings => ({
     enabled: false,
     mode: 'mask',
     enabledRules: [],
-    ipMaskScope: 'public'
+    ipMaskScope: 'all'
   },
   credential: {
     enabled: false,
@@ -492,6 +455,9 @@ const normalizeContentSafety = (
   const normalizedInfoRules = rawInfoRules.filter(rule => rule !== 'api_key') as SensitiveInfoRule[]
 
   return {
+    sensitiveData: {
+      mode: settings.sensitiveData?.mode === 'mask' ? 'mask' : 'block'
+    },
     sensitiveWord: {
       ...defaults.sensitiveWord,
       ...(sensitiveWord || {}),
@@ -505,7 +471,7 @@ const normalizeContentSafety = (
       ipMaskScope:
         sensitiveInfo?.ipMaskScope === 'all' || sensitiveInfo?.ipMaskScope === 'public'
           ? sensitiveInfo.ipMaskScope
-          : 'public'
+          : defaults.sensitiveInfo.ipMaskScope
     },
     credential: {
       ...defaults.credential,
@@ -794,16 +760,6 @@ onMounted(loadSettings)
 
 .safety-master-row {
   border-bottom: 0;
-}
-
-.mode-toggle {
-  margin: 0 0 12px;
-}
-
-.mode-settings {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 12px;
 }
 
 .mode-setting-row {

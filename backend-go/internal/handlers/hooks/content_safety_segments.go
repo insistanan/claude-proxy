@@ -14,6 +14,7 @@ import (
 const (
 	safetySourceUser         = "user"
 	safetySourceSystem       = "system"
+	safetySourceAssistant    = "assistant"
 	safetySourceToolResult   = "tool_result"
 	safetySourceToolArgument = "tool_argument"
 )
@@ -96,10 +97,13 @@ func extractMessagesSafetySegments(root map[string]interface{}) []SafetySegment 
 				}
 				toolName := stringValue(block["name"])
 				if input, exists := block["input"]; exists {
-					appendImmutableJSONSegmentWithTool(&segments, "messages", safetySourceToolArgument,
-						fmt.Sprintf("%s[%d].input", path, blockIndex), input, toolName)
+					appendMutableJSONValue(&segments, "messages", safetySourceToolArgument,
+						fmt.Sprintf("%s[%d].input", path, blockIndex), input, toolName, func(masked interface{}) { block["input"] = masked })
 				}
 			}
+			appendKnownTextContent(&segments, "messages", safetySourceAssistant, path, content, func(value string) {
+				message["content"] = value
+			})
 			continue
 		}
 		if role != "user" {
@@ -120,7 +124,7 @@ func extractMessagesSafetySegments(root map[string]interface{}) []SafetySegment 
 			case "tool_result":
 				toolName := toolNameByID[stringValue(block["tool_use_id"])]
 				if value, exists := block["content"]; exists {
-					appendImmutableJSONSegmentWithTool(&segments, "messages", safetySourceToolResult, blockPath+".content", value, toolName)
+					appendMutableJSONValue(&segments, "messages", safetySourceToolResult, blockPath+".content", value, toolName, func(masked interface{}) { block["content"] = masked })
 				}
 			case "", "text", "input_text":
 				appendMapTextField(&segments, "messages", safetySourceUser, blockPath, block)
@@ -149,7 +153,7 @@ func extractChatSafetySegments(root map[string]interface{}) []SafetySegment {
 			source = safetySourceToolResult
 		case "assistant":
 			appendChatMessageToolArguments(&segments, "messages", messageIndex, message)
-			continue
+			source = safetySourceAssistant
 		default:
 			continue
 		}
@@ -160,7 +164,7 @@ func extractChatSafetySegments(root map[string]interface{}) []SafetySegment {
 		path := fmt.Sprintf("messages[%d].content", messageIndex)
 		if source == safetySourceToolResult {
 			toolName := stringValue(message["name"])
-			appendImmutableJSONSegmentWithTool(&segments, "chat", source, path, content, toolName)
+			appendMutableJSONValue(&segments, "chat", source, path, content, toolName, func(masked interface{}) { message["content"] = masked })
 			continue
 		}
 		appendKnownTextContent(&segments, "chat", source, path, content, func(value string) {
@@ -211,15 +215,15 @@ func extractResponsesSafetySegments(root map[string]interface{}) []SafetySegment
 		case "function_call_output", "custom_tool_call_output", "tool_search_output":
 			toolName := toolNameByCallID[stringValue(item["call_id"])]
 			if output, exists := item["output"]; exists {
-				appendImmutableJSONSegmentWithTool(&segments, "responses", safetySourceToolResult, path+".output", output, toolName)
+				appendMutableJSONValue(&segments, "responses", safetySourceToolResult, path+".output", output, toolName, func(masked interface{}) { item["output"] = masked })
 			}
 			continue
 		case "function_call", "custom_tool_call", "tool_search_call":
 			toolName := stringValue(item["name"])
 			if arguments, exists := item["arguments"]; exists {
-				appendImmutableJSONSegmentWithTool(&segments, "responses", safetySourceToolArgument, path+".arguments", arguments, toolName)
+				appendMutableJSONValue(&segments, "responses", safetySourceToolArgument, path+".arguments", arguments, toolName, func(masked interface{}) { item["arguments"] = masked })
 			} else if input, exists := item["input"]; exists {
-				appendImmutableJSONSegmentWithTool(&segments, "responses", safetySourceToolArgument, path+".input", input, toolName)
+				appendMutableJSONValue(&segments, "responses", safetySourceToolArgument, path+".input", input, toolName, func(masked interface{}) { item["input"] = masked })
 			}
 			continue
 		case "input_text":
@@ -233,6 +237,8 @@ func extractResponsesSafetySegments(root map[string]interface{}) []SafetySegment
 			source = safetySourceUser
 		case "system", "developer":
 			source = safetySourceSystem
+		case "assistant":
+			source = safetySourceAssistant
 		default:
 			continue
 		}
@@ -269,7 +275,7 @@ func extractGeminiSafetySegments(root map[string]interface{}) []SafetySegment {
 				if response, ok := functionResponse.(map[string]interface{}); ok {
 					toolName = stringValue(response["name"])
 					if value, exists := response["response"]; exists {
-						appendImmutableJSONSegmentWithTool(&segments, "gemini", safetySourceToolResult, path+".functionResponse.response", value, toolName)
+						appendMutableJSONValue(&segments, "gemini", safetySourceToolResult, path+".functionResponse.response", value, toolName, func(masked interface{}) { response["response"] = masked })
 					}
 				}
 				continue
@@ -279,13 +285,15 @@ func extractGeminiSafetySegments(root map[string]interface{}) []SafetySegment {
 				if call, ok := functionCall.(map[string]interface{}); ok {
 					toolName = stringValue(call["name"])
 					if args, exists := call["args"]; exists {
-						appendImmutableJSONSegmentWithTool(&segments, "gemini", safetySourceToolArgument, path+".functionCall.args", args, toolName)
+						appendMutableJSONValue(&segments, "gemini", safetySourceToolArgument, path+".functionCall.args", args, toolName, func(masked interface{}) { call["args"] = masked })
 					}
 				}
 				continue
 			}
 			if role == "" || role == "user" {
 				appendMapTextField(&segments, "gemini", safetySourceUser, path, part)
+			} else if role == "model" || role == "assistant" {
+				appendMapTextField(&segments, "gemini", safetySourceAssistant, path, part)
 			}
 		}
 	}
@@ -390,15 +398,15 @@ func appendChatMessageToolArguments(segments *[]SafetySegment, pathPrefix string
 		}
 		toolName := stringValue(function["name"])
 		if arguments, exists := function["arguments"]; exists {
-			appendImmutableJSONSegmentWithTool(segments, "chat", safetySourceToolArgument,
-				fmt.Sprintf("%s.tool_calls[%d].function.arguments", path, callIndex), arguments, toolName)
+			appendMutableJSONValue(segments, "chat", safetySourceToolArgument,
+				fmt.Sprintf("%s.tool_calls[%d].function.arguments", path, callIndex), arguments, toolName, func(masked interface{}) { function["arguments"] = masked })
 		}
 	}
 	if functionCall, ok := message["function_call"].(map[string]interface{}); ok {
 		toolName := stringValue(functionCall["name"])
 		if arguments, exists := functionCall["arguments"]; exists {
-			appendImmutableJSONSegmentWithTool(segments, "chat", safetySourceToolArgument,
-				path+".function_call.arguments", arguments, toolName)
+			appendMutableJSONValue(segments, "chat", safetySourceToolArgument,
+				path+".function_call.arguments", arguments, toolName, func(masked interface{}) { functionCall["arguments"] = masked })
 		}
 	}
 }
@@ -477,15 +485,46 @@ func appendImmutableJSONSegment(segments *[]SafetySegment, protocol, source, pat
 }
 
 func appendImmutableJSONSegmentWithTool(segments *[]SafetySegment, protocol, source, path string, value interface{}, toolName string) {
-	text, ok := value.(string)
-	if !ok {
-		body, err := json.Marshal(value)
-		if err != nil {
+	appendMutableJSONValue(segments, protocol, source, path, value, toolName, nil)
+}
+
+func appendMutableJSONValue(
+	segments *[]SafetySegment,
+	protocol, source, path string,
+	value interface{},
+	toolName string,
+	replace func(interface{}),
+) {
+	switch typed := value.(type) {
+	case string:
+		if replace == nil {
+			appendSafetySegmentWithTool(segments, protocol, source, path, typed, toolName, nil)
 			return
 		}
-		text = string(body)
+		appendSafetySegmentWithTool(segments, protocol, source, path, typed, toolName, func(masked string) {
+			replace(masked)
+		})
+	case map[string]interface{}:
+		for _, key := range sortedMapKeys(typed) {
+			field := key
+			appendMutableJSONValue(segments, protocol, source, path+"."+field, typed[field], toolName, func(masked interface{}) {
+				typed[field] = masked
+			})
+		}
+	case []interface{}:
+		for index := range typed {
+			itemIndex := index
+			appendMutableJSONValue(segments, protocol, source, fmt.Sprintf("%s[%d]", path, index), typed[index], toolName, func(masked interface{}) {
+				typed[itemIndex] = masked
+			})
+		}
+	default:
+		if replace == nil {
+			if body, err := json.Marshal(value); err == nil {
+				appendSafetySegmentWithTool(segments, protocol, source, path, string(body), toolName, nil)
+			}
+		}
 	}
-	appendSafetySegmentWithTool(segments, protocol, source, path, text, toolName, nil)
 }
 
 func applyContentSafetySegments(
@@ -496,6 +535,13 @@ func applyContentSafetySegments(
 	recorder BlockedLogRecorder,
 	prompts *[]string,
 ) (bool, error) {
+	vault := metadata.redactionVault
+	if vault == nil {
+		vault = sensitive.NewVault()
+	}
+	for index := range segments {
+		vault.ReserveText(segments[index].Text)
+	}
 	changed := false
 	for index := range segments {
 		segment := &segments[index]
@@ -520,18 +566,10 @@ func applyContentSafetySegments(
 			}
 		}
 
-		credentialMode := ""
-		switch segment.Source {
-		case safetySourceUser, safetySourceSystem:
-			credentialMode = snapshot.settings.Credential.UserInputMode
-		case safetySourceToolResult:
-			credentialMode = snapshot.settings.Credential.ToolResultMode
-		case safetySourceToolArgument:
-			credentialMode = snapshot.settings.Credential.ToolArgumentMode
-		}
+		credentialMode := snapshot.settings.SensitiveData.Mode
 		credentialMatches := snapshot.credential.FindAll(segment.Text)
 		if len(credentialMatches) > 0 {
-			if credentialMode == config.ContentSafetyModeBlock || !segment.Mutable && credentialMode == config.ContentSafetyModeMask {
+			if credentialMode == config.ContentSafetyModeBlock || credentialMode == config.ContentSafetyModeMask && !segment.Mutable {
 				return changed, &ContentSafetyError{
 					BlockType: sensitive.BlockTypeCredential,
 					RuleName:  credentialMatches[0].Rule,
@@ -539,7 +577,11 @@ func applyContentSafetySegments(
 				}
 			}
 			if credentialMode == config.ContentSafetyModeMask {
-				segment.Text, credentialMatches = snapshot.credential.Mask(segment.Text)
+				masked, maskErr := vault.Mask(segment.Text, credentialRedactionMatches(credentialMatches))
+				if maskErr != nil {
+					return changed, maskErr
+				}
+				segment.Text = masked
 				changed = true
 			}
 			if err := recordSafetyMatches(ctx, metadata, recorder, sensitive.BlockTypeCredential, credentialMode, *segment, credentialRuleNames(credentialMatches)); err != nil {
@@ -547,11 +589,12 @@ func applyContentSafetySegments(
 			}
 		}
 
-		if segment.Source == safetySourceUser || segment.Source == safetySourceSystem {
+		if segment.Source == safetySourceUser || segment.Source == safetySourceSystem || segment.Source == safetySourceAssistant ||
+			segment.Source == safetySourceToolResult || segment.Source == safetySourceToolArgument {
 			infoMatches := snapshot.info.FindAll(segment.Text)
 			if len(infoMatches) > 0 {
-				mode := snapshot.settings.SensitiveInfo.Mode
-				if mode == config.ContentSafetyModeBlock {
+				mode := snapshot.settings.SensitiveData.Mode
+				if mode == config.ContentSafetyModeBlock || mode == config.ContentSafetyModeMask && !segment.Mutable {
 					return changed, &ContentSafetyError{
 						BlockType: sensitive.BlockTypeSensitiveInfo,
 						RuleName:  infoMatches[0].Rule,
@@ -559,7 +602,11 @@ func applyContentSafetySegments(
 					}
 				}
 				if mode == config.ContentSafetyModeMask {
-					segment.Text, infoMatches = snapshot.info.Mask(segment.Text)
+					masked, maskErr := vault.Mask(segment.Text, infoRedactionMatches(infoMatches))
+					if maskErr != nil {
+						return changed, maskErr
+					}
+					segment.Text = masked
 					changed = true
 				}
 				if err := recordSafetyMatches(ctx, metadata, recorder, sensitive.BlockTypeSensitiveInfo, mode, *segment, infoRuleNames(infoMatches)); err != nil {
@@ -571,11 +618,62 @@ func applyContentSafetySegments(
 		if segment.Mutable && segment.Text != "" {
 			segment.replace(segment.Text)
 		}
+		if snapshot.settings.SensitiveData.Mode == config.ContentSafetyModeMask {
+			if matches := snapshot.credential.FindAll(segment.Text); len(matches) > 0 {
+				return changed, fmt.Errorf("凭据脱敏后仍命中规则 %q", matches[0].Rule)
+			}
+			if matches := snapshot.info.FindAll(segment.Text); len(matches) > 0 {
+				return changed, fmt.Errorf("敏感信息脱敏后仍命中规则 %q", matches[0].Rule)
+			}
+		}
 		if (segment.Source == safetySourceUser || segment.Source == safetySourceSystem) && strings.TrimSpace(segment.Text) != "" {
 			*prompts = append(*prompts, segment.Text)
 		}
 	}
 	return changed, nil
+}
+
+func credentialRedactionMatches(matches []sensitive.CredentialMatch) []sensitive.RedactionMatch {
+	result := make([]sensitive.RedactionMatch, 0, len(matches))
+	for _, match := range matches {
+		result = append(result, sensitive.RedactionMatch{
+			Type: credentialPlaceholderType(match.Rule), Rule: match.Rule, Original: match.Original,
+			Start: match.Start, End: match.End,
+		})
+	}
+	return result
+}
+
+func infoRedactionMatches(matches []sensitive.InfoMatch) []sensitive.RedactionMatch {
+	result := make([]sensitive.RedactionMatch, 0, len(matches))
+	for _, match := range matches {
+		kind := map[string]string{
+			config.SensitiveInfoRulePhone: "PHONE", config.SensitiveInfoRuleIDCard: "IDCARD",
+			config.SensitiveInfoRuleEmail: "EMAIL", config.SensitiveInfoRuleIPAddress: "IPPRIVATE",
+			config.SensitiveInfoRuleBankCard: "BANKCARD",
+		}[match.Rule]
+		result = append(result, sensitive.RedactionMatch{
+			Type: kind, Rule: match.Rule, Original: match.Original, Start: match.Start, End: match.End,
+		})
+	}
+	return result
+}
+
+func credentialPlaceholderType(rule string) string {
+	switch rule {
+	case config.CredentialRuleConnectionString:
+		return "CONNSTR"
+	case config.CredentialRulePrivateKey:
+		return "PRIVATEKEY"
+	case config.CredentialRuleAPIKey:
+		return "APITOKEN"
+	case config.CredentialRuleNamedSecret:
+		return "SECRET"
+	case config.CredentialRuleHighEntropy:
+		return "TOKEN"
+	default:
+		return "CREDENTIAL"
+	}
 }
 
 func recordSafetyMatches(ctx context.Context, metadata HookContext, recorder BlockedLogRecorder, blockType, mode string, segment SafetySegment, rules []string) error {

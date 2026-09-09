@@ -89,3 +89,11 @@ func TestPrepareBodyTruncatesOverCap(t *testing.T) {
 		t.Fatalf("len(body)=%d, want %d", len(body), MaxBodyBytes)
 	}
 }
+
+func TestPrepareBodyRemovesSensitivePlaceholderID(t *testing.T) {
+	placeholder := "{{SECRET_7K4M2P9QAB2CD}}"
+	body, _, _ := PrepareBody([]byte(`{"text":"` + placeholder + `"}`))
+	if strings.Contains(body, placeholder) || !strings.Contains(body, "{{SECRET_REDACTED}}") {
+		t.Fatalf("流量日志未移除占位符映射 ID: %s", body)
+	}
+}

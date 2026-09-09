@@ -68,6 +68,7 @@ func CompactHandler(
 			Model:   model,
 			Stream:  false,
 		})
+		defer hooks.ClearAttachedSensitiveData(c)
 
 		// 检查是否为多渠道模式
 		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindResponses, model)
@@ -128,7 +129,7 @@ func handleSingleChannelCompact(
 				continue
 			}
 			// 非故障转移错误，直接返回
-			c.Data(compactErr.status, "application/json", compactErr.body)
+			writeCompactResponseBody(c, compactErr.status, compactErr.body)
 			return
 		}
 	}
@@ -146,7 +147,7 @@ func handleSingleChannelCompact(
 	}
 
 	if lastErr != nil {
-		c.Data(lastErr.status, "application/json", lastErr.body)
+		writeCompactResponseBody(c, lastErr.status, lastErr.body)
 	} else {
 		c.JSON(503, gin.H{"error": "所有 API 密钥都不可用"})
 	}
@@ -222,7 +223,7 @@ func handleMultiChannelCompact(
 	}
 
 	if lastErr != nil {
-		c.Data(lastErr.status, "application/json", lastErr.body)
+		writeCompactResponseBody(c, lastErr.status, lastErr.body)
 	} else {
 		c.JSON(503, gin.H{"error": "所有 Responses 渠道都不可用"})
 	}
@@ -295,12 +296,21 @@ func tryCompactChannelWithAllKeys(
 				continue
 			}
 			// 非故障转移错误，返回但标记渠道成功（请求已处理）
-			c.Data(compactErr.status, "application/json", compactErr.body)
+			writeCompactResponseBody(c, compactErr.status, compactErr.body)
 			return true, "", nil
 		}
 	}
 
 	return false, "", lastErr
+}
+
+func writeCompactResponseBody(c *gin.Context, status int, body []byte) {
+	restored, err := hooks.RestoreAttachedResponseBody(c, body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "敏感信息还原失败", "code": "CONTENT_SAFETY_HOOK_ERROR"})
+		return
+	}
+	c.Data(status, "application/json", restored)
 }
 
 // tryCompactWithKey 使用单个 key 尝试 compact 请求

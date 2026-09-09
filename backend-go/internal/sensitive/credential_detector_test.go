@@ -28,6 +28,7 @@ func TestCredentialDetectorDetectsSupportedCredentialShapes(t *testing.T) {
 		text string
 	}{
 		{name: "API Key", rule: config.CredentialRuleAPIKey, text: "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345"},
+		{name: "Bearer Token", rule: config.CredentialRuleAPIKey, text: "Authorization: Bearer AbCdEf0123456789._-token"},
 		{name: "命名密码", rule: config.CredentialRuleNamedSecret, text: "PASSWORD=correct-horse-battery-staple"},
 		{name: "连接串", rule: config.CredentialRuleConnectionString, text: "postgresql://admin:s3cret-pass@db.internal/app"},
 		{name: "私钥", rule: config.CredentialRulePrivateKey, text: "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----"},
@@ -46,6 +47,19 @@ func TestCredentialDetectorDetectsSupportedCredentialShapes(t *testing.T) {
 				t.Fatalf("未命中规则 %s: %+v", test.rule, matches)
 			}
 		})
+	}
+}
+
+func TestCredentialDetectorIgnoresShortBearerValue(t *testing.T) {
+	detector, err := NewCredentialDetector(config.CredentialConfig{
+		Enabled:      true,
+		EnabledRules: []string{config.CredentialRuleAPIKey},
+	})
+	if err != nil {
+		t.Fatalf("创建凭据检测器失败: %v", err)
+	}
+	if matches := detector.FindAll("Authorization: Bearer example"); len(matches) != 0 {
+		t.Fatalf("短示例值不应被识别为 Bearer Token: %+v", matches)
 	}
 }
 

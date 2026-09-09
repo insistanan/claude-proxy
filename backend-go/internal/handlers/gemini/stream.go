@@ -122,8 +122,12 @@ func streamGeminiToGemini(
 				}
 			}
 
+			restoredLine, err := hooks.RestoreAttachedSSEEvent(c, line)
+			if err != nil {
+				return nil, err
+			}
 			proxycore.MarkRequestLogFirstToken(c)
-			fmt.Fprintf(c.Writer, "%s\n", line)
+			fmt.Fprintf(c.Writer, "%s\n", restoredLine)
 		} else if line != "" {
 			proxycore.MarkRequestLogFirstToken(c)
 			fmt.Fprintf(c.Writer, "%s\n", line)
@@ -135,6 +139,9 @@ func streamGeminiToGemini(
 		if flusher != nil {
 			flusher.Flush()
 		}
+	}
+	if err := flushGeminiRestoration(c, flusher); err != nil {
+		return nil, err
 	}
 	if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 		return nil, err
@@ -205,9 +212,8 @@ func streamClaudeToGemini(
 
 				chunkBytes, _ := json.Marshal(geminiChunk)
 				proxycore.MarkRequestLogFirstToken(c)
-				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
-				if flusher != nil {
-					flusher.Flush()
+				if err := writeGeminiSSE(c, flusher, chunkBytes); err != nil {
+					return nil, err
 				}
 			}
 
@@ -267,12 +273,14 @@ func streamClaudeToGemini(
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
 				proxycore.MarkRequestLogFirstToken(c)
-				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
-				if flusher != nil {
-					flusher.Flush()
+				if err := writeGeminiSSE(c, flusher, chunkBytes); err != nil {
+					return nil, err
 				}
 			}
 		}
+	}
+	if err := flushGeminiRestoration(c, flusher); err != nil {
+		return nil, err
 	}
 	if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 		return nil, err
@@ -337,9 +345,8 @@ func streamOpenAIToGemini(
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
 				proxycore.MarkRequestLogFirstToken(c)
-				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
-				if flusher != nil {
-					flusher.Flush()
+				if err := writeGeminiSSE(c, flusher, chunkBytes); err != nil {
+					return nil, err
 				}
 			}
 			continue
@@ -368,9 +375,8 @@ func streamOpenAIToGemini(
 				}
 				chunkBytes, _ := json.Marshal(geminiChunk)
 				proxycore.MarkRequestLogFirstToken(c)
-				fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
-				if flusher != nil {
-					flusher.Flush()
+				if err := writeGeminiSSE(c, flusher, chunkBytes); err != nil {
+					return nil, err
 				}
 			}
 			continue
@@ -399,9 +405,8 @@ func streamOpenAIToGemini(
 
 			chunkBytes, _ := json.Marshal(geminiChunk)
 			proxycore.MarkRequestLogFirstToken(c)
-			fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
-			if flusher != nil {
-				flusher.Flush()
+			if err := writeGeminiSSE(c, flusher, chunkBytes); err != nil {
+				return nil, err
 			}
 		}
 
@@ -417,16 +422,49 @@ func streamOpenAIToGemini(
 			}
 			chunkBytes, _ := json.Marshal(geminiChunk)
 			proxycore.MarkRequestLogFirstToken(c)
-			fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
-			if flusher != nil {
-				flusher.Flush()
+			if err := writeGeminiSSE(c, flusher, chunkBytes); err != nil {
+				return nil, err
 			}
 		}
+	}
+	if err := flushGeminiRestoration(c, flusher); err != nil {
+		return nil, err
 	}
 	if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 		return nil, err
 	}
 	return totalUsage, nil
+}
+
+func writeGeminiSSE(c *gin.Context, flusher http.Flusher, payload []byte) error {
+	event, err := hooks.RestoreAttachedSSEEvent(c, "data: "+string(payload)+"\n\n")
+	if err != nil {
+		return err
+	}
+	proxycore.MarkRequestLogFirstToken(c)
+	if _, err := fmt.Fprint(c.Writer, event); err != nil {
+		return err
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+	return nil
+}
+
+func flushGeminiRestoration(c *gin.Context, flusher http.Flusher) error {
+	events, err := hooks.DrainAttachedStreamRestoration(c)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if _, err := fmt.Fprint(c.Writer, event); err != nil {
+			return err
+		}
+	}
+	if len(events) > 0 && flusher != nil {
+		flusher.Flush()
+	}
+	return nil
 }
 
 func feedGeminiStreamChunk(c *gin.Context, chunk *types.GeminiStreamChunk) error {

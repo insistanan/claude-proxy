@@ -101,7 +101,7 @@ func shouldRetryWithNextKeyNormal(statusCode int, bodyBytes []byte, apiType stri
 		}
 		// 否则，仍检查消息体是否包含 quota 相关关键词
 		// 这样 403 + "预扣费额度" 消息 → isQuotaRelated=true
-		log.Printf("[%s-Failover-Debug] 调用 classifyByErrorMessage, body=%s", apiType, string(bodyBytes))
+		log.Printf("[%s-Failover-Debug] 调用 classifyByErrorMessage, body=%s", apiType, utils.RedactSensitivePlaceholdersForLog(string(bodyBytes)))
 		_, msgQuota := classifyByErrorMessage(bodyBytes, apiType)
 		log.Printf("[%s-Failover-Debug] classifyByErrorMessage 返回: msgQuota=%v", apiType, msgQuota)
 		if msgQuota {
@@ -140,7 +140,7 @@ func classifyByErrorMessage(bodyBytes []byte, apiType string) (bool, bool) {
 	messageFields := []string{"message", "upstream_error", "detail"}
 	for _, field := range messageFields {
 		if msg, ok := errObj[field].(string); ok {
-			log.Printf("[%s-Failover-Debug] 提取到消息 (字段: %s): %s", apiType, field, msg)
+			log.Printf("[%s-Failover-Debug] 提取到消息 (字段: %s): %s", apiType, field, utils.RedactSensitivePlaceholdersForLog(msg))
 			if failover, quota := classifyMessage(msg); failover {
 				log.Printf("[%s-Failover-Debug] 消息分类结果: failover=%v, quota=%v", apiType, failover, quota)
 				return true, quota
@@ -151,7 +151,7 @@ func classifyByErrorMessage(bodyBytes []byte, apiType string) (bool, bool) {
 	// 如果 upstream_error 是嵌套对象，尝试提取其中的消息
 	if upstreamErr, ok := errObj["upstream_error"].(map[string]interface{}); ok {
 		if msg, ok := upstreamErr["message"].(string); ok {
-			log.Printf("[%s-Failover-Debug] 提取到嵌套 upstream_error.message: %s", apiType, msg)
+			log.Printf("[%s-Failover-Debug] 提取到嵌套 upstream_error.message: %s", apiType, utils.RedactSensitivePlaceholdersForLog(msg))
 			if failover, quota := classifyMessage(msg); failover {
 				log.Printf("[%s-Failover-Debug] 消息分类结果: failover=%v, quota=%v", apiType, failover, quota)
 				return true, quota

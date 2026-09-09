@@ -63,16 +63,10 @@ func (h *contentSafetyPostResponseHook) Run(ctx context.Context, metadata HookCo
 				if len(matches) == 0 {
 					continue
 				}
-				mode := snapshot.settings.Credential.ToolArgumentMode
-				if mode == config.ContentSafetyModeBlock {
-					return result, &ContentSafetyError{
-						BlockType: sensitive.BlockTypeCredential,
-						RuleName:  matches[0].Rule,
-						Snippet:   safetyEventSnippet("block", segment),
-					}
-				}
-				if err := recordSafetyMatches(ctx, metadata, h.recorder, sensitive.BlockTypeCredential, mode, segment, credentialRuleNames(matches)); err != nil {
-					return result, err
+				return result, &ContentSafetyError{
+					BlockType: sensitive.BlockTypeCredential,
+					RuleName:  matches[0].Rule,
+					Snippet:   safetyEventSnippet("block", segment),
 				}
 			}
 		}

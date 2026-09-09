@@ -260,10 +260,6 @@ func handleStreamSuccess(
 			if eventErr := responsesStreamEventError(event); eventErr != nil {
 				return nil, eventErr
 			}
-			// session 持久化使用结构化 collector；不能把正文、工具参数和
-			// reasoning summary 混进同一个 assistant 文本。
-			sessionCollector.consumeEvent(event)
-
 			// 检测并收集 usage
 			detected, needPatch, usageData := checkResponsesEventUsage(event, envCfg.EnableResponseLogs && envCfg.ShouldLog("debug"))
 			if detected {
@@ -332,6 +328,13 @@ func handleStreamSuccess(
 					return nil, err
 				}
 			}
+			eventToSend, err = hooks.RestoreAttachedSSEEvent(c, eventToSend)
+			if err != nil {
+				return nil, err
+			}
+			// 会话持久化保存客户端可见的已还原内容；下一轮即使只携带
+			// previous_response_id，也会重新经过上行脱敏而不会遗留旧占位符。
+			sessionCollector.consumeEvent(eventToSend)
 
 			// ---- 缓冲阶段逻辑 ----
 			if buffering {
@@ -398,6 +401,13 @@ func handleStreamSuccess(
 		log.Printf("[Responses-Stream] 流结束仍无内容，判定为空响应 (buffered=%d)", len(bufferedEvents))
 		return nil, proxycore.NewRetrySameCandidateError(ErrEmptyStreamResponse)
 	}
+	remaining, err := hooks.DrainAttachedStreamRestoration(c)
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range remaining {
+		writeEvent(event)
+	}
 	if err := hooks.FlushAttachedStreamHooks(c); err != nil {
 		return nil, err
 	}
@@ -424,16 +434,16 @@ func handleStreamSuccess(
 			parseFailed := synthesizer.IsParseFailed()
 			if synthesizedContent != "" && !parseFailed {
 				synth := strings.TrimSpace(synthesizedContent)
-				log.Printf("[Responses-Stream] 上游流式响应合成内容:\n%s", synth)
+				log.Printf("[Responses-Stream] 上游流式响应合成内容:\n%s", utils.RedactSensitivePlaceholdersForLog(synth))
 				logger.RecordStreamSynth(c.Request.Context(), "Responses", synth)
 			} else if logBuffer.Len() > 0 {
 				raw := logBuffer.String()
-				log.Printf("[Responses-Stream] 上游流式响应原始内容:\n%s", raw)
+				log.Printf("[Responses-Stream] 上游流式响应原始内容:\n%s", utils.RedactSensitivePlaceholdersForLog(raw))
 				logger.RecordStreamSynth(c.Request.Context(), "Responses", raw)
 			}
 		} else if logBuffer.Len() > 0 {
 			raw := logBuffer.String()
-			log.Printf("[Responses-Stream] 上游流式响应原始内容:\n%s", raw)
+			log.Printf("[Responses-Stream] 上游流式响应原始内容:\n%s", utils.RedactSensitivePlaceholdersForLog(raw))
 			logger.RecordStreamSynth(c.Request.Context(), "Responses", raw)
 		}
 	}

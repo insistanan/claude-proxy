@@ -217,7 +217,7 @@ func PatchMessageStartEvent(event string, requestModel string, rewriteModel bool
 			msg["id"] = fmt.Sprintf("msg_%s", uuid.New().String())
 			patched = true
 			if enableLog {
-				log.Printf("[Messages-Stream-Patch] 补全空 message.id: %s", msg["id"])
+				log.Printf("[Messages-Stream-Patch] 补全空 message.id: %s", utils.RedactSensitivePlaceholdersForLog(fmt.Sprint(msg["id"])))
 			}
 		}
 
@@ -331,6 +331,7 @@ func extractSSEEventInfo(event string) (eventType string, blockIndex int, blockT
 
 // truncateForLog 截断字符串用于日志输出
 func truncateForLog(s string, maxLen int) string {
+	s = utils.RedactSensitivePlaceholdersForLog(s)
 	if len(s) <= maxLen {
 		return s
 	}

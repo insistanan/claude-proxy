@@ -240,6 +240,19 @@ func TestFormatJSONBytesForLog(t *testing.T) {
 	t.Logf("格式化结果:\n%s", result)
 }
 
+func TestLogFormattingRemovesSensitivePlaceholderID(t *testing.T) {
+	placeholder := "{{PHONE_7K4M2P9QAB2CD}}"
+	body := []byte(`{"text":"` + placeholder + `"}`)
+	for name, formatted := range map[string]string{
+		"formatted": FormatJSONBytesForLog(body, 500),
+		"raw":       FormatJSONBytesRaw(body),
+	} {
+		if strings.Contains(formatted, placeholder) || !strings.Contains(formatted, "{{PHONE_REDACTED}}") {
+			t.Fatalf("%s 日志未移除占位符映射 ID: %s", name, formatted)
+		}
+	}
+}
+
 // TestCodexResponsesFormat 测试 Codex Responses API 格式的压缩显示
 func TestCodexResponsesFormat(t *testing.T) {
 	// 模拟 Codex Responses API 的请求体

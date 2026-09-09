@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -62,7 +63,7 @@ type ProtocolSpec struct {
 // RunProxyRequest 是一个可复用的代理请求处理主流程。
 // 它实现了五个协议共有的骨架：
 //
-//	认证 → 读 body → 解析 → 会话观测 → 日志 → 指定渠道分支 → PreRoute → 多渠道/单渠道分派
+//	认证 → 读 body → 解析 → 脱敏 → 会话观测 → 日志 → 指定渠道分支 → PreRoute → 多渠道/单渠道分派
 //
 // 协议特有的逻辑（解析、构建请求、处理响应、前置路由）通过 ProtocolSpec 注入。
 // 调用方通常这样使用：
@@ -102,27 +103,50 @@ func RunProxyRequest(
 		}
 		bodyBytes = filteredBytes
 	}
+	RestoreRequestBody(c, bodyBytes)
 
 	// 3. 解析请求
 	model, stream, prompts, ok := spec.ParseRequest(c, bodyBytes)
 	if !ok {
 		return
 	}
+	identity := ResolveConversationIdentity(c, bodyBytes)
+	transcript := BuildConversationTranscript(string(spec.Kind), bodyBytes)
+	imageFingerprints := utils.ExtractImageFingerprints(bodyBytes)
 	hooks.AttachHookPipeline(c, spec.HookPipeline, hooks.HookContext{
 		APIType: string(spec.Kind),
 		Model:   model,
 		Stream:  stream,
 	})
+	defer hooks.ClearAttachedSensitiveData(c)
+	if err := hooks.RunAttachedPreRequestHooks(c.Request.Context(), c, c.Request, "", string(spec.Kind)); err != nil {
+		handleContentSafetyPreparationError(c, spec.LogName, err)
+		return
+	}
+	bodyBytes, err = io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取脱敏请求体失败", "code": "CONTENT_SAFETY_HOOK_ERROR"})
+		return
+	}
+	RestoreRequestBody(c, bodyBytes)
+	for index := range prompts {
+		prompts[index], err = hooks.MaskAttachedText(c, prompts[index])
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "脱敏会话观测文本失败", "code": "CONTENT_SAFETY_HOOK_ERROR"})
+			return
+		}
+		prompts[index] = utils.RedactSensitivePlaceholdersForLog(prompts[index])
+	}
 
 	// 4. 会话观测
 	conversationID := ObserveConversationRequest(
 		channelScheduler,
 		spec.Kind,
-		ResolveConversationIdentity(c, bodyBytes),
-		BuildConversationTranscript(string(spec.Kind), bodyBytes),
+		identity,
+		transcript,
 		model,
 		prompts,
-		utils.ExtractImageFingerprints(bodyBytes),
+		imageFingerprints,
 		stream,
 	)
 	defer MarkConversationComplete(channelScheduler, conversationID, spec.Kind)

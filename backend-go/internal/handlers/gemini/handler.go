@@ -86,10 +86,15 @@ func Handler(
 		},
 		HandleAllFailed: func(c *gin.Context, failoverErr *proxycore.FailoverError, lastError error) {
 			if failoverErr != nil {
+				body, err := hooks.RestoreAttachedResponseBody(c, failoverErr.Body)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, types.GeminiError{Error: types.GeminiErrorDetail{Code: 500, Message: "Sensitive data restoration failed", Status: "INTERNAL"}})
+					return
+				}
 				c.JSON(failoverErr.Status, types.GeminiError{
 					Error: types.GeminiErrorDetail{
 						Code:    failoverErr.Status,
-						Message: string(failoverErr.Body),
+						Message: string(body),
 						Status:  "UNAVAILABLE",
 					},
 				})
@@ -105,10 +110,15 @@ func Handler(
 		},
 		HandleAllKeysFailed: func(c *gin.Context, fuzzyMode bool, failoverErr *proxycore.FailoverError, lastError error) {
 			if failoverErr != nil {
+				body, err := hooks.RestoreAttachedResponseBody(c, failoverErr.Body)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, types.GeminiError{Error: types.GeminiErrorDetail{Code: 500, Message: "Sensitive data restoration failed", Status: "INTERNAL"}})
+					return
+				}
 				c.JSON(failoverErr.Status, types.GeminiError{
 					Error: types.GeminiErrorDetail{
 						Code:    failoverErr.Status,
-						Message: string(failoverErr.Body),
+						Message: string(body),
 						Status:  "UNAVAILABLE",
 					},
 				})

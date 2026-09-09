@@ -29,6 +29,7 @@ type HookContext struct {
 	RequestID       string
 	ChannelName     string
 	eventDeduper    *safetyEventDeduper
+	redactionVault  *sensitive.Vault
 }
 
 type safetyEventDeduper struct {

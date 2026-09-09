@@ -25,7 +25,7 @@ func PrepareBody(raw []byte) (body string, originalBytes int, truncated bool) {
 	if originalBytes == 0 {
 		return "", 0, false
 	}
-	sanitized := stripImages(raw)
+	sanitized := stripImages([]byte(utils.RedactSensitivePlaceholdersForLog(string(raw))))
 	if len(sanitized) <= MaxBodyBytes {
 		return string(sanitized), originalBytes, false
 	}

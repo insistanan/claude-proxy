@@ -216,8 +216,12 @@ func handleSuccess(
 	if err != nil {
 		return nil, fmt.Errorf("序列化 Responses 响应失败: %w", err)
 	}
-	if _, err := hooks.RunAttachedPostResponseHooks(c.Request.Context(), c, responseBody, resp); err != nil {
+	responseBody, err = hooks.RunAttachedPostResponseHooks(c.Request.Context(), c, responseBody, resp)
+	if err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal(responseBody, responsesResp); err != nil {
+		return nil, fmt.Errorf("解析已还原 Responses 响应失败: %w", err)
 	}
 	// 客户端的 store 只控制上游是否保存，不能关闭本代理自己的七天会话持久化。
 	if originalReq != nil {

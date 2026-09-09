@@ -13,6 +13,9 @@ export interface AppSettings {
 }
 
 export interface ContentSafetySettings {
+  sensitiveData: {
+    mode: 'block' | 'mask'
+  }
   sensitiveWord: {
     enabled: boolean
     pornographyEnabled: boolean
@@ -47,7 +50,7 @@ export interface ContentSafetySettings {
 }
 
 export type ContentSafetyMode = 'audit' | 'block' | 'mask'
-export type SensitiveInfoRule = 'phone' | 'id_card' | 'email' | 'ip_address'
+export type SensitiveInfoRule = 'phone' | 'id_card' | 'email' | 'ip_address' | 'bank_card'
 export type SensitiveInfoIPMaskScope = 'public' | 'all'
 export type CredentialRule = 'api_key' | 'named_secret' | 'private_key' | 'connection_string' | 'high_entropy'
 export type DangerousCommandRule =

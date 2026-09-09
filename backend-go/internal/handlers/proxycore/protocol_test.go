@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
 	"github.com/BenedictKing/claude-proxy/internal/types"
@@ -55,6 +56,48 @@ func TestRunProxyRequestFiltersPrivateParams(t *testing.T) {
 	}
 	if strings.Contains(receivedBody, "_debug") {
 		t.Errorf("上游收到的请求体仍包含 _debug: %s", receivedBody)
+	}
+}
+
+func TestRunProxyRequestMasksBeforeRoutingAndUpstreamBuild(t *testing.T) {
+	env := newRunProxyTestEnv(t)
+	server := newRecordingUpstreamServer(t, nil)
+	addTestUpstream(t, env, "ch-0", server.URL(), "key-a")
+	settings := env.cfgManager.GetSettings()
+	settings.ContentSafety.SensitiveData.Mode = config.ContentSafetyModeMask
+	settings.ContentSafety.SensitiveInfo.Enabled = true
+	settings.ContentSafety.SensitiveInfo.EnabledRules = []string{config.SensitiveInfoRulePhone}
+	if err := env.cfgManager.UpdateSettings(settings); err != nil {
+		t.Fatalf("更新内容安全设置失败: %v", err)
+	}
+
+	var receivedBody string
+	rec := &specRecorder{}
+	spec := rec.newSpec()
+	spec.HookPipeline = hooks.NewContentSafetyPipeline(env.cfgManager)
+	spec.PreRoute = func(c *gin.Context, body []byte, model string, conversationID string, startTime time.Time) bool {
+		if strings.Contains(string(body), "18012345523") || !strings.Contains(string(body), "{{PHONE_") {
+			t.Errorf("路由阶段收到未脱敏请求体: %s", body)
+		}
+		return false
+	}
+	spec.BuildUpstreamRequest = func(c *gin.Context, up *config.UpstreamConfig, apiKey string, bodyBytes []byte) (*http.Request, error) {
+		receivedBody = string(bodyBytes)
+		req, err := http.NewRequest(http.MethodPost, up.GetEffectiveBaseURL()+"/v1/test", bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		return req, nil
+	}
+
+	w := performRunProxyRequest(t, env, spec, `{"model":"test-model","messages":[{"role":"user","content":"call 18012345523"}]}`, "test-access-key")
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(receivedBody, "18012345523") || !strings.Contains(receivedBody, "{{PHONE_") {
+		t.Fatalf("上游构建阶段收到未脱敏请求体: %s", receivedBody)
 	}
 }
 

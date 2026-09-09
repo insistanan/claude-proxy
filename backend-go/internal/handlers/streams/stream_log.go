@@ -12,6 +12,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/config"
 	"github.com/BenedictKing/claude-proxy/internal/logger"
 	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/claude-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
 
@@ -83,7 +84,7 @@ func logSynthesizedContent(c *gin.Context, ctx *Context) {
 				}
 			}
 
-			log.Printf("[Messages-Stream] 上游流式响应合成内容:\n%s", strings.TrimSpace(trimmed))
+			log.Printf("[Messages-Stream] 上游流式响应合成内容:\n%s", utils.RedactSensitivePlaceholdersForLog(strings.TrimSpace(trimmed)))
 			if c != nil {
 				logger.RecordStreamSynth(c.Request.Context(), "Messages", strings.TrimSpace(trimmed))
 			}
@@ -92,7 +93,7 @@ func logSynthesizedContent(c *gin.Context, ctx *Context) {
 	}
 	if ctx.LogBuffer.Len() > 0 {
 		raw := ctx.LogBuffer.String()
-		log.Printf("[Messages-Stream] 上游流式响应原始内容:\n%s", raw)
+		log.Printf("[Messages-Stream] 上游流式响应原始内容:\n%s", utils.RedactSensitivePlaceholdersForLog(raw))
 		if c != nil {
 			logger.RecordStreamSynth(c.Request.Context(), "Messages", raw)
 		}

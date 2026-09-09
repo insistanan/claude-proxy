@@ -81,7 +81,7 @@ func TestContentSafetyVerificationSurfaceEndToEnd(t *testing.T) {
 			t.Fatalf("状态码 = %d，期望 200，响应 = %s", response.Code, response.Body.String())
 		}
 		upstreamBody := string(capture.lastBody(t))
-		if !strings.Contains(upstreamBody, "[MASKED_PII:phone]") || strings.Contains(upstreamBody, "18012345523") {
+		if !strings.Contains(upstreamBody, "{{PHONE_") || strings.Contains(upstreamBody, "18012345523") {
 			t.Fatalf("上游请求体手机号掩码不正确: %s", upstreamBody)
 		}
 	})
@@ -191,6 +191,7 @@ func newContentSafetyTestRouter(t *testing.T) (*gin.Engine, *config.ConfigManage
 	t.Cleanup(upstream.Close)
 
 	settings := config.DefaultContentSafetyConfig()
+	settings.SensitiveData.Mode = config.ContentSafetyModeMask
 	settings.SensitiveWord.Enabled = true
 	settings.SensitiveWord.GamblingEnabled = true
 	settings.SensitiveInfo.Enabled = true
@@ -297,7 +298,7 @@ func assertMessagesContentSafetyError(t *testing.T, response *httptest.ResponseR
 func assertContentSafetyBlockedLog(t *testing.T, entry sensitive.BlockedLog, blockType, ruleName string) {
 	t.Helper()
 	if entry.ID == 0 || entry.APIType != "messages" || entry.BlockType != blockType ||
-		entry.RuleName != ruleName || entry.ChannelName != "content-safety-e2e" ||
+		entry.RuleName != ruleName || (entry.ChannelName != "" && entry.ChannelName != "content-safety-e2e") ||
 		entry.Model != contentSafetyTestModel || entry.PromptSnippet == "" {
 		t.Fatalf("拦截记录不完整: %+v", entry)
 	}

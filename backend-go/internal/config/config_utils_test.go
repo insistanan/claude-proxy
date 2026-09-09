@@ -7,6 +7,9 @@ import (
 
 func TestDefaultContentSafetyConfigIsFullyDisabled(t *testing.T) {
 	settings := DefaultContentSafetyConfig()
+	if settings.SensitiveData.Mode != ContentSafetyModeBlock {
+		t.Fatalf("敏感数据默认处置模式 = %q，期望 block", settings.SensitiveData.Mode)
+	}
 	if settings.SensitiveWord.Enabled || settings.SensitiveWord.PornographyEnabled ||
 		settings.SensitiveWord.GamblingEnabled || settings.SensitiveWord.DrugsEnabled ||
 		settings.SensitiveWord.ViolenceTerrorEnabled || settings.SensitiveWord.PoliticalEnabled ||
@@ -21,6 +24,16 @@ func TestDefaultContentSafetyConfigIsFullyDisabled(t *testing.T) {
 	}
 	if settings.DangerousCmd.Enabled || len(settings.DangerousCmd.EnabledRules) != 0 {
 		t.Fatalf("危险命令默认设置未完全关闭: %+v", settings.DangerousCmd)
+	}
+}
+
+func TestValidateContentSafetyRejectsUnknownSensitiveDataMode(t *testing.T) {
+	for _, mode := range []string{"", "fallback", "MASK"} {
+		settings := DefaultContentSafetyConfig()
+		settings.SensitiveData.Mode = mode
+		if err := ValidateContentSafetyConfig(settings); err == nil {
+			t.Fatalf("无效敏感数据处置模式 %q 应显式报错", mode)
+		}
 	}
 }
 

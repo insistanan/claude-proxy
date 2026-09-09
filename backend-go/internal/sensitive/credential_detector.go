@@ -38,9 +38,10 @@ type credentialCandidateWithRule struct {
 
 var (
 	knownAPIKeyPattern           = regexp.MustCompile(`(?i)(?:sk-ant-[A-Za-z0-9_-]{16,}|sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{24,}|xai-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|A(?:KI|SI)A[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,})`)
+	bearerTokenPattern           = regexp.MustCompile(`(?i)\bBearer[ \t]+([A-Za-z0-9._~+/=-]{16,})`)
 	namedSecretPattern           = regexp.MustCompile(`(?im)(?:^|[\s,{;])["']?(?:password|passwd|secret|token|credential|private[_-]?key|api[_-]?key|access[_-]?key|access[_-]?token|client[_-]?secret|aws_secret_access_key)["']?\s*[:=]\s*["']?([^\s"',;}]{6,})`)
 	privateKeyPattern            = regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`)
-	connectionStringPattern      = regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|amqps|mssql)://[^/\s:@]*:([^@\s/]+)@[^\s"']+`)
+	connectionStringPattern      = regexp.MustCompile(`(?i)\b(?:https?|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|amqps|mssql)://[^/\s:@]*:([^@\s/]+)@[^\s"']+`)
 	connectionAssignmentPattern  = regexp.MustCompile(`(?im)(?:^|[\s,{;])["']?(?:database_url|dsn|connection_string)["']?\s*[:=]\s*["']?([^\r\n"']{8,})`)
 	connectionPasswordPattern    = regexp.MustCompile(`(?i)(?:password|pwd)\s*=\s*([^;\s"']{3,})`)
 	highEntropyAssignmentPattern = regexp.MustCompile(`(?m)(?:^|[\s,{;])["']?([A-Za-z_][A-Za-z0-9_.-]{1,63})["']?\s*[:=]\s*["']?([A-Za-z0-9+/=_-]{24,})`)
@@ -170,10 +171,21 @@ func allCredentialRules() []credentialRule {
 	return []credentialRule{
 		{name: config.CredentialRulePrivateKey, find: regexpCredentialCandidates(privateKeyPattern)},
 		{name: config.CredentialRuleConnectionString, find: findConnectionStringCandidates},
-		{name: config.CredentialRuleAPIKey, find: regexpCredentialCandidates(knownAPIKeyPattern)},
+		{name: config.CredentialRuleAPIKey, find: findAPIKeyCandidates},
 		{name: config.CredentialRuleNamedSecret, find: findNamedSecretCandidates},
 		{name: config.CredentialRuleHighEntropy, find: findHighEntropyCandidates},
 	}
+}
+
+func findAPIKeyCandidates(text string) []credentialCandidate {
+	result := regexpCredentialCandidates(knownAPIKeyPattern)(text)
+	for _, index := range bearerTokenPattern.FindAllStringSubmatchIndex(text, -1) {
+		if len(index) < 4 || index[2] < 0 {
+			continue
+		}
+		result = append(result, credentialCandidate{start: index[2], end: index[3]})
+	}
+	return result
 }
 
 func findConnectionStringCandidates(text string) []credentialCandidate {

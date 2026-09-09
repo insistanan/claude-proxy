@@ -38,11 +38,12 @@ func newContentSafetySnapshotForTest(t *testing.T, settings config.ContentSafety
 
 // TestSafetySegmentsMaskUserTextAcrossProtocols 锁定跨协议掩码契约：三种上游载荷形状
 // （Claude messages / Responses input / Gemini contents）里的用户正文都要被改写，
-// 助手历史原样保留，且改写后的文本进入观测 prompts。
+// 助手历史同样脱敏，且只有改写后的用户文本进入观测 prompts。
 func TestSafetySegmentsMaskUserTextAcrossProtocols(t *testing.T) {
 	settings := config.DefaultContentSafetyConfig()
 	settings.SensitiveWord.Enabled = false
 	settings.SensitiveInfo.Enabled = true
+	settings.SensitiveData.Mode = config.ContentSafetyModeMask
 	settings.SensitiveInfo.Mode = config.ContentSafetyModeMask
 	settings.SensitiveInfo.EnabledRules = []string{
 		config.SensitiveInfoRulePhone,
@@ -59,19 +60,19 @@ func TestSafetySegmentsMaskUserTextAcrossProtocols(t *testing.T) {
 		{
 			protocol: "messages",
 			body:     `{"messages":[{"role":"assistant","content":"13900001234"},{"role":"user","content":[{"type":"text","text":"电话 18012345523"}]}]}`,
-			masked:   "[MASKED_PII:phone]",
+			masked:   "{{PHONE_",
 			original: "18012345523",
 		},
 		{
 			protocol: "responses",
 			body:     `{"input":[{"role":"assistant","content":"13900001234"},{"role":"user","content":[{"type":"input_text","text":"邮箱 user@example.com"}]}]}`,
-			masked:   "[MASKED_PII:email]",
+			masked:   "{{EMAIL_",
 			original: "user@example.com",
 		},
 		{
 			protocol: "gemini",
 			body:     `{"contents":[{"role":"model","parts":[{"text":"13900001234"}]},{"role":"user","parts":[{"text":"备用号码 16688889999"}]}]}`,
-			masked:   "[MASKED_PII:phone]",
+			masked:   "{{PHONE_",
 			original: "16688889999",
 		},
 	}
@@ -86,8 +87,8 @@ func TestSafetySegmentsMaskUserTextAcrossProtocols(t *testing.T) {
 			if err != nil {
 				t.Fatalf("提取片段失败: %v", err)
 			}
-			if len(segments) != 1 || segments[0].Source != safetySourceUser {
-				t.Fatalf("助手历史不应进入检查范围: %+v", segments)
+			if len(segments) != 2 || segments[0].Source != safetySourceAssistant || segments[1].Source != safetySourceUser {
+				t.Fatalf("用户正文与助手历史都应进入敏感数据检查范围: %+v", segments)
 			}
 
 			prompts := make([]string, 0, 1)
@@ -106,9 +107,8 @@ func TestSafetySegmentsMaskUserTextAcrossProtocols(t *testing.T) {
 			if !strings.Contains(text, test.masked) || strings.Contains(text, test.original) {
 				t.Errorf("用户正文掩码结果不正确: %s", text)
 			}
-			// 助手历史里的号码必须原样保留：掩码它既无收益，又会破坏上游的上下文一致性。
-			if !strings.Contains(text, "13900001234") {
-				t.Errorf("助手历史被改写: %s", text)
+			if strings.Contains(text, "13900001234") {
+				t.Errorf("助手历史敏感信息未脱敏: %s", text)
 			}
 			if len(prompts) != 1 || !strings.Contains(prompts[0], test.masked) {
 				t.Errorf("观测 prompts 应为掩码后的用户正文: %#v", prompts)
@@ -182,7 +182,7 @@ func TestExtractSafetySegmentsFindsToolResultsInAllProtocols(t *testing.T) {
 					break
 				}
 			}
-			if toolResult == nil || toolResult.Mutable || !strings.Contains(toolResult.Text, "sk-1234567890abcdefghijklmnop") {
+			if toolResult == nil || !toolResult.Mutable || !strings.Contains(toolResult.Text, "sk-1234567890abcdefghijklmnop") {
 				t.Fatalf("工具结果片段不正确: %+v", segments)
 			}
 		})
@@ -230,7 +230,7 @@ func TestToolResultCredentialIsBlockedWithoutMutatingPayload(t *testing.T) {
 	}
 }
 
-func TestExtractorDoesNotTouchAssistantOrUnrelatedFields(t *testing.T) {
+func TestExtractorCoversAssistantHistoryWithoutTouchingUnrelatedFields(t *testing.T) {
 	payload := map[string]interface{}{
 		"metadata": map[string]interface{}{"note": "user@example.com"},
 		"messages": []interface{}{
@@ -242,7 +242,8 @@ func TestExtractorDoesNotTouchAssistantOrUnrelatedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("提取片段失败: %v", err)
 	}
-	if len(segments) != 1 || segments[0].Text != "user@example.com" || segments[0].Path != "messages[1].content" {
+	if len(segments) != 2 || segments[0].Text != "assistant@example.com" || segments[0].Path != "messages[0].content" ||
+		segments[1].Text != "user@example.com" || segments[1].Path != "messages[1].content" {
 		t.Fatalf("精确提取范围错误: %+v", segments)
 	}
 }
@@ -294,6 +295,7 @@ func TestContentSafetyPipelineReplacesRequestBodyAndHonorsSettings(t *testing.T)
 	settings := configManager.GetSettings()
 	settings.ContentSafety.SensitiveWord.Enabled = false
 	settings.ContentSafety.SensitiveInfo.Enabled = true
+	settings.ContentSafety.SensitiveData.Mode = config.ContentSafetyModeMask
 	settings.ContentSafety.SensitiveInfo.EnabledRules = []string{config.SensitiveInfoRulePhone}
 	if err := configManager.UpdateSettings(settings); err != nil {
 		t.Fatalf("更新内容安全设置失败: %v", err)
@@ -312,7 +314,7 @@ func TestContentSafetyPipelineReplacesRequestBodyAndHonorsSettings(t *testing.T)
 	if err != nil {
 		t.Fatalf("读取替换后的请求体失败: %v", err)
 	}
-	if !strings.Contains(string(body), "[MASKED_PII:phone]") {
+	if !strings.Contains(string(body), "{{PHONE_") || strings.Contains(string(body), "18012345523") {
 		t.Fatalf("上游请求体未掩码: %s", body)
 	}
 	if req.ContentLength != int64(len(body)) {
@@ -617,6 +619,7 @@ func TestExtractSafetySegmentsCoversImagesJSONPrompt(t *testing.T) {
 	settings := config.DefaultContentSafetyConfig()
 	settings.SensitiveWord.Enabled = false
 	settings.SensitiveInfo.Enabled = true
+	settings.SensitiveData.Mode = config.ContentSafetyModeMask
 	settings.SensitiveInfo.Mode = config.ContentSafetyModeMask
 	settings.SensitiveInfo.EnabledRules = []string{config.SensitiveInfoRulePhone}
 	words, err := sensitive.NewWordFilter(settings.SensitiveWord)
@@ -657,7 +660,7 @@ func TestExtractSafetySegmentsCoversImagesJSONPrompt(t *testing.T) {
 		t.Fatal("预期 prompt 被掩码改写")
 	}
 	prompt, _ := payload["prompt"].(string)
-	if !strings.Contains(prompt, "[MASKED_PII:phone]") {
+	if !strings.Contains(prompt, "{{PHONE_") || strings.Contains(prompt, "18012345523") {
 		t.Fatalf("images prompt 未掩码: %q", prompt)
 	}
 	if payload["user"] != "tenant-42" || payload["size"] != "1024x1024" {

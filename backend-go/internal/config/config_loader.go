@@ -286,6 +286,18 @@ func migrateContentSafetyConfig(settings *ContentSafetyConfig, rawJSON []byte) b
 		return false
 	}
 	changed := false
+	if rawSensitiveData, exists := raw["sensitiveData"]; !exists {
+		settings.SensitiveData = defaults.SensitiveData
+		changed = true
+	} else {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(rawSensitiveData, &fields) == nil {
+			if _, exists := fields["mode"]; !exists || strings.TrimSpace(settings.SensitiveData.Mode) == "" {
+				settings.SensitiveData = defaults.SensitiveData
+				changed = true
+			}
+		}
+	}
 	if _, exists := raw["sensitiveWord"]; !exists {
 		settings.SensitiveWord = defaults.SensitiveWord
 		changed = true
