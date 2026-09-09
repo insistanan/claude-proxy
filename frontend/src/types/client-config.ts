@@ -71,6 +71,31 @@ export interface SaveClaudeCodeSettings extends Pick<
   credential?: string
 }
 
+export interface CodexProvider {
+  id: string
+  name: string
+  baseUrl: string
+}
+
+export interface CodexSettings {
+  configPath: string
+  configExists: boolean
+  authPath: string
+  authExists: boolean
+  activeProvider: string
+  selectedProvider: string
+  providers: CodexProvider[]
+  apiKeyMasked: string
+  apiKeyPresent: boolean
+}
+
+export interface SaveCodexSettings {
+  provider: string
+  baseUrl: string
+  apiKeyAction: 'keep' | 'replace' | 'remove'
+  apiKey?: string
+}
+
 // ============== pi-agent 配置管理类型 ==============
 
 export type PiAgentFileKind = 'models.json' | 'auth.json' | 'settings.json'

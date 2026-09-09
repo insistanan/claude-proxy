@@ -48,6 +48,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/gpt',
+    name: 'gpt',
+    component: () => import('@/views/GptView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/pi-agent',
     name: 'pi-agent',
     component: () => import('@/views/PiAgentView.vue'),

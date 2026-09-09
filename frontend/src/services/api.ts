@@ -16,6 +16,7 @@ import type {
   ChannelStatus,
   ChannelsResponse,
   ClaudeCodeSettings,
+  CodexSettings,
   ConversationEntry,
   ConversationKind,
   ConversationRouteOptionsResponse,
@@ -46,6 +47,7 @@ import type {
   SystemLogDetail,
   SystemLogsResponse,
   SaveClaudeCodeSettings,
+  SaveCodexSettings,
   SaveDSHSettings,
   SaveOpenCodeProvider,
   SkillBackup,
@@ -519,6 +521,19 @@ class ApiService {
 
   async saveClaudeCodeSettings(settings: SaveClaudeCodeSettings): Promise<{ success: boolean; path: string }> {
     return this.request('/settings/claude-code', {
+      method: 'PUT',
+      body: JSON.stringify(settings)
+    })
+  }
+
+  // ============== GPT / Codex 配置 API ==============
+
+  async getCodexSettings(): Promise<CodexSettings> {
+    return this.request('/settings/codex')
+  }
+
+  async saveCodexSettings(settings: SaveCodexSettings): Promise<{ success: boolean; configPath: string; authPath: string }> {
+    return this.request('/settings/codex', {
       method: 'PUT',
       body: JSON.stringify(settings)
     })

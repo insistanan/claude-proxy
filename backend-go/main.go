@@ -396,6 +396,8 @@ func (a *app) setupAdminAPI(apiGroup *gin.RouterGroup) {
 	apiGroup.PUT("/settings/opencode", handlers.SaveOpenCodeConfig())
 	apiGroup.GET("/settings/claude-code", handlers.GetClaudeCodeSettings())
 	apiGroup.PUT("/settings/claude-code", handlers.SaveClaudeCodeSettings())
+	apiGroup.GET("/settings/codex", handlers.GetCodexSettings())
+	apiGroup.PUT("/settings/codex", handlers.SaveCodexSettings())
 	apiGroup.GET("/settings/dsh", handlers.GetDSHSettings())
 	apiGroup.PUT("/settings/dsh", handlers.SaveDSHSettings())
 	apiGroup.POST("/settings/ccs/pick-path", handlers.PickCcsPath(a.cfgManager))

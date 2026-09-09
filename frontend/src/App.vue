@@ -420,11 +420,12 @@ const isBlockedLogsPage = computed(() => route.name === 'blocked-logs')
 const isSkillsPage = computed(() => route.name === 'skills')
 const isOpenCodePage = computed(() => route.name === 'opencode')
 const isClaudeCodePage = computed(() => route.name === 'claude-code')
+const isGptPage = computed(() => route.name === 'gpt')
 const isPiAgentPage = computed(() => route.name === 'pi-agent')
 const isDshPage = computed(() => route.name === 'dsh')
 const isSettingsPage = computed(() => route.name === 'settings')
 const isEvalPage = computed(() => route.name === 'eval')
-const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isEvalPage.value || isOpenCodePage.value || isClaudeCodePage.value || isPiAgentPage.value || isDshPage.value || isSettingsPage.value)
+const isStandalonePage = computed(() => isConversationPage.value || isLogsPage.value || isBlockedLogsPage.value || isSkillsPage.value || isEvalPage.value || isOpenCodePage.value || isClaudeCodePage.value || isGptPage.value || isPiAgentPage.value || isDshPage.value || isSettingsPage.value)
 
 const navGroups = [
   {
@@ -454,6 +455,7 @@ const navGroups = [
     label: '客户端',
     items: [
       { key: 'claude-code', label: 'Claude Code', to: '/claude-code' },
+      { key: 'gpt', label: 'GPT', to: '/gpt' },
       { key: 'opencode', label: 'OpenCode', to: '/opencode' },
       { key: 'pi-agent', label: 'pi', to: '/pi-agent' },
       { key: 'dsh', label: 'DSH', to: '/dsh' }
@@ -497,6 +499,9 @@ const topNavActive = computed(() => {
   }
   if (isClaudeCodePage.value) {
     return 'claude-code'
+  }
+  if (isGptPage.value) {
+    return 'gpt'
   }
   if (isPiAgentPage.value) {
     return 'pi-agent'
