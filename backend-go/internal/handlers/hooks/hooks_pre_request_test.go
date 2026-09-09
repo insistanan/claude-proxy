@@ -60,19 +60,19 @@ func TestSafetySegmentsMaskUserTextAcrossProtocols(t *testing.T) {
 		{
 			protocol: "messages",
 			body:     `{"messages":[{"role":"assistant","content":"13900001234"},{"role":"user","content":[{"type":"text","text":"电话 18012345523"}]}]}`,
-			masked:   "{{PHONE_",
+			masked:   "[[MASKED:PHONE:",
 			original: "18012345523",
 		},
 		{
 			protocol: "responses",
 			body:     `{"input":[{"role":"assistant","content":"13900001234"},{"role":"user","content":[{"type":"input_text","text":"邮箱 user@example.com"}]}]}`,
-			masked:   "{{EMAIL_",
+			masked:   "[[MASKED:EMAIL:",
 			original: "user@example.com",
 		},
 		{
 			protocol: "gemini",
 			body:     `{"contents":[{"role":"model","parts":[{"text":"13900001234"}]},{"role":"user","parts":[{"text":"备用号码 16688889999"}]}]}`,
-			masked:   "{{PHONE_",
+			masked:   "[[MASKED:PHONE:",
 			original: "16688889999",
 		},
 	}
@@ -314,7 +314,7 @@ func TestContentSafetyPipelineReplacesRequestBodyAndHonorsSettings(t *testing.T)
 	if err != nil {
 		t.Fatalf("读取替换后的请求体失败: %v", err)
 	}
-	if !strings.Contains(string(body), "{{PHONE_") || strings.Contains(string(body), "18012345523") {
+	if !strings.Contains(string(body), "[[MASKED:PHONE:") || strings.Contains(string(body), "18012345523") {
 		t.Fatalf("上游请求体未掩码: %s", body)
 	}
 	if req.ContentLength != int64(len(body)) {
@@ -526,6 +526,9 @@ func TestContentSafetyPipelineRecordsPreResponseAndStreamBlocks(t *testing.T) {
 	if !errors.As(err, &safetyErr) || safetyErr.BlockType != sensitive.BlockTypeSensitiveWord {
 		t.Fatalf("请求前拦截错误 = %v", err)
 	}
+	if err := AssignAttachedConversation(context.Background(), preContext, "conv-shared"); err != nil {
+		t.Fatalf("关联请求前拦截记录失败: %v", err)
+	}
 
 	postRecorder := httptest.NewRecorder()
 	postContext, _ := gin.CreateTestContext(postRecorder)
@@ -537,6 +540,9 @@ func TestContentSafetyPipelineRecordsPreResponseAndStreamBlocks(t *testing.T) {
 	postRequest.Header.Set("X-Oai-Request-Id", "req-post")
 	if err := runAttachedPreRequestHooks(context.Background(), postContext, postRequest, "chat-primary"); err != nil {
 		t.Fatalf("准备响应拦截元数据失败: %v", err)
+	}
+	if err := AssignAttachedConversation(context.Background(), postContext, "conv-shared"); err != nil {
+		t.Fatalf("关联响应拦截记录失败: %v", err)
 	}
 	_, err = RunAttachedPostResponseHooks(context.Background(), postContext,
 		[]byte("{\"choices\":[{\"message\":{\"content\":\"```sh\\nrm -rf /\\n```\"}}]}"), nil)
@@ -552,6 +558,9 @@ func TestContentSafetyPipelineRecordsPreResponseAndStreamBlocks(t *testing.T) {
 	streamRequest.Header.Set("X-Request-Id", "req-stream")
 	if err := runAttachedPreRequestHooks(context.Background(), streamContext, streamRequest, "responses-primary"); err != nil {
 		t.Fatalf("准备流式拦截元数据失败: %v", err)
+	}
+	if err := AssignAttachedConversation(context.Background(), streamContext, "conv-shared"); err != nil {
+		t.Fatalf("关联流式拦截记录失败: %v", err)
 	}
 	if err := FeedAttachedStreamText(streamContext, "```sh\nrm -rf"); err != nil {
 		t.Fatalf("危险命令前缀不应提前拦截: %v", err)
@@ -570,6 +579,9 @@ func TestContentSafetyPipelineRecordsPreResponseAndStreamBlocks(t *testing.T) {
 	}
 	byRequestID := make(map[string]sensitive.BlockedLog, len(page.Logs))
 	for _, entry := range page.Logs {
+		if entry.ConversationID != "conv-shared" {
+			t.Fatalf("拦截记录未关联同一会话: %+v", entry)
+		}
 		byRequestID[entry.RequestID] = entry
 	}
 	assertBlockedLogMetadata(t, byRequestID["req-pre"], "messages", sensitive.BlockTypeSensitiveWord, "messages-primary", "claude-test")
@@ -660,7 +672,7 @@ func TestExtractSafetySegmentsCoversImagesJSONPrompt(t *testing.T) {
 		t.Fatal("预期 prompt 被掩码改写")
 	}
 	prompt, _ := payload["prompt"].(string)
-	if !strings.Contains(prompt, "{{PHONE_") || strings.Contains(prompt, "18012345523") {
+	if !strings.Contains(prompt, "[[MASKED:PHONE:") || strings.Contains(prompt, "18012345523") {
 		t.Fatalf("images prompt 未掩码: %q", prompt)
 	}
 	if payload["user"] != "tenant-42" || payload["size"] != "1024x1024" {

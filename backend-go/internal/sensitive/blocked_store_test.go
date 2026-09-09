@@ -2,6 +2,7 @@ package sensitive
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -14,9 +15,9 @@ func TestBlockedStoreRecordListAndFilters(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
 	entries := []BlockedLog{
-		{Timestamp: base, APIType: "messages", BlockType: BlockTypeSensitiveWord, RuleName: "gambling", PromptSnippet: "sample-1", RequestID: "req-1"},
-		{Timestamp: base.Add(time.Minute), APIType: "responses", BlockType: BlockTypeDangerousCmd, RuleName: "destructive", PromptSnippet: "sample-2", RequestID: "req-2"},
-		{Timestamp: base.Add(2 * time.Minute), APIType: "messages", BlockType: BlockTypeSensitiveInfo, RuleName: "phone", PromptSnippet: "sample-3", RequestID: "req-3"},
+		{Timestamp: base, APIType: "messages", BlockType: BlockTypeSensitiveWord, RuleName: "gambling", PromptSnippet: "sample-1", RequestID: "req-1", ConversationID: "conv-1"},
+		{Timestamp: base.Add(time.Minute), APIType: "responses", BlockType: BlockTypeDangerousCmd, RuleName: "destructive", PromptSnippet: "sample-2", RequestID: "req-2", ConversationID: "conv-2"},
+		{Timestamp: base.Add(2 * time.Minute), APIType: "messages", BlockType: BlockTypeSensitiveInfo, RuleName: "phone", PromptSnippet: "sample-3", RequestID: "req-3", ConversationID: "conv-1"},
 	}
 	for index := range entries {
 		stored, err := store.Record(ctx, entries[index])
@@ -51,6 +52,72 @@ func TestBlockedStoreRecordListAndFilters(t *testing.T) {
 	entry, found, err := store.Get(ctx, entries[1].ID)
 	if err != nil || !found || entry.RequestID != "req-2" {
 		t.Fatalf("单条查询错误: %+v %v %v", entry, found, err)
+	}
+}
+
+func TestBlockedStoreAssignsAndListsConversationGroups(t *testing.T) {
+	store := openTestBlockedStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
+	for _, entry := range []BlockedLog{
+		{Timestamp: base, APIType: "responses", BlockType: BlockTypeSensitiveInfo, RequestID: "req-1"},
+		{Timestamp: base.Add(time.Second), APIType: "responses", BlockType: BlockTypeCredential, RequestID: "req-1"},
+		{Timestamp: base.Add(2 * time.Second), APIType: "messages", BlockType: BlockTypeSensitiveWord, RequestID: "req-2", ConversationID: "conv-2"},
+		{Timestamp: base.Add(3 * time.Second), APIType: "chat", BlockType: BlockTypeDangerousCmd},
+	} {
+		if _, err := store.Record(ctx, entry); err != nil {
+			t.Fatalf("写入分组测试记录失败: %v", err)
+		}
+	}
+	if err := store.AssignConversation(ctx, "req-1", "conv-1"); err != nil {
+		t.Fatalf("关联会话失败: %v", err)
+	}
+	page, err := store.ListGrouped(ctx, BlockedLogListOptions{Page: 1, PageSize: 2})
+	if err != nil {
+		t.Fatalf("按会话分页失败: %v", err)
+	}
+	if page.Total != 4 || page.TotalGroups != 3 || len(page.Groups) != 2 {
+		t.Fatalf("会话分页统计错误: %+v", page)
+	}
+	if page.Groups[0].ConversationID != "" || len(page.Groups[0].Logs) != 1 {
+		t.Fatalf("无身份旧记录不应与其他记录合并: %+v", page.Groups[0])
+	}
+	if page.Groups[1].ConversationID != "conv-2" || len(page.Groups[1].Logs) != 1 {
+		t.Fatalf("第二组错误: %+v", page.Groups[1])
+	}
+	page, err = store.ListGrouped(ctx, BlockedLogListOptions{Page: 2, PageSize: 2})
+	if err != nil || len(page.Groups) != 1 || page.Groups[0].ConversationID != "conv-1" || len(page.Groups[0].Logs) != 2 {
+		t.Fatalf("同一会话未完整归组: %+v %v", page, err)
+	}
+}
+
+func TestBlockedStoreMigratesConversationColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-blocked.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("创建旧版数据库失败: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE blocked_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, api_type TEXT NOT NULL,
+		block_type TEXT NOT NULL, rule_name TEXT NOT NULL DEFAULT '', prompt_snippet TEXT NOT NULL DEFAULT '',
+		channel_name TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', request_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("创建旧版表失败: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("关闭旧版数据库失败: %v", err)
+	}
+	store, err := NewBlockedStore(path)
+	if err != nil {
+		t.Fatalf("迁移旧版数据库失败: %v", err)
+	}
+	defer store.Close()
+	stored, err := store.Record(context.Background(), BlockedLog{
+		APIType: "messages", BlockType: BlockTypeSensitiveWord, ConversationID: "conv-migrated",
+	})
+	if err != nil || stored.ConversationID != "conv-migrated" {
+		t.Fatalf("迁移后写入会话 ID 失败: %+v %v", stored, err)
 	}
 }
 

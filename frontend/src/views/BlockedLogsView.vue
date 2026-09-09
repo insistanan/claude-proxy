@@ -21,34 +21,10 @@
     </header>
 
     <section class="filters" aria-label="拦截记录筛选">
-      <v-select
-        v-model="apiType"
-        :items="apiTypeItems"
-        label="API 类型"
-        density="compact"
-        hide-details
-      />
-      <v-select
-        v-model="blockType"
-        :items="blockTypeItems"
-        label="拦截类型"
-        density="compact"
-        hide-details
-      />
-      <v-text-field
-        v-model="fromTime"
-        type="datetime-local"
-        label="开始时间"
-        density="compact"
-        hide-details
-      />
-      <v-text-field
-        v-model="toTime"
-        type="datetime-local"
-        label="结束时间"
-        density="compact"
-        hide-details
-      />
+      <v-select v-model="apiType" :items="apiTypeItems" label="API 类型" density="compact" hide-details />
+      <v-select v-model="blockType" :items="blockTypeItems" label="拦截类型" density="compact" hide-details />
+      <v-text-field v-model="fromTime" type="datetime-local" label="开始时间" density="compact" hide-details />
+      <v-text-field v-model="toTime" type="datetime-local" label="结束时间" density="compact" hide-details />
       <v-btn color="primary" prepend-icon="mdi-magnify" class="filter-action" @click="applyFilters">应用</v-btn>
       <v-btn variant="text" class="filter-action" :disabled="!hasFilters" @click="resetFilters">重置</v-btn>
     </section>
@@ -61,90 +37,160 @@
       <v-table density="compact" class="blocked-logs-table">
         <thead>
           <tr>
+            <th class="expand-column"><span class="sr-only">展开状态</span></th>
             <th>时间</th>
+            <th>会话 / 请求</th>
             <th>入口</th>
             <th>类型 / 规则</th>
             <th>模型 / 渠道</th>
-            <th>请求 ID</th>
             <th>命中片段</th>
             <th class="action-column">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="7" class="text-center text-medium-emphasis py-10">
+            <td colspan="8" class="text-center text-medium-emphasis py-10">
               <v-progress-circular indeterminate size="24" width="2" color="primary" />
             </td>
           </tr>
-          <tr v-else-if="logs.length === 0">
-            <td colspan="7" class="empty-cell">
+          <tr v-else-if="groups.length === 0">
+            <td colspan="8" class="empty-cell">
               <v-icon size="28" color="secondary">mdi-shield-alert</v-icon>
               <span>暂无拦截记录</span>
             </td>
           </tr>
           <template v-else>
-            <tr v-for="entry in logs" :key="entry.id">
-              <td class="time-cell">{{ formatTime(entry.timestamp) }}</td>
-              <td>
-                <v-chip size="x-small" :color="apiTypeColor(entry.apiType)" variant="tonal">
-                  {{ apiTypeLabel(entry.apiType) }}
-                </v-chip>
-              </td>
-              <td class="type-cell">
-                <v-chip size="x-small" :color="blockTypeColor(entry.blockType)" variant="tonal">
-                  {{ blockTypeLabel(entry.blockType) }}
-                </v-chip>
-                <div class="text-caption text-medium-emphasis mt-1">{{ ruleLabel(entry.ruleName) }}</div>
-              </td>
-              <td class="metadata-cell">
-                <div class="font-weight-medium">{{ entry.model || '--' }}</div>
-                <div class="text-caption text-medium-emphasis">{{ entry.channelName || '--' }}</div>
-              </td>
-              <td class="request-id-cell" :title="entry.requestId || ''">{{ entry.requestId || '--' }}</td>
-              <td class="snippet-cell" :title="entry.promptSnippet || ''">{{ entry.promptSnippet || '--' }}</td>
-              <td class="action-cell">
-                <v-tooltip text="查看详情">
-                  <template #activator="{ props }">
-                    <v-btn
-                      v-bind="props"
-                      icon="mdi-open-in-new"
-                      variant="text"
-                      size="small"
-                      class="table-action"
-                      :aria-label="`查看记录 ${entry.id}`"
-                      @click="openDetail(entry.id)"
-                    />
-                  </template>
-                </v-tooltip>
-                <v-tooltip text="删除记录">
-                  <template #activator="{ props }">
-                    <v-btn
-                      v-bind="props"
-                      icon="mdi-delete"
-                      color="error"
-                      variant="text"
-                      size="small"
-                      class="table-action"
-                      :aria-label="`删除记录 ${entry.id}`"
-                      @click="openDelete(entry)"
-                    />
-                  </template>
-                </v-tooltip>
-              </td>
-            </tr>
+            <template v-for="group in groups" :key="group.key">
+              <tr
+                class="group-row"
+                tabindex="0"
+                role="button"
+                :aria-expanded="isExpanded(group.key)"
+                :aria-label="groupAriaLabel(group)"
+                @click="toggleGroup(group.key)"
+                @keydown.enter.prevent="toggleGroup(group.key)"
+                @keydown.space.prevent="toggleGroup(group.key)"
+              >
+                <td class="expand-cell">
+                  <v-icon size="20" :icon="isExpanded(group.key) ? 'mdi-chevron-down' : 'mdi-chevron-right'" />
+                </td>
+                <td class="time-cell">{{ formatTime(group.latestTimestamp) }}</td>
+                <td class="identity-cell" :title="group.conversationId || latestLog(group)?.requestId || ''">
+                  <div class="font-weight-medium">{{ groupIdentityLabel(group) }}</div>
+                  <div class="text-caption text-medium-emphasis">
+                    {{
+                      group.conversationId ? `${group.count} 条记录` : latestLog(group)?.requestId || '旧记录无请求 ID'
+                    }}
+                  </div>
+                </td>
+                <td>
+                  <div class="chip-list">
+                    <v-chip
+                      v-for="value in groupAPITypes(group)"
+                      :key="value"
+                      size="x-small"
+                      :color="apiTypeColor(value)"
+                      variant="tonal"
+                    >
+                      {{ apiTypeLabel(value) }}
+                    </v-chip>
+                  </div>
+                </td>
+                <td class="type-cell">
+                  <div class="chip-list">
+                    <v-chip
+                      v-for="value in groupBlockTypes(group)"
+                      :key="value"
+                      size="x-small"
+                      :color="blockTypeColor(value)"
+                      variant="tonal"
+                    >
+                      {{ blockTypeLabel(value) }}
+                    </v-chip>
+                  </div>
+                </td>
+                <td class="metadata-cell">
+                  <div class="font-weight-medium">{{ latestLog(group)?.model || '--' }}</div>
+                  <div class="text-caption text-medium-emphasis">{{ latestLog(group)?.channelName || '--' }}</div>
+                </td>
+                <td class="snippet-cell" :title="latestLog(group)?.promptSnippet || ''">
+                  {{ latestLog(group)?.promptSnippet || '--' }}
+                </td>
+                <td class="action-cell text-medium-emphasis">
+                  {{ isExpanded(group.key) ? '收起' : '展开' }}
+                </td>
+              </tr>
+              <tr
+                v-for="entry in isExpanded(group.key) ? group.logs : []"
+                :key="`${group.key}:${entry.id}`"
+                class="detail-row"
+              >
+                <td class="detail-marker"><span aria-hidden="true"></span></td>
+                <td class="time-cell">{{ formatTime(entry.timestamp) }}</td>
+                <td class="request-id-cell" :title="entry.requestId || ''">
+                  <div>{{ entry.requestId || '--' }}</div>
+                  <div class="text-caption text-medium-emphasis">请求 ID</div>
+                </td>
+                <td>
+                  <v-chip size="x-small" :color="apiTypeColor(entry.apiType)" variant="tonal">
+                    {{ apiTypeLabel(entry.apiType) }}
+                  </v-chip>
+                </td>
+                <td class="type-cell">
+                  <v-chip size="x-small" :color="blockTypeColor(entry.blockType)" variant="tonal">
+                    {{ blockTypeLabel(entry.blockType) }}
+                  </v-chip>
+                  <div class="text-caption text-medium-emphasis mt-1">{{ ruleLabel(entry.ruleName) }}</div>
+                </td>
+                <td class="metadata-cell">
+                  <div class="font-weight-medium">{{ entry.model || '--' }}</div>
+                  <div class="text-caption text-medium-emphasis">{{ entry.channelName || '--' }}</div>
+                </td>
+                <td class="snippet-cell" :title="entry.promptSnippet || ''">{{ entry.promptSnippet || '--' }}</td>
+                <td class="action-cell">
+                  <v-tooltip text="查看详情">
+                    <template #activator="{ props }">
+                      <v-btn
+                        v-bind="props"
+                        icon="mdi-open-in-new"
+                        variant="text"
+                        size="small"
+                        class="table-action"
+                        :aria-label="`查看记录 ${entry.id}`"
+                        @click.stop="openDetail(entry.id)"
+                      />
+                    </template>
+                  </v-tooltip>
+                  <v-tooltip text="删除记录">
+                    <template #activator="{ props }">
+                      <v-btn
+                        v-bind="props"
+                        icon="mdi-delete"
+                        color="error"
+                        variant="text"
+                        size="small"
+                        class="table-action"
+                        :aria-label="`删除记录 ${entry.id}`"
+                        @click.stop="openDelete(entry)"
+                      />
+                    </template>
+                  </v-tooltip>
+                </td>
+              </tr>
+            </template>
           </template>
         </tbody>
       </v-table>
     </div>
 
     <footer class="pagination-bar">
-      <div class="text-body-2 text-medium-emphasis">第 {{ page }} 页，共 {{ pageCount }} 页</div>
+      <div class="text-body-2 text-medium-emphasis">{{ totalGroups }} 个会话 · {{ total }} 条记录</div>
       <v-pagination
         v-model="page"
         :length="pageCount"
         :total-visible="5"
         density="comfortable"
-        aria-label="拦截记录分页"
+        aria-label="拦截记录会话分页"
       />
       <v-select
         v-model="pageSize"
@@ -168,14 +214,24 @@
         <v-card-text>
           <v-progress-linear v-if="detailLoading" indeterminate color="primary" />
           <dl v-else-if="selectedLog" class="detail-grid">
-            <dt>时间</dt><dd>{{ formatTime(selectedLog.timestamp) }}</dd>
-            <dt>API 类型</dt><dd>{{ apiTypeLabel(selectedLog.apiType) }}</dd>
-            <dt>规则</dt><dd>{{ ruleLabel(selectedLog.ruleName) }}</dd>
-            <dt>模型</dt><dd>{{ selectedLog.model || '--' }}</dd>
-            <dt>渠道</dt><dd>{{ selectedLog.channelName || '--' }}</dd>
-            <dt>请求 ID</dt><dd class="break-text">{{ selectedLog.requestId || '--' }}</dd>
+            <dt>时间</dt>
+            <dd>{{ formatTime(selectedLog.timestamp) }}</dd>
+            <dt>API 类型</dt>
+            <dd>{{ apiTypeLabel(selectedLog.apiType) }}</dd>
+            <dt>规则</dt>
+            <dd>{{ ruleLabel(selectedLog.ruleName) }}</dd>
+            <dt>模型</dt>
+            <dd>{{ selectedLog.model || '--' }}</dd>
+            <dt>渠道</dt>
+            <dd>{{ selectedLog.channelName || '--' }}</dd>
+            <dt>会话 ID</dt>
+            <dd class="break-text">{{ selectedLog.conversationId || '--' }}</dd>
+            <dt>请求 ID</dt>
+            <dd class="break-text">{{ selectedLog.requestId || '--' }}</dd>
             <dt>命中片段</dt>
-            <dd><pre class="snippet-detail">{{ selectedLog.promptSnippet || '--' }}</pre></dd>
+            <dd>
+              <pre class="snippet-detail">{{ selectedLog.promptSnippet || '--' }}</pre>
+            </dd>
           </dl>
         </v-card-text>
         <v-card-actions>
@@ -216,6 +272,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   api,
   type BlockedLogEntry,
+  type BlockedLogGroup,
   type BlockedLogType,
   type ContentSafetyAPIType
 } from '@/services/api'
@@ -245,7 +302,9 @@ const toTime = ref('')
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
-const logs = ref<BlockedLogEntry[]>([])
+const totalGroups = ref(0)
+const groups = ref<BlockedLogGroup[]>([])
+const expandedGroups = ref<Set<string>>(new Set())
 const loading = ref(false)
 const deleting = ref(false)
 const error = ref('')
@@ -256,10 +315,10 @@ const deleteDialog = ref(false)
 const deletingLog = ref<BlockedLogEntry | null>(null)
 const clearDialog = ref(false)
 
-const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+const pageCount = computed(() => Math.max(1, Math.ceil(totalGroups.value / pageSize.value)))
 const hasFilters = computed(() => Boolean(apiType.value || blockType.value || fromTime.value || toTime.value))
 
-const asRFC3339 = (value: string) => value ? new Date(value).toISOString() : ''
+const asRFC3339 = (value: string) => (value ? new Date(value).toISOString() : '')
 
 const loadLogs = async () => {
   loading.value = true
@@ -271,17 +330,22 @@ const loadLogs = async () => {
       from: asRFC3339(fromTime.value),
       to: asRFC3339(toTime.value),
       page: page.value,
-      pageSize: pageSize.value
+      pageSize: pageSize.value,
+      groupBy: 'conversation'
     })
-    logs.value = response.logs || []
+    groups.value = response.groups || []
     total.value = response.total || 0
+    totalGroups.value = response.totalGroups || 0
+    const visibleKeys = new Set(groups.value.map(group => group.key))
+    expandedGroups.value = new Set([...expandedGroups.value].filter(key => visibleKeys.has(key)))
     if (page.value > pageCount.value) {
       page.value = pageCount.value
     }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载拦截记录失败'
-    logs.value = []
+    groups.value = []
     total.value = 0
+    totalGroups.value = 0
   } finally {
     loading.value = false
   }
@@ -354,21 +418,39 @@ const confirmClear = async () => {
   }
 }
 
-const apiTypeLabel = (value: ContentSafetyAPIType) => ({
-  messages: 'Messages', responses: 'Responses', chat: 'Chat', gemini: 'Gemini'
-})[value]
+const apiTypeLabel = (value: ContentSafetyAPIType) =>
+  ({
+    messages: 'Messages',
+    responses: 'Responses',
+    chat: 'Chat',
+    gemini: 'Gemini'
+  })[value]
 
-const apiTypeColor = (value: ContentSafetyAPIType) => ({
-  messages: 'primary', responses: 'secondary', chat: 'info', gemini: 'success'
-})[value]
+const apiTypeColor = (value: ContentSafetyAPIType) =>
+  ({
+    messages: 'primary',
+    responses: 'secondary',
+    chat: 'info',
+    gemini: 'success'
+  })[value]
 
-const blockTypeLabel = (value: BlockedLogType) => ({
-  sensitive_word: '敏感词', sensitive_info: '个人信息', credential: '凭据', dangerous_cmd: '危险命令', whitelist: '白名单放行'
-})[value]
+const blockTypeLabel = (value: BlockedLogType) =>
+  ({
+    sensitive_word: '敏感词',
+    sensitive_info: '个人信息',
+    credential: '凭据',
+    dangerous_cmd: '危险命令',
+    whitelist: '白名单放行'
+  })[value]
 
-const blockTypeColor = (value: BlockedLogType) => ({
-  sensitive_word: 'error', sensitive_info: 'warning', credential: 'error', dangerous_cmd: 'error', whitelist: 'success'
-})[value]
+const blockTypeColor = (value: BlockedLogType) =>
+  ({
+    sensitive_word: 'error',
+    sensitive_info: 'warning',
+    credential: 'error',
+    dangerous_cmd: 'error',
+    whitelist: 'success'
+  })[value]
 
 const ruleLabels: Record<string, string> = {
   pornography: '色情',
@@ -394,7 +476,35 @@ const ruleLabels: Record<string, string> = {
   environment_tampering: '环境变量篡改'
 }
 
-const ruleLabel = (value?: string) => value ? ruleLabels[value] || value : '--'
+const ruleLabel = (value?: string) => (value ? ruleLabels[value] || value : '--')
+
+const latestLog = (group: BlockedLogGroup) => group.logs[0]
+
+const groupAPITypes = (group: BlockedLogGroup): ContentSafetyAPIType[] => [
+  ...new Set(group.logs.map(entry => entry.apiType))
+]
+
+const groupBlockTypes = (group: BlockedLogGroup): BlockedLogType[] => [
+  ...new Set(group.logs.map(entry => entry.blockType))
+]
+
+const groupIdentityLabel = (group: BlockedLogGroup) => {
+  if (group.conversationId) return group.conversationId
+  if (latestLog(group)?.requestId) return '旧记录（按请求保留）'
+  return '旧记录（未关联）'
+}
+
+const isExpanded = (key: string) => expandedGroups.value.has(key)
+
+const toggleGroup = (key: string) => {
+  const next = new Set(expandedGroups.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedGroups.value = next
+}
+
+const groupAriaLabel = (group: BlockedLogGroup) =>
+  `${groupIdentityLabel(group)}，${group.count} 条记录，${isExpanded(group.key) ? '已展开' : '已折叠'}`
 
 const formatTime = (value?: string) => {
   if (!value) return '--'
@@ -488,6 +598,52 @@ onMounted(loadLogs)
   vertical-align: middle;
 }
 
+.group-row {
+  cursor: pointer;
+  outline: none;
+}
+
+.group-row:hover,
+.group-row:focus-visible {
+  background: rgba(var(--v-theme-primary), 0.055);
+}
+
+.group-row:focus-visible {
+  box-shadow: inset 3px 0 rgb(var(--v-theme-primary));
+}
+
+.detail-row {
+  background: rgba(var(--v-theme-surface-variant), 0.18);
+}
+
+.expand-column,
+.expand-cell,
+.detail-marker {
+  width: 44px;
+  min-width: 44px;
+  padding-right: 0 !important;
+  text-align: center;
+}
+
+.detail-marker span {
+  display: inline-block;
+  width: 12px;
+  height: 20px;
+  border-bottom: 1px solid rgba(var(--v-border-color), 0.7);
+  border-left: 1px solid rgba(var(--v-border-color), 0.7);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .time-cell {
   width: 168px;
   white-space: nowrap;
@@ -498,11 +654,22 @@ onMounted(loadLogs)
   min-width: 150px;
 }
 
+.identity-cell,
 .request-id-cell {
-  max-width: 180px;
+  max-width: 210px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.request-id-cell {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 .snippet-cell {

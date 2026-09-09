@@ -62,7 +62,7 @@
 
 ## F4 内容安全（HookPipeline）
 
-阶段：pre-request / request-time / post-response / stream。管线在 main.go 组建（`NewContentSafetyPipelineWithRecorder`），注入 **messages / responses / chat / gemini / images 五协议** handler。检测实现在 `sensitive` 包（敏感词/个人信息/凭据/危险命令），拦截写 blocked_store（前端 Blocked Logs 视图）。协议解析后先在会话观测与请求日志之前执行一次；最终上游载荷在 vision 前后再查（vision 改写后复检）。个人信息与凭据由全局 `sensitiveData.mode` 统一选择 `block` 或 `mask`；`mask` 使用请求级随机语义占位符，上游响应在最终客户端出口按同一映射精确还原。
+阶段：pre-request / request-time / post-response / stream。管线在 main.go 组建（`NewContentSafetyPipelineWithRecorder`），注入 **messages / responses / chat / gemini / images 五协议** handler。检测实现在 `sensitive` 包（敏感词/个人信息/凭据/危险命令），拦截写 blocked_store（前端 Blocked Logs 视图）。协议解析后先在会话观测与请求日志之前执行一次；最终上游载荷在 vision 前后再查（vision 改写后复检）。个人信息与凭据由全局 `sensitiveData.mode` 统一选择 `block` 或 `mask`；`mask` 使用 `[[MASKED:TYPE:STABLE_TOKEN]]` 进程内稳定语义占位符且不注入提示词，避免上游提示词缓存因随机标识失效；上游响应在最终客户端出口按当前请求映射精确还原。
 
 images 的两点差异：① 请求体有 JSON 与 multipart/form-data 两种形态，后者走 `contentSafetyPreRequestHook.runMultipartFormSafety`（检查全部非文件文本部件；掩码改写后重编码表单，**新 boundary 同步回 Content-Type**），文件部件不扫描——图片内容由 vision 层负责；② 不接 post-response / stream 钩子：响应是 base64 图片或 URL，扫描多 MB base64 无检出收益。
 
@@ -70,7 +70,7 @@ images 的两点差异：① 请求体有 JSON 与 multipart/form-data 两种形
 
 流式拦截终止：`WriteAttachedStreamError` / `WriteAttachedStreamHookError` 在写完 error SSE 事件后补发该协议的流终止序列（messages 发 `message_stop`，responses 发 `response.completed` + ``，chat 发 `data: [DONE]`，gemini/images 无统一终止标记靠连接关闭）。不补终止序列客户端 agent 会一直等 `message_stop`，表现为"卡死、无法中断对话"。
 
-流式还原：协议转换后的 SSE JSON 按字段路径和协议逻辑索引维护独立 `StreamRestorer`，正文、推理与并行工具参数不会串流；只暂存可能组成当前请求已知占位符的尾部前缀。终止事件前先释放未闭合前缀，完整占位符替换为原文，未知或被改写的占位符原样下发。
+流式还原：协议转换后的 SSE JSON 按字段路径和协议逻辑索引维护独立 `StreamRestorer`，正文、推理与并行工具参数不会串流；只暂存可能组成当前请求已知占位符或其去方括号内部标识的尾部前缀。终止事件前先释放未闭合前缀；完整占位符和模型仅去掉外围方括号后的已知内部标识替换为原文，未知值、部分匹配或其他改写原样下发。
 
 ## F5 responses 链路
 

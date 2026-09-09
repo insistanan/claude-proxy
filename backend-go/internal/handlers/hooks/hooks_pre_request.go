@@ -172,7 +172,9 @@ func runAttachedPreRequestHooks(ctx context.Context, c requestContextGetter, req
 	metadata := attached.currentMetadata()
 	metadata.redactionVault = attached.vault
 	metadata.ChannelName = channelName
-	metadata.RequestID = requestIDFromHeaders(req.Header)
+	if metadata.RequestID == "" {
+		metadata.RequestID = requestIDFromHeaders(req.Header)
+	}
 	if len(payloadProtocols) > 1 {
 		return fmt.Errorf("内容安全只允许一个上游载荷协议")
 	}
@@ -315,6 +317,31 @@ func MaskAttachedText(c requestContextGetter, text string) (string, error) {
 	return attached.vault.MaskKnown(text), nil
 }
 
+// AssignAttachedConversation 将当前请求的内容安全事件关联到内部会话，并更新
+// 后续上游尝试和响应流使用的 Hook 元数据。
+func AssignAttachedConversation(ctx context.Context, c requestContextGetter, conversationID string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil
+	}
+	attached, err := attachedPipelineFromContext(c)
+	if err != nil || attached == nil {
+		return err
+	}
+	attached.metadataMu.Lock()
+	attached.metadata.ConversationID = conversationID
+	requestID := attached.metadata.RequestID
+	attached.metadataMu.Unlock()
+	assigner, ok := attached.pipeline.blockedLogRecorder.(blockedLogConversationAssigner)
+	if !ok || requestID == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return assigner.AssignConversation(ctx, requestID, conversationID)
+}
+
 // ClearAttachedSensitiveData 在请求统一退出路径释放明文映射和流式还原状态。
 func ClearAttachedSensitiveData(c requestContextGetter) {
 	attached, err := attachedPipelineFromContext(c)
@@ -368,13 +395,14 @@ func (a *attachedHookPipeline) recordContentSafetyError(ctx context.Context, met
 		ctx = context.Background()
 	}
 	_, recordErr := a.pipeline.blockedLogRecorder.Record(ctx, sensitive.BlockedLog{
-		APIType:       metadata.APIType,
-		BlockType:     safetyErr.BlockType,
-		RuleName:      safetyErr.RuleName,
-		PromptSnippet: safetyErr.Snippet,
-		ChannelName:   metadata.ChannelName,
-		Model:         metadata.Model,
-		RequestID:     metadata.RequestID,
+		APIType:        metadata.APIType,
+		BlockType:      safetyErr.BlockType,
+		RuleName:       safetyErr.RuleName,
+		PromptSnippet:  safetyErr.Snippet,
+		ChannelName:    metadata.ChannelName,
+		Model:          metadata.Model,
+		RequestID:      metadata.RequestID,
+		ConversationID: metadata.ConversationID,
 	})
 	if recordErr == nil {
 		return err

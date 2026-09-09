@@ -18,7 +18,7 @@ func TestVaultMasksReusesAndRestoresExactValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("脱敏失败: %v", err)
 	}
-	if strings.Contains(masked, original) || strings.Count(masked, "{{SECRET_") != 2 {
+	if strings.Contains(masked, original) || strings.Count(masked, "[[MASKED:SECRET:") != 2 {
 		t.Fatalf("脱敏结果错误: %q", masked)
 	}
 	parts := strings.Split(masked, ", second=")
@@ -28,8 +28,33 @@ func TestVaultMasksReusesAndRestoresExactValues(t *testing.T) {
 	if restored := vault.Restore(masked); restored != text {
 		t.Fatalf("还原结果 = %q，期望 %q", restored, text)
 	}
-	if restored := vault.Restore("{{SECRET_UNKNOWN}}"); restored != "{{SECRET_UNKNOWN}}" {
+	if restored := vault.Restore("[[MASKED:SECRET:UNKNOWN]]"); restored != "[[MASKED:SECRET:UNKNOWN]]" {
 		t.Fatalf("未知占位符不应还原: %q", restored)
+	}
+}
+
+func TestVaultRestoresKnownBarePlaceholderWithIdentifierBoundaries(t *testing.T) {
+	vault := NewVault()
+	original := "sk-test-secret-value"
+	placeholder, err := vault.Mask(original, []RedactionMatch{{
+		Type: "API_TOKEN", Rule: "api_token", Original: original, Start: 0, End: len(original),
+	}})
+	if err != nil {
+		t.Fatalf("创建占位符失败: %v", err)
+	}
+	bare := strings.TrimSuffix(strings.TrimPrefix(placeholder, "[["), "]]")
+
+	if got := vault.Restore("$env:" + bare + "; done"); got != "$env:"+original+"; done" {
+		t.Fatalf("模型去包装后的占位符未还原: %q", got)
+	}
+	for _, value := range []string{
+		"prefix" + bare,
+		bare + "suffix",
+		"[[MASKED:API_TOKEN:UNKNOWNVALUE]]",
+	} {
+		if got := vault.Restore(value); got != value {
+			t.Fatalf("非完整或未知占位符不应还原: input=%q output=%q", value, got)
+		}
 	}
 }
 
@@ -62,6 +87,35 @@ func TestStreamRestorerHandlesEveryPlaceholderSplit(t *testing.T) {
 	}
 }
 
+func TestStreamRestorerHandlesEveryBarePlaceholderSplit(t *testing.T) {
+	vault := NewVault()
+	original := "sk-test-secret-value"
+	placeholder, err := vault.Mask(original, []RedactionMatch{{
+		Type: "API_TOKEN", Rule: "api_token", Original: original, Start: 0, End: len(original),
+	}})
+	if err != nil {
+		t.Fatalf("创建占位符失败: %v", err)
+	}
+	bare := strings.TrimSuffix(strings.TrimPrefix(placeholder, "[["), "]]")
+	for split := 0; split <= len(bare); split++ {
+		t.Run(strconv.Itoa(split), func(t *testing.T) {
+			restorer := NewStreamRestorer(vault)
+			got := restorer.Feed(bare[:split]) + restorer.Feed(bare[split:]+";") + restorer.Flush()
+			if got != original+";" {
+				t.Fatalf("split=%d 还原结果 = %q", split, got)
+			}
+		})
+	}
+
+	restorer := NewStreamRestorer(vault)
+	if got := restorer.Feed(bare); got != "" {
+		t.Fatalf("缺少右边界时不应提前输出: %q", got)
+	}
+	if got := restorer.Feed("suffix") + restorer.Flush(); got != bare+"suffix" {
+		t.Fatalf("跨分片的非完整标识符不应还原: %q", got)
+	}
+}
+
 func TestVaultRestoreJSONEscapesOriginalText(t *testing.T) {
 	vault := NewVault()
 	original := "line 1\n\"line 2\""
@@ -85,7 +139,7 @@ func TestVaultRestoreJSONEscapesOriginalText(t *testing.T) {
 	}
 }
 
-func TestVaultMappingsAreRequestLocal(t *testing.T) {
+func TestVaultMappingsAreRequestLocalWithStablePlaceholders(t *testing.T) {
 	first := NewVault()
 	second := NewVault()
 	original := "user@example.com"
@@ -98,11 +152,15 @@ func TestVaultMappingsAreRequestLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("第二次脱敏失败: %v", err)
 	}
-	if firstPlaceholder == secondPlaceholder {
-		t.Fatal("不同请求不应复用随机占位符")
+	if firstPlaceholder != secondPlaceholder {
+		t.Fatalf("同一原文应生成稳定占位符: first=%q second=%q", firstPlaceholder, secondPlaceholder)
 	}
-	if got := second.Restore(firstPlaceholder); got != firstPlaceholder {
-		t.Fatalf("请求间发生串值: %q", got)
+	if got := second.Restore(firstPlaceholder); got != original {
+		t.Fatalf("当前请求应能还原自身稳定占位符: %q", got)
+	}
+	first.Clear()
+	if got := first.Restore(firstPlaceholder); got != firstPlaceholder {
+		t.Fatalf("请求清理后不应继续还原占位符: %q", got)
 	}
 }
 

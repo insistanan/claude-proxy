@@ -2,7 +2,9 @@ package sensitive
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/json"
 	"fmt"
@@ -13,7 +15,13 @@ import (
 	"sync"
 )
 
-var reservedPlaceholderPattern = regexp.MustCompile(`\{\{[A-Z0-9]+_[A-Z2-7]{13}\}\}`)
+var reservedPlaceholderPattern = regexp.MustCompile(`\bMASKED:[A-Z0-9_]+:[A-Z2-7]{13}\b`)
+
+var (
+	placeholderKeyOnce sync.Once
+	placeholderKey     []byte
+	placeholderKeyErr  error
+)
 
 // RedactionMatch 是可逆脱敏使用的统一命中区间。Original 必须与 Text 的对应
 // 字节区间完全一致；调用方不得记录该字段。
@@ -70,7 +78,7 @@ func restoreJSONStrings(value interface{}, vault *Vault) interface{} {
 	return value
 }
 
-// Vault 保存单次请求的明文与随机占位符映射。Vault 只能挂在请求上下文中，
+// Vault 保存单次请求的明文与占位符映射。Vault 只能挂在请求上下文中，
 // 不得放入全局缓存、持久化存储或日志。
 type Vault struct {
 	mu            sync.RWMutex
@@ -79,7 +87,7 @@ type Vault struct {
 	reserved      map[string]struct{}
 }
 
-// ReserveText 登记同一请求中尚未处理的原始文本，用于避免随机占位符与请求
+// ReserveText 登记同一请求中尚未处理的原始文本，用于避免占位符与请求
 // 自带文本发生冲突。
 func (v *Vault) ReserveText(text string) {
 	if v == nil || text == "" {
@@ -125,8 +133,9 @@ func (v *Vault) Clear() {
 	v.mu.Unlock()
 }
 
-// Mask 使用语义类型和加密随机标识替换命中区间。同一请求内相同明文复用
-// 同一占位符，占位符不包含明文哈希、长度或尾号。
+// Mask 使用语义类型和进程级密钥保护的稳定标识替换命中区间。同一原文在
+// 进程内的不同请求复用同一占位符，提升上游前缀缓存命中；明文仍只保留在
+// 当前请求 Vault 中，占位符不包含可直接推断明文的哈希、长度或尾号。
 func (v *Vault) Mask(text string, matches []RedactionMatch) (string, error) {
 	if v == nil {
 		return "", fmt.Errorf("敏感信息映射仓未初始化")
@@ -171,17 +180,22 @@ func (v *Vault) placeholder(kind, original, source string) (string, error) {
 		return placeholder, nil
 	}
 	kind = normalizePlaceholderType(kind)
-	for attempts := 0; attempts < 16; attempts++ {
-		random := make([]byte, 8)
-		if _, err := rand.Read(random); err != nil {
-			return "", fmt.Errorf("生成敏感信息占位符失败: %w", err)
-		}
-		token := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(random)
-		placeholder := "{{" + kind + "_" + token + "}}"
-		if strings.Contains(source, placeholder) {
+	key, err := stablePlaceholderKey()
+	if err != nil {
+		return "", err
+	}
+	for counter := byte(0); counter < 16; counter++ {
+		mac := hmac.New(sha256.New, key)
+		_, _ = mac.Write([]byte{counter})
+		_, _ = mac.Write([]byte{0})
+		_, _ = mac.Write([]byte(original))
+		token := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(mac.Sum(nil)[:8])
+		barePlaceholder := "MASKED:" + kind + ":" + token
+		placeholder := "[[" + barePlaceholder + "]]"
+		if strings.Contains(source, barePlaceholder) {
 			continue
 		}
-		if _, exists := v.reserved[placeholder]; exists {
+		if _, exists := v.reserved[barePlaceholder]; exists {
 			continue
 		}
 		if _, exists := v.byPlaceholder[placeholder]; exists {
@@ -194,34 +208,44 @@ func (v *Vault) placeholder(kind, original, source string) (string, error) {
 	return "", fmt.Errorf("生成无冲突的敏感信息占位符失败")
 }
 
+func stablePlaceholderKey() ([]byte, error) {
+	placeholderKeyOnce.Do(func() {
+		placeholderKey = make([]byte, 32)
+		if _, err := rand.Read(placeholderKey); err != nil {
+			placeholderKeyErr = fmt.Errorf("生成敏感信息占位符密钥失败: %w", err)
+			placeholderKey = nil
+		}
+	})
+	if placeholderKeyErr != nil {
+		return nil, placeholderKeyErr
+	}
+	return placeholderKey, nil
+}
+
 func normalizePlaceholderType(kind string) string {
 	kind = strings.ToUpper(strings.TrimSpace(kind))
 	var builder strings.Builder
 	for _, current := range kind {
-		if current >= 'A' && current <= 'Z' || current >= '0' && current <= '9' {
+		if current >= 'A' && current <= 'Z' || current >= '0' && current <= '9' || current == '_' {
 			builder.WriteRune(current)
 		}
 	}
-	if builder.Len() == 0 {
+	kind = strings.Trim(builder.String(), "_")
+	if kind == "" {
 		return "SENSITIVE"
 	}
-	return builder.String()
+	return kind
 }
 
-// Restore 只还原当前请求映射表中的完整占位符。
+// Restore 还原当前请求映射表中的完整占位符，以及模型去掉 [[ / ]] 后
+// 留下的完整内部标识。内部标识必须位于独立的标识符边界，未知值和部分匹配
+// 均保持原样。
 func (v *Vault) Restore(text string) string {
 	if v == nil || text == "" {
 		return text
 	}
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	if len(v.byPlaceholder) == 0 {
-		return text
-	}
-	for placeholder, original := range v.byPlaceholder {
-		text = strings.ReplaceAll(text, placeholder, original)
-	}
-	return text
+	restorer := NewStreamRestorer(v)
+	return restorer.Feed(text) + restorer.Flush()
 }
 
 // MaskKnown 将文本中已经登记到当前请求 Vault 的敏感原文替换为对应占位符。
@@ -245,24 +269,45 @@ func (v *Vault) MaskKnown(text string) string {
 	return text
 }
 
-func (v *Vault) mappings() map[string]string {
-	result := make(map[string]string)
+type restoreMapping struct {
+	token    string
+	original string
+	bare     bool
+}
+
+func (v *Vault) restoreMappings() []restoreMapping {
 	if v == nil {
-		return result
+		return nil
 	}
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+	result := make([]restoreMapping, 0, len(v.byPlaceholder)*2)
 	for placeholder, original := range v.byPlaceholder {
-		result[placeholder] = original
+		result = append(result, restoreMapping{token: placeholder, original: original})
+		if len(placeholder) > 4 && strings.HasPrefix(placeholder, "[[") && strings.HasSuffix(placeholder, "]]") {
+			result = append(result, restoreMapping{
+				token:    placeholder[2 : len(placeholder)-2],
+				original: original,
+				bare:     true,
+			})
+		}
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if len(result[i].token) != len(result[j].token) {
+			return len(result[i].token) > len(result[j].token)
+		}
+		return result[i].token < result[j].token
+	})
 	return result
 }
 
 // StreamRestorer 对一个逻辑文本通道执行增量精确还原。它只暂存可能成为
 // 当前 Vault 占位符的尾部前缀，普通文本立即返回。
 type StreamRestorer struct {
-	vault   *Vault
-	pending string
+	vault              *Vault
+	pending            string
+	previousSourceByte byte
+	hasPreviousSource  bool
 }
 
 func NewStreamRestorer(vault *Vault) *StreamRestorer {
@@ -275,31 +320,33 @@ func (r *StreamRestorer) Feed(fragment string) string {
 	}
 	input := r.pending + fragment
 	r.pending = ""
-	mappings := r.vault.mappings()
+	mappings := r.vault.restoreMappings()
 	var output strings.Builder
 	for len(input) > 0 {
-		start := strings.IndexByte(input, '{')
-		if start < 0 {
-			output.WriteString(input)
-			break
-		}
-		output.WriteString(input[:start])
-		input = input[start:]
 		matched := false
-		for placeholder, original := range mappings {
-			if strings.HasPrefix(input, placeholder) {
-				output.WriteString(original)
-				input = input[len(placeholder):]
-				matched = true
-				break
+		for _, mapping := range mappings {
+			if !strings.HasPrefix(input, mapping.token) || !r.validLeftBoundary(mapping) {
+				continue
 			}
+			if mapping.bare && len(input) == len(mapping.token) {
+				r.pending = input
+				return output.String()
+			}
+			if mapping.bare && isPlaceholderIdentifierByte(input[len(mapping.token)]) {
+				continue
+			}
+			output.WriteString(mapping.original)
+			r.consumeSource(mapping.token)
+			input = input[len(mapping.token):]
+			matched = true
+			break
 		}
 		if matched {
 			continue
 		}
 		possiblePrefix := false
-		for placeholder := range mappings {
-			if strings.HasPrefix(placeholder, input) {
+		for _, mapping := range mappings {
+			if r.validLeftBoundary(mapping) && strings.HasPrefix(mapping.token, input) {
 				possiblePrefix = true
 				break
 			}
@@ -309,9 +356,30 @@ func (r *StreamRestorer) Feed(fragment string) string {
 			break
 		}
 		output.WriteByte(input[0])
+		r.previousSourceByte = input[0]
+		r.hasPreviousSource = true
 		input = input[1:]
 	}
 	return output.String()
+}
+
+func (r *StreamRestorer) validLeftBoundary(mapping restoreMapping) bool {
+	return !mapping.bare || !r.hasPreviousSource || !isPlaceholderIdentifierByte(r.previousSourceByte)
+}
+
+func (r *StreamRestorer) consumeSource(value string) {
+	if value == "" {
+		return
+	}
+	r.previousSourceByte = value[len(value)-1]
+	r.hasPreviousSource = true
+}
+
+func isPlaceholderIdentifierByte(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' ||
+		value == '_'
 }
 
 func (r *StreamRestorer) Pending() bool {
@@ -324,5 +392,12 @@ func (r *StreamRestorer) Flush() string {
 	}
 	pending := r.pending
 	r.pending = ""
+	for _, mapping := range r.vault.restoreMappings() {
+		if pending == mapping.token && r.validLeftBoundary(mapping) {
+			r.consumeSource(mapping.token)
+			return mapping.original
+		}
+	}
+	r.consumeSource(pending)
 	return pending
 }

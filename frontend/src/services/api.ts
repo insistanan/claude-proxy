@@ -53,7 +53,7 @@ import type {
   SkillBackup,
   SkillSearchResponse,
   SkillsResponse,
-  UpstreamModelsRequest,
+  UpstreamModelsRequest
 } from '@/types'
 
 export class ApiError extends Error {
@@ -366,6 +366,7 @@ class ApiService {
     if (params.to) search.set('to', params.to)
     if (params.page) search.set('page', String(params.page))
     if (params.pageSize) search.set('pageSize', String(params.pageSize))
+    if (params.groupBy) search.set('groupBy', params.groupBy)
     const query = search.toString()
     return this.request(`/blocked-logs${query ? `?${query}` : ''}`)
   }
@@ -532,7 +533,9 @@ class ApiService {
     return this.request('/settings/codex')
   }
 
-  async saveCodexSettings(settings: SaveCodexSettings): Promise<{ success: boolean; configPath: string; authPath: string }> {
+  async saveCodexSettings(
+    settings: SaveCodexSettings
+  ): Promise<{ success: boolean; configPath: string; authPath: string }> {
     return this.request('/settings/codex', {
       method: 'PUT',
       body: JSON.stringify(settings)
@@ -815,7 +818,10 @@ class ApiService {
    * 评测批次历史。channelId 为渠道稳定 UUID：渠道行深链进来时按渠道过滤，
    * 否则该渠道的历史会被全局最近 N 条挤掉（后端 limit 默认 30、上限 200）。
    */
-  async listEvalRuns(options?: { channelId?: string; limit?: number }): Promise<{ runs: EvalRun[]; busy: boolean; currentRunId: string }> {
+  async listEvalRuns(options?: {
+    channelId?: string
+    limit?: number
+  }): Promise<{ runs: EvalRun[]; busy: boolean; currentRunId: string }> {
     const params = new URLSearchParams()
     if (options?.channelId) params.set('channel', options.channelId)
     if (options?.limit) params.set('limit', String(options.limit))
@@ -831,7 +837,11 @@ class ApiService {
     return this.request(`/eval/runs/${id}/cancel`, { method: 'POST' })
   }
 
-  async getEvalLatestMap(): Promise<{ channels: Record<string, EvalChannelLatest>; watch: EvalWatchConfig; busy: boolean }> {
+  async getEvalLatestMap(): Promise<{
+    channels: Record<string, EvalChannelLatest>
+    watch: EvalWatchConfig
+    busy: boolean
+  }> {
     return this.request('/eval/channels/latest-map')
   }
 
@@ -991,7 +1001,7 @@ export const testChannelWithModel = async (
   const accessKey = authStore.apiKey?.trim() || ''
   if (!accessKey) throw new Error('缺少访问密钥，请先完成登录认证')
 
-  const baseUrl = import.meta.env.PROD ? '' : (import.meta.env.VITE_BACKEND_URL || '')
+  const baseUrl = import.meta.env.PROD ? '' : import.meta.env.VITE_BACKEND_URL || ''
   const generateUUID = () => crypto.randomUUID()
   const sessionId = sessionContext?.sessionId || generateUUID()
   const threadId = sessionContext?.threadId || `thread-${generateUUID()}`
@@ -1017,7 +1027,13 @@ export const testChannelWithModel = async (
   switch (apiType) {
     case 'messages':
       endpoint = '/v1/messages'
-      body = { model: selectedModel, max_tokens: 1024, messages: [{ role: 'user', content: message }], metadata, stream: true }
+      body = {
+        model: selectedModel,
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: message }],
+        metadata,
+        stream: true
+      }
       break
     case 'responses':
       endpoint = '/v1/responses'
@@ -1031,7 +1047,13 @@ export const testChannelWithModel = async (
       break
     case 'chat':
       endpoint = '/v1/chat/completions'
-      body = { model: selectedModel, messages: [{ role: 'user', content: message }], metadata, user: sessionId, stream: true }
+      body = {
+        model: selectedModel,
+        messages: [{ role: 'user', content: message }],
+        metadata,
+        user: sessionId,
+        stream: true
+      }
       break
     case 'images':
       endpoint = '/v1/images/generations'
@@ -1060,7 +1082,9 @@ export const testChannelWithModel = async (
   if (apiType === 'images') {
     const result = await response.json()
     const outputs = Array.isArray(result.data)
-      ? result.data.map((item: any) => item.url || item.revised_prompt || (item.b64_json ? '[base64 image data]' : '')).filter(Boolean)
+      ? result.data
+          .map((item: any) => item.url || item.revised_prompt || (item.b64_json ? '[base64 image data]' : ''))
+          .filter(Boolean)
       : []
     onChunk(outputs.length > 0 ? outputs.join('\n') : JSON.stringify(result, null, 2))
     return
@@ -1085,13 +1109,16 @@ export const testChannelWithModel = async (
       sessionContext?.onInteractionId?.(parsed.response.id)
     }
     if (apiType === 'gemini' && parsed.id) sessionContext?.onInteractionId?.(parsed.id)
-    const content = apiType === 'messages'
-      ? parsed.delta?.text
-      : apiType === 'responses'
-        ? (parsed.type === 'response.output_text.delta' ? parsed.delta : parsed.completion)
-        : apiType === 'gemini'
-          ? parsed.candidates?.[0]?.content?.parts?.[0]?.text
-          : parsed.choices?.[0]?.delta?.content
+    const content =
+      apiType === 'messages'
+        ? parsed.delta?.text
+        : apiType === 'responses'
+          ? parsed.type === 'response.output_text.delta'
+            ? parsed.delta
+            : parsed.completion
+          : apiType === 'gemini'
+            ? parsed.candidates?.[0]?.content?.parts?.[0]?.text
+            : parsed.choices?.[0]?.delta?.content
     if (typeof content === 'string' && content) onChunk(content)
   }
 

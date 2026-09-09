@@ -64,7 +64,7 @@ func TestReversibleRedactionCoversAllRequestProtocolsAndResponseFields(t *testin
 					t.Fatalf("敏感原文仍在上游请求中: %q body=%s", secret, upstreamBody)
 				}
 			}
-			placeholder := regexp.MustCompile(`\{\{[A-Z]+_[A-Z2-7]+\}\}`).Find(upstreamBody)
+			placeholder := regexp.MustCompile(`\[\[MASKED:[A-Z0-9_]+:[A-Z2-7]{13}\]\]`).Find(upstreamBody)
 			if len(placeholder) == 0 {
 				t.Fatalf("上游请求未包含语义占位符: %s", upstreamBody)
 			}

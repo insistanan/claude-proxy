@@ -94,7 +94,7 @@ func RunProxyRequest(
 	if err != nil {
 		return
 	}
-	BindRequestLogID(c)
+	requestID := BindRequestLogID(c)
 
 	// 过滤客户端私有参数（如 _debug, _internal_id 等），保护 JSON Schema 属性定义
 	if filteredBytes, modified, removed := bodyfilter.FilterPrivateParams(bodyBytes); modified {
@@ -114,12 +114,24 @@ func RunProxyRequest(
 	transcript := BuildConversationTranscript(string(spec.Kind), bodyBytes)
 	imageFingerprints := utils.ExtractImageFingerprints(bodyBytes)
 	hooks.AttachHookPipeline(c, spec.HookPipeline, hooks.HookContext{
-		APIType: string(spec.Kind),
-		Model:   model,
-		Stream:  stream,
+		APIType:   string(spec.Kind),
+		Model:     model,
+		Stream:    stream,
+		RequestID: requestID,
 	})
 	defer hooks.ClearAttachedSensitiveData(c)
 	if err := hooks.RunAttachedPreRequestHooks(c.Request.Context(), c, c.Request, "", string(spec.Kind)); err != nil {
+		conversationID := ObserveConversationRequest(
+			channelScheduler, spec.Kind, identity, transcript, model, nil, imageFingerprints, stream,
+		)
+		if assignErr := hooks.AssignAttachedConversation(c.Request.Context(), c, conversationID); assignErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "关联内容安全记录会话失败", "code": "CONTENT_SAFETY_LOG_ERROR"})
+			MarkConversationFailure(channelScheduler, conversationID, spec.Kind, assignErr)
+			MarkConversationComplete(channelScheduler, conversationID, spec.Kind)
+			return
+		}
+		MarkConversationFailure(channelScheduler, conversationID, spec.Kind, err)
+		MarkConversationComplete(channelScheduler, conversationID, spec.Kind)
 		handleContentSafetyPreparationError(c, spec.LogName, err)
 		return
 	}
@@ -152,6 +164,11 @@ func RunProxyRequest(
 	defer MarkConversationComplete(channelScheduler, conversationID, spec.Kind)
 	// 会话记录 ID 写入请求上下文，供协议回调（如 HandleSuccess）取用。
 	c.Set(utils.ContextKeyConversationUserID, conversationID)
+	if err := hooks.AssignAttachedConversation(c.Request.Context(), c, conversationID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "关联内容安全记录会话失败", "code": "CONTENT_SAFETY_LOG_ERROR"})
+		MarkConversationFailure(channelScheduler, conversationID, spec.Kind, err)
+		return
+	}
 
 	// 5. 记录原始请求
 	LogOriginalRequest(c, bodyBytes, envCfg, spec.LogName)

@@ -110,12 +110,23 @@ export interface BlockedLogEntry {
   channelName?: string
   model?: string
   requestId?: string
+  conversationId?: string
   createdAt: string
 }
 
-export interface BlockedLogsResponse {
+export interface BlockedLogGroup {
+  key: string
+  conversationId?: string
+  latestTimestamp: string
+  count: number
   logs: BlockedLogEntry[]
+}
+
+export interface BlockedLogsResponse {
+  logs?: BlockedLogEntry[]
+  groups?: BlockedLogGroup[]
   total: number
+  totalGroups?: number
   page: number
   pageSize: number
 }
@@ -127,4 +138,5 @@ export interface BlockedLogFilters {
   to?: string
   page?: number
   pageSize?: number
+  groupBy?: 'conversation'
 }

@@ -81,7 +81,7 @@ func TestContentSafetyVerificationSurfaceEndToEnd(t *testing.T) {
 			t.Fatalf("状态码 = %d，期望 200，响应 = %s", response.Code, response.Body.String())
 		}
 		upstreamBody := string(capture.lastBody(t))
-		if !strings.Contains(upstreamBody, "{{PHONE_") || strings.Contains(upstreamBody, "18012345523") {
+		if !strings.Contains(upstreamBody, "[[MASKED:PHONE:") || strings.Contains(upstreamBody, "18012345523") {
 			t.Fatalf("上游请求体手机号掩码不正确: %s", upstreamBody)
 		}
 	})

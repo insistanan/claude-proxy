@@ -56,6 +56,7 @@ func CompactHandler(
 		if err != nil {
 			return
 		}
+		requestID := proxycore.BindRequestLogID(c)
 
 		// compact 是控制面操作：只复用主请求已经建立的内部会话，不创建新的会话记录。
 		// 这样不会改变客户端协议，同时避免外部 conversation ID 与内部记录 ID 分裂。
@@ -64,11 +65,17 @@ func CompactHandler(
 			channelScheduler, scheduler.ChannelKindResponses, identity)
 		model := compactRequestModel(bodyBytes)
 		hooks.AttachHookPipeline(c, contentSafetyPipeline, hooks.HookContext{
-			APIType: string(scheduler.ChannelKindResponses),
-			Model:   model,
-			Stream:  false,
+			APIType:        string(scheduler.ChannelKindResponses),
+			Model:          model,
+			Stream:         false,
+			RequestID:      requestID,
+			ConversationID: conversationID,
 		})
 		defer hooks.ClearAttachedSensitiveData(c)
+		if err := hooks.AssignAttachedConversation(c.Request.Context(), c, conversationID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "关联内容安全记录会话失败", "code": "CONTENT_SAFETY_LOG_ERROR"})
+			return
+		}
 
 		// 检查是否为多渠道模式
 		isMultiChannel := channelScheduler.IsMultiChannelModeForModel(scheduler.ChannelKindResponses, model)

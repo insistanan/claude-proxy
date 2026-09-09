@@ -48,9 +48,23 @@ func GetBlockedLogs(store *sensitive.BlockedStore) gin.HandlerFunc {
 			return
 		}
 
-		result, err := store.List(c.Request.Context(), sensitive.BlockedLogListOptions{
+		options := sensitive.BlockedLogListOptions{
 			APIType: apiType, BlockType: blockType, From: from, To: to, Page: page, PageSize: pageSize,
-		})
+		}
+		if strings.EqualFold(strings.TrimSpace(c.Query("groupBy")), "conversation") {
+			result, err := store.ListGrouped(c.Request.Context(), options)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "读取会话分组拦截记录失败"})
+				return
+			}
+			c.JSON(http.StatusOK, result)
+			return
+		}
+		if groupBy := strings.TrimSpace(c.Query("groupBy")); groupBy != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的分组方式"})
+			return
+		}
+		result, err := store.List(c.Request.Context(), options)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取拦截记录失败"})
 			return
@@ -169,7 +183,8 @@ func validBlockedLogAPIType(value string) bool {
 
 func validBlockedLogType(value string) bool {
 	switch value {
-	case sensitive.BlockTypeSensitiveWord, sensitive.BlockTypeSensitiveInfo, sensitive.BlockTypeCredential, sensitive.BlockTypeDangerousCmd:
+	case sensitive.BlockTypeSensitiveWord, sensitive.BlockTypeSensitiveInfo, sensitive.BlockTypeCredential,
+		sensitive.BlockTypeDangerousCmd, sensitive.BlockTypeWhitelist:
 		return true
 	default:
 		return false

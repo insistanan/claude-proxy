@@ -648,9 +648,9 @@ func infoRedactionMatches(matches []sensitive.InfoMatch) []sensitive.RedactionMa
 	result := make([]sensitive.RedactionMatch, 0, len(matches))
 	for _, match := range matches {
 		kind := map[string]string{
-			config.SensitiveInfoRulePhone: "PHONE", config.SensitiveInfoRuleIDCard: "IDCARD",
-			config.SensitiveInfoRuleEmail: "EMAIL", config.SensitiveInfoRuleIPAddress: "IPPRIVATE",
-			config.SensitiveInfoRuleBankCard: "BANKCARD",
+			config.SensitiveInfoRulePhone: "PHONE", config.SensitiveInfoRuleIDCard: "ID_CARD",
+			config.SensitiveInfoRuleEmail: "EMAIL", config.SensitiveInfoRuleIPAddress: "PRIVATE_IP",
+			config.SensitiveInfoRuleBankCard: "BANK_CARD",
 		}[match.Rule]
 		result = append(result, sensitive.RedactionMatch{
 			Type: kind, Rule: match.Rule, Original: match.Original, Start: match.Start, End: match.End,
@@ -662,11 +662,11 @@ func infoRedactionMatches(matches []sensitive.InfoMatch) []sensitive.RedactionMa
 func credentialPlaceholderType(rule string) string {
 	switch rule {
 	case config.CredentialRuleConnectionString:
-		return "CONNSTR"
+		return "CONNECTION_STRING"
 	case config.CredentialRulePrivateKey:
-		return "PRIVATEKEY"
+		return "PRIVATE_KEY"
 	case config.CredentialRuleAPIKey:
-		return "APITOKEN"
+		return "API_TOKEN"
 	case config.CredentialRuleNamedSecret:
 		return "SECRET"
 	case config.CredentialRuleHighEntropy:
@@ -698,13 +698,14 @@ func recordSafetyMatches(ctx context.Context, metadata HookContext, recorder Blo
 			continue
 		}
 		if _, err := recorder.Record(ctx, sensitive.BlockedLog{
-			APIType:       metadata.APIType,
-			BlockType:     blockType,
-			RuleName:      rule,
-			PromptSnippet: safetyEventSnippet(mode, segment),
-			ChannelName:   metadata.ChannelName,
-			Model:         metadata.Model,
-			RequestID:     metadata.RequestID,
+			APIType:        metadata.APIType,
+			BlockType:      blockType,
+			RuleName:       rule,
+			PromptSnippet:  safetyEventSnippet(mode, segment),
+			ChannelName:    metadata.ChannelName,
+			Model:          metadata.Model,
+			RequestID:      metadata.RequestID,
+			ConversationID: metadata.ConversationID,
 		}); err != nil {
 			return fmt.Errorf("写入内容安全%s记录失败: %w", mode, err)
 		}
@@ -770,13 +771,14 @@ func recordWhitelistAllowed(ctx context.Context, metadata HookContext, recorder 
 		return nil
 	}
 	if _, err := recorder.Record(ctx, sensitive.BlockedLog{
-		APIType:       metadata.APIType,
-		BlockType:     sensitive.BlockTypeWhitelist,
-		RuleName:      toolName,
-		PromptSnippet: safetyEventSnippet("allow", segment),
-		ChannelName:   metadata.ChannelName,
-		Model:         metadata.Model,
-		RequestID:     metadata.RequestID,
+		APIType:        metadata.APIType,
+		BlockType:      sensitive.BlockTypeWhitelist,
+		RuleName:       toolName,
+		PromptSnippet:  safetyEventSnippet("allow", segment),
+		ChannelName:    metadata.ChannelName,
+		Model:          metadata.Model,
+		RequestID:      metadata.RequestID,
+		ConversationID: metadata.ConversationID,
 	}); err != nil {
 		return fmt.Errorf("写入白名单放行记录失败: %w", err)
 	}

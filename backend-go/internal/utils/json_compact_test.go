@@ -241,13 +241,15 @@ func TestFormatJSONBytesForLog(t *testing.T) {
 }
 
 func TestLogFormattingRemovesSensitivePlaceholderID(t *testing.T) {
-	placeholder := "{{PHONE_7K4M2P9QAB2CD}}"
-	body := []byte(`{"text":"` + placeholder + `"}`)
+	placeholder := "[[MASKED:PHONE:7K4M2P9QAB2CD]]"
+	barePlaceholder := "MASKED:API_TOKEN:MN2UKMT4Y62X2"
+	body := []byte(`{"text":"` + placeholder + ` ` + barePlaceholder + `"}`)
 	for name, formatted := range map[string]string{
 		"formatted": FormatJSONBytesForLog(body, 500),
 		"raw":       FormatJSONBytesRaw(body),
 	} {
-		if strings.Contains(formatted, placeholder) || !strings.Contains(formatted, "{{PHONE_REDACTED}}") {
+		if strings.Contains(formatted, placeholder) || strings.Contains(formatted, barePlaceholder) ||
+			!strings.Contains(formatted, "[[MASKED:PHONE:REDACTED]]") || !strings.Contains(formatted, "MASKED:API_TOKEN:REDACTED") {
 			t.Fatalf("%s 日志未移除占位符映射 ID: %s", name, formatted)
 		}
 	}

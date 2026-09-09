@@ -2,6 +2,7 @@ package proxycore
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
 	"github.com/BenedictKing/claude-proxy/internal/metrics"
 	"github.com/BenedictKing/claude-proxy/internal/scheduler"
+	"github.com/BenedictKing/claude-proxy/internal/sensitive"
 	"github.com/BenedictKing/claude-proxy/internal/types"
 	"github.com/gin-gonic/gin"
 )
@@ -76,7 +78,7 @@ func TestRunProxyRequestMasksBeforeRoutingAndUpstreamBuild(t *testing.T) {
 	spec := rec.newSpec()
 	spec.HookPipeline = hooks.NewContentSafetyPipeline(env.cfgManager)
 	spec.PreRoute = func(c *gin.Context, body []byte, model string, conversationID string, startTime time.Time) bool {
-		if strings.Contains(string(body), "18012345523") || !strings.Contains(string(body), "{{PHONE_") {
+		if strings.Contains(string(body), "18012345523") || !strings.Contains(string(body), "[[MASKED:PHONE:") {
 			t.Errorf("路由阶段收到未脱敏请求体: %s", body)
 		}
 		return false
@@ -96,8 +98,57 @@ func TestRunProxyRequestMasksBeforeRoutingAndUpstreamBuild(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
 	}
-	if strings.Contains(receivedBody, "18012345523") || !strings.Contains(receivedBody, "{{PHONE_") {
+	if strings.Contains(receivedBody, "18012345523") || !strings.Contains(receivedBody, "[[MASKED:PHONE:") {
 		t.Fatalf("上游构建阶段收到未脱敏请求体: %s", receivedBody)
+	}
+}
+
+func TestRunProxyRequestRecordsRequestAndConversationIDs(t *testing.T) {
+	env := newRunProxyTestEnv(t)
+	settings := env.cfgManager.GetSettings()
+	settings.ContentSafety.SensitiveWord.Enabled = true
+	settings.ContentSafety.SensitiveWord.CustomWords = []string{"仅用于代理入口归组测试的禁词"}
+	if err := env.cfgManager.UpdateSettings(settings); err != nil {
+		t.Fatalf("更新内容安全设置失败: %v", err)
+	}
+
+	store, err := sensitive.NewBlockedStore(filepath.Join(t.TempDir(), "blocked.db"))
+	if err != nil {
+		t.Fatalf("创建拦截记录存储失败: %v", err)
+	}
+	defer store.Close()
+
+	rec := &specRecorder{}
+	spec := rec.newSpec()
+	spec.HookPipeline = hooks.NewContentSafetyPipelineWithRecorder(env.cfgManager, store)
+	requestBody := `{"model":"test-model","conversation_id":"thread-log-test","messages":[{"role":"user","content":"包含仅用于代理入口归组测试的禁词"}]}`
+	for attempt := 0; attempt < 2; attempt++ {
+		response := performRunProxyRequest(t, env, spec, requestBody, "test-access-key")
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("第 %d 次请求状态码 = %d，期望 403，响应体: %s", attempt+1, response.Code, response.Body.String())
+		}
+	}
+
+	page, err := store.ListGrouped(context.Background(), sensitive.BlockedLogListOptions{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("读取会话分组失败: %v", err)
+	}
+	if page.Total != 2 || page.TotalGroups != 1 || len(page.Groups) != 1 || len(page.Groups[0].Logs) != 2 {
+		t.Fatalf("代理入口拦截记录未归入同一会话: %+v", page)
+	}
+	group := page.Groups[0]
+	if group.ConversationID == "" {
+		t.Fatal("代理入口拦截记录缺少内部会话 ID")
+	}
+	requestIDs := make(map[string]struct{}, len(group.Logs))
+	for _, entry := range group.Logs {
+		if entry.RequestID == "" || entry.ConversationID != group.ConversationID {
+			t.Fatalf("拦截记录请求或会话 ID 不完整: %+v", entry)
+		}
+		requestIDs[entry.RequestID] = struct{}{}
+	}
+	if len(requestIDs) != 2 {
+		t.Fatalf("两次 HTTP 请求应保留不同 requestId，实际: %+v", group.Logs)
 	}
 }
 

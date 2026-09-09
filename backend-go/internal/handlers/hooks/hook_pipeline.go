@@ -27,6 +27,7 @@ type HookContext struct {
 	Model           string
 	Stream          bool
 	RequestID       string
+	ConversationID  string
 	ChannelName     string
 	eventDeduper    *safetyEventDeduper
 	redactionVault  *sensitive.Vault
@@ -85,6 +86,10 @@ type Hook interface {
 // sensitive.BlockedStore 满足该接口，测试可注入轻量实现验证错误路径。
 type BlockedLogRecorder interface {
 	Record(context.Context, sensitive.BlockedLog) (sensitive.BlockedLog, error)
+}
+
+type blockedLogConversationAssigner interface {
+	AssignConversation(context.Context, string, string) error
 }
 
 // HookExecutionError 标识具体阶段和 Hook 的执行失败。

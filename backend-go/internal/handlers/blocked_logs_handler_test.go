@@ -70,6 +70,18 @@ func TestBlockedLogsHandlersCRUD(t *testing.T) {
 		t.Fatalf("凭据筛选结果错误: %+v", page)
 	}
 
+	response = performBlockedLogRequest(router, http.MethodGet, "/blocked-logs?page=1&pageSize=20&groupBy=conversation")
+	if response.Code != http.StatusOK {
+		t.Fatalf("会话分组状态码错误: %d %s", response.Code, response.Body.String())
+	}
+	var groups sensitive.BlockedLogGroupPage
+	if err := json.Unmarshal(response.Body.Bytes(), &groups); err != nil {
+		t.Fatalf("解析会话分组失败: %v", err)
+	}
+	if groups.Total != 3 || groups.TotalGroups != 3 || len(groups.Groups) != 3 {
+		t.Fatalf("会话分组结果错误: %+v", groups)
+	}
+
 	response = performBlockedLogRequest(router, http.MethodGet, "/blocked-logs/"+formatBlockedLogID(first.ID))
 	if response.Code != http.StatusOK {
 		t.Fatalf("详情状态码错误: %d %s", response.Code, response.Body.String())
@@ -119,6 +131,7 @@ func TestBlockedLogsHandlersValidateQueriesAndStore(t *testing.T) {
 		"/blocked-logs?pageSize=101",
 		"/blocked-logs?apiType=unknown",
 		"/blocked-logs?blockType=unknown",
+		"/blocked-logs?groupBy=request",
 		"/blocked-logs?from=invalid",
 		"/blocked-logs?from=2026-08-11T00:00:00Z&to=2026-08-10T00:00:00Z",
 	} {
