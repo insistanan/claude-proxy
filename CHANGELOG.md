@@ -4,6 +4,26 @@
 
 ---
 
+## [v3.2.0] - 2026-09-11
+
+### 新功能
+
+- **Codex 模型目录管理** — GPT 配置页新增"模型目录"面板：内置 DeepSeek-Flash / DeepSeek-V4-Pro / 通用三套预设模板（元数据字段与 DeepSeek 官方 Codex 接入文档一致），按 slug 新增/编辑/删除 `~/.codex/models.json` 模型条目（更新仅覆盖可调字段，手工写入的未知字段与条目保留）；"默认模型"一键写入 config.toml 根级 `model` / `model_catalog_json` / `model_reasoning_effort`
+- **客户端伪装版本号可配置** — 新增环境变量 `CLAUDE_CODE_DISGUISE_VERSION` / `CODEX_DISGUISE_VERSION`（.env 支持，重启生效），未配置时沿用内置默认值（2.1.238 / 0.150.1）；影响 User-Agent、version 头、请求体计费块 cc_version 与会话指纹
+- **敏感数据可逆脱敏** — 新增 `sensitive/vault` 占位符存储与递归 JSON 还原；SSE 流式事件按 JSON 路径精确还原（`hooks/redaction_stream`）；`info_detector` 增加银行卡号检测；处置模式统一为"阻断 / 可逆掩码"，前端 Settings 敏感信息/凭据合并为统一开关；占位符语义化改进
+- **拦截日志会话分组懒加载** — `ListGrouped` 不再全量返回组内明细（大会话数千条导致前端展开卡死），改为返回组摘要（count/类型集合/最新代表记录），新增 groupKey 按组分页查明细；前端展开懒加载每页 50 条 + 加载更多
+
+### 修复
+
+- **敏感数据误报降低** — `credential_detector` / `info_detector` 检测精度改进（版本号语境等放行），掩码还原链路修复
+- **伪装 SDK 版本过旧** — Claude Code 伪装的 `X-Stainless-Package-Version` 从 0.94.0 更新至 0.124.0（npm 最新）
+
+### 其他
+
+- 文档：`ENVIRONMENT.md` 登记伪装版本环境变量，`.env.example` 新增客户端伪装配置段
+
+---
+
 ## [v3.1.2] - 2026-08-27
 
 ### 修复
