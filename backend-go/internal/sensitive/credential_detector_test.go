@@ -127,3 +127,38 @@ func TestCredentialDetectorMaskUsesTypedMarker(t *testing.T) {
 		t.Fatalf("凭据掩码错误: %q %+v", masked, matches)
 	}
 }
+
+func TestCredentialDetectorKeepsBusinessIDsOutOfSecretRules(t *testing.T) {
+	detector, err := NewCredentialDetector(config.CredentialConfig{
+		Enabled: true,
+		EnabledRules: []string{
+			config.CredentialRuleNamedSecret,
+			config.CredentialRuleHighEntropy,
+		},
+	})
+	if err != nil {
+		t.Fatalf("创建凭据检测器失败: %v", err)
+	}
+	text := strings.Join([]string{
+		"conversation_id=AbCdEf1234567890GhIjKlMnOpQrStUv",
+		"sessionId=550e8400-e29b-41d4-a716-446655440000",
+		"order_id=123456789012345678",
+		"token=550e8400-e29b-41d4-a716-446655440000",
+	}, "\n")
+	if matches := detector.FindAll(text); len(matches) != 0 {
+		t.Fatalf("业务 ID 不应被掩码: %+v", matches)
+	}
+}
+
+func TestCredentialDetectorStillMasksExplicitSecretFields(t *testing.T) {
+	detector, err := NewCredentialDetector(config.CredentialConfig{
+		Enabled:      true,
+		EnabledRules: []string{config.CredentialRuleHighEntropy},
+	})
+	if err != nil {
+		t.Fatalf("创建凭据检测器失败: %v", err)
+	}
+	if matches := detector.FindAll("API_KEY=AbCdEf1234567890GhIjKlMnOpQrStUv"); len(matches) != 1 {
+		t.Fatalf("明确密钥字段应被识别: %+v", matches)
+	}
+}

@@ -38,6 +38,12 @@ var (
 	ipv4Pattern     = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
 	ipv6Pattern     = regexp.MustCompile(`(?i)[0-9a-f:][0-9a-f:.]*:[0-9a-f:.]*`)
 	bankCardPattern = regexp.MustCompile(`(?:^|[^0-9])([0-9](?:[ -]?[0-9]){12,18})(?:[^0-9]|$)`)
+	phonePattern    = regexp.MustCompile(`\b1[3-9][0-9]{9}\b`)
+
+	// 仅凭 11 位数字无法区分手机号和设备号、工单号等业务编号；
+	// 这些上下文词用于把手机号规则限制在有明确语义的场景。
+	phoneContextPattern    = regexp.MustCompile(`(?i)(?:手机|手机号|电话|电话号码|联系电话|联系方式|(?:mobile|phone|telephone|tel|contact)\b|\+86\b)`)
+	bankCardContextPattern = regexp.MustCompile(`(?i)(?:银行卡|信用卡|借记卡|卡号|银行卡号|bank[ _-]?card|credit[ _-]?card|debit[ _-]?card|card[ _-]?(?:no|number)\b)`)
 
 	// versionHintPattern 匹配 IPv4 命中前文末尾的版本号语境词
 	//（version/release/build/rev/revision，允许字母数字与 _-. 前缀，
@@ -237,9 +243,8 @@ func normalizeIPMaskScope(scope string) (string, error) {
 func allInfoRules(ipMaskScope string) []infoRule {
 	return []infoRule{
 		{
-			name:  config.SensitiveInfoRulePhone,
-			regex: regexp.MustCompile(`\b1[3-9][0-9]{9}\b`),
-			mask:  maskPhone,
+			name: config.SensitiveInfoRulePhone,
+			find: findPhoneCandidates,
 		},
 		{
 			name: config.SensitiveInfoRuleIDCard,
@@ -263,6 +268,20 @@ func allInfoRules(ipMaskScope string) []infoRule {
 	}
 }
 
+func findPhoneCandidates(text string) []infoCandidate {
+	indices := phonePattern.FindAllStringIndex(text, -1)
+	candidates := make([]infoCandidate, 0, len(indices))
+	for _, index := range indices {
+		if !hasNearbyContext(text, index[0], index[1], phoneContextPattern, 48, 24) {
+			continue
+		}
+		candidates = append(candidates, infoCandidate{
+			start: index[0], end: index[1], replacement: maskPhone(text[index[0]:index[1]]),
+		})
+	}
+	return candidates
+}
+
 func findBankCardCandidates(text string) []infoCandidate {
 	indices := bankCardPattern.FindAllStringSubmatchIndex(text, -1)
 	candidates := make([]infoCandidate, 0, len(indices))
@@ -275,11 +294,26 @@ func findBankCardCandidates(text string) []infoCandidate {
 		if !validLuhn(digits) {
 			continue
 		}
+		if !hasNearbyContext(text, index[2], index[3], bankCardContextPattern, 48, 24) {
+			continue
+		}
 		candidates = append(candidates, infoCandidate{
 			start: index[2], end: index[3], replacement: "[MASKED_PII:bank_card]",
 		})
 	}
 	return candidates
+}
+
+func hasNearbyContext(text string, start, end int, pattern *regexp.Regexp, before, after int) bool {
+	windowStart := start - before
+	if windowStart < 0 {
+		windowStart = 0
+	}
+	windowEnd := end + after
+	if windowEnd > len(text) {
+		windowEnd = len(text)
+	}
+	return pattern.MatchString(text[windowStart:windowEnd])
 }
 
 func validLuhn(value string) bool {

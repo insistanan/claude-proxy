@@ -39,7 +39,7 @@ type credentialCandidateWithRule struct {
 var (
 	knownAPIKeyPattern           = regexp.MustCompile(`(?i)(?:sk-ant-[A-Za-z0-9_-]{16,}|sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{24,}|xai-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|A(?:KI|SI)A[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,})`)
 	bearerTokenPattern           = regexp.MustCompile(`(?i)\bBearer[ \t]+([A-Za-z0-9._~+/=-]{16,})`)
-	namedSecretPattern           = regexp.MustCompile(`(?im)(?:^|[\s,{;])["']?(?:password|passwd|secret|token|credential|private[_-]?key|api[_-]?key|access[_-]?key|access[_-]?token|client[_-]?secret|aws_secret_access_key)["']?\s*[:=]\s*["']?([^\s"',;}]{6,})`)
+	namedSecretPattern           = regexp.MustCompile(`(?im)(?:^|[\s,{;])["']?((?:password|passwd|secret|token|credential|private[_-]?key|api[_-]?key|access[_-]?key|access[_-]?token|client[_-]?secret|aws_secret_access_key))["']?\s*[:=]\s*["']?([^\s"',;}]{6,})`)
 	privateKeyPattern            = regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`)
 	connectionStringPattern      = regexp.MustCompile(`(?i)\b(?:https?|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|amqps|mssql)://[^/\s:@]*:([^@\s/]+)@[^\s"']+`)
 	connectionAssignmentPattern  = regexp.MustCompile(`(?im)(?:^|[\s,{;])["']?(?:database_url|dsn|connection_string)["']?\s*[:=]\s*["']?([^\r\n"']{8,})`)
@@ -49,6 +49,11 @@ var (
 	simpleIdentifierPattern      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	environmentReferencePattern  = regexp.MustCompile(`^(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|%[A-Za-z_][A-Za-z0-9_]*%)$`)
 	windowsPathPattern           = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
+	uuidLikePattern              = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	ulidLikePattern              = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
+	numericIDPattern             = regexp.MustCompile(`^[0-9]{15,20}$`)
+	hexIDPattern                 = regexp.MustCompile(`(?i)^[0-9a-f]{16,64}$`)
+	businessIDPrefixPattern      = regexp.MustCompile(`(?i)^(?:conv(?:ersation)?|session|message|msg|request|req|order|transaction|trace|user|task|run|job|event|correlation)[_-][a-z0-9_-]{4,}$`)
 )
 
 // CredentialDetector 检测文本中的凭据。它不自行决定审计、阻断或掩码，
@@ -232,13 +237,14 @@ func findNamedSecretCandidates(text string) []credentialCandidate {
 	indices := namedSecretPattern.FindAllStringSubmatchIndex(text, -1)
 	result := make([]credentialCandidate, 0, len(indices))
 	for _, index := range indices {
-		if len(index) < 4 || index[2] < 0 {
+		if len(index) < 6 || index[2] < 0 || index[4] < 0 {
 			continue
 		}
-		value := text[index[2]:index[3]]
-		quoted := index[2] > 0 && (text[index[2]-1] == '"' || text[index[2]-1] == '\'')
-		if isLikelyNamedSecretValue(value, quoted) {
-			result = append(result, credentialCandidate{start: index[2], end: index[3]})
+		name := text[index[2]:index[3]]
+		value := text[index[4]:index[5]]
+		quoted := index[4] > 0 && (text[index[4]-1] == '"' || text[index[4]-1] == '\'')
+		if isLikelyNamedSecretValue(name, value, quoted) {
+			result = append(result, credentialCandidate{start: index[4], end: index[5]})
 		}
 	}
 	return result
@@ -264,16 +270,22 @@ func findHighEntropyCandidates(text string) []credentialCandidate {
 		}
 		name := text[index[2]:index[3]]
 		value := text[index[4]:index[5]]
-		if !isClearlyNonSecretAssignmentName(name) && isLikelySecretValue(value) {
+		if isLikelySecretAssignmentName(name) && isLikelySecretValue(value) {
 			result = append(result, credentialCandidate{start: index[4], end: index[5]})
 		}
 	}
 	return result
 }
 
-func isLikelyNamedSecretValue(value string, quoted bool) bool {
+func isLikelyNamedSecretValue(name, value string, quoted bool) bool {
 	trimmed := strings.Trim(strings.TrimSpace(value), "\"'")
 	if len(trimmed) < 6 || isCredentialPlaceholder(trimmed) {
+		return false
+	}
+	normalizedName := strings.ToLower(strings.TrimSpace(name))
+	compactName := strings.NewReplacer("_", "", "-", "", ".", "").Replace(normalizedName)
+	weakName := compactName == "token" || compactName == "secret" || compactName == "credential"
+	if weakName && isLikelyIdentifierValue(trimmed) {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
@@ -297,6 +309,16 @@ func isLikelyNamedSecretValue(value string, quoted bool) bool {
 	default:
 		return true
 	}
+}
+
+func isLikelyIdentifierValue(value string) bool {
+	if uuidLikePattern.MatchString(value) || ulidLikePattern.MatchString(value) {
+		return true
+	}
+	if numericIDPattern.MatchString(value) || hexIDPattern.MatchString(value) {
+		return true
+	}
+	return businessIDPrefixPattern.MatchString(value)
 }
 
 func looksLikeCodeIdentifier(value string) bool {
@@ -340,6 +362,27 @@ func isClearlyNonSecretAssignmentName(name string) bool {
 		}
 	}
 	return normalized == "sha" || strings.HasPrefix(normalized, "sha_") || strings.HasSuffix(normalized, "_sha")
+}
+
+// isLikelySecretAssignmentName 将高熵检测限制在有明确秘密语义的字段。
+// 任意长随机字符串都可能是会话、消息或业务 ID，不能仅凭熵值判定为凭据。
+func isLikelySecretAssignmentName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" || isClearlyNonSecretAssignmentName(normalized) {
+		return false
+	}
+	// 统一处理 snake_case、kebab-case、点号和驼峰字段名。
+	compact := strings.NewReplacer("_", "", "-", "", ".", "").Replace(normalized)
+	for _, marker := range []string{
+		"password", "passwd", "secret", "token", "credential",
+		"privatekey", "apikey", "accesskey", "accesstoken",
+		"clientsecret", "awssecretaccesskey", "encryptionkey", "signingkey",
+	} {
+		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func isLikelySecretValue(value string) bool {
