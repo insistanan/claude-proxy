@@ -156,7 +156,7 @@ func buildClaudeCodeBillingText(requestPayload map[string]interface{}) string {
 	return fmt.Sprintf(
 		"%s cc_version=%s.%s; cc_entrypoint=cli;",
 		claudeCodeBillingPrefix,
-		claudeCodeDisguiseVersion,
+		claudeCodeDisguiseVersion(),
 		fingerprint,
 	)
 }
@@ -173,7 +173,7 @@ func computeClaudeCodeFingerprint(requestPayload map[string]interface{}) string 
 	}
 
 	fingerprintDigest := sha256.Sum256([]byte(
-		claudeCodeFingerprintSalt + string(fingerprintCharacters) + claudeCodeDisguiseVersion,
+		claudeCodeFingerprintSalt + string(fingerprintCharacters) + claudeCodeDisguiseVersion(),
 	))
 	return hex.EncodeToString(fingerprintDigest[:])[:3]
 }

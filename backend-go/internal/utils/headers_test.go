@@ -1,8 +1,10 @@
 package utils
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -241,4 +243,64 @@ func TestEnsureCompatibleUserAgent(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDisguiseVersionFromEnv(t *testing.T) {
+	t.Run("未设置环境变量时返回默认值", func(t *testing.T) {
+		if got := claudeCodeDisguiseVersion(); got != defaultClaudeCodeDisguiseVersion {
+			t.Fatalf("claudeCodeDisguiseVersion() = %q, want %q", got, defaultClaudeCodeDisguiseVersion)
+		}
+		if got := codexDisguiseVersion(); got != defaultCodexDisguiseVersion {
+			t.Fatalf("codexDisguiseVersion() = %q, want %q", got, defaultCodexDisguiseVersion)
+		}
+	})
+
+	t.Run("环境变量覆盖伪装版本", func(t *testing.T) {
+		t.Setenv(envKeyClaudeCodeDisguiseVersion, "9.9.9")
+		t.Setenv(envKeyCodexDisguiseVersion, "8.8.8")
+
+		claudeHeaders := http.Header{}
+		ApplyClaudeCodeDisguise(claudeHeaders, false)
+		if got := claudeHeaders.Get("User-Agent"); got != "claude-cli/9.9.9 (external, cli)" {
+			t.Fatalf("Claude 伪装 UA = %q, want %q", got, "claude-cli/9.9.9 (external, cli)")
+		}
+
+		codexHeaders := http.Header{}
+		ApplyCodexDisguise(codexHeaders, false)
+		if got := codexHeaders.Get("User-Agent"); !strings.HasPrefix(got, "codex_cli_rs/8.8.8 ") {
+			t.Fatalf("Codex 伪装 UA = %q, 应以 codex_cli_rs/8.8.8 开头", got)
+		}
+		if got := codexHeaders.Get("version"); got != "8.8.8" {
+			t.Fatalf("Codex version 头 = %q, want %q", got, "8.8.8")
+		}
+	})
+
+	t.Run("空白环境变量回退默认值", func(t *testing.T) {
+		t.Setenv(envKeyClaudeCodeDisguiseVersion, "   ")
+		t.Setenv(envKeyCodexDisguiseVersion, "")
+		if got := claudeCodeDisguiseVersion(); got != defaultClaudeCodeDisguiseVersion {
+			t.Fatalf("claudeCodeDisguiseVersion() = %q, want %q", got, defaultClaudeCodeDisguiseVersion)
+		}
+		if got := codexDisguiseVersion(); got != defaultCodexDisguiseVersion {
+			t.Fatalf("codexDisguiseVersion() = %q, want %q", got, defaultCodexDisguiseVersion)
+		}
+	})
+
+	t.Run("请求体计费块使用环境变量版本", func(t *testing.T) {
+		t.Setenv(envKeyClaudeCodeDisguiseVersion, "9.9.9")
+		body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello world from test"}]}`)
+		updated := ApplyClaudeCodeBodyDisguise(body, "session-1")
+		var payload map[string]interface{}
+		if err := json.Unmarshal(updated, &payload); err != nil {
+			t.Fatalf("伪装后请求体不是合法 JSON: %v", err)
+		}
+		systemBlocks, _ := payload["system"].([]interface{})
+		if len(systemBlocks) == 0 {
+			t.Fatal("应注入计费 system 块")
+		}
+		text, _ := systemBlocks[0].(map[string]interface{})["text"].(string)
+		if !strings.Contains(text, "cc_version=9.9.9.") {
+			t.Fatalf("计费块应包含环境变量版本: %q", text)
+		}
+	})
 }

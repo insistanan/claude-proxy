@@ -34,6 +34,8 @@
 | `LOG_TO_CONSOLE` | false | 同时输出到控制台。正文与运行日志只进 sqlite，不再写 `logs/` 文件 |
 | `CORRECT_RESPONSES_INPUT_TOKENS` | true | 校正 Responses 透传分支中明显错报的 input_tokens（仅作用于客户端下发 usage） |
 | `AFFINITY_DEBUG` | false | 开启 Trace / BaseURL 会话亲和性调度的调试日志 |
+| `CLAUDE_CODE_DISGUISE_VERSION` | 2.1.238 | Claude Code 伪装版本号（伪装开关开启时生效）：写入 User-Agent、请求体计费块 `cc_version` 与会话指纹。读取方在 `utils/headers.go`，不在 `NewEnvConfig` |
+| `CODEX_DISGUISE_VERSION` | 0.150.1 | Codex CLI 伪装版本号（伪装开关开启时生效）：写入 User-Agent 与 `version` 头。读取方在 `utils/headers.go`，不在 `NewEnvConfig` |
 | `CLAUDE_CONFIG_DIR` | 自动推导 | 自定义 Claude Code 配置与技能目录 |
 | `CODEX_HOME` | 自动推导 | 自定义 Codex 配置与技能目录 |
 | `OPENCODE_CONFIG_DIR` | 自动推导 | 自定义 OpenCode 配置与技能目录 |

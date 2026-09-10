@@ -2,6 +2,7 @@ package utils
 
 import (
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 
@@ -26,9 +27,44 @@ const (
 	// 新的本地历史根。非原生 Responses 转换器不能再把旧 session 追加到它
 	// 前面，响应持久化也必须替换旧历史而不是按普通轮次合并。
 	ContextKeyResponsesHistoryBoundary = "responses-history-boundary"
-	claudeCodeDisguiseVersion          = "2.1.238"
-	codexDisguiseVersion               = "0.150.1"
+
+	// 伪装版本默认值：与真实客户端版本对齐；可被环境变量覆盖（见下方版本函数）。
+	defaultClaudeCodeDisguiseVersion = "2.1.238"
+	defaultCodexDisguiseVersion      = "0.150.1"
+
+	// Anthropic SDK 版本 / Node 运行时版本（Claude Code 伪装的 X-Stainless-* 头）。
+	claudeDisguiseSDKPackageVersion = "0.124.0"
+	claudeDisguiseSDKRuntimeVersion = "v24.3.0"
 )
+
+const (
+	envKeyClaudeCodeDisguiseVersion = "CLAUDE_CODE_DISGUISE_VERSION"
+	envKeyCodexDisguiseVersion      = "CODEX_DISGUISE_VERSION"
+)
+
+// claudeCodeDisguiseVersion 返回 Claude Code 伪装版本号：
+// 优先取环境变量 CLAUDE_CODE_DISGUISE_VERSION（.env 支持，重启生效），
+// 未设置或为空白时使用内置默认值。影响 User-Agent、请求体计费块
+// cc_version 与会话指纹（utils/claude_disguise.go）。
+func claudeCodeDisguiseVersion() string {
+	return disguiseVersionFromEnv(envKeyClaudeCodeDisguiseVersion, defaultClaudeCodeDisguiseVersion)
+}
+
+// codexDisguiseVersion 返回 Codex CLI 伪装版本号：
+// 优先取环境变量 CODEX_DISGUISE_VERSION（.env 支持，重启生效），
+// 未设置或为空白时使用内置默认值。影响 User-Agent 与 version 头。
+func codexDisguiseVersion() string {
+	return disguiseVersionFromEnv(envKeyCodexDisguiseVersion, defaultCodexDisguiseVersion)
+}
+
+// disguiseVersionFromEnv 每次实时读取环境变量：不缓存，避免包初始化早于
+// main 的 config.LoadDotEnv 导致 .env 未加载；开销相对每次上游请求可忽略。
+func disguiseVersionFromEnv(envKey, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(envKey)); value != "" {
+		return value
+	}
+	return fallback
+}
 
 // PrepareUpstreamHeaders 准备上游请求头（统一头部处理逻辑）
 // 保留原始请求头，移除代理相关头部，设置认证头
@@ -147,7 +183,7 @@ func ApplyCodexDisguise(headers http.Header, stream bool) {
 		headers.Set("originator", "codex_cli_rs")
 	}
 	if headers.Get("version") == "" {
-		headers.Set("version", codexDisguiseVersion)
+		headers.Set("version", codexDisguiseVersion())
 	}
 
 	if headers.Get("session_id") == "" {
@@ -178,11 +214,11 @@ func ApplyCodexDisguise(headers http.Header, stream bool) {
 func ApplyClaudeCodeDisguise(headers http.Header, stream bool) {
 	isClaudeCodeClient := isClaudeCodeUserAgent(headers.Get("User-Agent"))
 	if !isClaudeCodeClient {
-		headers.Set("User-Agent", "claude-cli/"+claudeCodeDisguiseVersion+" (external, cli)")
+		headers.Set("User-Agent", "claude-cli/"+claudeCodeDisguiseVersion()+" (external, cli)")
 		headers.Set("X-Stainless-Lang", "js")
-		headers.Set("X-Stainless-Package-Version", "0.94.0")
+		headers.Set("X-Stainless-Package-Version", claudeDisguiseSDKPackageVersion)
 		headers.Set("X-Stainless-Runtime", "node")
-		headers.Set("X-Stainless-Runtime-Version", "v24.3.0")
+		headers.Set("X-Stainless-Runtime-Version", claudeDisguiseSDKRuntimeVersion)
 		headers.Set("X-Stainless-Os", stainlessOS())
 		headers.Set("X-Stainless-Arch", stainlessArch())
 		headers.Set("X-Stainless-Retry-Count", "0")
@@ -207,13 +243,13 @@ func ApplyClaudeCodeDisguise(headers http.Header, stream bool) {
 		headers.Set("X-Stainless-Lang", "js")
 	}
 	if headers.Get("X-Stainless-Package-Version") == "" {
-		headers.Set("X-Stainless-Package-Version", "0.94.0")
+		headers.Set("X-Stainless-Package-Version", claudeDisguiseSDKPackageVersion)
 	}
 	if headers.Get("X-Stainless-Runtime") == "" {
 		headers.Set("X-Stainless-Runtime", "node")
 	}
 	if headers.Get("X-Stainless-Runtime-Version") == "" {
-		headers.Set("X-Stainless-Runtime-Version", "v24.3.0")
+		headers.Set("X-Stainless-Runtime-Version", claudeDisguiseSDKRuntimeVersion)
 	}
 	if headers.Get("X-Stainless-Os") == "" {
 		headers.Set("X-Stainless-Os", stainlessOS())
@@ -244,11 +280,11 @@ func ApplyClaudeCodeDisguise(headers http.Header, stream bool) {
 func codexUserAgent() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "codex_cli_rs/" + codexDisguiseVersion + " (Mac OS; " + runtime.GOARCH + ") " + codexTargetTriple()
+		return "codex_cli_rs/" + codexDisguiseVersion() + " (Mac OS; " + runtime.GOARCH + ") " + codexTargetTriple()
 	case "windows":
-		return "codex_cli_rs/" + codexDisguiseVersion + " (Windows; " + runtime.GOARCH + ") " + codexTargetTriple()
+		return "codex_cli_rs/" + codexDisguiseVersion() + " (Windows; " + runtime.GOARCH + ") " + codexTargetTriple()
 	default:
-		return "codex_cli_rs/" + codexDisguiseVersion + " (Linux; " + runtime.GOARCH + ") " + codexTargetTriple()
+		return "codex_cli_rs/" + codexDisguiseVersion() + " (Linux; " + runtime.GOARCH + ") " + codexTargetTriple()
 	}
 }
 
