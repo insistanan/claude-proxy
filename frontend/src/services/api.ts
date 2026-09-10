@@ -48,6 +48,7 @@ import type {
   SystemLogDetail,
   SystemLogsResponse,
   SaveClaudeCodeSettings,
+  SaveCodexModelCatalog,
   SaveCodexSettings,
   SaveDSHSettings,
   SaveOpenCodeProvider,
@@ -554,6 +555,15 @@ class ApiService {
     return this.request('/settings/codex', {
       method: 'PUT',
       body: JSON.stringify(settings)
+    })
+  }
+
+  async saveCodexModelCatalog(
+    payload: SaveCodexModelCatalog
+  ): Promise<{ success: boolean; modelsPath: string; configPath: string }> {
+    return this.request('/settings/codex/model-catalog', {
+      method: 'PUT',
+      body: JSON.stringify(payload)
     })
   }
 

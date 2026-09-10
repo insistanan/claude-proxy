@@ -29,15 +29,23 @@ var (
 )
 
 type codexSettingsResponse struct {
-	ConfigPath       string              `json:"configPath"`
-	ConfigExists     bool                `json:"configExists"`
-	AuthPath         string              `json:"authPath"`
-	AuthExists       bool                `json:"authExists"`
-	ActiveProvider   string              `json:"activeProvider"`
-	SelectedProvider string              `json:"selectedProvider"`
-	Providers        []codexProviderView `json:"providers"`
-	APIKeyMasked     string              `json:"apiKeyMasked"`
-	APIKeyPresent    bool                `json:"apiKeyPresent"`
+	ConfigPath           string               `json:"configPath"`
+	ConfigExists         bool                 `json:"configExists"`
+	AuthPath             string               `json:"authPath"`
+	AuthExists           bool                 `json:"authExists"`
+	ModelsPath           string               `json:"modelsPath"`
+	ModelsExists         bool                 `json:"modelsExists"`
+	ActiveProvider       string               `json:"activeProvider"`
+	SelectedProvider     string               `json:"selectedProvider"`
+	Providers            []codexProviderView  `json:"providers"`
+	APIKeyMasked         string               `json:"apiKeyMasked"`
+	APIKeyPresent        bool                 `json:"apiKeyPresent"`
+	Model                string               `json:"model"`
+	ModelCatalogJSON     string               `json:"modelCatalogJson"`
+	ModelReasoningEffort string               `json:"modelReasoningEffort"`
+	CatalogModels        []codexModelView     `json:"catalogModels"`
+	ModelTemplates       []codexModelTemplate `json:"modelTemplates"`
+	ModelsError          string               `json:"modelsError"`
 }
 
 type codexProviderView struct {
@@ -54,8 +62,11 @@ type saveCodexSettingsRequest struct {
 }
 
 type codexConfigDocument struct {
-	ModelProvider  string                         `toml:"model_provider"`
-	ModelProviders map[string]codexProviderConfig `toml:"model_providers"`
+	Model                string                         `toml:"model"`
+	ModelProvider        string                         `toml:"model_provider"`
+	ModelCatalogJSON     string                         `toml:"model_catalog_json"`
+	ModelReasoningEffort string                         `toml:"model_reasoning_effort"`
+	ModelProviders       map[string]codexProviderConfig `toml:"model_providers"`
 }
 
 type codexProviderConfig struct {
@@ -69,7 +80,7 @@ func GetCodexSettings() gin.HandlerFunc {
 		codexSettingsMu.Lock()
 		defer codexSettingsMu.Unlock()
 
-		configPath, authPath, err := resolveCodexPaths()
+		configPath, authPath, modelsPath, err := resolveCodexPaths()
 		if err != nil {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("解析 Codex 配置目录失败: %v", err)})
 			return
@@ -84,6 +95,7 @@ func GetCodexSettings() gin.HandlerFunc {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("读取 Codex auth.json 失败: %v", err)})
 			return
 		}
+		catalogModels, modelsExists, modelsError := codexModelCatalogStatus(modelsPath)
 
 		providers := codexProviderViews(config)
 		selectedProvider := selectCodexProvider(config.ModelProvider, providers)
@@ -92,15 +104,23 @@ func GetCodexSettings() gin.HandlerFunc {
 			_ = json.Unmarshal(rawAPIKey, &apiKey)
 		}
 		c.JSON(200, codexSettingsResponse{
-			ConfigPath:       configPath,
-			ConfigExists:     configExists,
-			AuthPath:         authPath,
-			AuthExists:       authExists,
-			ActiveProvider:   strings.TrimSpace(config.ModelProvider),
-			SelectedProvider: selectedProvider,
-			Providers:        providers,
-			APIKeyMasked:     maskOpenCodeSecret(apiKey),
-			APIKeyPresent:    strings.TrimSpace(apiKey) != "",
+			ConfigPath:           configPath,
+			ConfigExists:         configExists,
+			AuthPath:             authPath,
+			AuthExists:           authExists,
+			ModelsPath:           modelsPath,
+			ModelsExists:         modelsExists,
+			ActiveProvider:       strings.TrimSpace(config.ModelProvider),
+			SelectedProvider:     selectedProvider,
+			Providers:            providers,
+			APIKeyMasked:         maskOpenCodeSecret(apiKey),
+			APIKeyPresent:        strings.TrimSpace(apiKey) != "",
+			Model:                strings.TrimSpace(config.Model),
+			ModelCatalogJSON:     strings.TrimSpace(config.ModelCatalogJSON),
+			ModelReasoningEffort: strings.TrimSpace(config.ModelReasoningEffort),
+			CatalogModels:        catalogModels,
+			ModelTemplates:       codexModelTemplates,
+			ModelsError:          modelsError,
 		})
 	}
 }
@@ -121,7 +141,7 @@ func SaveCodexSettings() gin.HandlerFunc {
 		codexSettingsMu.Lock()
 		defer codexSettingsMu.Unlock()
 
-		configPath, authPath, err := resolveCodexPaths()
+		configPath, authPath, _, err := resolveCodexPaths()
 		if err != nil {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("解析 Codex 配置目录失败: %v", err)})
 			return
@@ -167,20 +187,30 @@ func SaveCodexSettings() gin.HandlerFunc {
 	}
 }
 
-func resolveCodexPaths() (string, string, error) {
+func resolveCodexPaths() (string, string, string, error) {
 	configDir := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if configDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 		configDir = filepath.Join(home, ".codex")
 	}
 	configDir, err := filepath.Abs(configDir)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return filepath.Join(configDir, "config.toml"), filepath.Join(configDir, "auth.json"), nil
+	return filepath.Join(configDir, "config.toml"), filepath.Join(configDir, "auth.json"), filepath.Join(configDir, codexModelCatalogFileName), nil
+}
+
+// codexModelCatalogStatus 读取模型目录并返回条目视图；解析失败时返回空列表与错误信息，
+// 不阻断整个设置页（错误通过 modelsError 字段透出给前端）。
+func codexModelCatalogStatus(modelsPath string) ([]codexModelView, bool, string) {
+	catalog, err := readCodexModelCatalog(modelsPath)
+	if err != nil {
+		return []codexModelView{}, false, err.Error()
+	}
+	return catalog.modelViews(), catalog.exists, ""
 }
 
 func readCodexConfig(path string) (codexConfigDocument, []byte, bool, error) {

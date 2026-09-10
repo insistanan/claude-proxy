@@ -18,6 +18,10 @@
       <AgentConfigLocation
         :label="settings?.authExists ? 'Codex 凭据文件' : '设置 API Key 后将创建凭据文件'"
         :path="settings?.authPath"
+      />
+      <AgentConfigLocation
+        :label="settings?.modelsExists ? 'Codex 模型目录' : '保存模型后将创建模型目录文件'"
+        :path="settings?.modelsPath"
         class="mb-5"
       />
 
@@ -93,6 +97,8 @@
           </v-text-field>
         </v-card-text>
       </v-card>
+
+      <CodexModelCatalog :settings="settings" class="mb-5" @saved="loadSettings" />
     </template>
 
     <v-snackbar v-model="notice.visible" :color="notice.type" location="top right" :timeout="3500">{{ notice.message }}</v-snackbar>
@@ -103,6 +109,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import AgentConfigHeader from '@/components/AgentConfigHeader.vue'
 import AgentConfigLocation from '@/components/AgentConfigLocation.vue'
+import CodexModelCatalog from '@/components/CodexModelCatalog.vue'
 import { fetchProxyBaseUrl } from '@/composables/useChannelQuickPick'
 import { api, type CodexSettings } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'

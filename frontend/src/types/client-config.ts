@@ -77,16 +77,55 @@ export interface CodexProvider {
   baseUrl: string
 }
 
+export interface CodexReasoningLevel {
+  effort: string
+  description: string
+}
+
+/** Codex 模型目录预设模板（后端内置） */
+export interface CodexModelTemplate {
+  id: string
+  name: string
+  description: string
+  supportsImage: boolean
+  contextWindow: number
+  defaultReasoningLevel: string
+  reasoningLevels: CodexReasoningLevel[]
+  supportsSearchTool: boolean
+  priority: number
+}
+
+/** models.json 中已登记的模型条目视图 */
+export interface CodexCatalogModel {
+  slug: string
+  displayName: string
+  description: string
+  supportsImage: boolean
+  contextWindow: number
+  defaultReasoningLevel: string
+  reasoningLevels: string[]
+  supportsSearchTool: boolean
+  priority: number
+}
+
 export interface CodexSettings {
   configPath: string
   configExists: boolean
   authPath: string
   authExists: boolean
+  modelsPath: string
+  modelsExists: boolean
   activeProvider: string
   selectedProvider: string
   providers: CodexProvider[]
   apiKeyMasked: string
   apiKeyPresent: boolean
+  model: string
+  modelCatalogJson: string
+  modelReasoningEffort: string
+  catalogModels: CodexCatalogModel[]
+  modelTemplates: CodexModelTemplate[]
+  modelsError: string
 }
 
 export interface SaveCodexSettings {
@@ -94,6 +133,22 @@ export interface SaveCodexSettings {
   baseUrl: string
   apiKeyAction: 'keep' | 'replace' | 'remove'
   apiKey?: string
+}
+
+export interface SaveCodexModelCatalog {
+  action: 'upsert' | 'delete' | 'setDefault'
+  /** upsert 新增模型时必填的预设模板 id */
+  template?: string
+  slug: string
+  displayName?: string
+  description?: string
+  supportsImage?: boolean
+  contextWindow?: number
+  defaultReasoningLevel?: string
+  /** setDefault 可选：写入根级 model_reasoning_effort */
+  reasoningEffort?: string
+  /** setDefault 可选：删除根级 model_reasoning_effort，与 reasoningEffort 互斥 */
+  clearReasoningEffort?: boolean
 }
 
 // ============== pi-agent 配置管理类型 ==============
