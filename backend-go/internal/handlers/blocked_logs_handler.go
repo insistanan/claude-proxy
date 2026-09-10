@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,7 +52,26 @@ func GetBlockedLogs(store *sensitive.BlockedStore) gin.HandlerFunc {
 		options := sensitive.BlockedLogListOptions{
 			APIType: apiType, BlockType: blockType, From: from, To: to, Page: page, PageSize: pageSize,
 		}
-		if strings.EqualFold(strings.TrimSpace(c.Query("groupBy")), "conversation") {
+		groupKey := strings.TrimSpace(c.Query("groupKey"))
+		groupBy := strings.TrimSpace(c.Query("groupBy"))
+		if groupKey != "" && groupBy != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "groupKey 与 groupBy 不能同时使用"})
+			return
+		}
+		if groupKey != "" {
+			result, err := store.ListGroupEntries(c.Request.Context(), options, groupKey)
+			if err != nil {
+				if errors.Is(err, sensitive.ErrInvalidBlockedLogGroupKey) {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "无效的会话分组标识"})
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "读取会话明细拦截记录失败"})
+				return
+			}
+			c.JSON(http.StatusOK, result)
+			return
+		}
+		if strings.EqualFold(groupBy, "conversation") {
 			result, err := store.ListGrouped(c.Request.Context(), options)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "读取会话分组拦截记录失败"})
@@ -60,7 +80,7 @@ func GetBlockedLogs(store *sensitive.BlockedStore) gin.HandlerFunc {
 			c.JSON(http.StatusOK, result)
 			return
 		}
-		if groupBy := strings.TrimSpace(c.Query("groupBy")); groupBy != "" {
+		if groupBy != "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的分组方式"})
 			return
 		}

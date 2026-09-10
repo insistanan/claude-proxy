@@ -81,6 +81,32 @@ func TestBlockedLogsHandlersCRUD(t *testing.T) {
 	if groups.Total != 3 || groups.TotalGroups != 3 || len(groups.Groups) != 3 {
 		t.Fatalf("会话分组结果错误: %+v", groups)
 	}
+	// 分组列表只返回摘要，每组携带最新代表记录而非全量明细。
+	for _, group := range groups.Groups {
+		if group.Count != 1 || group.LatestLog == nil {
+			t.Fatalf("会话分组摘要错误: %+v", group)
+		}
+	}
+
+	// groupKey 查询组内明细分页。
+	groupKey := "request:" + groups.Groups[0].LatestLog.RequestID
+	detailResponse := performBlockedLogRequest(router, http.MethodGet, "/blocked-logs?page=1&pageSize=20&groupKey="+groupKey)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("组内明细状态码错误: %d %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	var details sensitive.BlockedLogPage
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &details); err != nil {
+		t.Fatalf("解析组内明细失败: %v", err)
+	}
+	if details.Total != 1 || len(details.Logs) != 1 || details.Logs[0].RequestID != groups.Groups[0].LatestLog.RequestID {
+		t.Fatalf("组内明细结果错误: %+v", details)
+	}
+
+	// 无效 groupKey 返回 400。
+	badResponse := performBlockedLogRequest(router, http.MethodGet, "/blocked-logs?groupKey=bad-key")
+	if badResponse.Code != http.StatusBadRequest {
+		t.Fatalf("无效 groupKey 状态码错误: %d", badResponse.Code)
+	}
 
 	response = performBlockedLogRequest(router, http.MethodGet, "/blocked-logs/"+formatBlockedLogID(first.ID))
 	if response.Code != http.StatusOK {

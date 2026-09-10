@@ -75,18 +75,20 @@
                   <v-icon size="20" :icon="isExpanded(group.key) ? 'mdi-chevron-down' : 'mdi-chevron-right'" />
                 </td>
                 <td class="time-cell">{{ formatTime(group.latestTimestamp) }}</td>
-                <td class="identity-cell" :title="group.conversationId || latestLog(group)?.requestId || ''">
+                <td class="identity-cell" :title="group.conversationId || group.latestLog?.requestId || ''">
                   <div class="font-weight-medium">{{ groupIdentityLabel(group) }}</div>
                   <div class="text-caption text-medium-emphasis">
                     {{
-                      group.conversationId ? `${group.count} 条记录` : latestLog(group)?.requestId || '旧记录无请求 ID'
+                      group.conversationId
+                        ? `${group.count} 条记录`
+                        : group.latestLog?.requestId || '旧记录无请求 ID'
                     }}
                   </div>
                 </td>
                 <td>
                   <div class="chip-list">
                     <v-chip
-                      v-for="value in groupAPITypes(group)"
+                      v-for="value in group.apiTypes || []"
                       :key="value"
                       size="x-small"
                       :color="apiTypeColor(value)"
@@ -99,7 +101,7 @@
                 <td class="type-cell">
                   <div class="chip-list">
                     <v-chip
-                      v-for="value in groupBlockTypes(group)"
+                      v-for="value in group.blockTypes || []"
                       :key="value"
                       size="x-small"
                       :color="blockTypeColor(value)"
@@ -110,73 +112,106 @@
                   </div>
                 </td>
                 <td class="metadata-cell">
-                  <div class="font-weight-medium">{{ latestLog(group)?.model || '--' }}</div>
-                  <div class="text-caption text-medium-emphasis">{{ latestLog(group)?.channelName || '--' }}</div>
+                  <div class="font-weight-medium">{{ group.latestLog?.model || '--' }}</div>
+                  <div class="text-caption text-medium-emphasis">{{ group.latestLog?.channelName || '--' }}</div>
                 </td>
-                <td class="snippet-cell" :title="latestLog(group)?.promptSnippet || ''">
-                  {{ latestLog(group)?.promptSnippet || '--' }}
+                <td class="snippet-cell" :title="group.latestLog?.promptSnippet || ''">
+                  {{ group.latestLog?.promptSnippet || '--' }}
                 </td>
                 <td class="action-cell text-medium-emphasis">
                   {{ isExpanded(group.key) ? '收起' : '展开' }}
                 </td>
               </tr>
               <tr
-                v-for="entry in isExpanded(group.key) ? group.logs : []"
-                :key="`${group.key}:${entry.id}`"
-                class="detail-row"
+                v-if="isExpanded(group.key) && (groupDetail(group.key)?.loading || groupDetail(group.key)?.error)"
+                class="detail-row detail-state-row"
               >
                 <td class="detail-marker"><span aria-hidden="true"></span></td>
-                <td class="time-cell">{{ formatTime(entry.timestamp) }}</td>
-                <td class="request-id-cell" :title="entry.requestId || ''">
-                  <div>{{ entry.requestId || '--' }}</div>
-                  <div class="text-caption text-medium-emphasis">请求 ID</div>
-                </td>
-                <td>
-                  <v-chip size="x-small" :color="apiTypeColor(entry.apiType)" variant="tonal">
-                    {{ apiTypeLabel(entry.apiType) }}
-                  </v-chip>
-                </td>
-                <td class="type-cell">
-                  <v-chip size="x-small" :color="blockTypeColor(entry.blockType)" variant="tonal">
-                    {{ blockTypeLabel(entry.blockType) }}
-                  </v-chip>
-                  <div class="text-caption text-medium-emphasis mt-1">{{ ruleLabel(entry.ruleName) }}</div>
-                </td>
-                <td class="metadata-cell">
-                  <div class="font-weight-medium">{{ entry.model || '--' }}</div>
-                  <div class="text-caption text-medium-emphasis">{{ entry.channelName || '--' }}</div>
-                </td>
-                <td class="snippet-cell" :title="entry.promptSnippet || ''">{{ entry.promptSnippet || '--' }}</td>
-                <td class="action-cell">
-                  <v-tooltip text="查看详情">
-                    <template #activator="{ props }">
-                      <v-btn
-                        v-bind="props"
-                        icon="mdi-open-in-new"
-                        variant="text"
-                        size="small"
-                        class="table-action"
-                        :aria-label="`查看记录 ${entry.id}`"
-                        @click.stop="openDetail(entry.id)"
-                      />
-                    </template>
-                  </v-tooltip>
-                  <v-tooltip text="删除记录">
-                    <template #activator="{ props }">
-                      <v-btn
-                        v-bind="props"
-                        icon="mdi-delete"
-                        color="error"
-                        variant="text"
-                        size="small"
-                        class="table-action"
-                        :aria-label="`删除记录 ${entry.id}`"
-                        @click.stop="openDelete(entry)"
-                      />
-                    </template>
-                  </v-tooltip>
+                <td colspan="7" class="detail-state-cell">
+                  <v-progress-circular v-if="groupDetail(group.key)?.loading" indeterminate size="18" width="2" />
+                  <v-alert
+                    v-else-if="groupDetail(group.key)?.error"
+                    type="error"
+                    variant="text"
+                    density="compact"
+                    class="mb-0"
+                  >
+                    {{ groupDetail(group.key)?.error }}
+                  </v-alert>
                 </td>
               </tr>
+              <template v-if="isExpanded(group.key) && groupDetail(group.key)">
+                <tr
+                  v-for="entry in groupDetail(group.key)?.logs || []"
+                  :key="`${group.key}:${entry.id}`"
+                  class="detail-row"
+                >
+                  <td class="detail-marker"><span aria-hidden="true"></span></td>
+                  <td class="time-cell">{{ formatTime(entry.timestamp) }}</td>
+                  <td class="request-id-cell" :title="entry.requestId || ''">
+                    <div>{{ entry.requestId || '--' }}</div>
+                    <div class="text-caption text-medium-emphasis">请求 ID</div>
+                  </td>
+                  <td>
+                    <v-chip size="x-small" :color="apiTypeColor(entry.apiType)" variant="tonal">
+                      {{ apiTypeLabel(entry.apiType) }}
+                    </v-chip>
+                  </td>
+                  <td class="type-cell">
+                    <v-chip size="x-small" :color="blockTypeColor(entry.blockType)" variant="tonal">
+                      {{ blockTypeLabel(entry.blockType) }}
+                    </v-chip>
+                    <div class="text-caption text-medium-emphasis mt-1">{{ ruleLabel(entry.ruleName) }}</div>
+                  </td>
+                  <td class="metadata-cell">
+                    <div class="font-weight-medium">{{ entry.model || '--' }}</div>
+                    <div class="text-caption text-medium-emphasis">{{ entry.channelName || '--' }}</div>
+                  </td>
+                  <td class="snippet-cell" :title="entry.promptSnippet || ''">{{ entry.promptSnippet || '--' }}</td>
+                  <td class="action-cell">
+                    <v-tooltip text="查看详情">
+                      <template #activator="{ props }">
+                        <v-btn
+                          v-bind="props"
+                          icon="mdi-open-in-new"
+                          variant="text"
+                          size="small"
+                          class="table-action"
+                          :aria-label="`查看记录 ${entry.id}`"
+                          @click.stop="openDetail(entry.id)"
+                        />
+                      </template>
+                    </v-tooltip>
+                    <v-tooltip text="删除记录">
+                      <template #activator="{ props }">
+                        <v-btn
+                          v-bind="props"
+                          icon="mdi-delete"
+                          color="error"
+                          variant="text"
+                          size="small"
+                          class="table-action"
+                          :aria-label="`删除记录 ${entry.id}`"
+                          @click.stop="openDelete(entry)"
+                        />
+                      </template>
+                    </v-tooltip>
+                  </td>
+                </tr>
+                <tr v-if="hasMoreEntries(group.key)" class="detail-row detail-more-row">
+                  <td class="detail-marker"><span aria-hidden="true"></span></td>
+                  <td colspan="7" class="detail-more-cell">
+                    <v-btn
+                      variant="tonal"
+                      size="small"
+                      :loading="groupDetail(group.key)?.loading"
+                      @click.stop="loadMoreEntries(group.key)"
+                    >
+                      加载更多（{{ loadedCount(group.key) }} / {{ group.count }}）
+                    </v-btn>
+                  </td>
+                </tr>
+              </template>
             </template>
           </template>
         </tbody>
@@ -268,7 +303,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   api,
   type BlockedLogEntry,
@@ -295,6 +330,7 @@ const blockTypeItems: Array<{ title: string; value: BlockedLogType | '' }> = [
 ]
 
 const pageSizeItems = [20, 50, 100]
+const entryPageSize = 50
 const apiType = ref<ContentSafetyAPIType | ''>('')
 const blockType = ref<BlockedLogType | ''>('')
 const fromTime = ref('')
@@ -305,6 +341,15 @@ const total = ref(0)
 const totalGroups = ref(0)
 const groups = ref<BlockedLogGroup[]>([])
 const expandedGroups = ref<Set<string>>(new Set())
+
+interface GroupDetailState {
+  logs: BlockedLogEntry[]
+  loading: boolean
+  error: string
+  loadedAll: boolean
+}
+
+const groupDetails = reactive(new Map<string, GroupDetailState>())
 const loading = ref(false)
 const deleting = ref(false)
 const error = ref('')
@@ -338,6 +383,16 @@ const loadLogs = async () => {
     totalGroups.value = response.totalGroups || 0
     const visibleKeys = new Set(groups.value.map(group => group.key))
     expandedGroups.value = new Set([...expandedGroups.value].filter(key => visibleKeys.has(key)))
+    for (const key of [...groupDetails.keys()]) {
+      if (!visibleKeys.has(key)) groupDetails.delete(key)
+    }
+    // 筛选条件变化后组内明细可能不再命中，重置为待加载状态。
+    if (expandedGroups.value.size > 0) {
+      for (const key of expandedGroups.value) {
+        groupDetails.set(key, { logs: [], loading: false, error: '', loadedAll: false })
+        void loadEntriesPage(key, true)
+      }
+    }
     if (page.value > pageCount.value) {
       page.value = pageCount.value
     }
@@ -478,29 +533,66 @@ const ruleLabels: Record<string, string> = {
 
 const ruleLabel = (value?: string) => (value ? ruleLabels[value] || value : '--')
 
-const latestLog = (group: BlockedLogGroup) => group.logs[0]
-
-const groupAPITypes = (group: BlockedLogGroup): ContentSafetyAPIType[] => [
-  ...new Set(group.logs.map(entry => entry.apiType))
-]
-
-const groupBlockTypes = (group: BlockedLogGroup): BlockedLogType[] => [
-  ...new Set(group.logs.map(entry => entry.blockType))
-]
-
 const groupIdentityLabel = (group: BlockedLogGroup) => {
   if (group.conversationId) return group.conversationId
-  if (latestLog(group)?.requestId) return '旧记录（按请求保留）'
+  if (group.latestLog?.requestId) return '旧记录（按请求保留）'
   return '旧记录（未关联）'
 }
 
 const isExpanded = (key: string) => expandedGroups.value.has(key)
 
+const groupDetail = (key: string) => groupDetails.get(key)
+
+const loadedCount = (key: string) => groupDetails.get(key)?.logs.length || 0
+
+const hasMoreEntries = (key: string) => {
+  const detail = groupDetails.get(key)
+  return Boolean(detail && !detail.loadedAll)
+}
+
+const loadEntriesPage = async (key: string, reset: boolean) => {
+  if (!isExpanded(key) || !groupDetails.has(key)) return
+  const detail = groupDetails.get(key)!
+  if (detail.loading) return
+  detail.loading = true
+  detail.error = ''
+  const nextPage = reset ? 1 : Math.floor(detail.logs.length / entryPageSize) + 1
+  try {
+    const response = await api.getBlockedLogGroupEntries({
+      apiType: apiType.value,
+      blockType: blockType.value,
+      from: asRFC3339(fromTime.value),
+      to: asRFC3339(toTime.value),
+      page: nextPage,
+      pageSize: entryPageSize,
+      groupKey: key
+    })
+    if (reset) detail.logs = response.logs || []
+    else detail.logs.push(...(response.logs || []))
+    detail.loadedAll = detail.logs.length >= (response.total || 0)
+  } catch (err) {
+    detail.error = err instanceof Error ? err.message : '加载会话明细失败'
+  } finally {
+    detail.loading = false
+  }
+}
+
 const toggleGroup = (key: string) => {
   const next = new Set(expandedGroups.value)
-  if (next.has(key)) next.delete(key)
-  else next.add(key)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+    if (!groupDetails.has(key)) {
+      groupDetails.set(key, { logs: [], loading: false, error: '', loadedAll: false })
+      void loadEntriesPage(key, true)
+    }
+  }
   expandedGroups.value = next
+}
+
+const loadMoreEntries = (key: string) => {
+  void loadEntriesPage(key, false)
 }
 
 const groupAriaLabel = (group: BlockedLogGroup) =>
@@ -614,6 +706,16 @@ onMounted(loadLogs)
 
 .detail-row {
   background: rgba(var(--v-theme-surface-variant), 0.18);
+}
+
+.detail-state-row .detail-state-cell {
+  height: 44px;
+  padding-left: 8px !important;
+}
+
+.detail-more-row .detail-more-cell {
+  height: 48px;
+  padding-left: 8px !important;
 }
 
 .expand-column,

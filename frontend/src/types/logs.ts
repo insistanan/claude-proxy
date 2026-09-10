@@ -119,7 +119,9 @@ export interface BlockedLogGroup {
   conversationId?: string
   latestTimestamp: string
   count: number
-  logs: BlockedLogEntry[]
+  apiTypes?: ContentSafetyAPIType[]
+  blockTypes?: BlockedLogType[]
+  latestLog?: BlockedLogEntry
 }
 
 export interface BlockedLogsResponse {
@@ -139,4 +141,12 @@ export interface BlockedLogFilters {
   page?: number
   pageSize?: number
   groupBy?: 'conversation'
+  groupKey?: string
+}
+
+export interface BlockedLogGroupEntriesResponse {
+  logs: BlockedLogEntry[]
+  total: number
+  page: number
+  pageSize: number
 }

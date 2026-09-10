@@ -6,6 +6,7 @@ import type {
   AppSettings,
   BlockedLogEntry,
   BlockedLogFilters,
+  BlockedLogGroupEntriesResponse,
   BlockedLogsResponse,
   Channel,
   ChannelDashboardResponse,
@@ -367,8 +368,22 @@ class ApiService {
     if (params.page) search.set('page', String(params.page))
     if (params.pageSize) search.set('pageSize', String(params.pageSize))
     if (params.groupBy) search.set('groupBy', params.groupBy)
+    if (params.groupKey) search.set('groupKey', params.groupKey)
     const query = search.toString()
     return this.request(`/blocked-logs${query ? `?${query}` : ''}`)
+  }
+
+  async getBlockedLogGroupEntries(params: BlockedLogFilters): Promise<BlockedLogGroupEntriesResponse> {
+    const search = new URLSearchParams()
+    if (params.apiType) search.set('apiType', params.apiType)
+    if (params.blockType) search.set('blockType', params.blockType)
+    if (params.from) search.set('from', params.from)
+    if (params.to) search.set('to', params.to)
+    if (params.page) search.set('page', String(params.page))
+    search.set('pageSize', String(params.pageSize ?? 50))
+    search.set('groupKey', params.groupKey ?? '')
+    const query = search.toString()
+    return this.request(`/blocked-logs?${query}`)
   }
 
   async getBlockedLog(id: number): Promise<BlockedLogEntry> {

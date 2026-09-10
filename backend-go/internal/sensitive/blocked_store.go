@@ -29,6 +29,9 @@ const (
 
 var ErrBlockedStoreClosed = errors.New("拦截记录存储已关闭")
 
+// ErrInvalidBlockedLogGroupKey 表示调用方传入的组标识格式非法。
+var ErrInvalidBlockedLogGroupKey = errors.New("无效的拦截记录组标识")
+
 // BlockedLog 表示一次内容安全拦截或掩码事件。
 type BlockedLog struct {
 	ID             int64     `json:"id"`
@@ -64,12 +67,16 @@ type BlockedLogPage struct {
 
 // BlockedLogGroup 表示同一会话下的全部内容安全事件。没有会话 ID 的旧记录
 // 只按请求 ID 合并；请求 ID 也缺失时每条记录保持独立。
+// 列表接口只返回组摘要与组内最新一条代表记录，组内明细通过
+// ListGroupEntries 按需分页加载，避免大组全量传输导致前端卡死。
 type BlockedLogGroup struct {
-	Key             string       `json:"key"`
-	ConversationID  string       `json:"conversationId,omitempty"`
-	LatestTimestamp time.Time    `json:"latestTimestamp"`
-	Count           int64        `json:"count"`
-	Logs            []BlockedLog `json:"logs"`
+	Key             string      `json:"key"`
+	ConversationID  string      `json:"conversationId,omitempty"`
+	LatestTimestamp time.Time   `json:"latestTimestamp"`
+	Count           int64       `json:"count"`
+	APITypes        []string    `json:"apiTypes"`
+	BlockTypes      []string    `json:"blockTypes"`
+	LatestLog       *BlockedLog `json:"latestLog,omitempty"`
 }
 
 // BlockedLogGroupPage 按会话分页。Total 是命中过滤条件的记录总数，
@@ -250,7 +257,8 @@ const blockedLogGroupKeySQL = `CASE
 	ELSE 'record:' || CAST(id AS TEXT)
 END`
 
-// ListGrouped 按会话组分页，并返回当前页每个组内的全部明细。
+// ListGrouped 按会话组分页，只返回组摘要（总数、类型集合、最新一条代表记录）。
+// 组内明细由 ListGroupEntries 按需分页加载。
 func (s *BlockedStore) ListGrouped(ctx context.Context, options BlockedLogListOptions) (BlockedLogGroupPage, error) {
 	if err := s.ensureOpen(); err != nil {
 		return BlockedLogGroupPage{}, err
@@ -269,9 +277,12 @@ func (s *BlockedStore) ListGrouped(ctx context.Context, options BlockedLogListOp
 		return BlockedLogGroupPage{}, fmt.Errorf("统计拦截记录会话数失败: %w", err)
 	}
 
+	// GROUP_CONCAT 的 DISTINCT 聚合产出组内出现过的类型集合；
+	// api_type 与 block_type 均为受限枚举值，不会包含分隔符逗号。
 	queryArgs := append(append([]any(nil), args...), options.PageSize, (options.Page-1)*options.PageSize)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+blockedLogGroupKeySQL+` AS group_key,
-		MAX(timestamp) AS latest_timestamp, MAX(id) AS latest_id, COUNT(*)
+		MAX(timestamp) AS latest_timestamp, MAX(id) AS latest_id, COUNT(*) AS entry_count,
+		GROUP_CONCAT(DISTINCT api_type) AS api_types, GROUP_CONCAT(DISTINCT block_type) AS block_types
 		FROM blocked_logs`+where+`
 		GROUP BY group_key
 		ORDER BY latest_timestamp DESC, latest_id DESC LIMIT ? OFFSET ?`, queryArgs...)
@@ -279,16 +290,19 @@ func (s *BlockedStore) ListGrouped(ctx context.Context, options BlockedLogListOp
 		return BlockedLogGroupPage{}, fmt.Errorf("查询拦截记录会话失败: %w", err)
 	}
 	type groupSummary struct {
-		key    string
-		latest time.Time
-		count  int64
+		key        string
+		latest     time.Time
+		latestID   int64
+		count      int64
+		apiTypes   []string
+		blockTypes []string
 	}
 	summaries := make([]groupSummary, 0, options.PageSize)
 	for rows.Next() {
 		var summary groupSummary
 		var latest string
-		var latestID int64
-		if err := rows.Scan(&summary.key, &latest, &latestID, &summary.count); err != nil {
+		var apiTypes, blockTypes string
+		if err := rows.Scan(&summary.key, &latest, &summary.latestID, &summary.count, &apiTypes, &blockTypes); err != nil {
 			_ = rows.Close()
 			return BlockedLogGroupPage{}, fmt.Errorf("读取拦截记录会话失败: %w", err)
 		}
@@ -297,6 +311,8 @@ func (s *BlockedStore) ListGrouped(ctx context.Context, options BlockedLogListOp
 			_ = rows.Close()
 			return BlockedLogGroupPage{}, fmt.Errorf("解析拦截记录会话时间失败: %w", err)
 		}
+		summary.apiTypes = splitGroupConcatValues(apiTypes)
+		summary.blockTypes = splitGroupConcatValues(blockTypes)
 		summaries = append(summaries, summary)
 	}
 	if err := rows.Err(); err != nil {
@@ -314,51 +330,106 @@ func (s *BlockedStore) ListGrouped(ctx context.Context, options BlockedLogListOp
 		return page, nil
 	}
 
-	keys := make([]string, len(summaries))
-	placeholders := make([]string, len(summaries))
+	latestIDs := make([]int64, len(summaries))
 	for index, summary := range summaries {
-		keys[index] = summary.key
-		placeholders[index] = "?"
+		latestIDs[index] = summary.latestID
 	}
-	detailWhere := where
-	if detailWhere == "" {
-		detailWhere = " WHERE "
-	} else {
-		detailWhere += " AND "
-	}
-	detailWhere += blockedLogGroupKeySQL + " IN (" + strings.Join(placeholders, ",") + ")"
-	detailArgs := append(append([]any(nil), args...), stringsToAny(keys)...)
-	detailRows, err := s.db.QueryContext(ctx, `SELECT id, timestamp, api_type, block_type, rule_name,
-		prompt_snippet, channel_name, model, request_id, conversation_id, created_at
-		FROM blocked_logs`+detailWhere+` ORDER BY timestamp DESC, id DESC`, detailArgs...)
+	latestLogs, err := s.blockedLogsByIDs(ctx, latestIDs)
 	if err != nil {
-		return BlockedLogGroupPage{}, fmt.Errorf("查询拦截记录会话明细失败: %w", err)
-	}
-	defer detailRows.Close()
-	logsByKey := make(map[string][]BlockedLog, len(summaries))
-	for detailRows.Next() {
-		entry, scanErr := scanBlockedLog(detailRows)
-		if scanErr != nil {
-			return BlockedLogGroupPage{}, scanErr
-		}
-		key := blockedLogGroupKey(entry)
-		logsByKey[key] = append(logsByKey[key], entry)
-	}
-	if err := detailRows.Err(); err != nil {
-		return BlockedLogGroupPage{}, fmt.Errorf("读取拦截记录会话明细失败: %w", err)
+		return BlockedLogGroupPage{}, err
 	}
 	for _, summary := range summaries {
-		logs := logsByKey[summary.key]
-		conversationID := ""
-		if len(logs) > 0 {
-			conversationID = logs[0].ConversationID
+		group := BlockedLogGroup{
+			Key: summary.key, LatestTimestamp: summary.latest, Count: summary.count,
+			APITypes: summary.apiTypes, BlockTypes: summary.blockTypes,
 		}
-		page.Groups = append(page.Groups, BlockedLogGroup{
-			Key: summary.key, ConversationID: conversationID, LatestTimestamp: summary.latest,
-			Count: summary.count, Logs: logs,
-		})
+		if latest, ok := latestLogs[summary.latestID]; ok {
+			group.ConversationID = latest.ConversationID
+			group.LatestLog = &latest
+		}
+		page.Groups = append(page.Groups, group)
 	}
 	return page, nil
+}
+
+// ListGroupEntries 分页返回单个组内命中过滤条件的明细记录。
+// groupKey 是 ListGrouped 返回的组标识。
+func (s *BlockedStore) ListGroupEntries(ctx context.Context, options BlockedLogListOptions, groupKey string) (BlockedLogPage, error) {
+	if err := s.ensureOpen(); err != nil {
+		return BlockedLogPage{}, err
+	}
+	groupKey = strings.TrimSpace(groupKey)
+	if !validBlockedLogGroupKey(groupKey) {
+		return BlockedLogPage{}, fmt.Errorf("%w: %q", ErrInvalidBlockedLogGroupKey, groupKey)
+	}
+	options, err := normalizeBlockedLogListOptions(options)
+	if err != nil {
+		return BlockedLogPage{}, err
+	}
+	where, args := blockedLogWhere(options)
+	if where == "" {
+		where = " WHERE "
+	} else {
+		where += " AND "
+	}
+	where += blockedLogGroupKeySQL + " = ?"
+	args = append(args, groupKey)
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM blocked_logs`+where, args...).Scan(&total); err != nil {
+		return BlockedLogPage{}, fmt.Errorf("统计拦截记录明细失败: %w", err)
+	}
+
+	queryArgs := append(append([]any(nil), args...), options.PageSize, (options.Page-1)*options.PageSize)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, timestamp, api_type, block_type, rule_name,
+		prompt_snippet, channel_name, model, request_id, conversation_id, created_at
+		FROM blocked_logs`+where+` ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return BlockedLogPage{}, fmt.Errorf("查询拦截记录明细失败: %w", err)
+	}
+	defer rows.Close()
+
+	logs := make([]BlockedLog, 0, options.PageSize)
+	for rows.Next() {
+		entry, err := scanBlockedLog(rows)
+		if err != nil {
+			return BlockedLogPage{}, err
+		}
+		logs = append(logs, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return BlockedLogPage{}, fmt.Errorf("读取拦截记录明细失败: %w", err)
+	}
+	return BlockedLogPage{Logs: logs, Total: total, Page: options.Page, PageSize: options.PageSize}, nil
+}
+
+// blockedLogsByIDs 按 ID 批量读取记录，返回 ID 到记录的映射。
+func (s *BlockedStore) blockedLogsByIDs(ctx context.Context, ids []int64) (map[int64]BlockedLog, error) {
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for index, id := range ids {
+		placeholders[index] = "?"
+		args[index] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, timestamp, api_type, block_type, rule_name,
+		prompt_snippet, channel_name, model, request_id, conversation_id, created_at
+		FROM blocked_logs WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("查询拦截记录代表记录失败: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[int64]BlockedLog, len(ids))
+	for rows.Next() {
+		entry, err := scanBlockedLog(rows)
+		if err != nil {
+			return nil, err
+		}
+		result[entry.ID] = entry
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("读取拦截记录代表记录失败: %w", err)
+	}
+	return result, nil
 }
 
 // Get 返回指定 ID 的拦截记录。
@@ -550,22 +621,30 @@ func scanBlockedLog(scanner blockedLogScanner) (BlockedLog, error) {
 	return entry, nil
 }
 
-func blockedLogGroupKey(entry BlockedLog) string {
-	if entry.ConversationID != "" {
-		return "conversation:" + entry.ConversationID
+// splitGroupConcatValues 拆分 SQLite GROUP_CONCAT 的逗号拼接结果。
+// api_type 与 block_type 均为受限枚举值，不会包含逗号。
+func splitGroupConcatValues(value string) []string {
+	if value == "" {
+		return []string{}
 	}
-	if entry.RequestID != "" {
-		return "request:" + entry.RequestID
-	}
-	return fmt.Sprintf("record:%d", entry.ID)
+	return strings.Split(value, ",")
 }
 
-func stringsToAny(values []string) []any {
-	result := make([]any, len(values))
-	for index, value := range values {
-		result[index] = value
+// validBlockedLogGroupKey 校验组标识格式（conversation:/request:/record: 前缀）。
+func validBlockedLogGroupKey(value string) bool {
+	if value == "" || len(value) > 300 {
+		return false
 	}
-	return result
+	prefix, rest, found := strings.Cut(value, ":")
+	if !found || rest == "" {
+		return false
+	}
+	switch prefix {
+	case "conversation", "request", "record":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *BlockedStore) ensureColumn(tableName, columnName, declaration string) error {

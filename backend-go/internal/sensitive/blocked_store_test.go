@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -79,15 +80,47 @@ func TestBlockedStoreAssignsAndListsConversationGroups(t *testing.T) {
 	if page.Total != 4 || page.TotalGroups != 3 || len(page.Groups) != 2 {
 		t.Fatalf("会话分页统计错误: %+v", page)
 	}
-	if page.Groups[0].ConversationID != "" || len(page.Groups[0].Logs) != 1 {
+	// 列表只返回组摘要，不携带全量明细。
+	if page.Groups[0].ConversationID != "" || page.Groups[0].Count != 1 || page.Groups[0].LatestLog == nil {
 		t.Fatalf("无身份旧记录不应与其他记录合并: %+v", page.Groups[0])
 	}
-	if page.Groups[1].ConversationID != "conv-2" || len(page.Groups[1].Logs) != 1 {
+	if got := page.Groups[0].LatestLog.BlockType; got != BlockTypeDangerousCmd {
+		t.Fatalf("组代表记录错误: %q", got)
+	}
+	if page.Groups[1].ConversationID != "conv-2" || page.Groups[1].Count != 1 || page.Groups[1].LatestLog == nil {
 		t.Fatalf("第二组错误: %+v", page.Groups[1])
 	}
 	page, err = store.ListGrouped(ctx, BlockedLogListOptions{Page: 2, PageSize: 2})
-	if err != nil || len(page.Groups) != 1 || page.Groups[0].ConversationID != "conv-1" || len(page.Groups[0].Logs) != 2 {
+	if err != nil || len(page.Groups) != 1 || page.Groups[0].ConversationID != "conv-1" || page.Groups[0].Count != 2 {
 		t.Fatalf("同一会话未完整归组: %+v %v", page, err)
+	}
+	if page.Groups[0].LatestLog == nil || page.Groups[0].LatestLog.RequestID != "req-1" {
+		t.Fatalf("conv-1 代表记录错误: %+v", page.Groups[0].LatestLog)
+	}
+
+	// 组内明细分页：conv-1 组共 2 条，每页 1 条。
+	entries, err := store.ListGroupEntries(ctx, BlockedLogListOptions{Page: 1, PageSize: 1}, "conversation:conv-1")
+	if err != nil {
+		t.Fatalf("查询组内明细失败: %v", err)
+	}
+	if entries.Total != 2 || len(entries.Logs) != 1 || entries.Logs[0].RequestID != "req-1" {
+		t.Fatalf("组内明细第一页错误: %+v", entries)
+	}
+	entries, err = store.ListGroupEntries(ctx, BlockedLogListOptions{Page: 2, PageSize: 1}, "conversation:conv-1")
+	if err != nil {
+		t.Fatalf("查询组内明细第二页失败: %v", err)
+	}
+	if entries.Total != 2 || len(entries.Logs) != 1 || entries.Logs[0].RequestID != "req-1" {
+		t.Fatalf("组内明细第二页错误: %+v", entries)
+	}
+
+	// 无效组标识应报错；record: 前缀合法。
+	if _, err := store.ListGroupEntries(ctx, BlockedLogListOptions{}, "invalid-key"); !errors.Is(err, ErrInvalidBlockedLogGroupKey) {
+		t.Fatalf("无效组标识应返回 ErrInvalidBlockedLogGroupKey: %v", err)
+	}
+	soloKey := "record:" + strconv.FormatInt(page.Groups[0].LatestLog.ID, 10)
+	if _, err := store.ListGroupEntries(ctx, BlockedLogListOptions{}, soloKey); err != nil {
+		t.Fatalf("record 组标识应合法: %v", err)
 	}
 }
 

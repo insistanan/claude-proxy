@@ -78,7 +78,7 @@ func TestRunProxyRequestMasksBeforeRoutingAndUpstreamBuild(t *testing.T) {
 	spec := rec.newSpec()
 	spec.HookPipeline = hooks.NewContentSafetyPipeline(env.cfgManager)
 	spec.PreRoute = func(c *gin.Context, body []byte, model string, conversationID string, startTime time.Time) bool {
-		if strings.Contains(string(body), "18012345523") || !strings.Contains(string(body), "[[MASKED:PHONE:") {
+		if strings.Contains(string(body), "13800138000") || !strings.Contains(string(body), "MASKED_PHONE_") {
 			t.Errorf("路由阶段收到未脱敏请求体: %s", body)
 		}
 		return false
@@ -94,11 +94,11 @@ func TestRunProxyRequestMasksBeforeRoutingAndUpstreamBuild(t *testing.T) {
 		return req, nil
 	}
 
-	w := performRunProxyRequest(t, env, spec, `{"model":"test-model","messages":[{"role":"user","content":"call 18012345523"}]}`, "test-access-key")
+	w := performRunProxyRequest(t, env, spec, `{"model":"test-model","messages":[{"role":"user","content":"phone 13800138000"}]}`, "test-access-key")
 	if w.Code != http.StatusOK {
 		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
 	}
-	if strings.Contains(receivedBody, "18012345523") || !strings.Contains(receivedBody, "[[MASKED:PHONE:") {
+	if strings.Contains(receivedBody, "13800138000") || !strings.Contains(receivedBody, "MASKED_PHONE_") {
 		t.Fatalf("上游构建阶段收到未脱敏请求体: %s", receivedBody)
 	}
 }
@@ -133,22 +133,29 @@ func TestRunProxyRequestRecordsRequestAndConversationIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取会话分组失败: %v", err)
 	}
-	if page.Total != 2 || page.TotalGroups != 1 || len(page.Groups) != 1 || len(page.Groups[0].Logs) != 2 {
+	if page.Total != 2 || page.TotalGroups != 1 || len(page.Groups) != 1 || page.Groups[0].Count != 2 {
 		t.Fatalf("代理入口拦截记录未归入同一会话: %+v", page)
 	}
 	group := page.Groups[0]
 	if group.ConversationID == "" {
 		t.Fatal("代理入口拦截记录缺少内部会话 ID")
 	}
-	requestIDs := make(map[string]struct{}, len(group.Logs))
-	for _, entry := range group.Logs {
+	entries, err := store.ListGroupEntries(context.Background(), sensitive.BlockedLogListOptions{Page: 1, PageSize: 20}, group.Key)
+	if err != nil {
+		t.Fatalf("读取会话组内明细失败: %v", err)
+	}
+	if entries.Total != 2 || len(entries.Logs) != 2 {
+		t.Fatalf("会话组内明细数量错误: %+v", entries)
+	}
+	requestIDs := make(map[string]struct{}, len(entries.Logs))
+	for _, entry := range entries.Logs {
 		if entry.RequestID == "" || entry.ConversationID != group.ConversationID {
 			t.Fatalf("拦截记录请求或会话 ID 不完整: %+v", entry)
 		}
 		requestIDs[entry.RequestID] = struct{}{}
 	}
 	if len(requestIDs) != 2 {
-		t.Fatalf("两次 HTTP 请求应保留不同 requestId，实际: %+v", group.Logs)
+		t.Fatalf("两次 HTTP 请求应保留不同 requestId，实际: %+v", entries.Logs)
 	}
 }
 
