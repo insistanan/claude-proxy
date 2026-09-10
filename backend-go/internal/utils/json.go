@@ -7,10 +7,7 @@ import (
 	"strings"
 )
 
-var (
-	sensitivePlaceholderPattern     = regexp.MustCompile(`\[\[MASKED:([A-Z0-9_]+):[A-Z2-7]{13}\]\]`)
-	bareSensitivePlaceholderPattern = regexp.MustCompile(`\bMASKED:([A-Z0-9_]+):[A-Z2-7]{13}\b`)
-)
+var semanticPlaceholderPattern = regexp.MustCompile(`\bMASKED_([A-Z0-9_]+)_[A-Z2-7]{13}_PRESERVE_EXACTLY\b`)
 
 // MarshalJSONNoEscape 序列化 JSON 并禁用 HTML 字符转义
 // 使用 json.Encoder + SetEscapeHTML(false) 避免将 <, >, & 等字符转义为 \u003c 等
@@ -800,8 +797,7 @@ func FormatJSONBytesRaw(jsonData []byte) string {
 }
 
 // RedactSensitivePlaceholdersForLog 去掉请求级占位符中的随机映射 ID，日志只保留类型。
-// 同时覆盖模型去掉 [[ / ]] 后返回内部标识的情况。
+// 仅覆盖新格式的完整语义占位符。
 func RedactSensitivePlaceholdersForLog(text string) string {
-	text = sensitivePlaceholderPattern.ReplaceAllString(text, `[[MASKED:${1}:REDACTED]]`)
-	return bareSensitivePlaceholderPattern.ReplaceAllString(text, `MASKED:${1}:REDACTED`)
+	return semanticPlaceholderPattern.ReplaceAllString(text, `MASKED_${1}_REDACTED`)
 }

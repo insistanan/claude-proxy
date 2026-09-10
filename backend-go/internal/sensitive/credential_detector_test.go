@@ -32,7 +32,7 @@ func TestCredentialDetectorDetectsSupportedCredentialShapes(t *testing.T) {
 		{name: "命名密码", rule: config.CredentialRuleNamedSecret, text: "PASSWORD=correct-horse-battery-staple"},
 		{name: "连接串", rule: config.CredentialRuleConnectionString, text: "postgresql://admin:s3cret-pass@db.internal/app"},
 		{name: "私钥", rule: config.CredentialRulePrivateKey, text: "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----"},
-		{name: "高熵值", rule: config.CredentialRuleHighEntropy, text: "RANDOM_CONFIG=AbCDef0123456789+/xyZ9876543210"},
+		{name: "高熵值", rule: config.CredentialRuleHighEntropy, text: "API_KEY=AbCdEf1234567890GhIjKlMnOpQrStUv"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

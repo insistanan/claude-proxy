@@ -15,7 +15,7 @@ import (
 	"sync"
 )
 
-var reservedPlaceholderPattern = regexp.MustCompile(`\bMASKED:[A-Z0-9_]+:[A-Z2-7]{13}\b`)
+var reservedPlaceholderPattern = regexp.MustCompile(`\bMASKED_[A-Z0-9_]+_[A-Z2-7]{13}_PRESERVE_EXACTLY\b`)
 
 var (
 	placeholderKeyOnce sync.Once
@@ -190,12 +190,11 @@ func (v *Vault) placeholder(kind, original, source string) (string, error) {
 		_, _ = mac.Write([]byte{0})
 		_, _ = mac.Write([]byte(original))
 		token := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(mac.Sum(nil)[:8])
-		barePlaceholder := "MASKED:" + kind + ":" + token
-		placeholder := "[[" + barePlaceholder + "]]"
-		if strings.Contains(source, barePlaceholder) {
+		placeholder := "MASKED_" + kind + "_" + token + "_PRESERVE_EXACTLY"
+		if strings.Contains(source, placeholder) {
 			continue
 		}
-		if _, exists := v.reserved[barePlaceholder]; exists {
+		if _, exists := v.reserved[placeholder]; exists {
 			continue
 		}
 		if _, exists := v.byPlaceholder[placeholder]; exists {
@@ -237,9 +236,8 @@ func normalizePlaceholderType(kind string) string {
 	return kind
 }
 
-// Restore 还原当前请求映射表中的完整占位符，以及模型去掉 [[ / ]] 后
-// 留下的完整内部标识。内部标识必须位于独立的标识符边界，未知值和部分匹配
-// 均保持原样。
+// Restore 还原当前请求中的完整语义占位符。占位符必须位于独立的标识符边界，
+// 未知值和部分匹配均保持原样。
 func (v *Vault) Restore(text string) string {
 	if v == nil || text == "" {
 		return text
@@ -272,7 +270,6 @@ func (v *Vault) MaskKnown(text string) string {
 type restoreMapping struct {
 	token    string
 	original string
-	bare     bool
 }
 
 func (v *Vault) restoreMappings() []restoreMapping {
@@ -281,16 +278,9 @@ func (v *Vault) restoreMappings() []restoreMapping {
 	}
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	result := make([]restoreMapping, 0, len(v.byPlaceholder)*2)
+	result := make([]restoreMapping, 0, len(v.byPlaceholder))
 	for placeholder, original := range v.byPlaceholder {
 		result = append(result, restoreMapping{token: placeholder, original: original})
-		if len(placeholder) > 4 && strings.HasPrefix(placeholder, "[[") && strings.HasSuffix(placeholder, "]]") {
-			result = append(result, restoreMapping{
-				token:    placeholder[2 : len(placeholder)-2],
-				original: original,
-				bare:     true,
-			})
-		}
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if len(result[i].token) != len(result[j].token) {
@@ -328,11 +318,11 @@ func (r *StreamRestorer) Feed(fragment string) string {
 			if !strings.HasPrefix(input, mapping.token) || !r.validLeftBoundary(mapping) {
 				continue
 			}
-			if mapping.bare && len(input) == len(mapping.token) {
+			if len(input) == len(mapping.token) {
 				r.pending = input
 				return output.String()
 			}
-			if mapping.bare && isPlaceholderIdentifierByte(input[len(mapping.token)]) {
+			if isPlaceholderIdentifierByte(input[len(mapping.token)]) {
 				continue
 			}
 			output.WriteString(mapping.original)
@@ -364,7 +354,7 @@ func (r *StreamRestorer) Feed(fragment string) string {
 }
 
 func (r *StreamRestorer) validLeftBoundary(mapping restoreMapping) bool {
-	return !mapping.bare || !r.hasPreviousSource || !isPlaceholderIdentifierByte(r.previousSourceByte)
+	return !r.hasPreviousSource || !isPlaceholderIdentifierByte(r.previousSourceByte)
 }
 
 func (r *StreamRestorer) consumeSource(value string) {

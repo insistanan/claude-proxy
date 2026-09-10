@@ -59,21 +59,21 @@ func TestSafetySegmentsMaskUserTextAcrossProtocols(t *testing.T) {
 	}{
 		{
 			protocol: "messages",
-			body:     `{"messages":[{"role":"assistant","content":"13900001234"},{"role":"user","content":[{"type":"text","text":"电话 18012345523"}]}]}`,
-			masked:   "[[MASKED:PHONE:",
-			original: "18012345523",
+			body:     `{"messages":[{"role":"assistant","content":"电话 13800138001"},{"role":"user","content":[{"type":"text","text":"电话 13800138000"}]}]}`,
+			masked:   "MASKED_PHONE_",
+			original: "13800138000",
 		},
 		{
 			protocol: "responses",
-			body:     `{"input":[{"role":"assistant","content":"13900001234"},{"role":"user","content":[{"type":"input_text","text":"邮箱 user@example.com"}]}]}`,
-			masked:   "[[MASKED:EMAIL:",
-			original: "user@example.com",
+			body:     `{"input":[{"role":"assistant","content":"电话 13800138001"},{"role":"user","content":[{"type":"input_text","text":"邮箱 test@example.com"}]}]}`,
+			masked:   "MASKED_EMAIL_",
+			original: "test@example.com",
 		},
 		{
 			protocol: "gemini",
-			body:     `{"contents":[{"role":"model","parts":[{"text":"13900001234"}]},{"role":"user","parts":[{"text":"备用号码 16688889999"}]}]}`,
-			masked:   "[[MASKED:PHONE:",
-			original: "16688889999",
+			body:     `{"contents":[{"role":"model","parts":[{"text":"电话 13800138001"}]},{"role":"user","parts":[{"text":"备用电话 13800138000"}]}]}`,
+			masked:   "MASKED_PHONE_",
+			original: "13800138000",
 		},
 	}
 
@@ -107,7 +107,7 @@ func TestSafetySegmentsMaskUserTextAcrossProtocols(t *testing.T) {
 			if !strings.Contains(text, test.masked) || strings.Contains(text, test.original) {
 				t.Errorf("用户正文掩码结果不正确: %s", text)
 			}
-			if strings.Contains(text, "13900001234") {
+			if strings.Contains(text, "13800138001") {
 				t.Errorf("助手历史敏感信息未脱敏: %s", text)
 			}
 			if len(prompts) != 1 || !strings.Contains(prompts[0], test.masked) {
@@ -305,7 +305,7 @@ func TestContentSafetyPipelineReplacesRequestBodyAndHonorsSettings(t *testing.T)
 	c, _ := gin.CreateTestContext(recorder)
 	AttachHookPipeline(c, pipeline, HookContext{APIType: "messages", Model: "test"})
 
-	req := httptest.NewRequest("POST", "/v1/messages", bytes.NewBufferString(`{"messages":[{"role":"user","content":"请联系 18012345523"}]}`))
+	req := httptest.NewRequest("POST", "/v1/messages", bytes.NewBufferString(`{"messages":[{"role":"user","content":"联系电话 13800138000"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	if err := runAttachedPreRequestHooks(context.Background(), c, req, "channel"); err != nil {
 		t.Fatalf("请求前 Hook 执行失败: %v", err)
@@ -314,7 +314,7 @@ func TestContentSafetyPipelineReplacesRequestBodyAndHonorsSettings(t *testing.T)
 	if err != nil {
 		t.Fatalf("读取替换后的请求体失败: %v", err)
 	}
-	if !strings.Contains(string(body), "[[MASKED:PHONE:") || strings.Contains(string(body), "18012345523") {
+	if !strings.Contains(string(body), "MASKED_PHONE_") || strings.Contains(string(body), "13800138000") {
 		t.Fatalf("上游请求体未掩码: %s", body)
 	}
 	if req.ContentLength != int64(len(body)) {
@@ -672,7 +672,7 @@ func TestExtractSafetySegmentsCoversImagesJSONPrompt(t *testing.T) {
 		t.Fatal("预期 prompt 被掩码改写")
 	}
 	prompt, _ := payload["prompt"].(string)
-	if !strings.Contains(prompt, "[[MASKED:PHONE:") || strings.Contains(prompt, "18012345523") {
+	if !strings.Contains(prompt, "MASKED_PHONE_") || strings.Contains(prompt, "13800138000") {
 		t.Fatalf("images prompt 未掩码: %q", prompt)
 	}
 	if payload["user"] != "tenant-42" || payload["size"] != "1024x1024" {

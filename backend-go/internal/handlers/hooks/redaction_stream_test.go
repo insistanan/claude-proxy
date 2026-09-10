@@ -42,6 +42,23 @@ func TestRestoreAttachedSSEEventAcrossChunksAndFlushesIncompletePrefix(t *testin
 
 	attached.restorers = nil
 	attached.restorePending = nil
+	exact, err := RestoreAttachedSSEEvent(c, sseTextEvent(t, placeholder))
+	if err != nil {
+		t.Fatalf("处理完整占位符事件失败: %v", err)
+	}
+	if got := sseDeltaText(t, exact); got != "" {
+		t.Fatalf("尚未确认右边界时不应提前还原: %q", got)
+	}
+	terminal, err := RestoreAttachedSSEEvent(c, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	if err != nil {
+		t.Fatalf("处理完整占位符后的终止事件失败: %v", err)
+	}
+	if !strings.Contains(terminal, original) || strings.Index(terminal, original) > strings.Index(terminal, "message_stop") {
+		t.Fatalf("完整占位符必须在终止事件前还原: %q", terminal)
+	}
+
+	attached.restorers = nil
+	attached.restorePending = nil
 	split := len(placeholder) / 2
 	incomplete := placeholder[:split]
 	event, err := RestoreAttachedSSEEvent(c, sseTextEvent(t, incomplete))
@@ -51,7 +68,7 @@ func TestRestoreAttachedSSEEventAcrossChunksAndFlushesIncompletePrefix(t *testin
 	if got := sseDeltaText(t, event); got != "" {
 		t.Fatalf("未完成前缀不应提前输出: %q", got)
 	}
-	terminal, err := RestoreAttachedSSEEvent(c, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	terminal, err = RestoreAttachedSSEEvent(c, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	if err != nil {
 		t.Fatalf("处理终止事件失败: %v", err)
 	}
@@ -81,19 +98,19 @@ func TestRestoreAttachedSSEEventIsolatesParallelToolCallStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("处理第二个工具流首段失败: %v", err)
 	}
-	firstTail, err := RestoreAttachedSSEEvent(c, sseToolArgumentEvent(t, 0, firstPlaceholder[firstSplit:]))
+	firstTail, err := RestoreAttachedSSEEvent(c, sseToolArgumentEvent(t, 0, firstPlaceholder[firstSplit:]+" "))
 	if err != nil {
 		t.Fatalf("处理第一个工具流末段失败: %v", err)
 	}
-	secondTail, err := RestoreAttachedSSEEvent(c, sseToolArgumentEvent(t, 1, secondPlaceholder[secondSplit:]))
+	secondTail, err := RestoreAttachedSSEEvent(c, sseToolArgumentEvent(t, 1, secondPlaceholder[secondSplit:]+" "))
 	if err != nil {
 		t.Fatalf("处理第二个工具流末段失败: %v", err)
 	}
 
-	if got := sseToolArguments(t, firstHead) + sseToolArguments(t, firstTail); got != firstOriginal {
+	if got := sseToolArguments(t, firstHead) + sseToolArguments(t, firstTail); got != firstOriginal+" " {
 		t.Fatalf("第一个工具流还原结果 = %q", got)
 	}
-	if got := sseToolArguments(t, secondHead) + sseToolArguments(t, secondTail); got != secondOriginal {
+	if got := sseToolArguments(t, secondHead) + sseToolArguments(t, secondTail); got != secondOriginal+" " {
 		t.Fatalf("第二个工具流还原结果 = %q", got)
 	}
 }
@@ -118,11 +135,11 @@ func TestResetAttachedStreamRestorationKeepsVaultAndDropsAttemptFragments(t *tes
 		t.Fatalf("重置流式还原状态失败: %v", err)
 	}
 
-	retry, err := RestoreAttachedSSEEvent(c, sseTextEvent(t, placeholder))
+	retry, err := RestoreAttachedSSEEvent(c, sseTextEvent(t, placeholder+" "))
 	if err != nil {
 		t.Fatalf("处理重试事件失败: %v", err)
 	}
-	if got := sseDeltaText(t, retry); got != original {
+	if got := sseDeltaText(t, retry); got != original+" " {
 		t.Fatalf("重试应复用 Vault 且不拼接旧分片: %q", got)
 	}
 }

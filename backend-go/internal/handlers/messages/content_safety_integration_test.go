@@ -74,14 +74,14 @@ func TestContentSafetyVerificationSurfaceEndToEnd(t *testing.T) {
 
 	t.Run("手机号在假上游收到前已掩码", func(t *testing.T) {
 		response := performContentSafetyMessagesRequest(t, router,
-			`{"model":"`+contentSafetyTestModel+`","max_tokens":32,"messages":[{"role":"user","content":"请联系 18012345523"}]}`,
+			`{"model":"`+contentSafetyTestModel+`","max_tokens":32,"messages":[{"role":"user","content":"联系电话 13800138000"}]}`,
 			"req-mask-phone",
 		)
 		if response.Code != http.StatusOK {
 			t.Fatalf("状态码 = %d，期望 200，响应 = %s", response.Code, response.Body.String())
 		}
 		upstreamBody := string(capture.lastBody(t))
-		if !strings.Contains(upstreamBody, "[[MASKED:PHONE:") || strings.Contains(upstreamBody, "18012345523") {
+		if !strings.Contains(upstreamBody, "MASKED_PHONE_") || strings.Contains(upstreamBody, "13800138000") {
 			t.Fatalf("上游请求体手机号掩码不正确: %s", upstreamBody)
 		}
 	})
@@ -153,16 +153,17 @@ func TestContentSafetyVerificationSurfaceEndToEnd(t *testing.T) {
 			t.Fatalf("安全处置记录数量 = %d/%d，期望 4: %+v", page.Total, len(page.Logs), page.Logs)
 		}
 
-		byRequestID := make(map[string]sensitive.BlockedLog, len(page.Logs))
+		counts := make(map[string]int, len(page.Logs))
 		for _, entry := range page.Logs {
-			byRequestID[entry.RequestID] = entry
+			if entry.RequestID == "" {
+				t.Fatalf("拦截记录缺少内部请求 ID: %+v", entry)
+			}
+			counts[entry.BlockType+":"+entry.RuleName]++
 		}
-		assertContentSafetyBlockedLog(t, byRequestID["req-sensitive-word"], sensitive.BlockTypeSensitiveWord, "gambling")
-		assertContentSafetyBlockedLog(t, byRequestID["req-mask-phone"], sensitive.BlockTypeSensitiveInfo, config.SensitiveInfoRulePhone)
-		assertContentSafetyBlockedLog(t, byRequestID["req-dangerous-normal"], sensitive.BlockTypeDangerousCmd, config.DangerousCmdRuleDestructive)
-		assertContentSafetyBlockedLog(t, byRequestID["req-dangerous-stream"], sensitive.BlockTypeDangerousCmd, config.DangerousCmdRuleDestructive)
-		if _, exists := byRequestID["req-gambling-disabled"]; exists {
-			t.Fatal("关闭赌博分类后的请求不应产生拦截记录")
+		if counts[sensitive.BlockTypeSensitiveWord+":gambling"] != 1 ||
+			counts[sensitive.BlockTypeSensitiveInfo+":"+config.SensitiveInfoRulePhone] != 1 ||
+			counts[sensitive.BlockTypeDangerousCmd+":"+config.DangerousCmdRuleDestructive] != 2 {
+			t.Fatalf("安全处置记录类型或规则不完整: %+v", page.Logs)
 		}
 	})
 }

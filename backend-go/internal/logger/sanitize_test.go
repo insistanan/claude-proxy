@@ -91,11 +91,17 @@ func TestPrepareBodyTruncatesOverCap(t *testing.T) {
 }
 
 func TestPrepareBodyRemovesSensitivePlaceholderID(t *testing.T) {
-	placeholder := "[[MASKED:SECRET:7K4M2P9QAB2CD]]"
-	barePlaceholder := "MASKED:API_TOKEN:MN2UKMT4Y62X2"
-	body, _, _ := PrepareBody([]byte(`{"text":"` + placeholder + ` ` + barePlaceholder + `"}`))
-	if strings.Contains(body, placeholder) || strings.Contains(body, barePlaceholder) ||
-		!strings.Contains(body, "[[MASKED:SECRET:REDACTED]]") || !strings.Contains(body, "MASKED:API_TOKEN:REDACTED") {
+	placeholder := "MASKED_SECRET_7K4M2P7QAB2CD_PRESERVE_EXACTLY"
+	body, _, _ := PrepareBody([]byte(`{"text":"` + placeholder + `"}`))
+	if strings.Contains(body, placeholder) || !strings.Contains(body, "MASKED_SECRET_REDACTED") {
 		t.Fatalf("流量日志未移除占位符映射 ID: %s", body)
+	}
+}
+
+func TestPrepareBodyRemovesSemanticSensitivePlaceholderID(t *testing.T) {
+	marker := "MASKED_API_TOKEN_TM5A7UUJ4YMVY_PRESERVE_EXACTLY"
+	body, _, _ := PrepareBody([]byte(`{"text":"` + marker + `"}`))
+	if strings.Contains(body, marker) || !strings.Contains(body, "MASKED_API_TOKEN_REDACTED") {
+		t.Fatalf("流量日志未移除语义占位符映射 ID: %s", body)
 	}
 }

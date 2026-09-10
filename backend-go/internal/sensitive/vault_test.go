@@ -18,7 +18,7 @@ func TestVaultMasksReusesAndRestoresExactValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("脱敏失败: %v", err)
 	}
-	if strings.Contains(masked, original) || strings.Count(masked, "[[MASKED:SECRET:") != 2 {
+	if strings.Contains(masked, original) || strings.Count(masked, "MASKED_SECRET_") != 2 || !strings.Contains(masked, "_PRESERVE_EXACTLY") {
 		t.Fatalf("脱敏结果错误: %q", masked)
 	}
 	parts := strings.Split(masked, ", second=")
@@ -28,7 +28,7 @@ func TestVaultMasksReusesAndRestoresExactValues(t *testing.T) {
 	if restored := vault.Restore(masked); restored != text {
 		t.Fatalf("还原结果 = %q，期望 %q", restored, text)
 	}
-	if restored := vault.Restore("[[MASKED:SECRET:UNKNOWN]]"); restored != "[[MASKED:SECRET:UNKNOWN]]" {
+	if restored := vault.Restore("MASKED_SECRET_UNKNOWN_PRESERVE_EXACTLY"); restored != "MASKED_SECRET_UNKNOWN_PRESERVE_EXACTLY" {
 		t.Fatalf("未知占位符不应还原: %q", restored)
 	}
 }
@@ -42,7 +42,7 @@ func TestVaultRestoresKnownBarePlaceholderWithIdentifierBoundaries(t *testing.T)
 	if err != nil {
 		t.Fatalf("创建占位符失败: %v", err)
 	}
-	bare := strings.TrimSuffix(strings.TrimPrefix(placeholder, "[["), "]]")
+	bare := placeholder
 
 	if got := vault.Restore("$env:" + bare + "; done"); got != "$env:"+original+"; done" {
 		t.Fatalf("模型去包装后的占位符未还原: %q", got)
@@ -50,7 +50,7 @@ func TestVaultRestoresKnownBarePlaceholderWithIdentifierBoundaries(t *testing.T)
 	for _, value := range []string{
 		"prefix" + bare,
 		bare + "suffix",
-		"[[MASKED:API_TOKEN:UNKNOWNVALUE]]",
+		"MASKED_API_TOKEN_UNKNOWNVALUE_PRESERVE_EXACTLY",
 	} {
 		if got := vault.Restore(value); got != value {
 			t.Fatalf("非完整或未知占位符不应还原: input=%q output=%q", value, got)
@@ -96,7 +96,7 @@ func TestStreamRestorerHandlesEveryBarePlaceholderSplit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建占位符失败: %v", err)
 	}
-	bare := strings.TrimSuffix(strings.TrimPrefix(placeholder, "[["), "]]")
+	bare := placeholder
 	for split := 0; split <= len(bare); split++ {
 		t.Run(strconv.Itoa(split), func(t *testing.T) {
 			restorer := NewStreamRestorer(vault)

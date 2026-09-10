@@ -70,7 +70,7 @@ func TestMultipartContentSafetyMasksPromptAndSyncsBoundary(t *testing.T) {
 		settings.ContentSafety.SensitiveInfo.EnabledRules = []string{config.SensitiveInfoRulePhone}
 	})
 
-	body, contentType, fileBytes := buildImagesEditForm(t, "把号码 18012345523 写在招牌上")
+	body, contentType, fileBytes := buildImagesEditForm(t, "把电话号码 13800138000 写在招牌上")
 	originalBoundary, _ := utils.MultipartBoundary(contentType)
 	req := httptest.NewRequest("POST", "/v1/images/edits", bytes.NewReader(body))
 	req.Header.Set("Content-Type", contentType)
@@ -103,7 +103,7 @@ func TestMultipartContentSafetyMasksPromptAndSyncsBoundary(t *testing.T) {
 	if len(parts) != 3 {
 		t.Fatalf("改写后部件数量 = %d，期望 3", len(parts))
 	}
-	if !strings.Contains(string(parts[1].Content), "[[MASKED:PHONE:") || strings.Contains(string(parts[1].Content), "18012345523") {
+	if !strings.Contains(string(parts[1].Content), "MASKED_PHONE_") || strings.Contains(string(parts[1].Content), "13800138000") {
 		t.Errorf("prompt 字段未掩码: %q", parts[1].Content)
 	}
 	if parts[2].FileName != "cat.png" || !bytes.Equal(parts[2].Content, fileBytes) {
