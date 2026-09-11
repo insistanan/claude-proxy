@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,23 +30,24 @@ var (
 )
 
 type codexSettingsResponse struct {
-	ConfigPath           string               `json:"configPath"`
-	ConfigExists         bool                 `json:"configExists"`
-	AuthPath             string               `json:"authPath"`
-	AuthExists           bool                 `json:"authExists"`
-	ModelsPath           string               `json:"modelsPath"`
-	ModelsExists         bool                 `json:"modelsExists"`
-	ActiveProvider       string               `json:"activeProvider"`
-	SelectedProvider     string               `json:"selectedProvider"`
-	Providers            []codexProviderView  `json:"providers"`
-	APIKeyMasked         string               `json:"apiKeyMasked"`
-	APIKeyPresent        bool                 `json:"apiKeyPresent"`
-	Model                string               `json:"model"`
-	ModelCatalogJSON     string               `json:"modelCatalogJson"`
-	ModelReasoningEffort string               `json:"modelReasoningEffort"`
-	CatalogModels        []codexModelView     `json:"catalogModels"`
-	ModelTemplates       []codexModelTemplate `json:"modelTemplates"`
-	ModelsError          string               `json:"modelsError"`
+	ConfigPath           string              `json:"configPath"`
+	ConfigExists         bool                `json:"configExists"`
+	AuthPath             string              `json:"authPath"`
+	AuthExists           bool                `json:"authExists"`
+	ModelsPath           string              `json:"modelsPath"`
+	ModelsExists         bool                `json:"modelsExists"`
+	ActiveProvider       string              `json:"activeProvider"`
+	SelectedProvider     string              `json:"selectedProvider"`
+	Providers            []codexProviderView `json:"providers"`
+	APIKeyMasked         string              `json:"apiKeyMasked"`
+	APIKeyPresent        bool                `json:"apiKeyPresent"`
+	Model                string              `json:"model"`
+	ModelCatalogJSON     string              `json:"modelCatalogJson"`
+	ModelReasoningEffort string              `json:"modelReasoningEffort"`
+	CatalogModels        []codexModelView    `json:"catalogModels"`
+	BuiltinModels        []codexModelView    `json:"builtinModels"`
+	ModelsError          string              `json:"modelsError"`
+	BuiltinError         string              `json:"builtinError"`
 }
 
 type codexProviderView struct {
@@ -95,7 +97,20 @@ func GetCodexSettings() gin.HandlerFunc {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("读取 Codex auth.json 失败: %v", err)})
 			return
 		}
-		catalogModels, modelsExists, modelsError := codexModelCatalogStatus(modelsPath)
+		// 内置清单读取失败不阻断设置页，通过 builtinError 透出；catalog 条目的 builtin
+		// 标记依赖该清单，失败时全部为 false。
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+		defer cancel()
+		builtin, builtinErr := loadCodexBuiltinCatalog(ctx, false)
+		catalogModels, modelsExists, modelsError := codexModelCatalogStatus(modelsPath, builtin)
+		var builtinModels []codexModelView
+		var builtinError string
+		if builtinErr != nil {
+			builtinModels = []codexModelView{}
+			builtinError = builtinErr.Error()
+		} else {
+			builtinModels = builtin.builtinViews()
+		}
 
 		providers := codexProviderViews(config)
 		selectedProvider := selectCodexProvider(config.ModelProvider, providers)
@@ -119,8 +134,9 @@ func GetCodexSettings() gin.HandlerFunc {
 			ModelCatalogJSON:     strings.TrimSpace(config.ModelCatalogJSON),
 			ModelReasoningEffort: strings.TrimSpace(config.ModelReasoningEffort),
 			CatalogModels:        catalogModels,
-			ModelTemplates:       codexModelTemplates,
+			BuiltinModels:        builtinModels,
 			ModelsError:          modelsError,
+			BuiltinError:         builtinError,
 		})
 	}
 }
@@ -203,14 +219,14 @@ func resolveCodexPaths() (string, string, string, error) {
 	return filepath.Join(configDir, "config.toml"), filepath.Join(configDir, "auth.json"), filepath.Join(configDir, codexModelCatalogFileName), nil
 }
 
-// codexModelCatalogStatus 读取模型目录并返回条目视图；解析失败时返回空列表与错误信息，
-// 不阻断整个设置页（错误通过 modelsError 字段透出给前端）。
-func codexModelCatalogStatus(modelsPath string) ([]codexModelView, bool, string) {
+// codexModelCatalogStatus 读取模型目录并返回条目视图（builtin 参数用于标记内置复制品）；
+// 解析失败时返回空列表与错误信息，不阻断整个设置页（错误通过 modelsError 字段透出给前端）。
+func codexModelCatalogStatus(modelsPath string, builtin *codexBuiltinCatalog) ([]codexModelView, bool, string) {
 	catalog, err := readCodexModelCatalog(modelsPath)
 	if err != nil {
 		return []codexModelView{}, false, err.Error()
 	}
-	return catalog.modelViews(), catalog.exists, ""
+	return catalog.modelViews(builtin), catalog.exists, ""
 }
 
 func readCodexConfig(path string) (codexConfigDocument, []byte, bool, error) {

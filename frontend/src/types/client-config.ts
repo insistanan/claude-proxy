@@ -77,25 +77,7 @@ export interface CodexProvider {
   baseUrl: string
 }
 
-export interface CodexReasoningLevel {
-  effort: string
-  description: string
-}
-
-/** Codex 模型目录预设模板（后端内置） */
-export interface CodexModelTemplate {
-  id: string
-  name: string
-  description: string
-  supportsImage: boolean
-  contextWindow: number
-  defaultReasoningLevel: string
-  reasoningLevels: CodexReasoningLevel[]
-  supportsSearchTool: boolean
-  priority: number
-}
-
-/** models.json 中已登记的模型条目视图 */
+/** models.json 中已登记的模型条目视图（builtin=true 表示内置模型的复制品） */
 export interface CodexCatalogModel {
   slug: string
   displayName: string
@@ -106,6 +88,8 @@ export interface CodexCatalogModel {
   reasoningLevels: string[]
   supportsSearchTool: boolean
   priority: number
+  visibility: string
+  builtin: boolean
 }
 
 export interface CodexSettings {
@@ -124,8 +108,10 @@ export interface CodexSettings {
   modelCatalogJson: string
   modelReasoningEffort: string
   catalogModels: CodexCatalogModel[]
-  modelTemplates: CodexModelTemplate[]
+  /** 动态获取的 Codex 内置模型清单（codex debug models） */
+  builtinModels: CodexCatalogModel[]
   modelsError: string
+  builtinError: string
 }
 
 export interface SaveCodexSettings {
@@ -137,8 +123,6 @@ export interface SaveCodexSettings {
 
 export interface SaveCodexModelCatalog {
   action: 'upsert' | 'delete' | 'setDefault'
-  /** upsert 新增模型时必填的预设模板 id */
-  template?: string
   slug: string
   displayName?: string
   description?: string

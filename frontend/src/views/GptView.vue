@@ -29,7 +29,6 @@
         <div class="agent-config-panel-header">
           <div>
             <div class="agent-config-panel-title">代理连接</div>
-            <div class="agent-config-panel-subtitle">仅修改所选 model provider 的 Base URL，不会切换 config.toml 的 model_provider。</div>
           </div>
         </div>
         <v-divider />
@@ -43,7 +42,6 @@
               <v-btn color="primary" variant="tonal" prepend-icon="mdi-link-variant" :loading="connecting" @click="connectToProxy">
                 一键连接本代理（{{ defaultBaseUrl || 'http://localhost:.../v1' }}）
               </v-btn>
-              <div class="text-caption text-medium-emphasis mt-2">Codex 固定走 Responses 协议，点击后自动填充 Base URL 与当前代理访问密钥。</div>
             </div>
           </section>
 
@@ -59,8 +57,6 @@
             variant="outlined"
             density="comfortable"
             placeholder="选择已有 provider，或输入 provider 名称"
-            hint="对应 config.toml 中的 [model_providers.&lt;provider&gt;]；名称支持字母、数字、下划线和连字符，不会修改根级 model_provider"
-            persistent-hint
           >
             <template #item="{ props, item }">
               <v-list-item v-bind="props" :subtitle="item.raw.subtitle" />
@@ -77,8 +73,6 @@
             variant="outlined"
             density="comfortable"
             placeholder="例如 http://localhost:9996/v1"
-            hint="写入所选 [model_providers.&lt;provider&gt;] 下的 base_url；留空会删除该字段"
-            persistent-hint
           />
 
           <v-text-field
@@ -106,6 +100,11 @@
 </template>
 
 <script setup lang="ts">
+// Codex CLI 配置页：
+// - 代理连接：只修改所选 [model_providers.<provider>] 的 base_url，不切换根级 model_provider；
+//   Base URL 留空保存会删除该字段；一键连接会填充本代理 Responses 地址（Codex 固定走 Responses 协议）
+//   与当前代理访问密钥。
+// - 模型目录：见 CodexModelCatalog.vue。
 import { computed, onMounted, ref, watch } from 'vue'
 import AgentConfigHeader from '@/components/AgentConfigHeader.vue'
 import AgentConfigLocation from '@/components/AgentConfigLocation.vue'
