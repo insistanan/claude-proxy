@@ -5,7 +5,7 @@
   "status": "pass",
   "visualReview": "pending",
   "artifact": {
-    "path": "d:\\code\\project\\some\\claude-proxy\\diagrams\\channel-select.html",
+    "path": "d:\\code\\project\\some\\api-proxy\\diagrams\\channel-select.html",
     "sha256": "8e22887c865993fc5a6ea813ddb758b87f663914ded45877c2983fdfcd39b495",
     "bytes": 716047
   },

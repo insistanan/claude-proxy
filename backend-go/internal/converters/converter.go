@@ -1,7 +1,7 @@
 package converters
 
 import (
-	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/types"
 )
 
 // ============== FinishReason 映射 ==============

@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 // streamPump 聚合各 provider 流式实现共有的脚手架：事件/错误双通道、

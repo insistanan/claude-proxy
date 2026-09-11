@@ -3,7 +3,7 @@ package providers
 import (
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/types"
 )
 
 func TestOpenAIProviderConvertToClaudeResponse_HidesReasoningContent(t *testing.T) {

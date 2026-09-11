@@ -49,7 +49,7 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
     apk --no-cache add ca-certificates tzdata
 
 # 从构建阶段复制 Go 二进制文件（已内嵌前端资源）
-COPY --from=builder /src/dist/claude-proxy-go /app/claude-proxy
+COPY --from=builder /src/dist/api-proxy-go /app/api-proxy
 
 # 创建配置目录和日志目录
 RUN mkdir -p /app/.config/backups /app/logs
@@ -65,4 +65,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
 
 # 启动命令
-CMD ["/app/claude-proxy"]
+CMD ["/app/api-proxy"]

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/pricing"
+	"github.com/BenedictKing/api-proxy/internal/pricing"
 )
 
 // ============ 历史数据查询方法（用于图表可视化）============

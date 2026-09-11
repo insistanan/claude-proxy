@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/handlers/proxycore"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
 

@@ -5,8 +5,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/types"
 	"github.com/gin-gonic/gin"
 )
 

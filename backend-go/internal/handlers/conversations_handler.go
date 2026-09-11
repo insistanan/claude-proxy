@@ -4,11 +4,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/conversation"
-	"github.com/BenedictKing/claude-proxy/internal/scheduler"
-	"github.com/BenedictKing/claude-proxy/internal/session"
-	"github.com/BenedictKing/claude-proxy/internal/visionlayer"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/conversation"
+	"github.com/BenedictKing/api-proxy/internal/scheduler"
+	"github.com/BenedictKing/api-proxy/internal/session"
+	"github.com/BenedictKing/api-proxy/internal/visionlayer"
 	"github.com/gin-gonic/gin"
 )
 

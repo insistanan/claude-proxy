@@ -1,5 +1,5 @@
 {
-  "name": "claude-proxy",
+  "name": "api-proxy",
   "private": true,
   "scripts": {
     "check": "node scripts/check.mjs"

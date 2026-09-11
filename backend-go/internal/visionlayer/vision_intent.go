@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/types"
 )
 
 func extractUserText(value interface{}) string {

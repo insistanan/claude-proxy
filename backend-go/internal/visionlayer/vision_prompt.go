@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 func buildVisionRequest(model string, profile visionAnalysisProfile, images []visionImage) ([]byte, error) {

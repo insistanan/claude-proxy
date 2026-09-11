@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/BenedictKing/claude-proxy/internal/sensitive"
+	"github.com/BenedictKing/api-proxy/internal/sensitive"
 )
 
 // HookStage 表示代理请求生命周期中的 Hook 执行阶段。

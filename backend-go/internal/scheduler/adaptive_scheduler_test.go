@@ -3,7 +3,7 @@ package scheduler
 import (
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/metrics"
+	"github.com/BenedictKing/api-proxy/internal/metrics"
 	"github.com/stretchr/testify/assert"
 )
 

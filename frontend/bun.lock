@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "claude-proxy-frontend",
+      "name": "api-proxy-frontend",
       "dependencies": {
         "@mdi/js": "^7.4.47",
         "apexcharts": "^5.3.6",

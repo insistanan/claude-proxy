@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/logger"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/logger"
 )
 
 const logsUsage = `用法:
-  claude-proxy logs query --from <time> --to <time> [--request-id id] [--limit n] [--db path]
-  claude-proxy logs show <request-id> [--db path]
+  api-proxy logs query --from <time> --to <time> [--request-id id] [--limit n] [--db path]
+  api-proxy logs show <request-id> [--db path]
 
 时间格式: RFC3339 / 2006-01-02T15:04:05 / 2006-01-02
 日期-only 的 --from 取当天 00:00:00，--to 取当天 23:59:59.999

@@ -43,7 +43,7 @@ npm run test                 # vitest 单测（现有 quickInputParser 等）
 
 ## Windows exe 打包流程
 
-目标产物：`dist/claude-proxy-windows-amd64.exe`。
+目标产物：`dist/api-proxy-windows-amd64.exe`。
 
 1. 先构建前端：`cd frontend && npm run build`。
 2. 把前端产物复制到 `backend-go/frontend/dist/`，供 Go embed 打包到最新 UI。
@@ -66,10 +66,10 @@ npm run test                 # vitest 单测（现有 quickInputParser 等）
    $env:CGO_ENABLED="0"
    $env:GOOS="windows"
    $env:GOARCH="amd64"
-   go build -ldflags "-X main.Version=$version -X main.BuildTime=$buildTime -X main.GitCommit=$gitCommit -s -w" -o ..\dist\claude-proxy-windows-amd64.exe .
+   go build -ldflags "-X main.Version=$version -X main.BuildTime=$buildTime -X main.GitCommit=$gitCommit -s -w" -o ..\dist\api-proxy-windows-amd64.exe .
    ```
 
-5. 构建后用 `Get-Item dist\claude-proxy-windows-amd64.exe` 确认产物存在；运行时 UI 版本不应显示 `v0.0.0-dev`。
+5. 构建后用 `Get-Item dist\api-proxy-windows-amd64.exe` 确认产物存在；运行时 UI 版本不应显示 `v0.0.0-dev`。
 
 ### 前端嵌入产物的所有入口（统一脚本）
 

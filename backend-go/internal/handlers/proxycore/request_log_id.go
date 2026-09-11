@@ -3,8 +3,8 @@ package proxycore
 import (
 	"net/http"
 
-	"github.com/BenedictKing/claude-proxy/internal/logger"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/logger"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
 

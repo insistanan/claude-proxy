@@ -5,7 +5,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 // ShouldRetryWithNextKey 判断是否应该使用下一个密钥重试

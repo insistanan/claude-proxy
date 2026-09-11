@@ -1,6 +1,6 @@
 # Claude / Codex / Gemini API Proxy
 
-[![GitHub release](https://img.shields.io/github/v/release/BenedictKing/claude-proxy)](https://github.com/BenedictKing/claude-proxy/releases/latest)
+[![GitHub release](https://img.shields.io/github/v/release/insistanan/api-proxy)](https://github.com/insistanan/api-proxy/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 一个高性能的多上游 AI 代理服务器：五协议统一入口（Messages / Responses / Gemini / Chat / Images），多渠道智能调度与故障转移，Web 管理面板单二进制部署。
@@ -32,7 +32,7 @@ make build
 
 # 3. 运行
 make run
-# 或直接运行产物 dist/claude-proxy-<platform>
+# 或直接运行产物 dist/api-proxy-<platform>
 ```
 
 开发模式见 `docs/DEVELOPMENT.md`（热重载 / 前端 dev server）。

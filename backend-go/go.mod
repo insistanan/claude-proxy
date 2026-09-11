@@ -1,4 +1,4 @@
-module github.com/BenedictKing/claude-proxy
+module github.com/BenedictKing/api-proxy
 
 go 1.25
 

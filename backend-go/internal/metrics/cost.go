@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/pricing"
+	"github.com/BenedictKing/api-proxy/internal/pricing"
 )
 
 // CostStats 一段区间内的花费聚合（美元）。

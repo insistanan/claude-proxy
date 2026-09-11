@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/types"
 )
 
 // ConvertToClaudeResponse 转换为 Claude 响应

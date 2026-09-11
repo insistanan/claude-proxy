@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/skills"
+	"github.com/BenedictKing/api-proxy/internal/skills"
 	"github.com/gin-gonic/gin"
 )
 

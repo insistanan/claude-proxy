@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/types"
 )
 
 func TestPersistentSessionManagerRestoresPreviousResponseChain(t *testing.T) {

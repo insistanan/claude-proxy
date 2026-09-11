@@ -3,8 +3,8 @@ package scheduler
 import (
 	"fmt"
 
-	"github.com/BenedictKing/claude-proxy/internal/conversation"
-	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
+	"github.com/BenedictKing/api-proxy/internal/conversation"
+	"github.com/BenedictKing/api-proxy/internal/urlhealth"
 )
 
 func (s *ChannelScheduler) SetTraceAffinityForKind(kind ChannelKind, conversationID string, channelIndex int) {

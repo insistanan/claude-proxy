@@ -1,7 +1,7 @@
 # Makefile for API Proxy Go Backend
 
 # 变量定义
-BINARY_NAME=claude-proxy-go
+BINARY_NAME=api-proxy-go
 MAIN_PATH=.
 BUILD_DIR=../dist
 AIR_VERSION=v1.52.0

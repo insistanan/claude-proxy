@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/config"
 )
 
 // SelectVisionChannel 通过稳定渠道 ID 解析图片理解层指定的原生图片理解渠道，

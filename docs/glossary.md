@@ -30,7 +30,7 @@
 | **Pi Agent 配置管理** | 管理 Pi Coding Agent 的 providers / credentials / model-settings / backups：原子写（临时文件+rename）、写前备份、跨进程锁、revision 冲突检测。凭据文件 0600。配置目录 `~/.pi/agent`（可 `PI_AGENT_CONFIG_DIR` 覆盖）。路由在 main.go 直接注册 `/api/settings/pi-agent/*`。 | `internal/piagent`、`internal/handlers/pi_agent.go` |
 | **模型目录（modelcatalog）** | `/v1/models` 聚合层：静态别名 + 渠道池匹配 + 上游 `/models` 发现，内存目录 + 后台刷新。无独立路由，聚合入口挂在 messages 包 handler 下。 | `internal/modelcatalog`、`internal/handlers/messages/models.go` |
 | **评测探针（Probe）** | 一条可入库的检测题：刺激（prompt）+ 封闭抽取 + 封闭判定。存在 `.config/eval.db`，不写死在 Go。 | `internal/eval` |
-| **日志库（logs.db）** | 运行日志、流量正文与请求元数据的 sqlite。路径 `.config/logs.db`，与 eval/conversations 并列。`app_logs` 接管原 `app.log`；`traffic_logs` 存客户端请求 / 上游请求 / 上游响应 / 流式合成（完整 JSON，1MB 硬顶，图片占位）；`request_logs` 供 Web 请求日志页。保留今天与昨天。查询入口 `claude-proxy logs query/show`。 | `internal/logger`、`internal/cli` |
+| **日志库（logs.db）** | 运行日志、流量正文与请求元数据的 sqlite。路径 `.config/logs.db`，与 eval/conversations 并列。`app_logs` 接管原 `app.log`；`traffic_logs` 存客户端请求 / 上游请求 / 上游响应 / 流式合成（完整 JSON，1MB 硬顶，图片占位）；`request_logs` 供 Web 请求日志页。保留今天与昨天。查询入口 `api-proxy logs query/show`。 | `internal/logger`、`internal/cli` |
 | **内置题 / 自建题** | 内置题（`builtin=true`）由 `seed.go` 定义，每次启动同步覆盖，UI 与 API 都改不了删不了——判定器和题目必须同版本。要定制就复制成自建题。 | `internal/eval/seed.go` |
 | **评测套件（Suite）** | 一组探针。便宜套件才能挂值班；真伪套件禁止 rubric。 | `internal/eval` |
 | **评测值班（Watch）** | 全局唯一的便宜套件定时任务。进程重启不立即触发；已有评测在跑则 skip。 | `internal/eval/watch.go` |

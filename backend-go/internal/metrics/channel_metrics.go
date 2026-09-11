@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 // NewMetricsManager 创建指标管理器

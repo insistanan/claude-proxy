@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/handlers/proxycore"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 // RawResponse 一次原生上游调用的原始结果。评测不走转换器。
@@ -323,7 +323,7 @@ func applyEvalClientHeaders(headers http.Header, serviceType string, cfg *config
 		headers.Set("User-Agent", "codex-cli")
 	default:
 		if headers.Get("User-Agent") == "" {
-			headers.Set("User-Agent", "claude-proxy-eval/1.0")
+			headers.Set("User-Agent", "api-proxy-eval/1.0")
 		}
 	}
 }

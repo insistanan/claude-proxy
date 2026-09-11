@@ -5,8 +5,8 @@ import (
 	"mime/multipart"
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 // buildImagesForm 构造 /v1/images/edits 常见的表单请求：model + prompt + 图片文件。

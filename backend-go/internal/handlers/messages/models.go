@@ -4,10 +4,10 @@ package messages
 import (
 	"net/http"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/middleware"
-	"github.com/BenedictKing/claude-proxy/internal/modelcatalog"
-	"github.com/BenedictKing/claude-proxy/internal/scheduler"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/middleware"
+	"github.com/BenedictKing/api-proxy/internal/modelcatalog"
+	"github.com/BenedictKing/api-proxy/internal/scheduler"
 	"github.com/gin-gonic/gin"
 )
 

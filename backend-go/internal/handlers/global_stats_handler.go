@@ -3,8 +3,8 @@ package handlers
 import (
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/metrics"
-	"github.com/BenedictKing/claude-proxy/internal/pricing"
+	"github.com/BenedictKing/api-proxy/internal/metrics"
+	"github.com/BenedictKing/api-proxy/internal/pricing"
 	"github.com/gin-gonic/gin"
 )
 

@@ -3,7 +3,7 @@ package sensitive
 import (
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/config"
 )
 
 func TestInfoDetectorMasksEveryRule(t *testing.T) {

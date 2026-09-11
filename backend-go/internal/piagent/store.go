@@ -13,7 +13,7 @@ type Store struct {
 	BackupDir string
 }
 
-// NewStore 创建 Store，备份目录默认放在 claude-proxy 的 .config/backups/pi-agent。
+// NewStore 创建 Store，备份目录默认放在 api-proxy 的 .config/backups/pi-agent。
 func NewStore(backupDir string) *Store {
 	return &Store{BackupDir: backupDir}
 }

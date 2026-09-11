@@ -7,7 +7,7 @@
     "output": "overview.html",
     "quality_profile": "showcase",
     "repository": {
-      "url": "https://github.com/insistanan/claude-proxy.git",
+      "url": "https://github.com/insistanan/api-proxy.git",
       "revision": "90ef994ed83cec8fd3902842032439f5db393dd1"
     },
     "views": [
@@ -129,7 +129,7 @@
   "boundaries": [
     {
       "kind": "region",
-      "label": "单二进制 claude-proxy",
+      "label": "单二进制 api-proxy",
       "wraps": ["web", "auth", "proxy", "scheduler", "converter", "store"]
     },
     {

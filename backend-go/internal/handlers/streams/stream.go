@@ -16,12 +16,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/proxycore"
-	"github.com/BenedictKing/claude-proxy/internal/providers"
-	"github.com/BenedictKing/claude-proxy/internal/types"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/api-proxy/internal/handlers/proxycore"
+	"github.com/BenedictKing/api-proxy/internal/providers"
+	"github.com/BenedictKing/api-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
 

@@ -222,7 +222,7 @@ func ensureClaudeCodeMetadataUserID(requestPayload map[string]interface{}, sessi
 		return
 	}
 
-	deviceIDDigest := sha256.Sum256([]byte("claude-proxy:" + sessionID))
+	deviceIDDigest := sha256.Sum256([]byte("api-proxy:" + sessionID))
 	metadataUserIDBytes, err := json.Marshal(claudeCodeMetadataUserID{
 		DeviceID:    hex.EncodeToString(deviceIDDigest[:]),
 		AccountUUID: "",

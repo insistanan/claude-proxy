@@ -3,8 +3,8 @@ package chat
 import (
 	"encoding/json"
 
-	"github.com/BenedictKing/claude-proxy/internal/types"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 func extractChatUsage(bodyBytes []byte) *types.Usage {

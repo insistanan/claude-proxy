@@ -44,12 +44,12 @@ jobs:
         run: |
           go mod tidy
           go mod download
-          CGO_ENABLED=0 go build -ldflags "-s -w -X main.Version=${{ github.ref_name }} -X main.BuildTime=$(date -u '+%Y-%m-%d_%H:%M:%S') -X main.GitCommit=${{ github.sha }}" -o claude-proxy-linux-amd64
+          CGO_ENABLED=0 go build -ldflags "-s -w -X main.Version=${{ github.ref_name }} -X main.BuildTime=$(date -u '+%Y-%m-%d_%H:%M:%S') -X main.GitCommit=${{ github.sha }}" -o api-proxy-linux-amd64
         working-directory: ./backend-go
 
       - name: Build Backend for arm64
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w -X main.Version=${{ github.ref_name }} -X main.BuildTime=$(date -u '+%Y-%m-%d_%H:%M:%S') -X main.GitCommit=${{ github.sha }}" -o claude-proxy-linux-arm64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w -X main.Version=${{ github.ref_name }} -X main.BuildTime=$(date -u '+%Y-%m-%d_%H:%M:%S') -X main.GitCommit=${{ github.sha }}" -o api-proxy-linux-arm64
         working-directory: ./backend-go
 
       - name: Release
@@ -57,8 +57,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            backend-go/claude-proxy-linux-amd64
-            backend-go/claude-proxy-linux-arm64
+            backend-go/api-proxy-linux-amd64
+            backend-go/api-proxy-linux-arm64
           draft: true
           generate_release_notes: true
         env:

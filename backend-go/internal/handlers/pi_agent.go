@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/piagent"
+	"github.com/BenedictKing/api-proxy/internal/piagent"
 	"github.com/gin-gonic/gin"
 )
 

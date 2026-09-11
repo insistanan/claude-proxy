@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/pricing"
-	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/pricing"
+	"github.com/BenedictKing/api-proxy/internal/types"
 )
 
 // 测试模型名刻意都不含内置价表里的任何键（gpt-4o / o1 / claude-3-5-sonnet …），

@@ -17,7 +17,7 @@
 | 请求体读取 / 放回 | `proxycore.ReadRequestBody` / `RestoreRequestBody` | 大小上限走 env `MAX_REQUEST_BODY_SIZE_MB` |
 | 上游请求发送 | `proxycore.SendRequest` | 统一超时/代理/认证头 |
 | 加载 `.env` | `config.LoadDotEnv` | 先 exe 同目录再 cwd；不覆盖已有环境变量。`main.go` 唯一入口，禁止再写 `godotenv.Load()` |
-| 运行日志 / 流量正文 / 请求元数据 | `logger`（`.config/logs.db`） | WAL sqlite；保留今天+昨天（本地日历）。`log.Printf` 进 `app_logs`；请求/响应正文进 `traffic_logs`（完整 JSON、单条 1MB 硬顶、图片 data URL 占位）；Web 请求日志走 `request_logs`。查询入口 `claude-proxy logs query/show`。管理端流量正文列表/详情走 `GET /api/system-logs`（列表不带 body，按 requestId 聚合）。停写 `logs/` 文件 |
+| 运行日志 / 流量正文 / 请求元数据 | `logger`（`.config/logs.db`） | WAL sqlite；保留今天+昨天（本地日历）。`log.Printf` 进 `app_logs`；请求/响应正文进 `traffic_logs`（完整 JSON、单条 1MB 硬顶、图片 data URL 占位）；Web 请求日志走 `request_logs`。查询入口 `api-proxy logs query/show`。管理端流量正文列表/详情走 `GET /api/system-logs`（列表不带 body，按 requestId 聚合）。停写 `logs/` 文件 |
 | 按稳定 UUID 跨五类切片查渠道 | `config.FindChannelByID` | 评测/关联状态用；返回深拷贝。HTTP 渠道路由仍用切片下标 |
 | 评测题库 / 运行记录 | `internal/eval`（`.config/eval.db`） | WAL sqlite；探针/套件/批次/值班单行。内置题带 `builtin`，启动走 `Store.SyncBuiltins` 按 `seed.go` 覆盖（保留 ID），改删一律拒绝。取套件的探针一律走 `Store.SuiteWithProbes` / `ProbesForSuite`，别再各处循环 `GetProbe`。批次列表走 `Store.ListRuns(channelID, limit)`：channelID 非空时用 `instr(channel_ids_json, '"id"')` 只留声明过该渠道的批次（渠道行深链要看单渠道完整历史，全局最近 N 条会把它挤掉），**不要改用 LIKE**——ID 里的 `%`/`_` 会变通配符、不带引号会命中前缀相同的其它渠道 |
 | 评测原生上游发送 | `eval.Sender` → `proxycore.SendRequest` | 空 `http.Header` 从头组认证/伪装；**禁止** `PrepareUpstreamHeaders`（会泄漏管理端 cookie / `x-proxy-key`）。不走转换器、不写 scheduler.Record* |

@@ -1,8 +1,8 @@
 # 忽略编译产物
 dist/
 *.exe
-claude-proxy-*
-claude-proxy
+api-proxy-*
+api-proxy
 stream_verify
 
 # 忽略前端资源（会在构建时复制）

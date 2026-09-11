@@ -11,7 +11,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 	"github.com/google/uuid"
 )
 

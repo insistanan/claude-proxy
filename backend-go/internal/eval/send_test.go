@@ -3,7 +3,7 @@ package eval
 import (
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/config"
 )
 
 func TestResolveEvalModelOverrideDoesNotUseDefault(t *testing.T) {

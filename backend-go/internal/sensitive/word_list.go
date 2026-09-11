@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/config"
 )
 
 // WordCategory 表示敏感词所属分类。

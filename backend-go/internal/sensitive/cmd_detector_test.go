@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/config"
 )
 
 func TestCmdDetectorOnlyMatchesExecutableContexts(t *testing.T) {

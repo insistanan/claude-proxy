@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/logger"
-	"github.com/BenedictKing/claude-proxy/internal/pricing"
+	"github.com/BenedictKing/api-proxy/internal/logger"
+	"github.com/BenedictKing/api-proxy/internal/pricing"
 )
 
 const defaultRequestLogLimit = 50

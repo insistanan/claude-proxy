@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/config"
 )
 
 // ipv4Dialer 优先使用 IPv4 建立 TCP 连接。

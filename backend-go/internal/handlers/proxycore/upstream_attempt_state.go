@@ -7,8 +7,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/types"
 )
 
 // candidateRetryState 收拢单个 BaseURL 生命周期内的 Key 失败和同候选重试状态。

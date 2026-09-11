@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/sensitive"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/sensitive"
 	"github.com/gin-gonic/gin"
 )
 
@@ -397,7 +397,7 @@ func contentSafetyHookStreamPayload(apiType string, metadata HookContext) (any, 
 				"details": []any{map[string]any{
 					"@type":  "type.googleapis.com/google.rpc.ErrorInfo",
 					"reason": code,
-					"domain": "claude-proxy",
+					"domain": "api-proxy",
 				}},
 			},
 		}, "", nil
@@ -413,7 +413,7 @@ func geminiContentSafetyPayload(message, code string) map[string]any {
 			"details": []any{map[string]any{
 				"@type":  "type.googleapis.com/google.rpc.ErrorInfo",
 				"reason": code,
-				"domain": "claude-proxy",
+				"domain": "api-proxy",
 			}},
 		},
 	}

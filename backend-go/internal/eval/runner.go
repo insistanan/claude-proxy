@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/scheduler"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/scheduler"
 )
 
 var ErrBusy = errors.New("已有评测在跑")

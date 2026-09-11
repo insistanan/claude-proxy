@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/httpclient"
-	"github.com/BenedictKing/claude-proxy/internal/logger"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/httpclient"
+	"github.com/BenedictKing/api-proxy/internal/logger"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 // ShouldForceIdentityEncoding 判定是否应强制上游使用 identity 编码（禁止压缩）。

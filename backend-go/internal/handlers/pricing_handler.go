@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/pricing"
+	"github.com/BenedictKing/api-proxy/internal/pricing"
 	"github.com/gin-gonic/gin"
 )
 

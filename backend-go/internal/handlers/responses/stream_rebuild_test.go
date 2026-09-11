@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/types"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 // TestResponsesEventRebuildPreservesLineStructure 锁定 Responses 侧两个事件改写函数的保真契约：

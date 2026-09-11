@@ -1,6 +1,6 @@
 // Package piagent 管理 pi-agent（Pi Coding Agent）的模型供应商配置。
 // pi-agent 使用本地目录 ~/.pi/agent 保存 models.json / auth.json / settings.json，
-// 本模块负责对该目录的固定路径解析、安全读写、备份与脱敏，避免与 claude-proxy
+// 本模块负责对该目录的固定路径解析、安全读写、备份与脱敏，避免与 api-proxy
 // 自身渠道配置耦合。
 package piagent
 

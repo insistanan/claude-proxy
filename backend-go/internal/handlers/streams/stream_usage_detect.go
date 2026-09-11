@@ -8,7 +8,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 )
 
 // updateCollectedUsage 更新收集的 usage 数据

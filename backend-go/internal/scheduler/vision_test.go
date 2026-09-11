@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/config"
 )
 
 func TestListVisionChannelsSeparatesPublicAndOwnerPoolsInConfigOrder(t *testing.T) {

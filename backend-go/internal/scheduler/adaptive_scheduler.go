@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/metrics"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/metrics"
 )
 
 // AdaptiveScheduler 自适应负载均衡调度器

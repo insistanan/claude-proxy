@@ -5,7 +5,7 @@
   "status": "pass",
   "visualReview": "pending",
   "artifact": {
-    "path": "d:\\code\\project\\some\\claude-proxy\\diagrams\\vision.html",
+    "path": "d:\\code\\project\\some\\api-proxy\\diagrams\\vision.html",
     "sha256": "e412682337178061414911e322efe5f339f4cc695f4962ae3777aadfb234fe97",
     "bytes": 718399
   },

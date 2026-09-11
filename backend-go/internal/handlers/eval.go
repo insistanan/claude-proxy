@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/eval"
+	"github.com/BenedictKing/api-proxy/internal/eval"
 	"github.com/gin-gonic/gin"
 )
 

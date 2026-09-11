@@ -3,8 +3,8 @@ package proxycore
 import (
 	"log"
 
-	"github.com/BenedictKing/claude-proxy/internal/conversation"
-	"github.com/BenedictKing/claude-proxy/internal/scheduler"
+	"github.com/BenedictKing/api-proxy/internal/conversation"
+	"github.com/BenedictKing/api-proxy/internal/scheduler"
 	"github.com/gin-gonic/gin"
 )
 

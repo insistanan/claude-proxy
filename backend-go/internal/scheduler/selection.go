@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/BenedictKing/claude-proxy/internal/circuit"
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	"github.com/BenedictKing/claude-proxy/internal/conversation"
-	"github.com/BenedictKing/claude-proxy/internal/metrics"
+	"github.com/BenedictKing/api-proxy/internal/circuit"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	"github.com/BenedictKing/api-proxy/internal/conversation"
+	"github.com/BenedictKing/api-proxy/internal/metrics"
 )
 
 // SelectionResult 渠道选择结果

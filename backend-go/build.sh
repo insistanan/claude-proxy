@@ -42,23 +42,23 @@ echo "🔨 构建二进制文件..."
 
 # Linux
 echo "  - 构建 Linux (amd64)..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/claude-proxy-linux-amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/api-proxy-linux-amd64 .
 
 # Linux ARM64
 echo "  - 构建 Linux (arm64)..."
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/claude-proxy-linux-arm64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/api-proxy-linux-arm64 .
 
 # macOS
 echo "  - 构建 macOS (amd64)..."
-CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/claude-proxy-darwin-amd64 .
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/api-proxy-darwin-amd64 .
 
 # macOS ARM64 (M1/M2)
 echo "  - 构建 macOS (arm64)..."
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/claude-proxy-darwin-arm64 .
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/api-proxy-darwin-arm64 .
 
 # Windows
 echo "  - 构建 Windows (amd64)..."
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/claude-proxy-windows-amd64.exe .
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/api-proxy-windows-amd64.exe .
 
 echo ""
 echo "✅ 构建完成！"
@@ -70,7 +70,7 @@ echo ""
 echo "💡 使用方法："
 echo "  1. 复制对应平台的二进制文件到目标机器"
 echo "  2. 创建 .env 文件配置环境变量"
-echo "  3. 运行: ./claude-proxy-linux-amd64"
+echo "  3. 运行: ./api-proxy-linux-amd64"
 echo ""
 echo "📌 版本信息已注入到二进制文件中"
 

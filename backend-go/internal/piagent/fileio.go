@@ -25,7 +25,7 @@ var ErrRevisionRequired = errors.New("修改已存在的配置必须提供 revis
 // LockDuration 表示 manager 锁在多大时间内视为有效（超过视为陈旧）。
 const lockStaleAfter = 60 * time.Second
 
-// managerLockName 是 claude-proxy 写入 pi-agent 配置时使用的互斥锁文件名，
+// managerLockName 是 api-proxy 写入 pi-agent 配置时使用的互斥锁文件名，
 // 放在 pi-agent 配置目录下，避免与 pi-agent 的 per-file proper-lockfile 冲突。
 const managerLockName = ".pi-agent-manager.lock"
 

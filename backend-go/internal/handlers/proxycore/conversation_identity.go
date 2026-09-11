@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/BenedictKing/claude-proxy/internal/conversation"
-	"github.com/BenedictKing/claude-proxy/internal/utils"
+	"github.com/BenedictKing/api-proxy/internal/conversation"
+	"github.com/BenedictKing/api-proxy/internal/utils"
 	"github.com/gin-gonic/gin"
 )
 

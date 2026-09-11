@@ -3,7 +3,7 @@ package proxycore
 import (
 	"encoding/json"
 
-	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/api-proxy/internal/handlers/hooks"
 	"github.com/gin-gonic/gin"
 )
 

@@ -5,8 +5,8 @@
 package proxycore
 
 import (
-	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
-	"github.com/BenedictKing/claude-proxy/internal/providers"
+	"github.com/BenedictKing/api-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/api-proxy/internal/providers"
 
 	"context"
 	"errors"

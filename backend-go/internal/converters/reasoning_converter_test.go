@@ -3,7 +3,7 @@ package converters
 import (
 	"testing"
 
-	"github.com/BenedictKing/claude-proxy/internal/types"
+	"github.com/BenedictKing/api-proxy/internal/types"
 	"github.com/stretchr/testify/assert"
 )
 

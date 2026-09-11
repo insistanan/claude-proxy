@@ -4,7 +4,7 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/BenedictKing/claude-proxy/internal/scheduler"
+	"github.com/BenedictKing/api-proxy/internal/scheduler"
 	"github.com/gin-gonic/gin"
 )
 

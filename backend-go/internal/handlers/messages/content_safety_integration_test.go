@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BenedictKing/claude-proxy/internal/config"
-	rootHandlers "github.com/BenedictKing/claude-proxy/internal/handlers"
-	"github.com/BenedictKing/claude-proxy/internal/handlers/hooks"
-	"github.com/BenedictKing/claude-proxy/internal/metrics"
-	"github.com/BenedictKing/claude-proxy/internal/scheduler"
-	"github.com/BenedictKing/claude-proxy/internal/sensitive"
-	"github.com/BenedictKing/claude-proxy/internal/session"
-	"github.com/BenedictKing/claude-proxy/internal/urlhealth"
+	"github.com/BenedictKing/api-proxy/internal/config"
+	rootHandlers "github.com/BenedictKing/api-proxy/internal/handlers"
+	"github.com/BenedictKing/api-proxy/internal/handlers/hooks"
+	"github.com/BenedictKing/api-proxy/internal/metrics"
+	"github.com/BenedictKing/api-proxy/internal/scheduler"
+	"github.com/BenedictKing/api-proxy/internal/sensitive"
+	"github.com/BenedictKing/api-proxy/internal/session"
+	"github.com/BenedictKing/api-proxy/internal/urlhealth"
 	"github.com/gin-gonic/gin"
 )
 
